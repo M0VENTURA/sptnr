@@ -1,6 +1,23 @@
 # Spotify Popularity to Navidrome Ratings (sptnr)
 
-This script was developed as a solution to repurpose the star ratings in Navidrome, aligning them with Spotify's track popularity. As a Navidrome user who utilizes the 'favorite' feature instead of star ratings, I wanted to give new life and utility to the unused rating system. By syncing Spotify popularity data with Navidrome's ratings, the script provides a quick way to identify popular tracks. This becomes particularly useful when frequently adding new albums and artists to the Navidrome server, especially those you're not familiar with.
+---
+
+🎧 SPTNR — Rate My Music with Artist-Normalized Popularity
+
+this SPTNR fork is a music rating engine that blends Spotify and Last.fm popularity data, normalizes scores within each artist’s catalog, and outputs star ratings for Navidrome or other Subsonic-compatible platforms.
+
+Built for playlist curation, metadata enrichment, and genre-aware automation.
+
+---
+
+🚀 Features
+
+- 🔀 Blended Popularity: Combines Spotify popularity and Last.fm playcounts.
+- 📊 Artist-Normalized Scoring: Ratings are scaled relative to each artist’s top and bottom tracks.
+- ⭐ Star Rating Output: Converts normalized scores to 0–5 star ratings.
+- 📁 CSV Export: Outputs ratings in a Navidrome-friendly format.
+- 🐳 Docker-Ready: Easily deployable via Docker or Docker Compose.
+
 
 ![Screenshot of script and phone](https://i.imgur.com/7NhSQFM.png)
 
