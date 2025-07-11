@@ -1,19 +1,36 @@
 #!/bin/bash
 
-# Ensure the script stops if there is an error
+# 💥 Stop script on error
 set -e
 
-# Read version from the VERSION file
+# 📦 Load version info
 VERSION=$(cat VERSION)
 
-# Set up the builder instance (only needs to be done once, so you can comment this out after the first run)
-# docker buildx create --name mybuilder --use
-# docker buildx inspect mybuilder --bootstrap
+# 🧪 Ensure .env exists
+if [ ! -f .env ]; then
+  echo "❌ Missing .env file. Please create one with Spotify and Last.fm credentials."
+  exit 1
+fi
 
-# Build and push the Docker image for both arm64 and amd64 platforms with the version tag
-docker buildx build --platform linux/arm64,linux/amd64 -t krestaino/sptnr:$VERSION . --push
+# 🔨 Check if builder exists
+if ! docker buildx inspect mybuilder > /dev/null 2>&1; then
+  echo "🔧 Creating Docker builder 'mybuilder'..."
+  docker buildx create --name mybuilder --use
+  docker buildx inspect mybuilder --bootstrap
+else
+  echo "🧱 Using existing Docker builder 'mybuilder'"
+  docker buildx use mybuilder
+fi
 
-# Build and push the 'latest' tag as well
-docker buildx build --platform linux/arm64,linux/amd64 -t krestaino/sptnr:latest . --push
+# 🚀 Build and push versioned image
+echo "📦 Building and pushing image: krestaino/sptnr:$VERSION"
+docker buildx build --platform linux/arm64,linux/amd64 \
+  -t krestaino/sptnr:$VERSION . --push
 
-echo "Docker images tagged and pushed: $VERSION and latest"
+# 🏷️ Build and push 'latest' tag
+echo "📦 Building and pushing image: krestaino/sptnr:latest"
+docker buildx build --platform linux/arm64,linux/amd64 \
+  -t krestaino/sptnr:latest . --push
+
+# 🎉 Done
+echo "✅ Docker images pushed: $VERSION and latest"
