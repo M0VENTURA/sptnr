@@ -72,9 +72,11 @@ def load_cached_artist_id(artist_name):
 def get_artist_tracks_from_navidrome(artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth: return []
+
     name, artist_id = load_cached_artist_id(artist_name)
     if not artist_id: return []
     print(f"\n✅ Matched artist: {name} [ID: {artist_id}]")
+
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
@@ -83,25 +85,26 @@ def get_artist_tracks_from_navidrome(artist_name):
         print(f"\n⚠️ Album fetch failed: {type(e).__name__} - {e}")
         return []
 
-tracks = []
-for album in albums:
-    album_name = album.get("name", "Unknown")
-    album_id = album["id"]
-    print(f"\n📀 Album: {album_name} [ID: {album_id}]")
-    try:
-        song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
-        song_res.raise_for_status()
-        songs = song_res.json().get("album", {}).get("song", [])
-        if not songs:
-            print(f"⚠️ No tracks found in album '{album_name}'")
-        else:
-            print(f"🎵 Found {len(songs)} track(s) in '{album_name}'")
-            for s in songs:
-                tracks.append({"id": s["id"], "title": s["title"]})
-    except Exception as e:
-        print(f"⚠️ Failed to fetch album '{album_name}': {type(e).__name__} - {e}")
-print(f"\n🎵 Total tracks pulled: {len(tracks)}")
-return tracks
+    tracks = []
+    for album in albums:
+        album_name = album.get("name", "Unknown")
+        album_id = album["id"]
+        print(f"\n📀 Album: {album_name} [ID: {album_id}]")
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("album", {}).get("song", [])
+            if not songs:
+                print(f"⚠️ No tracks found in album '{album_name}'")
+            else:
+                print(f"🎵 Found {len(songs)} track(s) in '{album_name}'")
+                for s in songs:
+                    tracks.append({"id": s["id"], "title": s["title"]})
+        except Exception as e:
+            print(f"⚠️ Failed to fetch album '{album_name}': {type(e).__name__} - {e}")
+
+    print(f"\n🎵 Total tracks pulled: {len(tracks)}")
+    return tracks
 
 def sync_to_navidrome(artist_name, rated_tracks):
     nav_base, auth = get_auth_params()
