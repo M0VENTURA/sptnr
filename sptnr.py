@@ -83,17 +83,25 @@ def get_artist_tracks_from_navidrome(artist_name):
         print(f"\n⚠️ Album fetch failed: {type(e).__name__} - {e}")
         return []
 
-    tracks = []
-    for album in albums:
-        try:
-            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
-            songs = song_res.json().get("album", {}).get("song", [])
+tracks = []
+for album in albums:
+    album_name = album.get("name", "Unknown")
+    album_id = album["id"]
+    print(f"\n📀 Album: {album_name} [ID: {album_id}]")
+    try:
+        song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+        song_res.raise_for_status()
+        songs = song_res.json().get("album", {}).get("song", [])
+        if not songs:
+            print(f"⚠️ No tracks found in album '{album_name}'")
+        else:
+            print(f"🎵 Found {len(songs)} track(s) in '{album_name}'")
             for s in songs:
                 tracks.append({"id": s["id"], "title": s["title"]})
-        except Exception as e:
-            print(f"⚠️ Skipping album '{album.get('name', 'Unknown')}': {e}")
-    print(f"\n🎵 Total tracks pulled: {len(tracks)}")
-    return tracks
+    except Exception as e:
+        print(f"⚠️ Failed to fetch album '{album_name}': {type(e).__name__} - {e}")
+print(f"\n🎵 Total tracks pulled: {len(tracks)}")
+return tracks
 
 def sync_to_navidrome(artist_name, rated_tracks):
     nav_base, auth = get_auth_params()
