@@ -80,7 +80,7 @@ def get_artist_tracks_from_navidrome(artist_name):
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
-        albums = album_res.json().get("artist", {}).get("album", [])
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
     except Exception as e:
         print(f"\n⚠️ Album fetch failed: {type(e).__name__} - {e}")
         return []
