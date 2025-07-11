@@ -21,7 +21,7 @@ def get_auth_params():
         "u": user,
         "p": password,
         "v": "1.16.1",
-        "c": "sptnr-idcache",
+        "c": "sptnr-pipe",
         "f": "json"
     }
 
@@ -153,22 +153,52 @@ def batch_rate(sync=False, dry_run=False):
             print(f"⚠️ Error on '{name}': {err}")
     print("\n✅ Batch rating complete.")
 
+def pipe_output(search_term=None):
+    if not os.path.exists(INDEX_FILE):
+        print(f"❌ {INDEX_FILE} not found. Run with --refresh to build it.")
+        sys.exit(1)
+    try:
+        with open(INDEX_FILE) as f:
+            artist_map = json.load(f)
+        filtered = {
+            name: aid for name, aid in artist_map.items()
+            if not search_term or search_term.lower() in name.lower()
+        }
+        print(f"\n📁 Cached Artist Index ({len(filtered)} match{'es' if len(filtered) != 1 else ''}):\n")
+        for name, aid in filtered.items():
+            print(f"🎨 {name} → ID: {aid}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
+        sys.exit(1)
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI w/ ID Caching")
+    parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI w/ ID Cache + Search")
     parser.add_argument("--artist", type=str, help="Rate one artist")
     parser.add_argument("--batchrate", action="store_true", help="Rate entire library")
     parser.add_argument("--dry-run", action="store_true", help="Preview artists only")
     parser.add_argument("--sync", action="store_true", help="Push stars to Navidrome")
     parser.add_argument("--refresh", action="store_true", help="Rebuild artist_index.json")
+    parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index (optionally filter by substring)")
     args = parser.parse_args()
 
+    # Refresh artist index if flag is set or index is missing
     if args.refresh or not os.path.exists(INDEX_FILE):
         build_artist_index()
 
+    # Show cached artist index if requested
+    if args.pipeoutput is not None:
+        pipe_output(args.pipeoutput)
+
+    # Handle artist rating
     if args.artist:
         result = rate_artist(args.artist)
-        if args.sync: sync_to_navidrome(args.artist, result)
+        if args.sync:
+            sync_to_navidrome(args.artist, result)
+
+    # Handle batch rating
     elif args.batchrate:
         batch_rate(sync=args.sync, dry_run=args.dry_run)
+
     else:
-        print("⚠️ No valid command provided. Try --artist or --batchrate.")
+        print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
