@@ -116,12 +116,10 @@ def sync_to_navidrome(track_ratings, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth: return
 
-    # Verify track_ratings structure before syncing
     if not all(isinstance(t, dict) and "title" in t for t in track_ratings):
         print("❌ Invalid track_ratings format. Expected list of dicts with a 'title' key.")
         return
 
-    # Fetch Navidrome tracks via Subsonic search
     try:
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
         res.raise_for_status()
@@ -147,34 +145,99 @@ def sync_to_navidrome(track_ratings, artist_name):
 
         if match:
             print(f"✅ Synced rating for: {title} (score: {score}, stars: {stars})")
-            # You can insert your rating logic here (e.g. API call to update Navidrome rating)
+            # Insert rating push logic here if needed
             matched += 1
         else:
             print(f"❌ No Navidrome match for '{title}'")
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
-def rate_artist(name):
-    print(f"\n🎧 Rating artist: {name}")
-    tracks = get_artist_tracks_from_navidrome(name)
-    if not tracks: return []
-    for t in tracks:
-        sp = random.randint(30, 100)
-        lf = random.randint(5000, 150000)
-        t["score"] = (sp * SPOTIFY_WEIGHT) + (lf / 100000 * LASTFM_WEIGHT)
-    min_s, max_s = min(t["score"] for t in tracks), max(t["score"] for t in tracks)
-    for t in tracks:
-        t["stars"] = normalize_score(t["score"], min_s, max_s)
-        print(f"  🎵 {t['title']} → score: {round(t['score'],2)}, stars: {t['stars']}")
+def rate_artist_tracks(artist_id, artist_name, spotify_token):
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth: return []
 
-    os.makedirs("logs", exist_ok=True)
-    log_path = f"logs/{name}.csv"
-    with open(log_path, "w", newline="") as f:
-        writer = csv.writer(f)
-        writer.writerow(["Artist", "Track", "Stars"])
-        for t in tracks: writer.writerow([name, t["title"], t["stars"]])
-    print(f"\n✅ Ratings saved to: {log_path}")
-    return tracks
+    # Fetch albums for the artist
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+        if not albums:
+            print(f"⚠️ No albums found for artist '{artist_name}'")
+            return []
+    except Exception as e:
+        print(f"❌ Failed to fetch albums for '{artist_name}': {type(e).__name__} - {e}")
+        return []
+
+    def get_rating_from_popularity(popularity):
+        popularity = float(popularity)
+        if popularity < 17: return 0
+        elif popularity < 34: return 1
+        elif popularity < 51: return 2
+        elif popularity < 67: return 3
+        elif popularity < 84: return 4
+        else: return 5
+
+    def is_primary_version(track):
+        title = track["name"].lower()
+        return not any(k in title for k in ["remix", "live", "karaoke", "instrumental", "edit", "demo", "rehearsal"])
+
+    def loose_match(a, b):
+        a_clean = a.lower().strip()
+        b_clean = b.lower().strip()
+        return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
+
+    headers = {"Authorization": f"Bearer {spotify_token}"}
+    rated_tracks = []
+
+    for album in albums:
+        album_id = album["id"]
+        album_name = album["name"]
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+            if not songs:
+                continue
+        except Exception as e:
+            print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
+            continue
+
+        for song in songs:
+            track_title = song["title"]
+            track_id = song["id"]
+
+            # Spotify search
+            params = {
+                "q": f"{track_title} artist:{artist_name}",
+                "type": "track",
+                "limit": 10
+            }
+            try:
+                response = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+                response.raise_for_status()
+                results = response.json().get("tracks", {}).get("items", [])
+                if not results:
+                    continue
+
+                filtered = [r for r in results if is_primary_version(r)]
+                exact_match = next((r for r in filtered if loose_match(r["name"], track_title)), None)
+                ranked = sorted(filtered or results, key=lambda r: r.get("popularity", 0), reverse=True)
+                selected = exact_match if exact_match else ranked[0]
+                popularity = selected.get("popularity", 0)
+                stars = get_rating_from_popularity(popularity)
+
+                print(f"  🎵 {track_title} → score: {popularity}, stars: {stars}")
+                rated_tracks.append({
+                    "title": track_title,
+                    "stars": stars,
+                    "score": popularity,
+                    "id": track_id
+                })
+            except Exception as e:
+                print(f"⚠️ Spotify API error for '{track_title}': {type(e).__name__} - {e}")
+                continue
+
+    return rated_tracks
 
 def fetch_all_artists():
     try:
