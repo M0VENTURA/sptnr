@@ -33,9 +33,21 @@ def build_artist_index():
         res.raise_for_status()
         index = res.json().get("artists", {}).get("index", [])
         artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
+        count = len(artist_map)
+
+        if count == 0:
+            print("🚫 No artists extracted from Navidrome. Check library access, tags, or endpoint.")
+            return {}
+
         with open(INDEX_FILE, "w") as f:
             json.dump(artist_map, f, indent=2)
-        print(f"✅ Artist index cached to {INDEX_FILE}")
+        print(f"✅ Cached {count} artists to {INDEX_FILE}")
+
+        print("\n🔍 Sample from artist index:")
+        for i, (name, aid) in enumerate(artist_map.items()):
+            print(f"  🎨 {name} → ID: {aid}")
+            if i >= 9: break
+
         return artist_map
     except Exception as e:
         print(f"⚠️ Failed to build artist index: {e}")
