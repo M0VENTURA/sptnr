@@ -1,36 +1,37 @@
 #!/bin/bash
 
-# 💥 Stop script on error
+# 💥 Stop on any error
 set -e
 
-# 📦 Load version info
+# 📦 Read version number from VERSION file
 VERSION=$(cat VERSION)
 
 # 🧪 Ensure .env exists
 if [ ! -f .env ]; then
-  echo "❌ Missing .env file. Please create one with Spotify and Last.fm credentials."
+  echo "❌ Missing .env file. Please create one based on .env.example."
   exit 1
 fi
 
-# 🔨 Check if builder exists
-if ! docker buildx inspect mybuilder > /dev/null 2>&1; then
-  echo "🔧 Creating Docker builder 'mybuilder'..."
-  docker buildx create --name mybuilder --use
-  docker buildx inspect mybuilder --bootstrap
+# 🔨 Ensure buildx builder is set up
+BUILDER_NAME="mybuilder"
+if ! docker buildx inspect "$BUILDER_NAME" > /dev/null 2>&1; then
+  echo "🔧 Creating Docker builder '$BUILDER_NAME'..."
+  docker buildx create --name "$BUILDER_NAME" --use
+  docker buildx inspect "$BUILDER_NAME" --bootstrap
 else
-  echo "🧱 Using existing Docker builder 'mybuilder'"
-  docker buildx use mybuilder
+  echo "🧱 Using existing Docker builder '$BUILDER_NAME'"
+  docker buildx use "$BUILDER_NAME"
 fi
 
 # 🚀 Build and push versioned image
-echo "📦 Building and pushing image: krestaino/sptnr:$VERSION"
+echo "📦 Building moventura/sptnr:$VERSION..."
 docker buildx build --platform linux/arm64,linux/amd64 \
-  -t krestaino/sptnr:$VERSION . --push
+  -t moventura/sptnr:"$VERSION" . --push
 
 # 🏷️ Build and push 'latest' tag
-echo "📦 Building and pushing image: krestaino/sptnr:latest"
+echo "📦 Building moventura/sptnr:latest..."
 docker buildx build --platform linux/arm64,linux/amd64 \
-  -t krestaino/sptnr:latest . --push
+  -t moventura/sptnr:latest . --push
 
-# 🎉 Done
-echo "✅ Docker images pushed: $VERSION and latest"
+# 🎉 Completion message
+echo "✅ Successfully pushed: moventura/sptnr:$VERSION and moventura/sptnr:latest"
