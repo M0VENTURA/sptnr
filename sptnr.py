@@ -31,7 +31,7 @@ def build_artist_index():
     try:
         res = requests.get(f"{nav_base}/rest/getArtists.view", params=auth)
         res.raise_for_status()
-        index = res.json().get("artists", {}).get("index", [])
+        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
         artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
         count = len(artist_map)
 
