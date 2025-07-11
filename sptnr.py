@@ -1,4 +1,4 @@
-import argparse, os, sys, requests, time, hashlib, random, string, csv
+import argparse, os, sys, requests, time, random, csv
 
 SPOTIFY_WEIGHT = 0.6
 LASTFM_WEIGHT = 0.4
@@ -12,11 +12,12 @@ def get_auth_params():
     if not all([base, user, password]):
         print("❌ Missing Navidrome credentials.")
         return None, None
-    salt = ''.join(random.choices(string.ascii_letters + string.digits, k=6))
-    token = hashlib.md5((password + salt).encode("utf-8")).hexdigest()
     return base, {
-        "u": user, "t": token, "s": salt,
-        "v": "1.16.1", "c": "sptnr-sync", "f": "json"
+        "u": user,
+        "p": password,
+        "v": "1.16.1",
+        "c": "sptnr-cli",
+        "f": "json"
     }
 
 def get_artist_tracks_from_navidrome(artist_name):
@@ -130,7 +131,7 @@ def batch_rate(sync=False, dry_run=False):
     print("\n✅ Batch rating complete.")
 
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI")
+    parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI (Raw Auth)")
     parser.add_argument("--artist", type=str, help="Rate a single artist")
     parser.add_argument("--batchrate", action="store_true", help="Rate full catalog")
     parser.add_argument("--dry-run", action="store_true", help="Preview batch")
