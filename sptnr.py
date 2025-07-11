@@ -116,7 +116,12 @@ def sync_to_navidrome(track_ratings, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth: return
 
-    # Fetch all songs using Navidrome's search endpoint
+    # Verify track_ratings structure before syncing
+    if not all(isinstance(t, dict) and "title" in t for t in track_ratings):
+        print("❌ Invalid track_ratings format. Expected list of dicts with a 'title' key.")
+        return
+
+    # Fetch Navidrome tracks via Subsonic search
     try:
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
         res.raise_for_status()
@@ -135,14 +140,17 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     matched = 0
     for track in track_ratings:
-        match = next((s for s in songs if loose_match(s["title"], track["title"])), None)
+        title = track["title"]
+        stars = track.get("stars")
+        score = track.get("score")
+        match = next((s for s in songs if loose_match(s["title"], title)), None)
+
         if match:
-            print(f"✅ Synced rating for: {match['title']}")
-            # Example: logic to sync rating could go here
-            # send_rating_to_navidrome(match["id"], track["stars"])
+            print(f"✅ Synced rating for: {title} (score: {score}, stars: {stars})")
+            # You can insert your rating logic here (e.g. API call to update Navidrome rating)
             matched += 1
         else:
-            print(f"❌ No Navidrome match for '{track['title']}'")
+            print(f"❌ No Navidrome match for '{title}'")
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
