@@ -1,14 +1,21 @@
 # Use an official Python runtime as a parent image
-FROM python:3.9-slim
+FROM python:3.11-slim  # Updated for better compatibility with latest packages
 
-# Set the working directory in the container
+# Install system dependencies for pip packages (especially for pylast if it uses SSL)
+RUN apt-get update && apt-get install -y \
+    build-essential \
+    libssl-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+# Set working directory
 WORKDIR /usr/src/app
 
-# Copy the current directory contents into the container at /usr/src/app
+# Copy project files
 COPY . .
 
-# Install any needed packages specified in requirements.txt
-RUN pip install --no-cache-dir -r requirements.txt
+# Install Python packages
+RUN pip install --no-cache-dir --upgrade pip && \
+    pip install --no-cache-dir -r requirements.txt
 
-# Use an entrypoint script
+# Entrypoint
 ENTRYPOINT ["python", "./sptnr.py"]
