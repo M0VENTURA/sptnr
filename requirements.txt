@@ -2,4 +2,4 @@ requests==2.31.0
 python-dotenv==1.0.0
 colorama==0.4.6
 tqdm==4.66.1
-re>=2.2.1  # if you ever use regex extras (though stdlib re is fine for now)
+re>=2.2.1 
