@@ -262,6 +262,9 @@ def fetch_all_artists():
         print(f"\n❌ Failed to fetch cached artist list: {type(e).__name__} - {e}")
         sys.exit(1)
 
+import difflib
+import unicodedata
+
 def sync_to_navidrome(track_ratings, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -271,48 +274,73 @@ def sync_to_navidrome(track_ratings, artist_name):
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
         res.raise_for_status()
         songs = res.json().get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
-
         print(f"\n🔎 Navidrome search returned {len(songs)} tracks for '{artist_name}':")
         for s in songs:
-            print(f"  • Title: {s.get('title')} | ID: {s.get('id')} | MBID: {s.get('musicbrainz_trackid')} | ISRC: {s.get('isrc')}")
+            print(f"  • Title: {s.get('title')} | ID: {s.get('id')} | ISRC: {s.get('isrc')}")
     except Exception as e:
         print(f"\n⚠️ Failed to fetch search results for '{artist_name}': {type(e).__name__} - {e}")
         return
 
     def loose_match(a, b):
         def clean(s):
+            s = unicodedata.normalize("NFKD", s)
+            s = s.encode("ascii", "ignore").decode("ascii")
             s = s.lower()
-            s = s.replace("’", "'")  # normalize apostrophes
-            s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
+            s = re.sub(r"[^\w\s]", "", s)
+            s = re.sub(r"\s+", " ", s)
             return s.strip()
-        return clean(a) == clean(b) or clean(a) in clean(b) or clean(b) in clean(a)
+        a_clean = clean(a)
+        b_clean = clean(b)
+        return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
 
+    def fuzzy_match(title, candidates, threshold=0.85):
+        best = difflib.get_close_matches(title, candidates, n=1, cutoff=threshold)
+        return best[0] if best else None
 
     matched = 0
     for track in track_ratings:
         title = track["title"]
         stars = track.get("stars", 0)
         score = track.get("score")
+        isrc = track.get("isrc")
 
         print(f"\n🔍 Attempting match for: '{title}'")
 
+        # First try loose title match
         match = next((s for s in songs if loose_match(s["title"], title)), None)
 
+        # Fallback: fuzzy match
+        if not match:
+            titles = [s["title"] for s in songs]
+            fallback_title = fuzzy_match(title, titles)
+            match = next((s for s in songs if s["title"] == fallback_title), None)
+
+        # Fallback: ISRC
+        if not match and isrc:
+            match = next((s for s in songs if isrc in s.get("isrc", [])), None)
+
+        # Debug close matches
+        if not match:
+            for s in songs:
+                sim = difflib.SequenceMatcher(None, title, s["title"]).ratio()
+                if sim > 0.6:
+                    print(f"  🤔 Possible close match: '{s['title']}' (similarity {round(sim*100)}%)")
+
         if match:
-            print(f"✅ Match found: '{match['title']}' → ID: {match['id']}")
             try:
-                rating = track.get("stars", 0)
+                rating = stars
                 set_params = {**auth, "id": match["id"], "rating": rating}
                 set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
                 set_res.raise_for_status()
-                print(f"{LIGHT_GREEN}✅ Synced rating for: {title} (score: {score}, stars: {rating}){RESET}")
-                matched += 1  # ✅ Move this inside the try block
+                print(f"✅ Synced rating for: {title} (score: {score}, stars: {rating})")
+                matched += 1
             except Exception as e:
-                print(f"{LIGHT_RED}⚠️ Failed to sync rating for '{title}': {type(e).__name__} - {e}{RESET}")
+                print(f"⚠️ Failed to sync rating for '{title}': {type(e).__name__} - {e}")
         else:
-            print(f"{LIGHT_RED}❌ No match found for: '{title}'{RESET}")
+            print(f"❌ No match found for: '{title}'")
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
+
 
 def batch_rate(sync=False, dry_run=False):
     artists = fetch_all_artists()
