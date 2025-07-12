@@ -149,6 +149,7 @@ def rate_artist(artist_id, artist_name):
                     res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
                     res.raise_for_status()
                     return res.json().get("tracks", {}).get("items", [])
+                print(f"re module available? {'re' in globals()}")
 
                 def strip_parentheses(s):
                     return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
