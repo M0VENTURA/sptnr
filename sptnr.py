@@ -179,7 +179,9 @@ def rate_artist_tracks(artist_id, artist_name, spotify_token):
 
     def is_primary_version(track):
         title = track["name"].lower()
-        return not any(k in title for k in ["remix", "live", "karaoke", "instrumental", "edit", "demo", "rehearsal"])
+        return not any(term in title for term in [
+            "remix", "live", "karaoke", "instrumental", "edit", "demo", "rehearsal"
+        ])
 
     def loose_match(a, b):
         a_clean = a.lower().strip()
@@ -206,12 +208,12 @@ def rate_artist_tracks(artist_id, artist_name, spotify_token):
             track_title = song["title"]
             track_id = song["id"]
 
-            # Spotify search
             params = {
                 "q": f"{track_title} artist:{artist_name}",
                 "type": "track",
                 "limit": 10
             }
+
             try:
                 response = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
                 response.raise_for_status()
@@ -219,20 +221,32 @@ def rate_artist_tracks(artist_id, artist_name, spotify_token):
                 if not results:
                     continue
 
-                filtered = [r for r in results if is_primary_version(r)]
-                exact_match = next((r for r in filtered if loose_match(r["name"], track_title)), None)
-                ranked = sorted(filtered or results, key=lambda r: r.get("popularity", 0), reverse=True)
-                selected = exact_match if exact_match else ranked[0]
+                # Separate primary and variant versions
+                primary_versions = [r for r in results if is_primary_version(r)]
+                matching_versions = [r for r in primary_versions if loose_match(r["name"], track_title)]
+
+                # Prefer a matching primary version with highest popularity
+                if matching_versions:
+                    selected = max(matching_versions, key=lambda r: r.get("popularity", 0))
+                else:
+                    # Fallback to any primary version if no title match
+                    selected = max(primary_versions, key=lambda r: r.get("popularity", 0)) if primary_versions else None
+
+                if not selected:
+                    print(f"❌ No usable Spotify match for '{track_title}'")
+                    continue
+
                 popularity = selected.get("popularity", 0)
                 stars = get_rating_from_popularity(popularity)
 
-                print(f"  🎵 {track_title} → score: {popularity}, stars: {stars}")
+                print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {popularity}, stars: {stars}")
                 rated_tracks.append({
                     "title": track_title,
                     "stars": stars,
                     "score": popularity,
                     "id": track_id
                 })
+
             except Exception as e:
                 print(f"⚠️ Spotify API error for '{track_title}': {type(e).__name__} - {e}")
                 continue
