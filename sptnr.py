@@ -1,6 +1,7 @@
-import argparse, os, sys, requests, time, random, csv, json, logging
+import argparse, os, sys, requests, time, random, csv, json, logging, base64
 from dotenv import load_dotenv
-from spotipy.oauth2 import SpotifyClientCredentials
+SPOTIFY_TOKEN = get_spotify_token()
+
 from colorama import init, Fore, Style
 
 logging.basicConfig(
@@ -38,6 +39,52 @@ LASTFM_WEIGHT = 0.4
 SLEEP_TIME = 1.5
 INDEX_FILE = "artist_index.json"
 
+def get_spotify_token():
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        print("❌ Missing Spotify credentials.")
+        sys.exit(1)
+
+    auth_str = f"{client_id}:{client_secret}"
+    auth_bytes = auth_str.encode("utf-8")
+    auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
+
+    headers = {
+        "Authorization": f"Basic {auth_base64}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {"grant_type": "client_credentials"}
+
+    try:
+        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        res.raise_for_status()
+        return res.json()["access_token"]
+    except Exception as e:
+        print(f"⚠️ Spotify token fetch failed: {type(e).__name__} - {e}")
+        sys.exit(1)
+def search_spotify_artist(artist_name, token):
+    headers = {"Authorization": f"Bearer {token}"}
+    params = {
+        "q": artist_name,
+        "type": "artist",
+        "limit": 1
+    }
+
+    try:
+        res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+        res.raise_for_status()
+        items = res.json().get("artists", {}).get("items", [])
+        if not items:
+            print(f"❌ No Spotify match for '{artist_name}'")
+            return None
+        artist = items[0]
+        print(f"🎧 Spotify match: {artist['name']} → Popularity: {artist['popularity']}")
+        return artist
+    except Exception as e:
+        print(f"⚠️ Spotify search failed: {type(e).__name__} - {e}")
+        return None
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -193,21 +240,14 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
-def rate_artist(artist_id, artist_name, spotify_token):
+def rate_artist(artist_id, artist_name):
     nav_base, auth = get_auth_params()
-    if not nav_base or not auth: return []
-
-    # Fetch albums for the artist
-    try:
-        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
-        album_res.raise_for_status()
-        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
-        if not albums:
-            print(f"⚠️ No albums found for artist '{artist_name}'")
-            return []
-    except Exception as e:
-        print(f"❌ Failed to fetch albums for '{artist_name}': {type(e).__name__} - {e}")
+    if not nav_base or not auth:
         return []
+
+    spotify_token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {spotify_token}"}
+    rated_tracks = []
 
     def get_rating_from_popularity(popularity):
         popularity = float(popularity)
@@ -229,8 +269,17 @@ def rate_artist(artist_id, artist_name, spotify_token):
         b_clean = b.lower().strip()
         return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
 
-    headers = {"Authorization": f"Bearer {spotify_token}"}
-    rated_tracks = []
+    # Fetch albums for the artist
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+        if not albums:
+            print(f"⚠️ No albums found for artist '{artist_name}'")
+            return []
+    except Exception as e:
+        print(f"❌ Failed to fetch albums for '{artist_name}': {type(e).__name__} - {e}")
+        return []
 
     for album in albums:
         album_id = album["id"]
@@ -262,16 +311,14 @@ def rate_artist(artist_id, artist_name, spotify_token):
                 if not results:
                     continue
 
-                # Separate primary and variant versions
                 primary_versions = [r for r in results if is_primary_version(r)]
                 matching_versions = [r for r in primary_versions if loose_match(r["name"], track_title)]
 
-                # Prefer a matching primary version with highest popularity
+                selected = None
                 if matching_versions:
                     selected = max(matching_versions, key=lambda r: r.get("popularity", 0))
-                else:
-                    # Fallback to any primary version if no title match
-                    selected = max(primary_versions, key=lambda r: r.get("popularity", 0)) if primary_versions else None
+                elif primary_versions:
+                    selected = max(primary_versions, key=lambda r: r.get("popularity", 0))
 
                 if not selected:
                     print(f"❌ No usable Spotify match for '{track_title}'")
@@ -319,9 +366,9 @@ def batch_rate(sync=False, dry_run=False):
                 if not artist_id:
                     print(f"⚠️ No ID found for '{name}', skipping.")
                     continue
-            rated = rate_artist(artist_id, name, SPOTIFY_TOKEN)
-            if sync and not dry_run:
-                sync_to_navidrome(rated, name)
+            rated = rate_artist(artist_id, name)
+                if sync and not dry_run:
+                    sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
 
         except Exception as err:
@@ -373,7 +420,7 @@ if __name__ == "__main__":
             if not artist_id:
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
-            rated = rate_artist(artist_id, name, SPOTIFY_TOKEN)
+            rated = rate_artist(artist_id, name)
             if args.sync and not args.dry_run:
                 sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
