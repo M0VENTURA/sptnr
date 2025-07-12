@@ -93,6 +93,7 @@ def get_lastfm_track_info(artist, title):
         return None
 
 import math
+import numpy as np
 from statistics import median
 
 def rate_artist(artist_id, artist_name):
@@ -105,23 +106,12 @@ def rate_artist(artist_id, artist_name):
     rated_tracks = []
 
     try:
-        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.2"))
-        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.8"))
+        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.7"))
     except ValueError:
         print("⚠️ Invalid weight in .env — using defaults.")
-        SPOTIFY_WEIGHT = 0.2
-        LASTFM_WEIGHT = 0.8
-
-    STAR_THRESHOLDS = [20, 40, 60, 80]
-
-    def map_stars(score):
-        for i, threshold in enumerate(STAR_THRESHOLDS):
-            if score < threshold:
-                return i + 1
-        return 5
-
-    def normalize_score(raw, min_score, max_score):
-        return (raw - min_score) / (max_score - min_score) * 100 if max_score > min_score else raw
+        SPOTIFY_WEIGHT = 0.3
+        LASTFM_WEIGHT = 0.7
 
     def search_spotify_track(title, artist, album=None):
         def query(q):
@@ -151,16 +141,11 @@ def rate_artist(artist_id, artist_name):
     def select_best_spotify_match(results, track_title):
         def clean(s):
             return re.sub(r"[^\w\s]", "", s.lower()).strip()
-
         cleaned_title = clean(track_title)
         exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
         if exact:
             return exact
-
-        filtered = [
-            r for r in results
-            if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())
-        ]
+        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
         if filtered:
             return max(filtered, key=lambda r: r.get("popularity", 0))
         return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
@@ -188,16 +173,12 @@ def rate_artist(artist_id, artist_name):
             track_title = song["title"]
             track_id = song["id"]
             results = search_spotify_track(track_title, artist_name, album_name)
-
             selected = select_best_spotify_match(results, track_title)
             sp_score = selected.get("popularity", 0)
-
             lf_data = get_lastfm_track_info(artist_name, track_title)
             lf_raw = lf_data["playcount"] if lf_data else 0
-            lf_score = math.log10(lf_raw + 1)  # 🎚️ log scale Last.fm
-
+            lf_score = math.sqrt(math.log10(lf_raw + 1)) if lf_raw else 0  # 📈 log+sqrt scaling
             combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score)
-
             raw_track_data.append({
                 "title": track_title,
                 "score": combined_score,
@@ -211,32 +192,24 @@ def rate_artist(artist_id, artist_name):
     if not raw_track_data:
         return []
 
-    min_score = min(t["score"] for t in raw_track_data)
-    max_score = max(t["score"] for t in raw_track_data)
+    all_scores = [t["score"] for t in raw_track_data]
+    percentiles = np.percentile(all_scores, [10, 30, 50, 70, 85])
 
-    # 💿 Compute album top scores
-    album_scores = {}
+    def map_percentile_stars(score):
+        if score < percentiles[0]: return 1
+        if score < percentiles[1]: return 2
+        if score < percentiles[2]: return 3
+        if score < percentiles[3]: return 4
+        return 5
+
     for track in raw_track_data:
-        album = track["album"]
-        album_scores.setdefault(album, []).append(track["score"])
-
-    album_tops = {a: max(scores) for a, scores in album_scores.items()}
-
-    for track in raw_track_data:
-        album = track["album"]
-        raw = track["score"]
-        norm_artist = normalize_score(raw, min_score, max_score)
-        top_boost = album_tops.get(album, raw)
-
-        # 💥 Stronger boost for album top score
-        norm_final = round((0.4 * norm_artist) + (0.6 * top_boost))
-
-        stars = map_stars(norm_final)
-        print(f"  🎵 {track['title']} → score: {raw}, norm: {norm_final}, stars: {stars}")
+        score = track["score"]
+        stars = map_percentile_stars(score)
+        print(f"  🎵 {track['title']} → score: {score}, stars: {stars}")
         rated_tracks.append({
             "title": track["title"],
             "stars": stars,
-            "score": raw,
+            "score": score,
             "id": track["id"]
         })
 
