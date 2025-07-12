@@ -111,7 +111,6 @@ def rate_artist(artist_id, artist_name):
         SPOTIFY_WEIGHT = 0.2
         LASTFM_WEIGHT = 0.8
 
-    # 🎚️ Artist-wide thresholds only
     STAR_THRESHOLDS = [20, 40, 60, 80]
 
     def map_stars(score):
@@ -212,19 +211,23 @@ def rate_artist(artist_id, artist_name):
     min_score = min(t["score"] for t in raw_track_data)
     max_score = max(t["score"] for t in raw_track_data)
 
+    # 💿 Build album score groups
     album_scores = {}
     for track in raw_track_data:
         album = track["album"]
         album_scores.setdefault(album, []).append(track["score"])
 
-    album_medians = {a: median(scores) for a, scores in album_scores.items()}
+    album_tops = {a: max(scores) for a, scores in album_scores.items()}
 
+    # 🔄 Normalize with artist + album top blending
     for track in raw_track_data:
         album = track["album"]
         raw = track["score"]
         norm_artist = normalize_score(raw, min_score, max_score)
-        norm_album = album_medians.get(album, raw)
-        norm_final = round((0.75 * norm_artist) + (0.25 * norm_album))
+        top_boost = album_tops.get(album, raw)
+
+        # Blend artist-normalized score with album top
+        norm_final = round((0.6 * norm_artist) + (0.4 * top_boost))
 
         stars = map_stars(norm_final)
         print(f"  🎵 {track['title']} → score: {raw}, normalized: {norm_final}, stars: {stars}")
