@@ -222,7 +222,11 @@ def rate_artist(artist_id, artist_name):
         album = track["album"]
         raw = track["score"]
         top_boost = album_tops.get(album, raw)
-        blended_score = round((0.7 * raw) + (0.3 * top_boost))  # tweak ratio as needed
+        median_score = median(album_scores[album])
+        if raw_score >= median_score:
+            blended_score = round((0.7 * raw_score) + (0.3 * album_top_score))
+        else:
+            blended_score = raw_score  # no boost for below-median tracks
         track["score"] = blended_score
 
     # 📊 Percentile-based star mapping
