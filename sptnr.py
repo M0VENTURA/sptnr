@@ -260,26 +260,38 @@ def sync_to_navidrome(track_ratings, artist_name):
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
         res.raise_for_status()
         songs = res.json().get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
+        
+        # 🔍 Debug output here
+        print(f"\n🔎 Navidrome search returned {len(songs)} tracks for '{artist_name}':")
+        for s in songs:
+            print(f"  • Title: {s.get('title')} | ID: {s.get('id')} | MBID: {s.get('musicbrainz_trackid')} | ISRC: {s.get('isrc')}")
     except Exception as e:
         print(f"\n⚠️ Failed to fetch search results for '{artist_name}': {type(e).__name__} - {e}")
         return
 
     def loose_match(a, b):
-        a_clean = re.sub(r"[^\w\s]", "", a.lower())
-        b_clean = re.sub(r"[^\w\s]", "", b.lower())
+        a_clean = re.sub(r"[^\w\s]", "", a.lower()).strip()
+        b_clean = re.sub(r"[^\w\s]", "", b.lower()).strip()
         return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
+
 
     matched = 0
     for track in track_ratings:
         title = track["title"]
         stars = track.get("stars")
         score = track.get("score")
+
+        # 💡 Print each attempted match
+        print(f"\n🔍 Attempting match for: '{title}'")
+
         match = next((s for s in songs if loose_match(s["title"], title)), None)
+
         if match:
-            print(f"✅ Synced rating for: {title} (score: {score}, stars: {stars})")
-            matched += 1
+            print(f"✅ Match found: '{match['title']}' → ID: {match['id']}")
+            ...
         else:
-            print(f"❌ No Navidrome match for '{title}'")
+            print(f"❌ No match found for: '{title}'")
+
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
 def batch_rate(sync=False, dry_run=False):
