@@ -200,7 +200,7 @@ def get_artist_tracks_from_navidrome(artist_name):
         album_id = album.get("id")
         if not album_id:
             print(f"⚠️ Album '{album_name}' missing ID, skipping.")
-            continue
+        continue
 
         print(f"\n📀 Album: {album_name} [ID: {album_id}]")
         try:
@@ -226,7 +226,7 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     if not all(isinstance(t, dict) and "title" in t for t in track_ratings):
         print("❌ Invalid track_ratings format. Expected list of dicts with a 'title' key.")
-        return
+    return
 
     try:
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
