@@ -2,5 +2,4 @@ requests==2.31.0
 python-dotenv==1.0.0
 colorama==0.4.6
 tqdm==4.66.1
-spotipy>=2.22.1
-pylast>=3.3.0
+re>=2.2.1  # if you ever use regex extras (though stdlib re is fine for now)
