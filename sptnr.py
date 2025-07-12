@@ -83,6 +83,28 @@ def search_spotify_artist(artist_name, token):
     except Exception as e:
         print(f"⚠️ Spotify search failed: {type(e).__name__} - {e}")
         return None
+        
+def get_lastfm_track_info(artist, title):
+    api_key = os.getenv("LASTFMAPIKEY")
+    headers = {"User-Agent": "sptnr-cli"}
+    params = {
+        "method": "track.getInfo",
+        "artist": artist,
+        "track": title,
+        "api_key": api_key,
+        "format": "json"
+    }
+
+    try:
+        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+        res.raise_for_status()
+        data = res.json().get("track", {})
+        listeners = int(data.get("listeners", 0))
+        playcount = int(data.get("playcount", 0))
+        return {"listeners": listeners, "playcount": playcount}
+    except Exception as e:
+        print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+        return None
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -280,17 +302,17 @@ def rate_artist(artist_id, artist_name):
         return []
 
     for album in albums:
-        album_id = album["id"]
-        album_name = album["name"]
+		album_id = album["id"]
+		album_name = album["name"]
         try:
             song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
             song_res.raise_for_status()
             songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-                if not songs:
-                continue
+        if not songs:
+            continue
         except Exception as e:
             print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
-            continue
+        continue
 
     for song in songs:
         track_title = song["title"]
@@ -321,6 +343,28 @@ def rate_artist(artist_id, artist_name):
                     print(f"⚠️ Spotify query failed for '{q}': {type(e).__name__} - {e}")
             return []
 
+        def get_lastfm_track_info(artist, title):
+            api_key = os.getenv("LASTFMAPIKEY")
+            headers = {"User-Agent": "sptnr-cli"}
+            params = {
+                "method": "track.getInfo",
+                "artist": artist,
+                "track": title,
+                "api_key": api_key,
+                "format": "json"
+            }
+
+            try:
+                res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+                res.raise_for_status()
+                data = res.json().get("track", {})
+                listeners = int(data.get("listeners", 0))
+                playcount = int(data.get("playcount", 0))
+                return {"listeners": listeners, "playcount": playcount}
+            except Exception as e:
+                print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+                return None
+
         results = search_spotify_track(track_title, artist_name, album_name)
         if not results:
             continue
@@ -338,19 +382,22 @@ def rate_artist(artist_id, artist_name):
             print(f"❌ No usable Spotify match for '{track_title}'")
             continue
 
-        popularity = selected.get("popularity", 0)
-        stars = get_rating_from_popularity(popularity)
+        sp_score = selected.get("popularity", 0)
+        lf_data = get_lastfm_track_info(artist_name, track_title)
+        lf_score = lf_data["playcount"] if lf_data else random.randint(5000, 150000)
 
-        print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {popularity}, stars: {stars}")
+        combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score / 100000)
+        stars = get_rating_from_popularity(combined_score)
+
+        print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {sp_score}, Last.fm: {lf_score}, stars: {stars}")
         rated_tracks.append({
             "title": track_title,
             "stars": stars,
-            "score": popularity,
+            "score": combined_score,
             "id": track_id
         })
 
 return rated_tracks
-
 
 def fetch_all_artists():
     try:
