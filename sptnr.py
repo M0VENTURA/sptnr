@@ -280,17 +280,17 @@ def rate_artist(artist_id, artist_name):
         return []
 
     for album in albums:
-    album_id = album["id"]
-    album_name = album["name"]
-    try:
-        song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
-        song_res.raise_for_status()
-        songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-        if not songs:
+        album_id = album["id"]
+        album_name = album["name"]
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+                if not songs:
+                continue
+        except Exception as e:
+            print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
             continue
-    except Exception as e:
-        print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
-        continue
 
     for song in songs:
         track_title = song["title"]
