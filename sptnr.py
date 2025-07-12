@@ -1,11 +1,13 @@
 import argparse, os, sys, requests, time, random, csv, json, logging
 from dotenv import load_dotenv
 from spotipy.oauth2 import SpotifyClientCredentials
-
-import argparse, os, sys, requests, time, random, csv, json, logging
-from dotenv import load_dotenv
-from spotipy.oauth2 import SpotifyClientCredentials
 from colorama import init, Fore, Style
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    datefmt="%H:%M:%S"
+)
 
 # 🎨 Colorama setup
 init(autoreset=True)
@@ -28,7 +30,7 @@ if not client_id or not client_secret:
 
 # 🎧 Get Spotify token
 auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-SPOTIFY_TOKEN = auth_manager.get_access_token()
+SPOTIFY_TOKEN = auth_manager.get_access_token(as_dict=False)
 
 # ⚙️ Global constants
 SPOTIFY_WEIGHT = 0.6
@@ -311,9 +313,17 @@ def batch_rate(sync=False, dry_run=False):
     for name in artists:
         print(f"\n🎧 Processing: {name}")
         try:
-            rated = rate_artist(name)
-            if sync: sync_to_navidrome(rated, name)
+            artist_index = load_artist_index()
+            for name in artists:
+                artist_id = artist_index.get(name)
+                if not artist_id:
+                    print(f"⚠️ No ID found for '{name}', skipping.")
+                    continue
+            rated = rate_artist(artist_id, name, SPOTIFY_TOKEN)
+            if sync and not dry_run:
+                sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
+
         except Exception as err:
             print(f"⚠️ Error on '{name}': {err}")
     print("\n✅ Batch rating complete.")
@@ -358,14 +368,14 @@ if __name__ == "__main__":
     # Handle artist rating
     if args.artist:
         artist_index = load_artist_index()
-        for name in artists:
+        for name in args.artist:
             artist_id = artist_index.get(name)
             if not artist_id:
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
             rated = rate_artist(artist_id, name, SPOTIFY_TOKEN)
-            if sync and not dry_run:
-                sync_to_navidrome(artist_id, rated)
+            if args.sync and not args.dry_run:
+                sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
             
     # Handle batch rating
