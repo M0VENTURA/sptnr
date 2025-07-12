@@ -308,8 +308,9 @@ def rate_artist(artist_id, artist_name):
             song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
             song_res.raise_for_status()
             songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-        if not songs:
-            continue
+            
+            if not songs:
+                continue
         except Exception as e:
             print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
         continue
@@ -397,7 +398,7 @@ def rate_artist(artist_id, artist_name):
             "id": track_id
         })
 
-return rated_tracks
+    return rated_tracks
 
 def fetch_all_artists():
     try:
