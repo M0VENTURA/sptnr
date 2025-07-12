@@ -1,5 +1,5 @@
 # 🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm integration
-import argparse, os, sys, requests, time, random, json, logging, base64
+import argparse, os, sys, requests, time, random, json, logging, base64, re
 from dotenv import load_dotenv
 from colorama import init, Fore, Style
 
@@ -270,15 +270,23 @@ def batch_rate(sync=False, dry_run=False):
     for name in artists:
         print(f"\n🎧 Processing: {name}")
         artist_id = artist_index.get(name)
+
         if not artist_id:
-            print(f"⚠️ No ID found for '{name}', skipping.")
-            continue
+            # Fallback: try fuzzy match
+            matches = [n for n in artist_index if name.lower() in n.lower()]
+            if matches:
+                fuzzy_name = matches[0]
+                artist_id = artist_index[fuzzy_name]
+                print(f"🔍 Fuzzy match found: '{name}' → '{fuzzy_name}'")
+            else:
+                print(f"⚠️ No ID found for '{name}', skipping.")
+                continue
+
         rated = rate_artist(artist_id, name)
         if sync and not dry_run:
             sync_to_navidrome(rated, name)
         time.sleep(SLEEP_TIME)
     print("\n✅ Batch rating complete.")
-
 def pipe_output(search_term=None):
     try:
         with open(INDEX_FILE) as f:
