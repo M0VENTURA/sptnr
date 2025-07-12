@@ -23,8 +23,14 @@ if not client_id or not client_secret:
     sys.exit(1)
 
 # ⚙️ Global constants
-SPOTIFY_WEIGHT = 0.6
-LASTFM_WEIGHT = 0.4
+try:
+    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.2"))
+    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.8"))
+except ValueError:
+    print("⚠️ Invalid weight in .env — using defaults.")
+    SPOTIFY_WEIGHT = 0.2
+    LASTFM_WEIGHT = 0.8
+
 SLEEP_TIME = 1.5
 INDEX_FILE = "artist_index.json"
 
@@ -109,9 +115,17 @@ def rate_artist(artist_id, artist_name):
         return 5
 
     def loose_match(a, b):
-        a_clean = re.sub(r"[^\w\s]", "", a.lower())
-        b_clean = re.sub(r"[^\w\s]", "", b.lower())
+        def clean(s):
+            s = s.lower()
+            s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+            s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
+            s = re.sub(r"\s+", " ", s)     # normalize whitespace
+            return s.strip()
+
+        a_clean = clean(a)
+        b_clean = clean(b)
         return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
+
 
     def get_lastfm_track_info(artist, title):
         api_key = os.getenv("LASTFMAPIKEY")
