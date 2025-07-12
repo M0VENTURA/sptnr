@@ -92,6 +92,8 @@ def get_lastfm_track_info(artist, title):
         print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
         return None
 
+from statistics import median
+
 def rate_artist(artist_id, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -119,15 +121,6 @@ def rate_artist(artist_id, artist_name):
             if norm_score < threshold:
                 return i + 1
         return 5
-
-    def loose_match(a, b):
-        def clean(s):
-            s = s.lower()
-            s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-            s = re.sub(r"[^\w\s]", "", s)
-            s = re.sub(r"\s+", " ", s)
-            return s.strip()
-        return clean(a) == clean(b) or clean(a) in clean(b) or clean(b) in clean(a)
 
     def search_spotify_track(title, artist, album=None):
         def query(q):
@@ -179,6 +172,7 @@ def rate_artist(artist_id, artist_name):
         return []
 
     raw_track_data = []
+
     for album in albums:
         album_id = album["id"]
         album_name = album["name"]
@@ -207,7 +201,8 @@ def rate_artist(artist_id, artist_name):
                 "score": combined_score,
                 "spotify": sp_score,
                 "lastfm": lf_score,
-                "id": track_id
+                "id": track_id,
+                "album": album_name
             })
 
     if not raw_track_data:
@@ -216,14 +211,28 @@ def rate_artist(artist_id, artist_name):
     min_score = min(t["score"] for t in raw_track_data)
     max_score = max(t["score"] for t in raw_track_data)
 
+    # 🧠 Album median scores
+    album_scores = {}
     for track in raw_track_data:
-        norm = normalize_score(track["score"], min_score, max_score)
-        stars = map_genre_stars(norm)
-        print(f"  🎵 {track['title']} → score: {track['score']}, normalized: {round(norm)}, stars: {stars}")
+        album = track["album"]
+        album_scores.setdefault(album, []).append(track["score"])
+
+    album_medians = {a: median(scores) for a, scores in album_scores.items()}
+
+    # 🎚️ Hybrid normalization
+    for track in raw_track_data:
+        album = track["album"]
+        raw = track["score"]
+        norm_artist = normalize_score(raw, min_score, max_score)
+        norm_album = album_medians.get(album, raw)
+        norm_final = round((0.75 * norm_artist) + (0.25 * norm_album))
+
+        stars = map_genre_stars(norm_final)
+        print(f"  🎵 {track['title']} → score: {raw}, normalized: {norm_final}, stars: {stars}")
         rated_tracks.append({
             "title": track["title"],
             "stars": stars,
-            "score": track["score"],
+            "score": raw,
             "id": track["id"]
         })
 
