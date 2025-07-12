@@ -92,6 +92,7 @@ def get_lastfm_track_info(artist, title):
         print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
         return None
 
+import math
 from statistics import median
 
 def rate_artist(artist_id, artist_name):
@@ -192,15 +193,17 @@ def rate_artist(artist_id, artist_name):
             sp_score = selected.get("popularity", 0)
 
             lf_data = get_lastfm_track_info(artist_name, track_title)
-            lf_score = lf_data["playcount"] if lf_data else 0
+            lf_raw = lf_data["playcount"] if lf_data else 0
+            lf_score = math.log10(lf_raw + 1)  # 🎚️ log scale Last.fm
 
-            combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score / 100000)
+            combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score)
 
             raw_track_data.append({
                 "title": track_title,
                 "score": combined_score,
                 "spotify": sp_score,
-                "lastfm": lf_score,
+                "lastfm_raw": lf_raw,
+                "lastfm_scaled": lf_score,
                 "id": track_id,
                 "album": album_name
             })
@@ -211,7 +214,7 @@ def rate_artist(artist_id, artist_name):
     min_score = min(t["score"] for t in raw_track_data)
     max_score = max(t["score"] for t in raw_track_data)
 
-    # 💿 Build album score groups
+    # 💿 Compute album top scores
     album_scores = {}
     for track in raw_track_data:
         album = track["album"]
@@ -219,18 +222,17 @@ def rate_artist(artist_id, artist_name):
 
     album_tops = {a: max(scores) for a, scores in album_scores.items()}
 
-    # 🔄 Normalize with artist + album top blending
     for track in raw_track_data:
         album = track["album"]
         raw = track["score"]
         norm_artist = normalize_score(raw, min_score, max_score)
         top_boost = album_tops.get(album, raw)
 
-        # Blend artist-normalized score with album top
-        norm_final = round((0.6 * norm_artist) + (0.4 * top_boost))
+        # 💥 Stronger boost for album top score
+        norm_final = round((0.4 * norm_artist) + (0.6 * top_boost))
 
         stars = map_stars(norm_final)
-        print(f"  🎵 {track['title']} → score: {raw}, normalized: {norm_final}, stars: {stars}")
+        print(f"  🎵 {track['title']} → score: {raw}, norm: {norm_final}, stars: {stars}")
         rated_tracks.append({
             "title": track["title"],
             "stars": stars,
