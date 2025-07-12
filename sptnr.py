@@ -1,5 +1,32 @@
 import argparse, os, sys, requests, time, random, csv, json, logging, base64
 from dotenv import load_dotenv
+
+def get_spotify_token():
+    client_id = os.getenv("SPOTIFY_CLIENT_ID")
+    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
+
+    if not client_id or not client_secret:
+        print("❌ Missing Spotify credentials.")
+        sys.exit(1)
+
+    auth_str = f"{client_id}:{client_secret}"
+    auth_bytes = auth_str.encode("utf-8")
+    auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
+
+    headers = {
+        "Authorization": f"Basic {auth_base64}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {"grant_type": "client_credentials"}
+
+    try:
+        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        res.raise_for_status()
+        return res.json()["access_token"]
+    except Exception as e:
+        print(f"⚠️ Spotify token fetch failed: {type(e).__name__} - {e}")
+        sys.exit(1)
+        
 SPOTIFY_TOKEN = get_spotify_token()
 
 from colorama import init, Fore, Style
@@ -39,31 +66,6 @@ LASTFM_WEIGHT = 0.4
 SLEEP_TIME = 1.5
 INDEX_FILE = "artist_index.json"
 
-def get_spotify_token():
-    client_id = os.getenv("SPOTIFY_CLIENT_ID")
-    client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-    if not client_id or not client_secret:
-        print("❌ Missing Spotify credentials.")
-        sys.exit(1)
-
-    auth_str = f"{client_id}:{client_secret}"
-    auth_bytes = auth_str.encode("utf-8")
-    auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
-
-    headers = {
-        "Authorization": f"Basic {auth_base64}",
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    data = {"grant_type": "client_credentials"}
-
-    try:
-        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
-        res.raise_for_status()
-        return res.json()["access_token"]
-    except Exception as e:
-        print(f"⚠️ Spotify token fetch failed: {type(e).__name__} - {e}")
-        sys.exit(1)
 def search_spotify_artist(artist_name, token):
     headers = {"Authorization": f"Bearer {token}"}
     params = {
