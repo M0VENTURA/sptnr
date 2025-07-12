@@ -180,17 +180,20 @@ def rate_artist(artist_id, artist_name):
             track_title = song["title"]
             track_id = song["id"]
             results = search_spotify_track(track_title, artist_name, album_name)
-            if not results:
-                continue
 
             selected = next((r for r in results if loose_match(r["name"], track_title)), None)
-            selected = selected or max(results, key=lambda r: r.get("popularity", 0))
+
+            # ✅ If not found on Spotify, fall back with zero popularity
+            selected = selected or {"popularity": 0}
 
             sp_score = selected.get("popularity", 0)
+
+            # 🎯 Always try Last.fm, even if Spotify failed
             lf_data = get_lastfm_track_info(artist_name, track_title)
-            lf_score = lf_data["playcount"] if lf_data else random.randint(5000, 150000)
+            lf_score = lf_data["playcount"] if lf_data else 0
 
             combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score / 100000)
+
             raw_track_data.append({
                 "title": track_title,
                 "score": combined_score,
@@ -198,6 +201,7 @@ def rate_artist(artist_id, artist_name):
                 "lastfm": lf_score,
                 "id": track_id
             })
+
 
     # Normalize scores per artist
     if not raw_track_data:
