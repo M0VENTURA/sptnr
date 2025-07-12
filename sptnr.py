@@ -5,6 +5,13 @@ LASTFM_WEIGHT = 0.4
 SLEEP_TIME = 1.5
 INDEX_FILE = "artist_index.json"
 
+def load_artist_index():
+    if not os.path.exists(INDEX_FILE):
+        logging.error(f"{LIGHT_RED}Artist index file not found: {INDEX_FILE}{RESET}")
+        return {}
+    with open(INDEX_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
 def normalize_score(score, min_score, max_score):
     return 3 if max_score == min_score else round((score - min_score) / (max_score - min_score) * 5)
 
