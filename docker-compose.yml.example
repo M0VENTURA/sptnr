@@ -1,9 +1,24 @@
+version: '3.8'
+
 services:
   sptnr:
     container_name: sptnr
-    image: moventura/sptnr:latest  # points to your Docker Hub repo
-    env_file:
-      - .env
+    image: moventura/sptnr:latest
+    
+    # Uncomment the next line to build the Docker image locally
+    # build: .
+
+    environment:
+      - NAV_BASE_URL=                      #URL That Navidrome is hosted
+      - NAV_USER=                          #Navidrome User that you want to sync ratings for
+      - NAV_PASS=                          #Navidrome Password
+      - SPOTIFY_CLIENT_ID=                 #Spotify Client ID
+      - SPOTIFY_CLIENT_SECRET=             #Spotify Client Secret
+      - LASTFMAPIKEY=                      #Last.FM API Key
+      - LASTFMAPISECRET=                   #Last.FM Client Secret
+      - SPOTIFY_WEIGHT=0.4                 #Adjust Spotify Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
+      - LASTFM_WEIGHT=0.6                  #Adjust Last.FM Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
     volumes:
       - ./logs:/usr/src/app/logs
-    restart: unless-stopped
+
+    command: ["--artist", "Orpheus Omega", "--sync"]
