@@ -300,7 +300,7 @@ def pipe_output(search_term=None):
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI w/ ID Cache + Search")
-    parser.add_argument("--artist", type=str, help="Rate one artist")
+    parser.add_argument("--artist", type=str, nargs="+", help="Rate one or more artists by ID")
     parser.add_argument("--batchrate", action="store_true", help="Rate entire library")
     parser.add_argument("--dry-run", action="store_true", help="Preview artists only")
     parser.add_argument("--sync", action="store_true", help="Push stars to Navidrome")
@@ -321,8 +321,7 @@ if __name__ == "__main__":
         artist_id = args.artist[0]
         artist_name = artist_index.get(artist_id, {}).get("name", "Unknown Artist")
         result = rate_artist(artist_id, artist_name, SPOTIFY_TOKEN)
-        if args.sync:
-            if args.sync:
+        if args.sync and not args.dry_run:
             sync_to_navidrome(artist_id, result)
 
     # Handle batch rating
