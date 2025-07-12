@@ -96,6 +96,10 @@ import math
 import numpy as np
 from statistics import median
 
+import math
+import numpy as np
+from statistics import median
+
 def rate_artist(artist_id, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -210,24 +214,23 @@ def rate_artist(artist_id, artist_name):
     if not raw_track_data:
         return []
 
-    # 💿 Album top boosting
+    # 💿 Album median and top scores
     album_scores = {}
     for track in raw_track_data:
         album = track["album"]
         album_scores.setdefault(album, []).append(track["score"])
     album_tops = {a: max(scores) for a, scores in album_scores.items()}
 
-    # 🔁 Blend base score with album top score
+    # 💡 Hybrid boost logic: only apply if above album median
     for track in raw_track_data:
         album = track["album"]
-        raw = track["score"]
-        top_boost = album_tops.get(album, raw)
-        median_score = median(album_scores[album])
         raw_score = track["score"]
+        median_score = median(album_scores[album])
+        album_top_score = album_tops.get(album, raw_score)
         if raw_score >= median_score:
             blended_score = round((0.7 * raw_score) + (0.3 * album_top_score))
         else:
-            blended_score = raw_score  # no boost for below-median tracks
+            blended_score = raw_score
         track["score"] = blended_score
 
     # 📊 Percentile-based star mapping
