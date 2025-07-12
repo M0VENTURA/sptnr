@@ -318,12 +318,12 @@ if __name__ == "__main__":
 
     # Handle artist rating
     if args.artist:
-    artist_index = load_artist_index()
-    artist_id = args.artist[0]
-    artist_name = artist_index.get(artist_id, {}).get("name", "Unknown Artist")
-    result = rate_artist(artist_id, artist_name, SPOTIFY_TOKEN)
-    if args.sync and not args.dry_run:
-        sync_to_navidrome(artist_id, result)
+        artist_index = load_artist_index()
+        artist_id = args.artist[0]
+        artist_name = artist_index.get(artist_id, {}).get("name", "Unknown Artist")
+        result = rate_artist(artist_id, artist_name, SPOTIFY_TOKEN)
+        if args.sync and not args.dry_run:
+            sync_to_navidrome(artist_id, result)
 
     # Handle batch rating
     elif args.batchrate:
