@@ -152,7 +152,7 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
-def rate_artist_tracks(artist_id, artist_name, spotify_token):
+def rate_artist(artist_id, artist_name, spotify_token):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth: return []
 
