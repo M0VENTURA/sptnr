@@ -101,9 +101,15 @@ def rate_artist(artist_id, artist_name):
     headers = {"Authorization": f"Bearer {spotify_token}"}
     rated_tracks = []
 
-    SPOTIFY_WEIGHT = 0.4  # favoring Last.fm for niche genres
-    LASTFM_WEIGHT = 0.6
-    GENRE_THRESHOLDS = [25, 40, 55, 70, 85]  # industrial rock default
+    try:
+        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.2"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.8"))
+    except ValueError:
+        print("⚠️ Invalid weight in .env — using defaults.")
+        SPOTIFY_WEIGHT = 0.2
+        LASTFM_WEIGHT = 0.8
+
+    GENRE_THRESHOLDS = [25, 40, 55, 70, 85]
 
     def normalize_score(raw, min_score, max_score):
         return (raw - min_score) / (max_score - min_score) * 100 if max_score > min_score else raw
@@ -118,34 +124,10 @@ def rate_artist(artist_id, artist_name):
         def clean(s):
             s = s.lower()
             s = s.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-            s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
-            s = re.sub(r"\s+", " ", s)     # normalize whitespace
+            s = re.sub(r"[^\w\s]", "", s)
+            s = re.sub(r"\s+", " ", s)
             return s.strip()
-
-        a_clean = clean(a)
-        b_clean = clean(b)
-        return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
-
-
-    def get_lastfm_track_info(artist, title):
-        api_key = os.getenv("LASTFMAPIKEY")
-        headers = {"User-Agent": "sptnr-cli"}
-        params = {
-            "method": "track.getInfo",
-            "artist": artist,
-            "track": title,
-            "api_key": api_key,
-            "format": "json"
-        }
-        try:
-            res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
-            res.raise_for_status()
-            data = res.json().get("track", {})
-            listeners = int(data.get("listeners", 0))
-            playcount = int(data.get("playcount", 0))
-            return {"listeners": listeners, "playcount": playcount}
-        except:
-            return None
+        return clean(a) == clean(b) or clean(a) in clean(b) or clean(b) in clean(a)
 
     def search_spotify_track(title, artist, album=None):
         def query(q):
@@ -172,6 +154,23 @@ def rate_artist(artist_id, artist_name):
                 continue
         return []
 
+    def select_best_spotify_match(results, track_title):
+        def clean(s):
+            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+
+        cleaned_title = clean(track_title)
+        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+        if exact:
+            return exact
+
+        filtered = [
+            r for r in results
+            if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())
+        ]
+        if filtered:
+            return max(filtered, key=lambda r: r.get("popularity", 0))
+        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
@@ -195,14 +194,9 @@ def rate_artist(artist_id, artist_name):
             track_id = song["id"]
             results = search_spotify_track(track_title, artist_name, album_name)
 
-            selected = next((r for r in results if loose_match(r["name"], track_title)), None)
-
-            # ✅ If not found on Spotify, fall back with zero popularity
-            selected = selected or {"popularity": 0}
-
+            selected = select_best_spotify_match(results, track_title)
             sp_score = selected.get("popularity", 0)
 
-            # 🎯 Always try Last.fm, even if Spotify failed
             lf_data = get_lastfm_track_info(artist_name, track_title)
             lf_score = lf_data["playcount"] if lf_data else 0
 
@@ -216,8 +210,6 @@ def rate_artist(artist_id, artist_name):
                 "id": track_id
             })
 
-
-    # Normalize scores per artist
     if not raw_track_data:
         return []
 
