@@ -354,25 +354,23 @@ def batch_rate(sync=False, dry_run=False):
     artists = fetch_all_artists()
     if dry_run:
         print("\n📝 Dry run list:")
-        for a in artists: print(f"– {a}")
+        for a in artists:
+            print(f"– {a}")
         print(f"\n💡 Total: {len(artists)} artists")
         return
+
+    artist_index = load_artist_index()
     for name in artists:
         print(f"\n🎧 Processing: {name}")
-        try:
-            artist_index = load_artist_index()
-            for name in artists:
-                artist_id = artist_index.get(name)
-                if not artist_id:
-                    print(f"⚠️ No ID found for '{name}', skipping.")
-                    continue
-            rated = rate_artist(artist_id, name)
-                if sync and not dry_run:
-                    sync_to_navidrome(rated, name)
-            time.sleep(SLEEP_TIME)
+        artist_id = artist_index.get(name)
+        if not artist_id:
+            print(f"⚠️ No ID found for '{name}', skipping.")
+            continue
+        rated = rate_artist(artist_id, name)
+        if sync and not dry_run:
+            sync_to_navidrome(rated, name)
+        time.sleep(SLEEP_TIME)
 
-        except Exception as err:
-            print(f"⚠️ Error on '{name}': {err}")
     print("\n✅ Batch rating complete.")
 
 def pipe_output(search_term=None):
