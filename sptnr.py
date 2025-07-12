@@ -6,7 +6,7 @@ def get_spotify_token():
     client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
     if not client_id or not client_secret:
-        print("❌ Missing Spotify credentials.")
+        logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
         sys.exit(1)
 
     auth_str = f"{client_id}:{client_secret}"
@@ -23,12 +23,12 @@ def get_spotify_token():
         res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
         res.raise_for_status()
         return res.json()["access_token"]
-    except Exception as e:
-        print(f"⚠️ Spotify token fetch failed: {type(e).__name__} - {e}")
+    except requests.exceptions.HTTPError as e:
+        error_info = res.json()
+        error_description = error_info.get("error_description", "Unknown error")
+        logging.error(f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}")
         sys.exit(1)
         
-SPOTIFY_TOKEN = get_spotify_token()
-
 from colorama import init, Fore, Style
 
 logging.basicConfig(
@@ -55,10 +55,6 @@ client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 if not client_id or not client_secret:
     logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
     sys.exit(1)
-
-# 🎧 Get Spotify token
-auth_manager = SpotifyClientCredentials(client_id=client_id, client_secret=client_secret)
-SPOTIFY_TOKEN = auth_manager.get_access_token(as_dict=False)
 
 # ⚙️ Global constants
 SPOTIFY_WEIGHT = 0.6
@@ -284,64 +280,77 @@ def rate_artist(artist_id, artist_name):
         return []
 
     for album in albums:
-        album_id = album["id"]
-        album_name = album["name"]
-        try:
-            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
-            song_res.raise_for_status()
-            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-            if not songs:
-                continue
-        except Exception as e:
-            print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
+    album_id = album["id"]
+    album_name = album["name"]
+    try:
+        song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+        song_res.raise_for_status()
+        songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        if not songs:
+            continue
+    except Exception as e:
+        print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
+        continue
+
+    for song in songs:
+        track_title = song["title"]
+        track_id = song["id"]
+
+        def search_spotify_track(title, artist, album=None):
+            def query(q):
+                params = {"q": q, "type": "track", "limit": 10}
+                res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+                res.raise_for_status()
+                return res.json().get("tracks", {}).get("items", [])
+
+            def strip_parentheses(s):
+                return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+
+            queries = [
+                f"{title} artist:{artist} album:{album}" if album else None,
+                f"{strip_parentheses(title)} artist:{artist}",
+                f"{title.replace('Part', 'Pt.')} artist:{artist}"
+            ]
+
+            for q in filter(None, queries):
+                try:
+                    results = query(q)
+                    if results:
+                        return results
+                except Exception as e:
+                    print(f"⚠️ Spotify query failed for '{q}': {type(e).__name__} - {e}")
+            return []
+
+        results = search_spotify_track(track_title, artist_name, album_name)
+        if not results:
             continue
 
-        for song in songs:
-            track_title = song["title"]
-            track_id = song["id"]
+        primary_versions = [r for r in results if is_primary_version(r)]
+        matching_versions = [r for r in primary_versions if loose_match(r["name"], track_title)]
 
-            params = {
-                "q": f"{track_title} artist:{artist_name}",
-                "type": "track",
-                "limit": 10
-            }
+        selected = None
+        if matching_versions:
+            selected = max(matching_versions, key=lambda r: r.get("popularity", 0))
+        elif primary_versions:
+            selected = max(primary_versions, key=lambda r: r.get("popularity", 0))
 
-            try:
-                response = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
-                response.raise_for_status()
-                results = response.json().get("tracks", {}).get("items", [])
-                if not results:
-                    continue
+        if not selected:
+            print(f"❌ No usable Spotify match for '{track_title}'")
+            continue
 
-                primary_versions = [r for r in results if is_primary_version(r)]
-                matching_versions = [r for r in primary_versions if loose_match(r["name"], track_title)]
+        popularity = selected.get("popularity", 0)
+        stars = get_rating_from_popularity(popularity)
 
-                selected = None
-                if matching_versions:
-                    selected = max(matching_versions, key=lambda r: r.get("popularity", 0))
-                elif primary_versions:
-                    selected = max(primary_versions, key=lambda r: r.get("popularity", 0))
+        print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {popularity}, stars: {stars}")
+        rated_tracks.append({
+            "title": track_title,
+            "stars": stars,
+            "score": popularity,
+            "id": track_id
+        })
 
-                if not selected:
-                    print(f"❌ No usable Spotify match for '{track_title}'")
-                    continue
+return rated_tracks
 
-                popularity = selected.get("popularity", 0)
-                stars = get_rating_from_popularity(popularity)
-
-                print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {popularity}, stars: {stars}")
-                rated_tracks.append({
-                    "title": track_title,
-                    "stars": stars,
-                    "score": popularity,
-                    "id": track_id
-                })
-
-            except Exception as e:
-                print(f"⚠️ Spotify API error for '{track_title}': {type(e).__name__} - {e}")
-                continue
-
-    return rated_tracks
 
 def fetch_all_artists():
     try:
