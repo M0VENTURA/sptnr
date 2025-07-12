@@ -95,37 +95,77 @@ def rate_artist(artist_id, artist_name):
     headers = {"Authorization": f"Bearer {spotify_token}"}
     rated_tracks = []
 
-    def get_rating_from_popularity(popularity):
-        popularity = float(popularity)
-        if popularity < 17: return 0
-        elif popularity < 34: return 1
-        elif popularity < 51: return 2
-        elif popularity < 67: return 3
-        elif popularity < 84: return 4
-        else: return 5
+    SPOTIFY_WEIGHT = 0.4  # favoring Last.fm for niche genres
+    LASTFM_WEIGHT = 0.6
+    GENRE_THRESHOLDS = [25, 40, 55, 70, 85]  # industrial rock default
 
-    def is_primary_version(track):
-        title = track["name"].lower()
-        return not any(term in title for term in [
-            "remix", "live", "karaoke", "instrumental", "edit", "demo", "rehearsal"
-        ])
+    def normalize_score(raw, min_score, max_score):
+        return (raw - min_score) / (max_score - min_score) * 100 if max_score > min_score else raw
+
+    def map_genre_stars(norm_score):
+        for i, threshold in enumerate(GENRE_THRESHOLDS):
+            if norm_score < threshold:
+                return i + 1
+        return 5
 
     def loose_match(a, b):
-        a_clean = a.lower().strip()
-        b_clean = b.lower().strip()
+        a_clean = re.sub(r"[^\w\s]", "", a.lower())
+        b_clean = re.sub(r"[^\w\s]", "", b.lower())
         return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
+
+    def get_lastfm_track_info(artist, title):
+        api_key = os.getenv("LASTFMAPIKEY")
+        headers = {"User-Agent": "sptnr-cli"}
+        params = {
+            "method": "track.getInfo",
+            "artist": artist,
+            "track": title,
+            "api_key": api_key,
+            "format": "json"
+        }
+        try:
+            res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+            res.raise_for_status()
+            data = res.json().get("track", {})
+            listeners = int(data.get("listeners", 0))
+            playcount = int(data.get("playcount", 0))
+            return {"listeners": listeners, "playcount": playcount}
+        except:
+            return None
+
+    def search_spotify_track(title, artist, album=None):
+        def query(q):
+            params = {"q": q, "type": "track", "limit": 10}
+            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+            res.raise_for_status()
+            return res.json().get("tracks", {}).get("items", [])
+
+        def strip_parentheses(s):
+            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{strip_parentheses(title)} artist:{artist}",
+            f"{title.replace('Part', 'Pt.')} artist:{artist}"
+        ]
+
+        for q in filter(None, queries):
+            try:
+                results = query(q)
+                if results:
+                    return results
+            except:
+                continue
+        return []
 
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
         albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
-        if not albums:
-            print(f"⚠️ No albums found for artist '{artist_name}'")
-            return []
-    except Exception as e:
-        print(f"❌ Failed to fetch albums for '{artist_name}': {type(e).__name__} - {e}")
+    except:
         return []
 
+    raw_track_data = []
     for album in albums:
         album_id = album["id"]
         album_name = album["name"]
@@ -133,75 +173,52 @@ def rate_artist(artist_id, artist_name):
             song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
             song_res.raise_for_status()
             songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-            if not songs:
-                continue
-        except Exception as e:
-            print(f"❌ Failed to fetch tracks for album '{album_name}': {type(e).__name__} - {e}")
+        except:
             continue
 
         for song in songs:
             track_title = song["title"]
             track_id = song["id"]
-
-            def search_spotify_track(title, artist, album=None):
-                def query(q):
-                    params = {"q": q, "type": "track", "limit": 10}
-                    res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
-                    res.raise_for_status()
-                    return res.json().get("tracks", {}).get("items", [])
-                print(f"re module available? {'re' in globals()}")
-
-                def strip_parentheses(s):
-                    return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
-
-                queries = [
-                    f"{title} artist:{artist} album:{album}" if album else None,
-                    f"{strip_parentheses(title)} artist:{artist}",
-                    f"{title.replace('Part', 'Pt.')} artist:{artist}"
-                ]
-
-                for q in filter(None, queries):
-                    try:
-                        results = query(q)
-                        if results:
-                            return results
-                    except Exception as e:
-                        print(f"⚠️ Spotify query failed for '{q}': {type(e).__name__} - {e}")
-                return []
-
             results = search_spotify_track(track_title, artist_name, album_name)
             if not results:
                 continue
 
-            primary_versions = [r for r in results if is_primary_version(r)]
-            matching_versions = [r for r in primary_versions if loose_match(r["name"], track_title)]
-
-            selected = None
-            if matching_versions:
-                selected = max(matching_versions, key=lambda r: r.get("popularity", 0))
-            elif primary_versions:
-                selected = max(primary_versions, key=lambda r: r.get("popularity", 0))
-
-            if not selected:
-                print(f"❌ No usable Spotify match for '{track_title}'")
-                continue
+            selected = next((r for r in results if loose_match(r["name"], track_title)), None)
+            selected = selected or max(results, key=lambda r: r.get("popularity", 0))
 
             sp_score = selected.get("popularity", 0)
             lf_data = get_lastfm_track_info(artist_name, track_title)
             lf_score = lf_data["playcount"] if lf_data else random.randint(5000, 150000)
 
             combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score / 100000)
-            stars = get_rating_from_popularity(combined_score)
-
-            print(f"  🎵 {track_title} → Spotify: '{selected['name']}' → score: {sp_score}, Last.fm: {lf_score}, stars: {stars}")
-            rated_tracks.append({
+            raw_track_data.append({
                 "title": track_title,
-                "stars": stars,
                 "score": combined_score,
+                "spotify": sp_score,
+                "lastfm": lf_score,
                 "id": track_id
             })
 
+    # Normalize scores per artist
+    if not raw_track_data:
+        return []
+
+    min_score = min(t["score"] for t in raw_track_data)
+    max_score = max(t["score"] for t in raw_track_data)
+
+    for track in raw_track_data:
+        norm = normalize_score(track["score"], min_score, max_score)
+        stars = map_genre_stars(norm)
+        print(f"  🎵 {track['title']} → score: {track['score']}, normalized: {round(norm)}, stars: {stars}")
+        rated_tracks.append({
+            "title": track["title"],
+            "stars": stars,
+            "score": track["score"],
+            "id": track["id"]
+        })
+
     return rated_tracks
+
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
         logging.error(f"{LIGHT_RED}Artist index file not found: {INDEX_FILE}{RESET}")
@@ -248,8 +265,8 @@ def sync_to_navidrome(track_ratings, artist_name):
         return
 
     def loose_match(a, b):
-        a_clean = a.lower().strip()
-        b_clean = b.lower().strip()
+        a_clean = re.sub(r"[^\w\s]", "", a.lower())
+        b_clean = re.sub(r"[^\w\s]", "", b.lower())
         return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
 
     matched = 0
