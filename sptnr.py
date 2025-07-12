@@ -94,10 +94,7 @@ def get_lastfm_track_info(artist, title):
 
 import math
 import numpy as np
-from statistics import median
-
-import math
-import numpy as np
+from datetime import datetime
 from statistics import median
 
 def rate_artist(artist_id, artist_name):
@@ -111,10 +108,12 @@ def rate_artist(artist_id, artist_name):
 
     try:
         SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
-        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.7"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
     except ValueError:
         SPOTIFY_WEIGHT = 0.3
-        LASTFM_WEIGHT = 0.7
+        LASTFM_WEIGHT = 0.5
+        AGE_WEIGHT = 0.2
 
     def get_lastfm_track_info(artist, title):
         api_key = os.getenv("LASTFMAPIKEY")
@@ -132,9 +131,11 @@ def rate_artist(artist_id, artist_name):
             data = res.json().get("track", {})
             track_play = int(data.get("playcount", 0))
             artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
-            return {"track_play": track_play, "artist_play": artist_play}
-        except Exception as e:
-            print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+            return {
+                "track_play": track_play,
+                "artist_play": artist_play
+            }
+        except:
             return None
 
     def search_spotify_track(title, artist, album=None):
@@ -171,6 +172,14 @@ def rate_artist(artist_id, artist_name):
             return max(filtered, key=lambda r: r.get("popularity", 0))
         return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
 
+    def score_by_age(playcount, release_str):
+        try:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
+            days_since = max((datetime.now() - release_date).days, 30)
+            return playcount / days_since
+        except:
+            return 0
+
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
@@ -189,24 +198,33 @@ def rate_artist(artist_id, artist_name):
             songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
         except:
             continue
+
         for song in songs:
             track_title = song["title"]
             track_id = song["id"]
+            nav_date = song.get("created", "").split("T")[0]  # fallback format
             results = search_spotify_track(track_title, artist_name, album_name)
             selected = select_best_spotify_match(results, track_title)
             sp_score = selected.get("popularity", 0)
+            release_date = selected.get("album", {}).get("release_date") or nav_date
             lf_data = get_lastfm_track_info(artist_name, track_title)
             lf_track = lf_data["track_play"] if lf_data else 0
             lf_artist = lf_data["artist_play"] if lf_data else 0
-            lf_score = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-            base_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score)
+            lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+            age_scaled = score_by_age(lf_track, release_date)
+            combined_score = round(
+                SPOTIFY_WEIGHT * sp_score +
+                LASTFM_WEIGHT * lf_ratio +
+                AGE_WEIGHT * age_scaled
+            )
             raw_track_data.append({
                 "title": track_title,
-                "score": base_score,
+                "score": combined_score,
                 "spotify": sp_score,
                 "lastfm_raw": lf_track,
                 "lastfm_total": lf_artist,
-                "lastfm_scaled": lf_score,
+                "lastfm_ratio": lf_ratio,
+                "age_scaled": age_scaled,
                 "id": track_id,
                 "album": album_name
             })
@@ -214,26 +232,20 @@ def rate_artist(artist_id, artist_name):
     if not raw_track_data:
         return []
 
-    # 💿 Album median and top scores
     album_scores = {}
     for track in raw_track_data:
         album = track["album"]
         album_scores.setdefault(album, []).append(track["score"])
     album_tops = {a: max(scores) for a, scores in album_scores.items()}
 
-    # 💡 Hybrid boost logic: only apply if above album median
     for track in raw_track_data:
         album = track["album"]
         raw_score = track["score"]
         median_score = median(album_scores[album])
         album_top_score = album_tops.get(album, raw_score)
         if raw_score >= median_score:
-            blended_score = round((0.7 * raw_score) + (0.3 * album_top_score))
-        else:
-            blended_score = raw_score
-        track["score"] = blended_score
+            track["score"] = round((0.7 * raw_score) + (0.3 * album_top_score))
 
-    # 📊 Percentile-based star mapping
     sorted_tracks = sorted(raw_track_data, key=lambda x: x["score"], reverse=True)
     total = len(sorted_tracks)
     for i, track in enumerate(sorted_tracks):
