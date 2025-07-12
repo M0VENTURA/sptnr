@@ -330,7 +330,15 @@ def pipe_output(search_term=None):
     except Exception as e:
         print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
         sys.exit(1)
-
+        
+def run_perpetual_mode():
+    while True:
+        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
+        build_artist_index()  # Optional: refresh index in case new artists were added
+        batch_rate(sync=True, dry_run=False)
+        print(f"{LIGHT_CYAN}✅ Scan complete. Sleeping for 12 hours...{RESET}")
+        time.sleep(12 * 60 * 60)
+        
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm")
     parser.add_argument("--artist", type=str, nargs="+", help="Rate one or more artists")
@@ -339,6 +347,8 @@ if __name__ == "__main__":
     parser.add_argument("--sync", action="store_true", help="Push ratings to Navidrome")
     parser.add_argument("--refresh", action="store_true", help="Rebuild artist index")
     parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index (optionally filter)")
+    parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")  # ✅ Add this
+
     args = parser.parse_args()
 
     if args.refresh or not os.path.exists(INDEX_FILE):
@@ -358,5 +368,8 @@ if __name__ == "__main__":
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
         batch_rate(sync=args.sync, dry_run=args.dry_run)
+    elif args.perpetual:  # ✅ Handle --perpetual here
+        run_perpetual_mode()
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
+    
