@@ -256,12 +256,12 @@ def sync_to_navidrome(track_ratings, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
+
     try:
         res = requests.get(f"{nav_base}/rest/search3.view", params={**auth, "query": artist_name})
         res.raise_for_status()
         songs = res.json().get("subsonic-response", {}).get("searchResult3", {}).get("song", [])
-        
-        # 🔍 Debug output here
+
         print(f"\n🔎 Navidrome search returned {len(songs)} tracks for '{artist_name}':")
         for s in songs:
             print(f"  • Title: {s.get('title')} | ID: {s.get('id')} | MBID: {s.get('musicbrainz_trackid')} | ISRC: {s.get('isrc')}")
@@ -270,27 +270,37 @@ def sync_to_navidrome(track_ratings, artist_name):
         return
 
     def loose_match(a, b):
-        a_clean = re.sub(r"[^\w\s]", "", a.lower()).strip()
-        b_clean = re.sub(r"[^\w\s]", "", b.lower()).strip()
-        return a_clean == b_clean or a_clean in b_clean or b_clean in a_clean
+        def clean(s):
+            s = s.lower()
+            s = s.replace("’", "'")  # normalize apostrophes
+            s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
+            return s.strip()
+        return clean(a) == clean(b) or clean(a) in clean(b) or clean(b) in clean(a)
 
 
     matched = 0
     for track in track_ratings:
         title = track["title"]
-        stars = track.get("stars")
+        stars = track.get("stars", 0)
         score = track.get("score")
 
-        # 💡 Print each attempted match
         print(f"\n🔍 Attempting match for: '{title}'")
 
         match = next((s for s in songs if loose_match(s["title"], title)), None)
 
         if match:
             print(f"✅ Match found: '{match['title']}' → ID: {match['id']}")
-            ...
+            try:
+                rating = track.get("stars", 0)
+                set_params = {**auth, "id": match["id"], "rating": rating}
+                set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+                set_res.raise_for_status()
+                print(f"{LIGHT_GREEN}✅ Synced rating for: {title} (score: {score}, stars: {rating}){RESET}")
+                matched += 1  # ✅ Move this inside the try block
+            except Exception as e:
+                print(f"{LIGHT_RED}⚠️ Failed to sync rating for '{title}': {type(e).__name__} - {e}{RESET}")
         else:
-            print(f"❌ No match found for: '{title}'")
+            print(f"{LIGHT_RED}❌ No match found for: '{title}'{RESET}")
 
     print(f"\n📊 Sync summary: {matched} matched out of {len(track_ratings)} rated track(s)")
 
