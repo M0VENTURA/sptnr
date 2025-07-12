@@ -111,16 +111,17 @@ def rate_artist(artist_id, artist_name):
         SPOTIFY_WEIGHT = 0.2
         LASTFM_WEIGHT = 0.8
 
-    GENRE_THRESHOLDS = [25, 40, 55, 70, 85]
+    # 🎚️ Artist-wide thresholds only
+    STAR_THRESHOLDS = [20, 40, 60, 80]
+
+    def map_stars(score):
+        for i, threshold in enumerate(STAR_THRESHOLDS):
+            if score < threshold:
+                return i + 1
+        return 5
 
     def normalize_score(raw, min_score, max_score):
         return (raw - min_score) / (max_score - min_score) * 100 if max_score > min_score else raw
-
-    def map_genre_stars(norm_score):
-        for i, threshold in enumerate(GENRE_THRESHOLDS):
-            if norm_score < threshold:
-                return i + 1
-        return 5
 
     def search_spotify_track(title, artist, album=None):
         def query(q):
@@ -211,7 +212,6 @@ def rate_artist(artist_id, artist_name):
     min_score = min(t["score"] for t in raw_track_data)
     max_score = max(t["score"] for t in raw_track_data)
 
-    # 🧠 Album median scores
     album_scores = {}
     for track in raw_track_data:
         album = track["album"]
@@ -219,7 +219,6 @@ def rate_artist(artist_id, artist_name):
 
     album_medians = {a: median(scores) for a, scores in album_scores.items()}
 
-    # 🎚️ Hybrid normalization
     for track in raw_track_data:
         album = track["album"]
         raw = track["score"]
@@ -227,7 +226,7 @@ def rate_artist(artist_id, artist_name):
         norm_album = album_medians.get(album, raw)
         norm_final = round((0.75 * norm_artist) + (0.25 * norm_album))
 
-        stars = map_genre_stars(norm_final)
+        stars = map_stars(norm_final)
         print(f"  🎵 {track['title']} → score: {raw}, normalized: {norm_final}, stars: {stars}")
         rated_tracks.append({
             "title": track["title"],
