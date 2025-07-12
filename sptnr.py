@@ -85,12 +85,16 @@ def get_lastfm_track_info(artist, title):
         res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
         res.raise_for_status()
         data = res.json().get("track", {})
-        listeners = int(data.get("listeners", 0))
-        playcount = int(data.get("playcount", 0))
-        return {"listeners": listeners, "playcount": playcount}
+        track_play = int(data.get("playcount", 0))
+        artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
+        return {"track_play": track_play, "artist_play": artist_play}
     except Exception as e:
         print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
         return None
+
+import math
+import numpy as np
+from statistics import median
 
 import math
 import numpy as np
@@ -109,7 +113,6 @@ def rate_artist(artist_id, artist_name):
         SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
         LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.7"))
     except ValueError:
-        print("⚠️ Invalid weight in .env — using defaults.")
         SPOTIFY_WEIGHT = 0.3
         LASTFM_WEIGHT = 0.7
 
@@ -150,6 +153,27 @@ def rate_artist(artist_id, artist_name):
             return max(filtered, key=lambda r: r.get("popularity", 0))
         return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
 
+    def get_lastfm_track_info(artist, title):
+        api_key = os.getenv("LASTFMAPIKEY")
+        headers = {"User-Agent": "sptnr-cli"}
+        params = {
+            "method": "track.getInfo",
+            "artist": artist,
+            "track": title,
+            "api_key": api_key,
+            "format": "json"
+        }
+        try:
+            res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+            res.raise_for_status()
+            data = res.json().get("track", {})
+            track_play = int(data.get("playcount", 0))
+            artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
+            return {"track_play": track_play, "artist_play": artist_play}
+        except Exception as e:
+            print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+            return None
+
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
@@ -176,14 +200,16 @@ def rate_artist(artist_id, artist_name):
             selected = select_best_spotify_match(results, track_title)
             sp_score = selected.get("popularity", 0)
             lf_data = get_lastfm_track_info(artist_name, track_title)
-            lf_raw = lf_data["playcount"] if lf_data else 0
-            lf_score = math.sqrt(math.log10(lf_raw + 1)) if lf_raw else 0  # 📈 log+sqrt scaling
+            lf_track = lf_data["track_play"] if lf_data else 0
+            lf_artist = lf_data["artist_play"] if lf_data else 0
+            lf_score = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0  # 🎧 Relative popularity
             combined_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score)
             raw_track_data.append({
                 "title": track_title,
                 "score": combined_score,
                 "spotify": sp_score,
-                "lastfm_raw": lf_raw,
+                "lastfm_raw": lf_track,
+                "lastfm_total": lf_artist,
                 "lastfm_scaled": lf_score,
                 "id": track_id,
                 "album": album_name
@@ -192,24 +218,22 @@ def rate_artist(artist_id, artist_name):
     if not raw_track_data:
         return []
 
-    all_scores = [t["score"] for t in raw_track_data]
-    percentiles = np.percentile(all_scores, [10, 30, 50, 70, 85])
+    sorted_tracks = sorted(raw_track_data, key=lambda x: x["score"], reverse=True)
+    total = len(sorted_tracks)
 
-    def map_percentile_stars(score):
-        if score < percentiles[0]: return 1
-        if score < percentiles[1]: return 2
-        if score < percentiles[2]: return 3
-        if score < percentiles[3]: return 4
-        return 5
+    for i, track in enumerate(sorted_tracks):
+        percentile = (i + 1) / total
+        if percentile <= 0.10: stars = 5
+        elif percentile <= 0.30: stars = 4
+        elif percentile <= 0.60: stars = 3
+        elif percentile <= 0.85: stars = 2
+        else: stars = 1
 
-    for track in raw_track_data:
-        score = track["score"]
-        stars = map_percentile_stars(score)
-        print(f"  🎵 {track['title']} → score: {score}, stars: {stars}")
+        print(f"  🎵 {track['title']} → score: {track['score']} | stars: {stars}")
         rated_tracks.append({
             "title": track["title"],
             "stars": stars,
-            "score": score,
+            "score": track["score"],
             "id": track["id"]
         })
 
