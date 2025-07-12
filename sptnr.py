@@ -96,10 +96,6 @@ import math
 import numpy as np
 from statistics import median
 
-import math
-import numpy as np
-from statistics import median
-
 def rate_artist(artist_id, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -115,43 +111,6 @@ def rate_artist(artist_id, artist_name):
     except ValueError:
         SPOTIFY_WEIGHT = 0.3
         LASTFM_WEIGHT = 0.7
-
-    def search_spotify_track(title, artist, album=None):
-        def query(q):
-            params = {"q": q, "type": "track", "limit": 10}
-            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
-            res.raise_for_status()
-            return res.json().get("tracks", {}).get("items", [])
-
-        def strip_parentheses(s):
-            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
-
-        queries = [
-            f"{title} artist:{artist} album:{album}" if album else None,
-            f"{strip_parentheses(title)} artist:{artist}",
-            f"{title.replace('Part', 'Pt.')} artist:{artist}"
-        ]
-
-        for q in filter(None, queries):
-            try:
-                results = query(q)
-                if results:
-                    return results
-            except:
-                continue
-        return []
-
-    def select_best_spotify_match(results, track_title):
-        def clean(s):
-            return re.sub(r"[^\w\s]", "", s.lower()).strip()
-        cleaned_title = clean(track_title)
-        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
-        if exact:
-            return exact
-        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
-        if filtered:
-            return max(filtered, key=lambda r: r.get("popularity", 0))
-        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
 
     def get_lastfm_track_info(artist, title):
         api_key = os.getenv("LASTFMAPIKEY")
@@ -173,6 +132,118 @@ def rate_artist(artist_id, artist_name):
         except Exception as e:
             print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
             return None
+
+    def search_spotify_track(title, artist, album=None):
+        def query(q):
+            params = {"q": q, "type": "track", "limit": 10}
+            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+            res.raise_for_status()
+            return res.json().get("tracks", {}).get("items", [])
+        def strip_parentheses(s):
+            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{strip_parentheses(title)} artist:{artist}",
+            f"{title.replace('Part', 'Pt.')} artist:{artist}"
+        ]
+        for q in filter(None, queries):
+            try:
+                results = query(q)
+                if results:
+                    return results
+            except:
+                continue
+        return []
+
+    def select_best_spotify_match(results, track_title):
+        def clean(s):
+            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+        cleaned_title = clean(track_title)
+        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+        if exact:
+            return exact
+        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+        if filtered:
+            return max(filtered, key=lambda r: r.get("popularity", 0))
+        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+    except:
+        return []
+
+    raw_track_data = []
+
+    for album in albums:
+        album_id = album["id"]
+        album_name = album["name"]
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        except:
+            continue
+        for song in songs:
+            track_title = song["title"]
+            track_id = song["id"]
+            results = search_spotify_track(track_title, artist_name, album_name)
+            selected = select_best_spotify_match(results, track_title)
+            sp_score = selected.get("popularity", 0)
+            lf_data = get_lastfm_track_info(artist_name, track_title)
+            lf_track = lf_data["track_play"] if lf_data else 0
+            lf_artist = lf_data["artist_play"] if lf_data else 0
+            lf_score = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+            base_score = round(SPOTIFY_WEIGHT * sp_score + LASTFM_WEIGHT * lf_score)
+            raw_track_data.append({
+                "title": track_title,
+                "score": base_score,
+                "spotify": sp_score,
+                "lastfm_raw": lf_track,
+                "lastfm_total": lf_artist,
+                "lastfm_scaled": lf_score,
+                "id": track_id,
+                "album": album_name
+            })
+
+    if not raw_track_data:
+        return []
+
+    # 💿 Album top boosting
+    album_scores = {}
+    for track in raw_track_data:
+        album = track["album"]
+        album_scores.setdefault(album, []).append(track["score"])
+    album_tops = {a: max(scores) for a, scores in album_scores.items()}
+
+    # 🔁 Blend base score with album top score
+    for track in raw_track_data:
+        album = track["album"]
+        raw = track["score"]
+        top_boost = album_tops.get(album, raw)
+        blended_score = round((0.7 * raw) + (0.3 * top_boost))  # tweak ratio as needed
+        track["score"] = blended_score
+
+    # 📊 Percentile-based star mapping
+    sorted_tracks = sorted(raw_track_data, key=lambda x: x["score"], reverse=True)
+    total = len(sorted_tracks)
+    for i, track in enumerate(sorted_tracks):
+        percentile = (i + 1) / total
+        if percentile <= 0.10: stars = 5
+        elif percentile <= 0.30: stars = 4
+        elif percentile <= 0.60: stars = 3
+        elif percentile <= 0.85: stars = 2
+        else: stars = 1
+        print(f"  🎵 {track['title']} → score: {track['score']} | stars: {stars}")
+        rated_tracks.append({
+            "title": track["title"],
+            "stars": stars,
+            "score": track["score"],
+            "id": track["id"]
+        })
+
+    return rated_tracks
 
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
