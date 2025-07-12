@@ -191,6 +191,102 @@ def rate_artist(artist_id, artist_name):
 
     for album in albums:
         album_id = album["id"]
+import math
+import numpy as np
+from datetime import datetime
+from statistics import median
+
+def rate_artist(artist_id, artist_name):
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+
+    spotify_token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {spotify_token}"}
+    rated_tracks = []
+
+    try:
+        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
+    except ValueError:
+        SPOTIFY_WEIGHT = 0.3
+        LASTFM_WEIGHT = 0.5
+        AGE_WEIGHT = 0.2
+
+    def get_lastfm_track_info(artist, title):
+        api_key = os.getenv("LASTFMAPIKEY")
+        headers = {"User-Agent": "sptnr-cli"}
+        params = {
+            "method": "track.getInfo",
+            "artist": artist,
+            "track": title,
+            "api_key": api_key,
+            "format": "json"
+        }
+        try:
+            res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+            res.raise_for_status()
+            data = res.json().get("track", {})
+            track_play = int(data.get("playcount", 0))
+            artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
+            return {"track_play": track_play, "artist_play": artist_play}
+        except:
+            return None
+
+    def search_spotify_track(title, artist, album=None):
+        def query(q):
+            params = {"q": q, "type": "track", "limit": 10}
+            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+            res.raise_for_status()
+            return res.json().get("tracks", {}).get("items", [])
+        def strip_parentheses(s):
+            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{strip_parentheses(title)} artist:{artist}",
+            f"{title.replace('Part', 'Pt.')} artist:{artist}"
+        ]
+        for q in filter(None, queries):
+            try:
+                results = query(q)
+                if results:
+                    return results
+            except:
+                continue
+        return []
+
+    def select_best_spotify_match(results, track_title):
+        def clean(s):
+            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+        cleaned_title = clean(track_title)
+        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+        if exact:
+            return exact
+        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+        if filtered:
+            return max(filtered, key=lambda r: r.get("popularity", 0))
+        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+
+    def score_by_age(playcount, release_str):
+        try:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
+            days_since = max((datetime.now() - release_date).days, 30)
+            return playcount / days_since
+        except:
+            return 0
+
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+    except:
+        return []
+
+    raw_track_data = []
+
+    for album in albums:
+        album_id = album["id"]
         album_name = album["name"]
         try:
             song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
@@ -202,7 +298,7 @@ def rate_artist(artist_id, artist_name):
         for song in songs:
             track_title = song["title"]
             track_id = song["id"]
-            nav_date = song.get("created", "").split("T")[0]  # fallback format
+            nav_date = song.get("created", "").split("T")[0]
             results = search_spotify_track(track_title, artist_name, album_name)
             selected = select_best_spotify_match(results, track_title)
             sp_score = selected.get("popularity", 0)
@@ -211,11 +307,11 @@ def rate_artist(artist_id, artist_name):
             lf_track = lf_data["track_play"] if lf_data else 0
             lf_artist = lf_data["artist_play"] if lf_data else 0
             lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-            age_scaled = score_by_age(lf_track, release_date)
+            momentum = score_by_age(lf_track, release_date)
             combined_score = round(
                 SPOTIFY_WEIGHT * sp_score +
                 LASTFM_WEIGHT * lf_ratio +
-                AGE_WEIGHT * age_scaled
+                AGE_WEIGHT * momentum
             )
             raw_track_data.append({
                 "title": track_title,
@@ -224,7 +320,7 @@ def rate_artist(artist_id, artist_name):
                 "lastfm_raw": lf_track,
                 "lastfm_total": lf_artist,
                 "lastfm_ratio": lf_ratio,
-                "age_scaled": age_scaled,
+                "momentum": momentum,
                 "id": track_id,
                 "album": album_name
             })
