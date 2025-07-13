@@ -66,9 +66,25 @@ def search_youtube_video(title, artist):
         "maxResults": 3,
         "key": api_key
     }
-    res = requests.get(url, params=params)
-    res.raise_for_status()
-    return res.json().get("items", [])
+
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("items", [])
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code
+        reason = e.response.reason
+        if code == 403:
+            print(f"{LIGHT_RED}🚫 YouTube API key rejected or quota exceeded (403 Forbidden){RESET}")
+        elif code == 400:
+            print(f"{LIGHT_RED}⚠️ Bad YouTube request: {reason}{RESET}")
+        else:
+            print(f"{LIGHT_RED}⚠️ YouTube HTTP error ({code}): {reason}{RESET}")
+        return []
+    except requests.exceptions.RequestException as e:
+        print(f"{LIGHT_RED}⚠️ YouTube API call failed: {type(e).__name__} - {e}{RESET}")
+        return []
 
 import difflib
 
@@ -129,6 +145,11 @@ def normalize_title(s):
 
 def is_youtube_single(title, artist, verbose=False):
     videos = search_youtube_video(title, artist)
+    if not videos:
+        if verbose:
+            print(f"{LIGHT_CYAN}ℹ️ Skipped YouTube scan — API unavailable or blocked{RESET}")
+        return False
+
     nav_title = normalize_title(title)
 
     for v in videos:
@@ -136,17 +157,21 @@ def is_youtube_single(title, artist, verbose=False):
         channel_id = v["snippet"]["channelId"]
 
         if "official video" in yt_title and nav_title in yt_title:
-            if is_official_youtube_channel(channel_id):
+            if is_official_youtube_channel(channel_id, artist):
                 return True
 
-    # Fuzzy fallback
+    # 🎯 Fuzzy fallback
     yt_titles = [normalize_title(v["snippet"]["title"]) for v in videos]
     matches = difflib.get_close_matches(nav_title, yt_titles, n=1, cutoff=0.7)
     if matches:
         match_title = matches[0]
-        match_video = next(v for v in videos if normalize_title(v["snippet"]["title"]) == match_title)
+        match_video = next(
+            v for v in videos if normalize_title(v["snippet"]["title"]) == match_title
+        )
         channel_id = match_video["snippet"]["channelId"]
-        if is_official_youtube_channel(channel_id):
+        if is_official_youtube_channel(channel_id, artist):
+            if verbose:
+                print(f"{LIGHT_GREEN}🔍 Fuzzy matched '{title}' → '{match_title}' (trusted channel){RESET}")
             return True
 
     if verbose:
