@@ -51,6 +51,10 @@ def load_channel_cache():
 
 channel_cache = load_channel_cache()
 
+trusted_channels_raw = os.getenv("TRUSTED_CHANNEL_IDS", "")
+for cid in [c.strip() for c in trusted_channels_raw.split(",") if c.strip()]:
+    channel_cache.setdefault(cid, True)
+
 def save_channel_cache(cache):
     with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2)
@@ -610,11 +614,6 @@ def rate_artist(artist_id, artist_name, verbose=False):
         print(f"\n📡 Single Sources Used:")
         for src, count in source_counts.items():
             print(f"- {src}: {count} track{'s' if count != 1 else ''}")
-
-        print(f"\n🎬 Singles Detected: {len(confirmed_singles)}")
-        for s in confirmed_singles:
-            srcs = ", ".join(s["sources"])
-            print(f"- {s['title']} ({srcs})")
 
     return rated_tracks
 
