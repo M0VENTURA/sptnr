@@ -35,12 +35,78 @@ SLEEP_TIME = 1.5
 INDEX_FILE = "artist_index.json"
 RATING_CACHE_FILE = "rating_cache.json"
 SINGLE_CACHE_FILE = "single_cache.json"
+CHANNEL_CACHE_FILE = "channel_cache.json"
+
+channel_cache = load_channel_cache()
 
 def load_rating_cache():
     if os.path.exists(RATING_CACHE_FILE):
         with open(RATING_CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+def load_channel_cache():
+    if os.path.exists(CHANNEL_CACHE_FILE):
+        with open(CHANNEL_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_channel_cache(cache):
+    with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+
+def search_youtube_video(title, artist):
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    query = f"{artist} {title} official video"
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "maxResults": 3,
+        "key": api_key
+    }
+    res = requests.get(url, params=params)
+    res.raise_for_status()
+    return res.json().get("items", [])
+
+def is_official_youtube_channel(channel_id):
+    if channel_id in channel_cache:
+        return channel_cache[channel_id]
+
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    url = "https://www.googleapis.com/youtube/v3/channels"
+    params = {
+        "part": "snippet",
+        "id": channel_id,
+        "key": api_key
+    }
+
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json().get("items", [])
+        if not data:
+            result = False
+        else:
+            title = data[0]["snippet"]["title"].lower()
+            description = data[0]["snippet"].get("description", "").lower()
+            result = any(k in title or k in description for k in ["official", "vevo", "records", "label"])
+    except:
+        result = False
+
+    channel_cache[channel_id] = result
+    return result
+
+
+def is_youtube_single(title, artist):
+    videos = search_youtube_video(title, artist)
+    for v in videos:
+        vid_title = v["snippet"]["title"].lower()
+        channel_id = v["snippet"]["channelId"]
+        if "official video" in vid_title and is_official_youtube_channel(channel_id):
+            return True
+    return False
 
 
 def load_single_cache():
@@ -121,66 +187,41 @@ def detect_single_status(title, artist, cache={}):
     if key in cache:
         return cache[key]
 
-    confirmed_sources = 0
-    sources_used = []
-
-    # MusicBrainz
+    # Step 1: YouTube check
     try:
-        if is_musicbrainz_single(title, artist):
-            confirmed_sources += 1
-            sources_used.append("MusicBrainz")
-        time.sleep(1.1)  # Rate limit
+        if is_youtube_single(title, artist):
+            result = {
+                "is_single": True,
+                "confidence": "high",
+                "sources": ["YouTube (official channel)"]
+            }
+            cache[key] = result
+            return result
     except:
         pass
 
-    # Discogs
-    try:
-        token = os.getenv("DISCOGS_TOKEN")
-        headers = {"User-Agent": "sptnr-cli", "Authorization": f"Discogs token={token}"}
-        params = {"q": f"{artist} {title}", "type": "release", "per_page": 5}
-        res = requests.get("https://api.discogs.com/database/search", headers=headers, params=params)
-        res.raise_for_status()
-        hits = res.json().get("results", [])
-        if any("Single" in r.get("format", []) for r in hits):
-            confirmed_sources += 1
-            sources_used.append("Discogs")
-    except:
-        pass
+    # Step 2: Run Discogs and MusicBrainz
+    sources = []
+    if is_musicbrainz_single(title, artist):
+        sources.append("MusicBrainz")
+    if is_discogs_single(title, artist):
+        sources.append("Discogs")
 
-    # YouTube
-    try:
-        yt_key = os.getenv("YOUTUBE_API_KEY")
-        yt_url = "https://www.googleapis.com/youtube/v3/search"
-        params = {
-            "part": "snippet",
-            "q": f"{artist} {title} official video",
-            "type": "video",
-            "maxResults": 3,
-            "key": yt_key
-        }
-        yt_res = requests.get(yt_url, params=params)
-        yt_res.raise_for_status()
-        videos = yt_res.json().get("items", [])
-        if any("official video" in v["snippet"]["title"].lower() for v in videos):
-            confirmed_sources += 1
-            sources_used.append("YouTube")
-    except:
-        pass
-
-    # Final decision
     confidence = (
-        "high" if confirmed_sources >= 2 else
-        "medium" if confirmed_sources == 1 else
+        "high" if len(sources) >= 2 else
+        "medium" if len(sources) == 1 else
         "low"
     )
+
     result = {
-        "is_single": confirmed_sources >= 2,
+        "is_single": len(sources) >= 2,
         "confidence": confidence,
-        "sources": sources_used
+        "sources": sources
     }
 
     cache[key] = result
     return result
+
 
 import math
 import numpy as np
@@ -196,6 +237,7 @@ def rate_artist(artist_id, artist_name, verbose=False):
     headers = {"Authorization": f"Bearer {spotify_token}"}
     rated_tracks = []
     single_cache = load_single_cache()
+    channel_cache = load_channel_cache()
 
     try:
         SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
@@ -254,27 +296,6 @@ def rate_artist(artist_id, artist_name, verbose=False):
         except:
             return 0, 9999
 
-    def get_lastfm_track_info(artist, title):
-        api_key = os.getenv("LASTFMAPIKEY")
-        headers = {"User-Agent": "sptnr-cli"}
-        params = {
-            "method": "track.getInfo",
-            "artist": artist,
-            "track": title,
-            "api_key": api_key,
-            "format": "json"
-        }
-        try:
-            res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
-            res.raise_for_status()
-            data = res.json().get("track", {})
-            track_play = int(data.get("playcount", 0))
-            artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
-            return {"track_play": track_play, "artist_play": artist_play}
-        except Exception as e:
-            print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
-            return None
-
     try:
         album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         album_res.raise_for_status()
@@ -318,7 +339,9 @@ def rate_artist(artist_id, artist_name, verbose=False):
             if track_title in single_cache:
                 single_status = single_cache[track_title]
             else:
-                single_status = detect_single_status(track_title, artist_name, single_cache)
+                single_status = detect_single_status(
+                    track_title, artist_name, single_cache
+                )
                 single_cache[track_title] = single_status
 
             if single_status["is_single"]:
@@ -344,7 +367,8 @@ def rate_artist(artist_id, artist_name, verbose=False):
                 "days_since": days_since,
                 "id": track_id,
                 "album": album_name,
-                "single_confidence": single_status["confidence"]
+                "single_confidence": single_status["confidence"],
+                "sources": single_status.get("sources", [])
             })
 
     if not raw_track_data:
@@ -380,10 +404,31 @@ def rate_artist(artist_id, artist_name, verbose=False):
             "title": track["title"],
             "stars": stars,
             "score": track["score"],
-            "id": track["id"]
+            "id": track["id"],
+            "sources": track["sources"]
         })
 
     save_single_cache(single_cache)
+    save_channel_cache(channel_cache)
+
+    if verbose:
+        star_counts = {s: 0 for s in range(1, 6)}
+        source_counts = {}
+        for track in rated_tracks:
+            s = track["stars"]
+            star_counts[s] += 1
+            for src in track.get("sources", []):
+                source_counts[src] = source_counts.get(src, 0) + 1
+
+        print(f"\n📈 Star Distribution:")
+        for s in range(5, 0, -1):
+            print(f"{'★' * s} : {star_counts[s]}")
+
+        print(f"\n📡 Single Sources Used:")
+        for src, count in source_counts.items():
+            print(f"- {src}: {count} track{'s' if count != 1 else ''}")
+
+    return rated_tracks
 
 
 def load_artist_index():
@@ -479,9 +524,12 @@ def batch_rate(sync=False, dry_run=False):
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
 
-        rated = rate_artist(artist_id, name)
-        if sync and not dry_run:
-            sync_to_navidrome(rated, name)
+        rated = rate_artist(artist_id, name, verbose=args.verbose)
+        if not rated:
+            print(f"⚠️ Rating failed for '{name}', skipping sync.")
+            continue
+        sync_to_navidrome(rated, name)
+
         time.sleep(SLEEP_TIME)
     print("\n✅ Batch rating complete.")
 def pipe_output(search_term=None):
