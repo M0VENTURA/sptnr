@@ -514,7 +514,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             title = song["title"]
             track_id = song["id"]
 
-            # Skip recent cache
+            if verbose:
+                print(f"\n🎵 Scoring: {title}")
+
             existing = track_cache.get(track_id)
             if existing and not force:
                 try:
@@ -530,11 +532,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             album_name = album["name"]
             nav_date = song.get("created", "").split("T")[0]
 
+            if verbose:
+                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
             spotify_results = search_spotify_track(title, artist_name, album_name)
             selected = select_best_spotify_match(spotify_results, title)
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
+            if verbose:
+                print(f"{LIGHT_YELLOW}📡 Fetching Last.fm stats...{RESET}")
             lf_data = get_lastfm_track_info(artist_name, title)
             lf_track = lf_data["track_play"] if lf_data else 0
             lf_artist = lf_data["artist_play"] if lf_data else 0
@@ -547,6 +553,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 AGE_WEIGHT * momentum
             )
 
+            if verbose:
+                print(f"{LIGHT_CYAN}🧠 Detecting single status...{RESET}")
             single_status = detect_single_status(title, artist_name, single_cache, force=force)
             if single_status["is_single"]:
                 score += SINGLE_BOOST
@@ -554,11 +562,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if days_since > 10 * 365 and lf_ratio >= 1.0:
                 score += LEGACY_BOOST
 
+            provisional_score = round(score)
+            print_star_line(title, provisional_score, 1, single_status["is_single"])  # Placeholder ★
+
             raw_tracks.append({
                 "title": title,
                 "album": album_name,
                 "id": track_id,
-                "score": round(score),
+                "score": provisional_score,
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", []),
                 "is_single": single_status["is_single"]
@@ -567,7 +578,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not raw_tracks:
         return []
 
-    # 🎯 Album-aware score boost
     album_scores = {}
     for track in raw_tracks:
         album_scores.setdefault(track["album"], []).append(track["score"])
@@ -581,7 +591,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         if raw >= median_score:
             track["score"] = round((0.7 * raw) + (0.3 * top_score))
 
-    # ⭐ Rank and assign stars
     sorted_tracks = sorted(raw_tracks, key=lambda x: x["score"], reverse=True)
     total = len(sorted_tracks)
     for i, track in enumerate(sorted_tracks):
@@ -594,11 +603,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         if track["single_confidence"] == "high":
             stars = max(stars, 4)
 
-        # ⏱️ Cache
         updated_cache[track["id"]] = build_cache_entry(stars, track["score"])
-
-        # 🎵 Print immediately
-        print_star_line(track["title"], track["score"], stars, track["is_single"])
+        print_star_line(track["title"], track["score"], stars, track["is_single"])  # Final stars
 
         rated_tracks.append({
             "title": track["title"],
