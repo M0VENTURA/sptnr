@@ -36,6 +36,7 @@ INDEX_FILE = "artist_index.json"
 RATING_CACHE_FILE = "rating_cache.json"
 SINGLE_CACHE_FILE = "single_cache.json"
 CHANNEL_CACHE_FILE = "channel_cache.json"
+youtube_api_unavailable = False
 
 def load_rating_cache():
     if os.path.exists(RATING_CACHE_FILE):
@@ -56,6 +57,11 @@ def save_channel_cache(cache):
         json.dump(cache, f, indent=2)
 
 def search_youtube_video(title, artist):
+    global youtube_api_unavailable
+
+    if youtube_api_unavailable:
+        return []
+
     api_key = os.getenv("YOUTUBE_API_KEY")
     query = f"{artist} {title} official video"
     url = "https://www.googleapis.com/youtube/v3/search"
@@ -75,15 +81,12 @@ def search_youtube_video(title, artist):
     except requests.exceptions.HTTPError as e:
         code = e.response.status_code
         reason = e.response.reason
-        if code == 403:
-            print(f"{LIGHT_RED}🚫 YouTube API key rejected or quota exceeded (403 Forbidden){RESET}")
-        elif code == 400:
-            print(f"{LIGHT_RED}⚠️ Bad YouTube request: {reason}{RESET}")
-        else:
-            print(f"{LIGHT_RED}⚠️ YouTube HTTP error ({code}): {reason}{RESET}")
+        youtube_api_unavailable = True
+        print(f"{LIGHT_RED}🚫 YouTube API disabled for session ({code} {reason}) — skipping future scans{RESET}")
         return []
     except requests.exceptions.RequestException as e:
-        print(f"{LIGHT_RED}⚠️ YouTube API call failed: {type(e).__name__} - {e}{RESET}")
+        youtube_api_unavailable = True
+        print(f"{LIGHT_RED}⚠️ YouTube API unreachable — disabled for session ({type(e).__name__}){RESET}")
         return []
 
 import difflib
