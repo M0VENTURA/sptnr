@@ -383,7 +383,8 @@ def rate_artist(artist_id, artist_name, verbose=False):
             "id": track["id"]
         })
 
-    save_single
+    save_single_cache(single_cache)
+
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
