@@ -272,28 +272,28 @@ def get_lastfm_track_info(artist, title):
     except Exception as e:
         print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
         return None
-        
 
-def detect_single_status(title, artist, cache={}):
+from datetime import datetime, timedelta
+
+def detect_single_status(title, artist, cache={}, force=False):
     key = f"{artist.lower()}::{title.lower()}"
-    if key in cache:
-        return cache[key]
+    entry = cache.get(key)
 
-    # Step 1: YouTube check
-    try:
-        if is_youtube_single(title, artist):
-            result = {
-                "is_single": True,
-                "confidence": "high",
-                "sources": ["YouTube (official channel)"]
-            }
-            cache[key] = result
-            return result
-    except:
-        pass
+    # Skip recent scan unless forced
+    if entry and not force:
+        last_ts = entry.get("last_scanned")
+        if last_ts:
+            try:
+                scanned_date = datetime.strptime(last_ts, "%Y-%m-%dT%H:%M:%S")
+                if datetime.now() - scanned_date < timedelta(days=7):
+                    return entry
+            except:
+                pass  # fallback to fresh scan if timestamp malformed
 
-    # Step 2: Run Discogs and MusicBrainz
+    # Run single detection logic
     sources = []
+    if is_youtube_single(title, artist):
+        sources.append("YouTube")
     if is_musicbrainz_single(title, artist):
         sources.append("MusicBrainz")
     if is_discogs_single(title, artist):
@@ -308,12 +308,12 @@ def detect_single_status(title, artist, cache={}):
     result = {
         "is_single": len(sources) >= 2,
         "confidence": confidence,
-        "sources": sources
+        "sources": sources,
+        "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     }
 
     cache[key] = result
     return result
-
 
 import math
 import numpy as np
