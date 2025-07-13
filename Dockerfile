@@ -1,5 +1,5 @@
 # Use an official Python runtime as a parent image
-FROM python:3.11-slim
+FROM python:3.10-slim-buster
 # Updated for better compatibility with latest packages
 
 # Install system dependencies for pip packages (especially for pylast if it uses SSL)
