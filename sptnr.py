@@ -376,6 +376,8 @@ from datetime import datetime
 from statistics import median
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
+    print(f"\n🔍 Scanning - {artist_name}")
+
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return []
@@ -469,7 +471,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             track_title = song["title"]
             track_id = song["id"]
 
-            # Check cache timestamp
             existing = track_cache.get(track_id)
             if existing and not force:
                 try:
@@ -504,19 +505,29 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             if single_status["is_single"]:
                 score += SINGLE_BOOST
-                if verbose:
-                    srcs = ", ".join(single_status["sources"])
-                    print(f"{LIGHT_YELLOW}⭐ '{track_title}' confirmed as single via: {srcs} (confidence: {single_status['confidence']}){RESET}")
 
             if days_since > 10 * 365 and lf_ratio >= 1.0:
                 score += LEGACY_BOOST
 
-            if verbose:
-                print(f"🔎 {track_title}: score={score:.2f} | Spotify={sp_score} | Last.fm={lf_ratio:.2f} | momentum={momentum:.2f}")
+            raw_score = round(score)
+            stars = 1  # will be updated later during percentile ranking
+
+            updated_cache[track_id] = {
+                "stars": stars,
+                "score": raw_score,
+                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            }
+
+            # ⭐ Print per-track output immediately
+            star_str = "★" * stars
+            title_output = f"🎵 {track_title}"
+            if single_status["is_single"]:
+                title_output += " (Single)"
+            print(f"{title_output} → score: {raw_score} | stars: {star_str}")
 
             raw_track_data.append({
                 "title": track_title,
-                "score": round(score),
+                "score": raw_score,
                 "spotify": sp_score,
                 "lastfm_raw": lf_track,
                 "lastfm_total": lf_artist,
@@ -528,13 +539,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", [])
             })
-
-            # Save last scan timestamp to rating cache
-            updated_cache[track_id] = {
-                "stars": None,  # To be filled later if syncing
-                "score": round(score),
-                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            }
 
     if not raw_track_data:
         return []
@@ -557,14 +561,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     total = len(sorted_tracks)
     for i, track in enumerate(sorted_tracks):
         percentile = (i + 1) / total
-        if percentile <= 0.10: stars = 5
-        elif percentile <= 0.30: stars = 4
-        elif percentile <= 0.60: stars = 3
-        elif percentile <= 0.85: stars = 2
-        else: stars = 1
+        if percentile <= 0.10:
+            stars = 5
+        elif percentile <= 0.30:
+            stars = 4
+        elif percentile <= 0.60:
+            stars = 3
+        elif percentile <= 0.85:
+            stars = 2
+        else:
+            stars = 1
         if track["single_confidence"] == "high":
             stars = max(stars, 4)
-        print(f"  🎵 {track['title']} → score: {track['score']} | stars: {stars}")
+
+        updated_cache[track["id"]]["stars"] = stars
+
         rated_tracks.append({
             "title": track["title"],
             "stars": stars,
@@ -572,7 +583,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             "id": track["id"],
             "sources": track["sources"]
         })
-        updated_cache[track["id"]]["stars"] = stars
 
     save_single_cache(single_cache)
     save_channel_cache(channel_cache)
@@ -583,7 +593,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         source_counts = {}
         confirmed_singles = []
 
-        for track in rated_tracks:
+                for track in rated_tracks:
             s = track["stars"]
             star_counts[s] += 1
             if track.get("sources"):
@@ -598,11 +608,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"\n📡 Single Sources Used:")
         for src, count in source_counts.items():
             print(f"- {src}: {count} track{'s' if count != 1 else ''}")
-
-        print(f"\n🎬 Singles Detected: {len(confirmed_singles)} song{'s' if len(confirmed_singles) != 1 else ''}")
-        for s in confirmed_singles:
-            srcs = ", ".join(s["sources"])
-            print(f"- {s['title']} ({srcs})")
 
         print(f"\n🎬 Singles Detected: {len(confirmed_singles)} song{'s' if len(confirmed_singles) != 1 else ''}")
         for s in confirmed_singles:
