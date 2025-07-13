@@ -530,18 +530,133 @@ def rate_artist(artist_id, artist_name, verbose=False):
             momentum, days_since = score_by_age(lf_track, release_date)
 
             score = (
+
+def rate_artist(artist_id, artist_name, verbose=False, force=False):
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+
+    spotify_token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {spotify_token}"}
+    rated_tracks = []
+    single_cache = load_single_cache()
+    channel_cache = load_channel_cache()
+    track_cache = load_rating_cache()
+    updated_cache = track_cache.copy()
+    skipped = 0
+
+    try:
+        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
+        SINGLE_BOOST = float(os.getenv("SINGLE_BOOST", "10"))
+        LEGACY_BOOST = float(os.getenv("LEGACY_BOOST", "4"))
+    except ValueError:
+        SPOTIFY_WEIGHT = 0.3
+        LASTFM_WEIGHT = 0.5
+        AGE_WEIGHT = 0.2
+        SINGLE_BOOST = 10
+        LEGACY_BOOST = 4
+
+    def search_spotify_track(title, artist, album=None):
+        def query(q):
+            params = {"q": q, "type": "track", "limit": 10}
+            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+            res.raise_for_status()
+            return res.json().get("tracks", {}).get("items", [])
+        def strip_parentheses(s):
+            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{strip_parentheses(title)} artist:{artist}",
+            f"{title.replace('Part', 'Pt.')} artist:{artist}"
+        ]
+        for q in filter(None, queries):
+            try:
+                results = query(q)
+                if results:
+                    return results
+            except:
+                continue
+        return []
+
+    def select_best_spotify_match(results, track_title):
+        def clean(s):
+            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+        cleaned_title = clean(track_title)
+        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+        if exact:
+            return exact
+        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+        if filtered:
+            return max(filtered, key=lambda r: r.get("popularity", 0))
+        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+
+    def score_by_age(playcount, release_str):
+        try:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
+            days_since = max((datetime.now() - release_date).days, 30)
+            capped_days = min(days_since, 5 * 365)
+            decay = 1 / math.log2(capped_days + 2)
+            return playcount * decay, days_since
+        except:
+            return 0, 9999
+
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+    except:
+        return []
+
+    raw_track_data = []
+
+    for album in albums:
+        album_id = album["id"]
+        album_name = album["name"]
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        except:
+            continue
+
+        for song in songs:
+            track_title = song["title"]
+            track_id = song["id"]
+
+            # Check cache timestamp
+            existing = track_cache.get(track_id)
+            if existing and not force:
+                try:
+                    last = datetime.strptime(existing.get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                    if datetime.now() - last < timedelta(days=7):
+                        if verbose:
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{track_title}' (recently scanned){RESET}")
+                        skipped += 1
+                        continue
+                except:
+                    pass
+
+            nav_date = song.get("created", "").split("T")[0]
+            results = search_spotify_track(track_title, artist_name, album_name)
+            selected = select_best_spotify_match(results, track_title)
+            sp_score = selected.get("popularity", 0)
+            release_date = selected.get("album", {}).get("release_date") or nav_date
+            lf_data = get_lastfm_track_info(artist_name, track_title)
+            lf_track = lf_data["track_play"] if lf_data else 0
+            lf_artist = lf_data["artist_play"] if lf_data else 0
+            lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+            momentum, days_since = score_by_age(lf_track, release_date)
+
+            score = (
                 SPOTIFY_WEIGHT * sp_score +
                 LASTFM_WEIGHT * lf_ratio +
                 AGE_WEIGHT * momentum
             )
 
-            if track_title in single_cache:
-                single_status = single_cache[track_title]
-            else:
-                single_status = detect_single_status(
-                    track_title, artist_name, single_cache
-                )
-                single_cache[track_title] = single_status
+            single_status = detect_single_status(track_title, artist_name, single_cache, force=force)
+            single_cache[f"{artist_name.lower()}::{track_title.lower()}"] = single_status
 
             if single_status["is_single"]:
                 score += SINGLE_BOOST
@@ -569,6 +684,13 @@ def rate_artist(artist_id, artist_name, verbose=False):
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", [])
             })
+
+            # Save last scan timestamp to rating cache
+            updated_cache[track_id] = {
+                "stars": None,  # To be filled later if syncing
+                "score": round(score),
+                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            }
 
     if not raw_track_data:
         return []
@@ -606,9 +728,224 @@ def rate_artist(artist_id, artist_name, verbose=False):
             "id": track["id"],
             "sources": track["sources"]
         })
+        updated_cache[track["id"]]["stars"] = stars
 
     save_single_cache(single_cache)
     save_channel_cache(channel_cache)
+    save_rating_cache(updated_cache)
+
+    if verbose:
+        star_counts = {s: 0 for s in range(1, 6)}
+        source_counts = {}
+        confirmed_singles = []
+
+        for track in rated_tracks:
+            s = track["stars"]
+            star_counts[s] += 1
+            if track.get("sources"):
+                confirmed_singles.append(track)
+def rate_artist(artist_id, artist_name, verbose=False, force=False):
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+
+    spotify_token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {spotify_token}"}
+    rated_tracks = []
+    single_cache = load_single_cache()
+    channel_cache = load_channel_cache()
+    track_cache = load_rating_cache()
+    updated_cache = track_cache.copy()
+    skipped = 0
+
+    try:
+        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
+        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
+        SINGLE_BOOST = float(os.getenv("SINGLE_BOOST", "10"))
+        LEGACY_BOOST = float(os.getenv("LEGACY_BOOST", "4"))
+    except ValueError:
+        SPOTIFY_WEIGHT = 0.3
+        LASTFM_WEIGHT = 0.5
+        AGE_WEIGHT = 0.2
+        SINGLE_BOOST = 10
+        LEGACY_BOOST = 4
+
+    def search_spotify_track(title, artist, album=None):
+        def query(q):
+            params = {"q": q, "type": "track", "limit": 10}
+            res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+            res.raise_for_status()
+            return res.json().get("tracks", {}).get("items", [])
+        def strip_parentheses(s):
+            return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{strip_parentheses(title)} artist:{artist}",
+            f"{title.replace('Part', 'Pt.')} artist:{artist}"
+        ]
+        for q in filter(None, queries):
+            try:
+                results = query(q)
+                if results:
+                    return results
+            except:
+                continue
+        return []
+
+    def select_best_spotify_match(results, track_title):
+        def clean(s):
+            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+        cleaned_title = clean(track_title)
+        exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+        if exact:
+            return exact
+        filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+        if filtered:
+            return max(filtered, key=lambda r: r.get("popularity", 0))
+        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+
+    def score_by_age(playcount, release_str):
+        try:
+            release_date = datetime.strptime(release_str, "%Y-%m-%d")
+            days_since = max((datetime.now() - release_date).days, 30)
+            capped_days = min(days_since, 5 * 365)
+            decay = 1 / math.log2(capped_days + 2)
+            return playcount * decay, days_since
+        except:
+            return 0, 9999
+
+    try:
+        album_res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        album_res.raise_for_status()
+        albums = album_res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+    except:
+        return []
+
+    raw_track_data = []
+
+    for album in albums:
+        album_id = album["id"]
+        album_name = album["name"]
+        try:
+            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            song_res.raise_for_status()
+            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        except:
+            continue
+
+        for song in songs:
+            track_title = song["title"]
+            track_id = song["id"]
+
+            # Check cache timestamp
+            existing = track_cache.get(track_id)
+            if existing and not force:
+                try:
+                    last = datetime.strptime(existing.get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                    if datetime.now() - last < timedelta(days=7):
+                        if verbose:
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{track_title}' (recently scanned){RESET}")
+                        skipped += 1
+                        continue
+                except:
+                    pass
+
+            nav_date = song.get("created", "").split("T")[0]
+            results = search_spotify_track(track_title, artist_name, album_name)
+            selected = select_best_spotify_match(results, track_title)
+            sp_score = selected.get("popularity", 0)
+            release_date = selected.get("album", {}).get("release_date") or nav_date
+            lf_data = get_lastfm_track_info(artist_name, track_title)
+            lf_track = lf_data["track_play"] if lf_data else 0
+            lf_artist = lf_data["artist_play"] if lf_data else 0
+            lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+            momentum, days_since = score_by_age(lf_track, release_date)
+
+            score = (
+                SPOTIFY_WEIGHT * sp_score +
+                LASTFM_WEIGHT * lf_ratio +
+                AGE_WEIGHT * momentum
+            )
+
+            single_status = detect_single_status(track_title, artist_name, single_cache, force=force)
+            single_cache[f"{artist_name.lower()}::{track_title.lower()}"] = single_status
+
+            if single_status["is_single"]:
+                score += SINGLE_BOOST
+                if verbose:
+                    srcs = ", ".join(single_status["sources"])
+                    print(f"{LIGHT_YELLOW}⭐ '{track_title}' confirmed as single via: {srcs} (confidence: {single_status['confidence']}){RESET}")
+
+            if days_since > 10 * 365 and lf_ratio >= 1.0:
+                score += LEGACY_BOOST
+
+            if verbose:
+                print(f"🔎 {track_title}: score={score:.2f} | Spotify={sp_score} | Last.fm={lf_ratio:.2f} | momentum={momentum:.2f}")
+
+            raw_track_data.append({
+                "title": track_title,
+                "score": round(score),
+                "spotify": sp_score,
+                "lastfm_raw": lf_track,
+                "lastfm_total": lf_artist,
+                "lastfm_ratio": lf_ratio,
+                "momentum": momentum,
+                "days_since": days_since,
+                "id": track_id,
+                "album": album_name,
+                "single_confidence": single_status["confidence"],
+                "sources": single_status.get("sources", [])
+            })
+
+            # Save last scan timestamp to rating cache
+            updated_cache[track_id] = {
+                "stars": None,  # To be filled later if syncing
+                "score": round(score),
+                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            }
+
+    if not raw_track_data:
+        return []
+
+    album_scores = {}
+    for track in raw_track_data:
+        album = track["album"]
+        album_scores.setdefault(album, []).append(track["score"])
+    album_tops = {a: max(scores) for a, scores in album_scores.items()}
+
+    for track in raw_track_data:
+        album = track["album"]
+        raw_score = track["score"]
+        median_score = median(album_scores[album])
+        album_top_score = album_tops.get(album, raw_score)
+        if raw_score >= median_score:
+            track["score"] = round((0.7 * raw_score) + (0.3 * album_top_score))
+
+    sorted_tracks = sorted(raw_track_data, key=lambda x: x["score"], reverse=True)
+    total = len(sorted_tracks)
+    for i, track in enumerate(sorted_tracks):
+        percentile = (i + 1) / total
+        if percentile <= 0.10: stars = 5
+        elif percentile <= 0.30: stars = 4
+        elif percentile <= 0.60: stars = 3
+        elif percentile <= 0.85: stars = 2
+        else: stars = 1
+        if track["single_confidence"] == "high":
+            stars = max(stars, 4)
+        print(f"  🎵 {track['title']} → score: {track['score']} | stars: {stars}")
+        rated_tracks.append({
+            "title": track["title"],
+            "stars": stars,
+            "score": track["score"],
+            "id": track["id"],
+            "sources": track["sources"]
+        })
+        updated_cache[track["id"]]["stars"] = stars
+
+    save_single_cache(single_cache)
+    save_channel_cache(channel_cache)
+    save_rating_cache(updated_cache)
 
     if verbose:
         star_counts = {s: 0 for s in range(1, 6)}
@@ -631,9 +968,21 @@ def rate_artist(artist_id, artist_name, verbose=False):
         for src, count in source_counts.items():
             print(f"- {src}: {count} track{'s' if count != 1 else ''}")
 
+        print(f"\n🎬 Singles Detected: {len(confirmed_singles)} song{'s' if len(confirmed_singles) != 1 else ''}")
+        for s in confirmed_singles:
+            srcs = ", ".join(s["sources"])
+            print(f"- {s['title']} ({srcs})")
+
+        print(f"\n🎬 Singles Detected: {len(confirmed_singles)} song{'s' if len(confirmed_singles) != 1 else ''}")
+        for s in confirmed_singles:
+            srcs = ", ".join(s["sources"])
+            print(f"- {s['title']} ({srcs})")
+
+        if skipped > 0:
+            print(f"\n🛑 Skipped {skipped} track{'s' if skipped != 1 else ''} (cached <7 days, use --force to override)")
+
     return rated_tracks
-
-
+    
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
         logging.error(f"{LIGHT_RED}Artist index file not found: {INDEX_FILE}{RESET}")
