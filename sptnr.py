@@ -55,6 +55,33 @@ def print_star_line(title, score, stars, is_single=False):
 def canonical_title(title):
     return re.sub(r"[^\w\s]", "", title.lower()).strip()
 
+def get_resume_artist_from_cache():
+    cache = load_rating_cache()
+    latest = None
+    latest_time = datetime.min
+
+    for track_id, entry in cache.items():
+        ts = entry.get("last_scanned")
+        if ts:
+            try:
+                dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+                if dt > latest_time:
+                    latest_time = dt
+                    latest = track_id
+            except:
+                continue
+
+    if not latest:
+        return None
+
+    # Map track_id to artist — you'll need a way to reverse this
+    artist_map = load_artist_index()
+    for name in sorted(artist_map):
+        artist_id = artist_map[name]
+        if latest.startswith(str(artist_id)):
+            return name
+    return None
+
 def print_rating_summary(rated_tracks, skipped):
     star_counts = {s: 0 for s in range(1, 6)}
     source_counts = {}
@@ -617,8 +644,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     save_single_cache(single_cache)
     save_rating_cache(updated_cache)
 
-    if verbose:
-        print_rating_summary(rated_tracks, skipped)
+    if verbose and not args.sync:
+    print_rating_summary(rated_tracks, skipped)
 
     return rated_tracks
     
@@ -678,16 +705,28 @@ def sync_to_navidrome(track_ratings, artist_name):
             continue
 
         last_rating = cache.get(track_id)
+        if isinstance(last_rating, dict):
+            last_rating = last_rating.get("stars", 0)
+
         if last_rating == stars:
-            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {stars}){RESET}")
+            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
+            matched += 1
             continue
 
         try:
             set_params = {**auth, "id": track_id, "rating": stars}
             set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
             set_res.raise_for_status()
-            print(f"{LIGHT_GREEN}✅ Synced: {title} (score: {score}, stars: {stars}){RESET}")
-            updated_cache[track_id] = stars
+
+            star_str = "★" * stars
+            print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {star_str}){RESET}")
+
+            updated_cache[track_id] = {
+                "stars": stars,
+                "score": score,
+                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            }
+
             matched += 1
             changed += 1
         except Exception as e:
@@ -696,15 +735,18 @@ def sync_to_navidrome(track_ratings, artist_name):
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
 
-def batch_rate(sync=False, dry_run=False):
+def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
     artists = fetch_all_artists()
     artist_index = load_artist_index()
-    for name in artists:
+
+    for name in sorted(artists):
+        if resume_from and name < resume_from:
+            continue
+
         print(f"\n🎧 Processing: {name}")
         artist_id = artist_index.get(name)
 
         if not artist_id:
-            # Fallback: try fuzzy match
             matches = [n for n in artist_index if name.lower() in n.lower()]
             if matches:
                 fuzzy_name = matches[0]
@@ -714,14 +756,18 @@ def batch_rate(sync=False, dry_run=False):
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
 
-        rated = rate_artist(artist_id, name, verbose=args.verbose)
+        rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
         if not rated:
             print(f"⚠️ Rating failed for '{name}', skipping sync.")
             continue
-        sync_to_navidrome(rated, name)
+
+        if sync:
+            sync_to_navidrome(rated, name)
 
         time.sleep(SLEEP_TIME)
+
     print("\n✅ Batch rating complete.")
+    
 def pipe_output(search_term=None):
     try:
         with open(INDEX_FILE) as f:
@@ -741,8 +787,17 @@ def pipe_output(search_term=None):
 def run_perpetual_mode():
     while True:
         print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
-        build_artist_index()  # Optional: refresh index in case new artists were added
-        batch_rate(sync=True, dry_run=False)
+
+        build_artist_index()
+
+        resume_artist = get_resume_artist_from_cache()
+        if resume_artist:
+            print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
+        else:
+            print(f"{LIGHT_CYAN}🚀 Starting full batch scan{RESET}")
+
+        batch_rate(sync=True, dry_run=False, force=args.force, resume_from=resume_artist)
+
         print(f"{LIGHT_CYAN}✅ Scan complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
         
@@ -756,6 +811,8 @@ if __name__ == "__main__":
     parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index (optionally filter)")
     parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")  # ✅ Add this
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
+    parser.add_argument("--resume", action="store_true", help="Resume batch scan from last synced artist")
+    parser.add_argument("--force", action="store_true", help="Force re-scan of all tracks (override cache)")
 
     args = parser.parse_args()
 
