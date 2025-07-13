@@ -57,22 +57,31 @@ def canonical_title(title):
 
 def get_resume_artist_from_cache():
     cache = load_rating_cache()
-    latest = None
     latest_time = datetime.min
+    latest_track_id = None
 
-    for track_id, entry in cache.items():
+    for tid, entry in cache.items():
         ts = entry.get("last_scanned")
         if ts:
             try:
                 dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
                 if dt > latest_time:
                     latest_time = dt
-                    latest = track_id
+                    latest_track_id = tid
             except:
                 continue
 
-    if not latest:
+    if not latest_track_id:
         return None
+
+    # Fuzzy reverse match
+    artist_map = load_artist_index()
+    track_prefix = latest_track_id.split(".")[0]
+
+    for name, aid in artist_map.items():
+        if str(aid) == track_prefix or str(aid) in latest_track_id:
+            return name
+    return None
 
     # Map track_id to artist — you'll need a way to reverse this
     artist_map = load_artist_index()
