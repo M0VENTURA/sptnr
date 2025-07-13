@@ -99,13 +99,38 @@ def is_official_youtube_channel(channel_id):
     return result
 
 
-def is_youtube_single(title, artist):
+import difflib
+
+def normalize_title(s):
+    s = s.lower()
+    s = re.sub(r"\(.*?\)", "", s)  # remove parentheticals
+    s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
+    return s.strip()
+
+def is_youtube_single(title, artist, verbose=False):
     videos = search_youtube_video(title, artist)
+    nav_title = normalize_title(title)
+
     for v in videos:
-        vid_title = v["snippet"]["title"].lower()
+        yt_title = normalize_title(v["snippet"]["title"])
         channel_id = v["snippet"]["channelId"]
-        if "official video" in vid_title and is_official_youtube_channel(channel_id):
+
+        if "official video" in yt_title and nav_title in yt_title:
+            if is_official_youtube_channel(channel_id):
+                return True
+
+    # Fuzzy fallback
+    yt_titles = [normalize_title(v["snippet"]["title"]) for v in videos]
+    matches = difflib.get_close_matches(nav_title, yt_titles, n=1, cutoff=0.7)
+    if matches:
+        match_title = matches[0]
+        match_video = next(v for v in videos if normalize_title(v["snippet"]["title"]) == match_title)
+        channel_id = match_video["snippet"]["channelId"]
+        if is_official_youtube_channel(channel_id):
             return True
+
+    if verbose:
+        print(f"{LIGHT_RED}⚠️ No YouTube match for '{title}' by '{artist}'{RESET}")
     return False
 
 def is_musicbrainz_single(title, artist):
