@@ -51,10 +51,6 @@ def load_channel_cache():
 
 channel_cache = load_channel_cache()
 
-trusted_channels_raw = os.getenv("TRUSTED_CHANNEL_IDS", "")
-for cid in [c.strip() for c in trusted_channels_raw.split(",") if c.strip()]:
-    channel_cache.setdefault(cid, True)
-
 def save_channel_cache(cache):
     with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2)
@@ -74,7 +70,17 @@ def search_youtube_video(title, artist):
     res.raise_for_status()
     return res.json().get("items", [])
 
-def is_official_youtube_channel(channel_id):
+import difflib
+
+def is_official_youtube_channel(channel_id, artist=None):
+    # Load trusted channel IDs from .env
+    trusted_raw = os.getenv("TRUSTED_CHANNEL_IDS", "")
+    trusted_env = [c.strip() for c in trusted_raw.split(",") if c.strip()]
+    if channel_id in trusted_env:
+        channel_cache[channel_id] = True
+        return True
+
+    # Already cached
     if channel_id in channel_cache:
         return channel_cache[channel_id]
 
@@ -93,17 +99,27 @@ def is_official_youtube_channel(channel_id):
         if not data:
             result = False
         else:
-            title = data[0]["snippet"]["title"].lower()
-            description = data[0]["snippet"].get("description", "").lower()
-            result = any(k in title or k in description for k in ["official", "vevo", "records", "label"])
-    except:
+            snippet = data[0]["snippet"]
+            title = snippet["title"].lower()
+            description = snippet.get("description", "").lower()
+
+            # Trust keywords
+            keywords = ["official", "records", "label", "vevo"]
+            result = any(k in title or k in description for k in keywords)
+
+            # Fuzzy match with artist name
+            if artist:
+                artist_norm = artist.lower()
+                match_ratio = difflib.SequenceMatcher(None, artist_norm, title).ratio()
+                if match_ratio >= 0.75:
+                    result = True
+
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ YouTube channel check failed: {type(e).__name__} - {e}{RESET}")
         result = False
 
     channel_cache[channel_id] = result
     return result
-
-
-import difflib
 
 def normalize_title(s):
     s = s.lower()
