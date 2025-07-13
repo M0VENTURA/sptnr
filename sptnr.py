@@ -108,6 +108,25 @@ def is_youtube_single(title, artist):
             return True
     return False
 
+def is_musicbrainz_single(title, artist):
+    query = f'"{title}" AND artist:"{artist}" AND primarytype:Single'
+    url = "https://musicbrainz.org/ws/2/release-group/"
+    params = {
+        "query": query,
+        "fmt": "json",
+        "limit": 5
+    }
+    headers = {"User-Agent": "sptnr-cli/1.0 (your@email.com)"}
+
+    try:
+        res = requests.get(url, params=params, headers=headers)
+        res.raise_for_status()
+        data = res.json().get("release-groups", [])
+        return any(rg.get("primary-type", "").lower() == "single" for rg in data)
+    except Exception as e:
+        print(f"⚠️ MusicBrainz lookup failed for '{title}': {type(e).__name__} - {e}")
+        return False
+
 
 def load_single_cache():
     if os.path.exists(SINGLE_CACHE_FILE):
