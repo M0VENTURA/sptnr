@@ -801,9 +801,13 @@ def run_perpetual_mode():
 
         build_artist_index()
 
-        resume_artist = get_resume_artist_from_cache()
-        if resume_artist:
-            print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
+        resume_artist = None
+        if args.resume:
+            resume_artist = get_resume_artist_from_cache()
+            if resume_artist:
+                print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
+            else:
+                print(f"{LIGHT_RED}⚠️ Resume failed — no valid scan point found{RESET}")
         else:
             print(f"{LIGHT_CYAN}🚀 Starting full batch scan{RESET}")
 
