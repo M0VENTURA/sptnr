@@ -75,13 +75,14 @@ Use the example above to configure your API keys and Navidrome access.
           sptnr:
             build: .
             container_name: sptnr
+            image: moventura/sptnr:latest
             volumes:
             - ./data:/usr/src/app/data
             env_file:
             - .env
             command: ["python3", "sptnr.py", "--batchrate", "--sync"]
     
-4. Run It
+5. Run It
    
         bash
         docker compose build
