@@ -37,8 +37,6 @@ RATING_CACHE_FILE = "rating_cache.json"
 SINGLE_CACHE_FILE = "single_cache.json"
 CHANNEL_CACHE_FILE = "channel_cache.json"
 
-channel_cache = load_channel_cache()
-
 def load_rating_cache():
     if os.path.exists(RATING_CACHE_FILE):
         with open(RATING_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -50,6 +48,8 @@ def load_channel_cache():
         with open(CHANNEL_CACHE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
+
+channel_cache = load_channel_cache()
 
 def save_channel_cache(cache):
     with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
