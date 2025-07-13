@@ -127,6 +127,34 @@ def is_musicbrainz_single(title, artist):
         print(f"⚠️ MusicBrainz lookup failed for '{title}': {type(e).__name__} - {e}")
         return False
 
+def is_discogs_single(title, artist):
+    token = os.getenv("DISCOGS_TOKEN")
+    if not token:
+        print("❌ Missing Discogs token.")
+        return False
+
+    headers = {
+        "Authorization": f"Discogs token={token}",
+        "User-Agent": "sptnr-cli/1.0"
+    }
+    query = f"{artist} {title}"
+    url = "https://api.discogs.com/database/search"
+    params = {
+        "q": query,
+        "type": "release",
+        "format": "Single",
+        "per_page": 5
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        results = res.json().get("results", [])
+        return any("Single" in r.get("format", []) for r in results)
+    except Exception as e:
+        print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
+        return False
+
 
 def load_single_cache():
     if os.path.exists(SINGLE_CACHE_FILE):
