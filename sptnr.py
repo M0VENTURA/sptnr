@@ -143,6 +143,21 @@ def normalize_title(s):
     s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
     return s.strip()
 
+def is_lastfm_single(title, artist):
+    import requests
+    from bs4 import BeautifulSoup
+
+    query = f"{artist} {title}".replace(" ", "+")
+    url = f"https://www.last.fm/music/{artist.replace(' ', '+')}/{title.replace(' ', '+')}"
+    try:
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        track_count = soup.find_all("td", class_="chartlist-duration")
+        return len(track_count) == 1
+    except:
+        return False
+
 def is_youtube_single(title, artist, verbose=False):
     videos = search_youtube_video(title, artist)
     if not videos:
@@ -304,7 +319,7 @@ def detect_single_status(title, artist, cache={}, force=False):
     key = f"{artist.lower()}::{title.lower()}"
     entry = cache.get(key)
 
-    # Skip recent scan unless forced
+    # ⏱️ Skip fresh scans unless forced
     if entry and not force:
         last_ts = entry.get("last_scanned")
         if last_ts:
@@ -313,10 +328,22 @@ def detect_single_status(title, artist, cache={}, force=False):
                 if datetime.now() - scanned_date < timedelta(days=7):
                     return entry
             except:
-                pass  # fallback to fresh scan if timestamp malformed
+                pass
 
-    # Run single detection logic
+    # 🧪 First check — Last.fm "1 track" release
     sources = []
+    if is_lastfm_single(title, artist):
+        sources.append("Last.fm")
+        result = {
+            "is_single": True,
+            "confidence": "high",
+            "sources": sources,
+            "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        }
+        cache[key] = result
+        return result
+
+    # 👇 Proceed to multi-source fallback
     if is_youtube_single(title, artist):
         sources.append("YouTube")
     if is_musicbrainz_single(title, artist):
