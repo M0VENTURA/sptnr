@@ -74,20 +74,10 @@ def get_resume_artist_from_cache():
     if not latest_track_id:
         return None
 
-    # Fuzzy reverse match
+    # Attempt reverse match using artist_index.json
     artist_map = load_artist_index()
-    track_prefix = latest_track_id.split(".")[0]
-
-    for name, aid in artist_map.items():
-        if str(aid) == track_prefix or str(aid) in latest_track_id:
-            return name
-    return None
-
-    # Map track_id to artist — you'll need a way to reverse this
-    artist_map = load_artist_index()
-    for name in sorted(artist_map):
-        artist_id = artist_map[name]
-        if latest.startswith(str(artist_id)):
+    for name, artist_id in artist_map.items():
+        if str(artist_id) in latest_track_id:
             return name
     return None
 
