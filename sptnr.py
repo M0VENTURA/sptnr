@@ -50,6 +50,42 @@ for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, CHANNEL_CACHE_FILE, INDEX_FIL
 
 youtube_api_unavailable = False
 
+def strip_parentheses(s):
+    return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+
+def search_spotify_track(title, artist, album=None):
+    def query(q):
+        params = {"q": q, "type": "track", "limit": 10}
+        token = get_spotify_token()
+        headers = {"Authorization": f"Bearer " + token}
+        res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+        res.raise_for_status()
+        return res.json().get("tracks", {}).get("items", [])
+
+    queries = [
+        f"{title} artist:{artist} album:{album}" if album else None,
+        f"{strip_parentheses(title)} artist:{artist}",
+        f"{title.replace('Part', 'Pt.')} artist:{artist}"
+    ]
+
+    for q in filter(None, queries):
+        try:
+            results = query(q)
+            if results:
+                return results
+        except:
+            continue
+    return []
+
+def select_best_spotify_match(results, track_title):
+    def clean(s): return re.sub(r"[^\w\s]", "", s.lower()).strip()
+    cleaned_title = clean(track_title)
+    exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
+    if exact: return exact
+    filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+    return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
+
+
 def build_cache_entry(stars, score):
     return {
         "stars": stars,
