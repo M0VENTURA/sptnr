@@ -642,6 +642,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             "sources": track["sources"]
         })
 
+        if verbose:
+            print(f"🧪 Rated track → {track['title']} | ID: {track['id']} | stars: {stars} | score: {track['score']}")
+
     save_single_cache(single_cache)
     save_rating_cache(updated_cache)
 
