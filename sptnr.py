@@ -462,6 +462,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     updated_cache = track_cache.copy()
     skipped = 0
 
+    # Load weights
     try:
         SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
         LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
@@ -475,6 +476,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         SINGLE_BOOST = 10
         LEGACY_BOOST = 4
 
+    # Internal helpers
     def search_spotify_track(title, artist, album=None):
         def query(q):
             params = {"q": q, "type": "track", "limit": 10}
@@ -498,16 +500,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         return []
 
     def select_best_spotify_match(results, track_title):
-        def clean(s):
-            return re.sub(r"[^\w\s]", "", s.lower()).strip()
+        def clean(s): return re.sub(r"[^\w\s]", "", s.lower()).strip()
         cleaned_title = clean(track_title)
         exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
-        if exact:
-            return exact
+        if exact: return exact
         filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
-        if filtered:
-            return max(filtered, key=lambda r: r.get("popularity", 0))
-        return max(results, key=lambda r: r.get("popularity", 0)) if results else {"popularity": 0}
+        return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
 
     def score_by_age(playcount, release_str):
         try:
@@ -519,6 +517,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         except:
             return 0, 9999
 
+    # Fetch albums
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         res.raise_for_status()
@@ -590,14 +589,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if days_since > 10 * 365 and lf_ratio >= 1.0:
                 score += LEGACY_BOOST
 
-            provisional_score = round(score)
-            print_star_line(title, provisional_score, 1, single_status["is_single"])
-
             raw_tracks.append({
                 "title": title,
                 "album": album_name,
                 "id": track_id,
-                "score": provisional_score,
+                "score": round(score),
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", []),
                 "is_single": single_status["is_single"]
@@ -606,6 +602,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not raw_tracks:
         return []
 
+    # Adjust scores based on album context
     album_scores = {}
     for track in raw_tracks:
         album_scores.setdefault(track["album"], []).append(track["score"])
@@ -619,6 +616,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         if raw >= median_score:
             track["score"] = round((0.7 * raw) + (0.3 * top_score))
 
+    # Star assignment
     sorted_tracks = sorted(raw_tracks, key=lambda x: x["score"], reverse=True)
     total = len(sorted_tracks)
     for i, track in enumerate(sorted_tracks):
@@ -643,7 +641,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         })
 
         if verbose:
-            print(f"🧪 Rated track → {track['title']} | ID: {track['id']} | stars: {stars} | score: {track['score']}")
+            print(f"🧪 Rated → {track['title']} | stars: {stars} | ID: {track['id']} | score: {track['score']}")
 
     save_single_cache(single_cache)
     save_rating_cache(updated_cache)
@@ -699,42 +697,38 @@ def sync_to_navidrome(track_ratings, artist_name):
     changed = 0
 
     for track in track_ratings:
-        title = track["title"]
-        stars = track.get("stars", 0)
-        score = track.get("score")
-        track_id = track.get("id")
+    title = track["title"]
+    stars = track.get("stars", 0)
+    score = track.get("score")
+    track_id = track.get("id")
 
-        if not track_id:
-            print(f"❌ Missing ID for: '{title}', skipping.")
-            continue
+    if not track_id:
+        print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
+        continue
 
-        last_rating = cache.get(track_id)
-        if isinstance(last_rating, dict):
-            last_rating = last_rating.get("stars", 0)
+    last_rating_entry = cache.get(track_id, {})
+    cached_stars = last_rating_entry.get("stars", 0)
 
-        if last_rating == stars:
-            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
-            matched += 1
-            continue
+    print(f"🧪 Sync check → {title} | current stars: {stars} | cached: {cached_stars}")
 
-        try:
-            set_params = {**auth, "id": track_id, "rating": stars}
-            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
-            set_res.raise_for_status()
+    if cached_stars == stars:
+        print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
+        matched += 1
+        continue
 
-            star_str = "★" * stars
-            print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {star_str}){RESET}")
+    try:
+        set_params = {**auth, "id": track_id, "rating": stars}
+        set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+        set_res.raise_for_status()
 
-            updated_cache[track_id] = {
-                "stars": stars,
-                "score": score,
-                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-            }
+        print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
 
-            matched += 1
-            changed += 1
-        except Exception as e:
-            print(f"{LIGHT_RED}⚠️ Failed: '{title}' - {type(e).__name__}: {e}{RESET}")
+        updated_cache[track_id] = build_cache_entry(stars, score)
+        matched += 1
+        changed += 1
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
+
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
@@ -797,25 +791,31 @@ def run_perpetual_mode():
 
         build_artist_index()
 
+        # Set resume_artist based on --artist or --resume
+        resume_artist = None
         if args.artist:
             resume_artist = " ".join(args.artist).strip()
-            print(f"{LIGHT_CYAN}⏩ Starting from specific artist: {resume_artist}{RESET}")
+            print(f"{LIGHT_CYAN}⏩ Starting scan from artist: {resume_artist} — continuing batch scan thereafter{RESET}")
         elif args.resume:
             resume_artist = get_resume_artist_from_cache()
             if resume_artist:
-                print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
+                print(f"{LIGHT_CYAN}⏩ Resuming from last scanned artist: {resume_artist}{RESET}")
             else:
                 print(f"{LIGHT_RED}⚠️ Resume failed — no valid scan point found{RESET}")
-                resume_artist = None
         else:
-            resume_artist = None
-            print(f"{LIGHT_CYAN}🚀 Starting full batch scan{RESET}")
+            print(f"{LIGHT_CYAN}🚀 Starting full batch scan from beginning{RESET}")
 
-        # ✅ Pass flags from CLI instead of hardcoding
-        batch_rate(sync=args.sync, dry_run=args.dry_run, force=args.force, resume_from=resume_artist)
+        # Respect user flags passed from CLI
+        batch_rate(
+            sync=args.sync,
+            dry_run=args.dry_run,
+            force=args.force,
+            resume_from=resume_artist
+        )
 
-        print(f"{LIGHT_CYAN}✅ Scan complete. Sleeping for 12 hours...{RESET}")
+        print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
+
         
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm")
