@@ -651,7 +651,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     save_single_cache(single_cache)
 
-    return rated_map, rated_tracks
+    return rated_map
 
     
 def load_artist_index():
