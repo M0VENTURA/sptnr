@@ -520,7 +520,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     skipped = 0
     rated_map = {}
 
-    # Load weights
+    # Load weight config
     try:
         SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
         LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
@@ -614,7 +614,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not raw_tracks:
         return {}
 
-    # Album context boosting
+    # Boost scores based on album context
     album_scores = {}
     for track in raw_tracks:
         album_scores.setdefault(track["album"], []).append(track["score"])
@@ -642,7 +642,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             stars = max(stars, 4)
 
         cache_entry = build_cache_entry(stars, track["score"], artist=artist_name)
-        rated_map[track["id"]] = {**cache_entry, "title": track["title"]}
+        rated_map[track["id"]] = {
+            "id": track["id"],
+            "title": track["title"],
+            "artist": artist_name,
+            "stars": stars,
+            "score": track["score"],
+            "is_single": track["is_single"],
+            "last_scanned": cache_entry["last_scanned"]
+        }
 
         print_star_line(track["title"], track["score"], stars, track["is_single"])
 
