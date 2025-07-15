@@ -783,7 +783,7 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
 
         rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
         if sync and rated:
-            sync_to_navidrome(rated, name)
+            sync_to_navidrome(list(rated.values()), name)
 
         time.sleep(SLEEP_TIME)
 
