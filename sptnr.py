@@ -697,10 +697,10 @@ def sync_to_navidrome(track_ratings, artist_name):
     changed = 0
 
     for track in track_ratings:
-    title = track["title"]
-    stars = track.get("stars", 0)
-    score = track.get("score")
-    track_id = track.get("id")
+        title = track["title"]
+        stars = track.get("stars", 0)
+        score = track.get("score")
+        track_id = track.get("id")
 
     if not track_id:
         print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
