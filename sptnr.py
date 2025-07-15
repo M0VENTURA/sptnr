@@ -53,6 +53,16 @@ youtube_api_unavailable = False
 def strip_parentheses(s):
     return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
 
+def score_by_age(playcount, release_str):
+    try:
+        release_date = datetime.strptime(release_str, "%Y-%m-%d")
+        days_since = max((datetime.now() - release_date).days, 30)
+        capped_days = min(days_since, 5 * 365)
+        decay = 1 / math.log2(capped_days + 2)
+        return playcount * decay, days_since
+    except:
+        return 0, 9999
+
 def search_spotify_track(title, artist, album=None):
     def query(q):
         params = {"q": q, "type": "track", "limit": 10}
@@ -640,7 +650,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     save_single_cache(single_cache)
 
-    return rated_map
+    return rated_map, rated_tracks
 
     
 def load_artist_index():
