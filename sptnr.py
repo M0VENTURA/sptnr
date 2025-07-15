@@ -791,14 +791,18 @@ def run_perpetual_mode():
 
         build_artist_index()
 
-        resume_artist = None
-        if args.resume:
+        if args.artist:
+            resume_artist = " ".join(args.artist).strip()
+            print(f"{LIGHT_CYAN}⏩ Starting from specific artist: {resume_artist}{RESET}")
+        elif args.resume:
             resume_artist = get_resume_artist_from_cache()
             if resume_artist:
                 print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
             else:
                 print(f"{LIGHT_RED}⚠️ Resume failed — no valid scan point found{RESET}")
+                resume_artist = None
         else:
+            resume_artist = None
             print(f"{LIGHT_CYAN}🚀 Starting full batch scan{RESET}")
 
         batch_rate(sync=True, dry_run=False, force=args.force, resume_from=resume_artist)
