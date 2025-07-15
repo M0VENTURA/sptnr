@@ -737,6 +737,8 @@ def sync_to_navidrome(track_ratings, artist_name):
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
 
 def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
+    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
+
     artists = fetch_all_artists()
     artist_index = load_artist_index()
 
@@ -763,6 +765,7 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
             continue
 
         if sync:
+            print(f"{LIGHT_YELLOW}📡 Sync enabled — syncing ratings for '{name}'...{RESET}")
             sync_to_navidrome(rated, name)
 
         time.sleep(SLEEP_TIME)
@@ -805,7 +808,8 @@ def run_perpetual_mode():
             resume_artist = None
             print(f"{LIGHT_CYAN}🚀 Starting full batch scan{RESET}")
 
-        batch_rate(sync=True, dry_run=False, force=args.force, resume_from=resume_artist)
+        # ✅ Pass flags from CLI instead of hardcoding
+        batch_rate(sync=args.sync, dry_run=args.dry_run, force=args.force, resume_from=resume_artist)
 
         print(f"{LIGHT_CYAN}✅ Scan complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
