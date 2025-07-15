@@ -32,10 +32,14 @@ except ValueError:
     LASTFM_WEIGHT = 0.5
 
 SLEEP_TIME = 1.5
-INDEX_FILE = "artist_index.json"
-RATING_CACHE_FILE = "rating_cache.json"
-SINGLE_CACHE_FILE = "single_cache.json"
-CHANNEL_CACHE_FILE = "channel_cache.json"
+
+# 📁 Cache paths (aligned with mounted volume)
+DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
+INDEX_FILE = os.path.join(DATA_DIR, "artist_index.json")
+RATING_CACHE_FILE = os.path.join(DATA_DIR, "rating_cache.json")
+SINGLE_CACHE_FILE = os.path.join(DATA_DIR, "single_cache.json")
+CHANNEL_CACHE_FILE = os.path.join(DATA_DIR, "channel_cache.json")
+
 youtube_api_unavailable = False
 
 def build_cache_entry(stars, score):
@@ -854,3 +858,5 @@ if __name__ == "__main__":
         batch_rate(sync=args.sync, dry_run=args.dry_run)
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
+
+    
