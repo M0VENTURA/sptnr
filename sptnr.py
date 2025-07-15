@@ -34,11 +34,19 @@ except ValueError:
 SLEEP_TIME = 1.5
 
 # 📁 Cache paths (aligned with mounted volume)
+
 DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
+os.makedirs(DATA_DIR, exist_ok=True)
 INDEX_FILE = os.path.join(DATA_DIR, "artist_index.json")
 RATING_CACHE_FILE = os.path.join(DATA_DIR, "rating_cache.json")
 SINGLE_CACHE_FILE = os.path.join(DATA_DIR, "single_cache.json")
 CHANNEL_CACHE_FILE = os.path.join(DATA_DIR, "channel_cache.json")
+
+#confirm files exist
+for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, CHANNEL_CACHE_FILE, INDEX_FILE]:
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{}")  # safe empty JSON object
 
 youtube_api_unavailable = False
 
