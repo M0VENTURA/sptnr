@@ -487,100 +487,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         SINGLE_BOOST = 10
         LEGACY_BOOST = 4
 
-    # Helpers (unchanged): search_spotify_track(), select_best_spotify_match(), score_by_age()
-
-    try:
-        res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
-        res.raise_for_status()
-        albums = res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
-    except:
-        return {}
-
-    raw_tracks = []
-
-    for album in albums:
-        try:
-            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
-            song_res.raise_for_status()
-            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-        except:
-            continue
-
-        for song in songs:
-            title = song["title"]
-            track_id = song["id"]
-
-            # Cache skip logic
-            if not force and track_id in track_cache:
-                try:
-                    last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
-                    if datetime.now() - last < timedelta(days=7):
-                        if verbose:
-                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recently scanned){RESET}")
-                        skipped += 1
-                        continue
-                except:
-                    pass
-            elif verbose and force:
-                print(f"{LIGHT_GREEN}🔁 Force re-scan: '{title}'{RESET}")
-
-            album_name = album["name"]
-            nav_date = song.get("created", "").split("T")[0]
-
-            if verbose:
-                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
-            spotify_results = search_spotify_track(title, artist_name, album_name)
-            selected = select_best_spotify_match(spotify_results, title)
-            sp_score = selected.get("popularity", 0)
-            release_date = selected.get("album", {}).get("release_date") or nav_date
-
-            if verbose:
-                print(f"{LIGHT_YELLOW}📡 Fetching Last.fm stats...{RESET}")
-            lf_data = get_lastfm_track_info(artist_name, title)
-            lf_track = lf_data["track_play"] if lf_data else 0
-            lf_artist = lf_data["artist_play"] if lf_data else 0
-            lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-            momentum, days_since = score_by_age(lf_track, release_date)
-
-            score = (
-                SPOTIFY_WEIGHT * sp_score +
-                LASTFM_WEIGHT * lf_ratio +
-                AGE_WEIGHT * momentum
-            )
-
-            if verbose:
-                print(f"{LIGHT_CYAN}🧠 Detecting single status...{RESET}")
-            single_status = detect_single_status(title, artist_name, single_cache, force=force)
-            if single_status["is_single"]:
-
-def rate_artist(artist_id, artist_name, verbose=False, force=False):
-    print(f"\n🔍 Scanning - {artist_name}")
-
-    nav_base, auth = get_auth_params()
-    if not nav_base or not auth:
-        return {}
-
-    spotify_token = get_spotify_token()
-    headers = {"Authorization": f"Bearer {spotify_token}"}
-    single_cache = load_single_cache()
-    track_cache = load_rating_cache()
-    skipped = 0
-    rated_map = {}
-
-    # Load weights
-    try:
-        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
-        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
-        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
-        SINGLE_BOOST = float(os.getenv("SINGLE_BOOST", "10"))
-        LEGACY_BOOST = float(os.getenv("LEGACY_BOOST", "4"))
-    except ValueError:
-        SPOTIFY_WEIGHT = 0.3
-        LASTFM_WEIGHT = 0.5
-        AGE_WEIGHT = 0.2
-        SINGLE_BOOST = 10
-        LEGACY_BOOST = 4
-
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         res.raise_for_status()
@@ -699,6 +605,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     save_single_cache(single_cache)
 
     return rated_map
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -903,3 +810,5 @@ if __name__ == "__main__":
         batch_rate(sync=args.sync, dry_run=args.dry_run)
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
+
+    
