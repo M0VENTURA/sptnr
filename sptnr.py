@@ -96,10 +96,11 @@ def select_best_spotify_match(results, track_title):
     return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
 
 
-def build_cache_entry(stars, score):
+def build_cache_entry(stars, score, artist=None):
     return {
         "stars": stars,
         "score": score,
+        "artist": artist,
         "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     }
 
