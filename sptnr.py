@@ -702,72 +702,36 @@ def sync_to_navidrome(track_ratings, artist_name):
         score = track.get("score")
         track_id = track.get("id")
 
-    if not track_id:
-        print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
-        continue
+        if not track_id:
+            print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
+            continue
 
-    last_rating_entry = cache.get(track_id, {})
-    cached_stars = last_rating_entry.get("stars", 0)
+        last_rating_entry = cache.get(track_id, {})
+        cached_stars = last_rating_entry.get("stars", 0)
 
-    print(f"🧪 Sync check → {title} | current stars: {stars} | cached: {cached_stars}")
+        print(f"🧪 Sync check → {title} | current stars: {stars} | cached: {cached_stars}")
 
-    if cached_stars == stars:
-        print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
-        matched += 1
-        continue
+        if cached_stars == stars:
+            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
+            matched += 1
+            continue
 
-    try:
-        set_params = {**auth, "id": track_id, "rating": stars}
-        set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
-        set_res.raise_for_status()
+        try:
+            set_params = {**auth, "id": track_id, "rating": stars}
+            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+            set_res.raise_for_status()
 
-        print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
+            print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
 
-        updated_cache[track_id] = build_cache_entry(stars, score)
-        matched += 1
-        changed += 1
-    except Exception as e:
-        print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
-
+            updated_cache[track_id] = build_cache_entry(stars, score)
+            matched += 1
+            changed += 1
+        except Exception as e:
+            print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
 
-def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
-    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
-
-    artists = fetch_all_artists()
-    artist_index = load_artist_index()
-
-    for name in sorted(artists):
-        if resume_from and name < resume_from:
-            continue
-
-        print(f"\n🎧 Processing: {name}")
-        artist_id = artist_index.get(name)
-
-        if not artist_id:
-            matches = [n for n in artist_index if name.lower() in n.lower()]
-            if matches:
-                fuzzy_name = matches[0]
-                artist_id = artist_index[fuzzy_name]
-                print(f"🔍 Fuzzy match found: '{name}' → '{fuzzy_name}'")
-            else:
-                print(f"⚠️ No ID found for '{name}', skipping.")
-                continue
-
-        rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
-        if not rated:
-            print(f"⚠️ Rating failed for '{name}', skipping sync.")
-            continue
-
-        if sync:
-            print(f"{LIGHT_YELLOW}📡 Sync enabled — syncing ratings for '{name}'...{RESET}")
-            sync_to_navidrome(rated, name)
-
-        time.sleep(SLEEP_TIME)
-
-    print("\n✅ Batch rating complete.")
     
 def pipe_output(search_term=None):
     try:
