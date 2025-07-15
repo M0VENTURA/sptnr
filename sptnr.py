@@ -749,27 +749,61 @@ def pipe_output(search_term=None):
         print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
         sys.exit(1)
         
+def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
+    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
+
+    artists = fetch_all_artists()
+    artist_index = load_artist_index()
+
+    resume_hit = False if resume_from else True
+    for name in sorted(artists):
+        # Skip until resume match
+        if not resume_hit:
+            if name.lower() == resume_from.lower():
+                resume_hit = True
+                print(f"{LIGHT_YELLOW}🎯 Resuming from: {name}{RESET}")
+            elif resume_from.lower() in name.lower():
+                resume_hit = True
+                print(f"{LIGHT_YELLOW}🔍 Fuzzy resume match: {resume_from} → {name}{RESET}")
+            else:
+                continue
+
+        print(f"\n🎧 Processing: {name}")
+        artist_id = artist_index.get(name)
+        if not artist_id:
+            print(f"{LIGHT_RED}⚠️ No ID found for '{name}', skipping.{RESET}")
+            continue
+
+        if dry_run:
+            print(f"{LIGHT_CYAN}👀 Dry run: would scan '{name}' (ID {artist_id}){RESET}")
+            continue
+
+        rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
+        if sync and rated:
+            sync_to_navidrome(rated, name)
+
+        time.sleep(SLEEP_TIME)
+
+    print(f"\n{LIGHT_GREEN}✅ Batch rating complete.{RESET}")
+
 def run_perpetual_mode():
     while True:
         print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
-
         build_artist_index()
 
-        # Set resume_artist based on --artist or --resume
         resume_artist = None
         if args.artist:
             resume_artist = " ".join(args.artist).strip()
-            print(f"{LIGHT_CYAN}⏩ Starting scan from artist: {resume_artist} — continuing batch scan thereafter{RESET}")
+            print(f"{LIGHT_CYAN}⏩ Starting from artist: {resume_artist}{RESET}")
         elif args.resume:
             resume_artist = get_resume_artist_from_cache()
             if resume_artist:
-                print(f"{LIGHT_CYAN}⏩ Resuming from last scanned artist: {resume_artist}{RESET}")
+                print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
             else:
-                print(f"{LIGHT_RED}⚠️ Resume failed — no valid scan point found{RESET}")
+                print(f"{LIGHT_RED}⚠️ No valid resume point found{RESET}")
         else:
-            print(f"{LIGHT_CYAN}🚀 Starting full batch scan from beginning{RESET}")
+            print(f"{LIGHT_CYAN}🚀 Starting from beginning of artist list{RESET}")
 
-        # Respect user flags passed from CLI
         batch_rate(
             sync=args.sync,
             dry_run=args.dry_run,
@@ -779,6 +813,7 @@ def run_perpetual_mode():
 
         print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
+
 
         
 if __name__ == "__main__":
@@ -800,21 +835,22 @@ if __name__ == "__main__":
         build_artist_index()
     if args.pipeoutput is not None:
         pipe_output(args.pipeoutput)
-    if args.artist:
+    elif args.refresh or not os.path.exists(INDEX_FILE):
+        build_artist_index()
+    elif args.perpetual:
+        run_perpetual_mode()
+    elif args.artist:
         artist_index = load_artist_index()
         for name in args.artist:
             artist_id = artist_index.get(name)
             if not artist_id:
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
-            rated = rate_artist(artist_id, name)
+            rated = rate_artist(artist_id, name, verbose=args.verbose, force=args.force)
             if args.sync and not args.dry_run:
                 sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
         batch_rate(sync=args.sync, dry_run=args.dry_run)
-    elif args.perpetual:  # ✅ Handle --perpetual here
-        run_perpetual_mode()
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
-    
