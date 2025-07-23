@@ -504,7 +504,7 @@ def detect_single_status(title, artist, cache={}, force=False):
 
 import math
 from datetime import datetime
-from statistics import median
+from statistics import mean
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"\n🔍 Scanning - {artist_name}")
@@ -614,19 +614,22 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not raw_tracks:
         return {}
 
-    # Boost scores based on album context
+    # Deviation-based album boosting
     album_scores = {}
     for track in raw_tracks:
         album_scores.setdefault(track["album"], []).append(track["score"])
-    album_tops = {a: max(scores) for a, scores in album_scores.items()}
+    album_means = {a: mean(scores) for a, scores in album_scores.items()}
 
     for track in raw_tracks:
         album = track["album"]
         raw = track["score"]
-        median_score = median(album_scores[album])
-        top_score = album_tops[album]
-        if raw >= median_score:
-            track["score"] = round((0.7 * raw) + (0.3 * top_score))
+        mean_score = album_means[album]
+        if raw > mean_score:
+            boost = (raw - mean_score) * 0.3
+            track["score"] = round(raw + boost)
+
+            if verbose:
+                print(f"📈 Boosted → {track['title']} | raw: {raw} | mean: {round(mean_score)} | boost: {round(boost)} | final: {track['score']}")
 
     sorted_tracks = sorted(raw_tracks, key=lambda x: x["score"], reverse=True)
     total = len(sorted_tracks)
@@ -660,7 +663,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     save_single_cache(single_cache)
 
     return rated_map
-
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
