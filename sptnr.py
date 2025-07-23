@@ -506,6 +506,13 @@ import math
 from datetime import datetime
 from statistics import mean
 
+from statistics import mean
+from datetime import datetime, timedelta
+import os
+import requests
+
+DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -605,7 +612,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "title": title,
                 "album": album_name,
                 "id": track_id,
-                "score": round(score),
+                "score": score,  # preserve decimals
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", []),
                 "is_single": single_status["is_single"]
@@ -614,7 +621,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not raw_tracks:
         return {}
 
-    # Deviation-based album boosting
+    # Apply deviation-based album boost
     album_scores = {}
     for track in raw_tracks:
         album_scores.setdefault(track["album"], []).append(track["score"])
@@ -625,11 +632,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         raw = track["score"]
         mean_score = album_means[album]
         if raw > mean_score:
-            boost = (raw - mean_score) * 0.3
-            track["score"] = round(raw + boost)
-
+            boost = (raw - mean_score) * DEV_BOOST_WEIGHT
+            track["score"] = raw + boost
             if verbose:
-                print(f"📈 Boosted → {track['title']} | raw: {raw} | mean: {round(mean_score)} | boost: {round(boost)} | final: {track['score']}")
+                print(f"📈 Boosted → {track['title']} | raw: {round(raw)} | mean: {round(mean_score)} | boost: {round(boost)} | final: {round(track['score'])}")
+        else:
+            track["score"] = raw  # preserve original
 
     sorted_tracks = sorted(raw_tracks, key=lambda x: x["score"], reverse=True)
     total = len(sorted_tracks)
@@ -644,21 +652,22 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         if track["single_confidence"] == "high":
             stars = max(stars, 4)
 
-        cache_entry = build_cache_entry(stars, track["score"], artist=artist_name)
+        final_score = round(track["score"])
+        cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
         rated_map[track["id"]] = {
             "id": track["id"],
             "title": track["title"],
             "artist": artist_name,
             "stars": stars,
-            "score": track["score"],
+            "score": final_score,
             "is_single": track["is_single"],
             "last_scanned": cache_entry["last_scanned"]
         }
 
-        print_star_line(track["title"], track["score"], stars, track["is_single"])
+        print_star_line(track["title"], final_score, stars, track["is_single"])
 
         if verbose:
-            print(f"🧪 Rated → {track['title']} | stars: {stars} | ID: {track['id']} | score: {track['score']}")
+            print(f"🧪 Rated → {track['title']} | stars: {stars} | ID: {track['id']} | score: {final_score}")
 
     save_single_cache(single_cache)
 
