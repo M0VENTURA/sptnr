@@ -2,8 +2,10 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main]
-    tags: ['v*']  # Optional: triggers on Git tags like v1.0.0
+    branches: [main, dev]  # ✅ Trigger on both main and dev branches
+    tags: ['v*']           # Optional: triggers on Git tags like v1.0.0
+  pull_request:
+    branches: [main, dev]
 
 jobs:
   build:
@@ -31,3 +33,4 @@ jobs:
           tags: |
             moventura/sptnr:latest
             moventura/sptnr:${{ github.ref_name }}
+            moventura/sptnr:dev-${{ github.sha }}  # ✅ Optional: tag dev builds with commit SHA
