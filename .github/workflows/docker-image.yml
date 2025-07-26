@@ -2,10 +2,10 @@ name: Build and Push Docker Image
 
 on:
   push:
-    branches: [main, dev]  # ✅ Trigger on both main and dev branches
+    branches: [develop]  # ✅ Trigger on both main and dev branches
     tags: ['v*']           # Optional: triggers on Git tags like v1.0.0
   pull_request:
-    branches: [main, dev]
+    branches: [develop]
 jobs:
   build:
     runs-on: ubuntu-latest
