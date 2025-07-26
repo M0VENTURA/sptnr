@@ -29,7 +29,7 @@ jobs:
           context: .
           push: true
           platforms: linux/amd64,linux/arm64
-          tags: |
-            moventura/sptnr:latest
-            moventura/sptnr:${{ github.ref_name }}
-            moventura/sptnr:dev-${{ github.sha }}  # ✅ Optional: tag dev builds with commit SHA
+        tags: |
+          moventura/sptnr:latest
+          moventura/sptnr:develop
+
