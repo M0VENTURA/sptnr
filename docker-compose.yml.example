@@ -8,6 +8,12 @@ services:
     # Uncomment the next line to build the Docker image locally
     # build: .
 
+    # Uncomment the next line to run the script
+    # entrypoint: ["python", "sptnr.py"]
+    
+    # Uncomment the next line to start the web server
+    # entrypoint: ["gunicorn", "-b", "0.0.0.0:5000", "server:sptnr"]
+
     environment:
       - NAV_BASE_URL=                      #URL That Navidrome is hosted
       - NAV_USER=                          #Navidrome User that you want to sync ratings for
