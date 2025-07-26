@@ -87,13 +87,49 @@ def search_spotify_track(title, artist, album=None):
             continue
     return []
 
+def version_requested(track_title):
+    keywords = ["live", "remix"]
+    return any(k in track_title.lower() for k in keywords)
+
+def is_valid_version(track_title, allow_live_remix):
+    title = track_title.lower()
+    blacklist = ["live", "remix", "mix", "edit", "rework", "bootleg"]
+    whitelist = ["remaster"]
+
+    if allow_live_remix:
+        blacklist = [b for b in blacklist if b not in ["live", "remix"]]
+
+    return any(w in title for w in whitelist) or not any(b in title for b in blacklist)
+
+def compute_track_score(title, artist_name, release_date, sp_score, verbose=False):
+    fallback_triggered = False
+
+    if not sp_score or sp_score <= 20:
+        fallback_triggered = True
+        if verbose:
+            print(f"{LIGHT_YELLOW}⚠️ Weak Spotify score ({sp_score}) — applying Last.fm fallback{RESET}")
+
+        lf_data = get_lastfm_track_info(artist_name, title)
+        lf_track = lf_data["track_play"] if lf_data else 0
+        lf_artist = lf_data["artist_play"] if lf_data else 0
+        lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+        momentum, days_since = score_by_age(lf_track, release_date)
+
+        score = LASTFM_WEIGHT * lf_ratio + AGE_WEIGHT * momentum
+    else:
+        momentum, days_since = score_by_age(0, release_date)
+        score = SPOTIFY_WEIGHT * sp_score + AGE_WEIGHT * momentum
+
+    if verbose:
+        print(f"🔢 Final score for '{title}': {round(score)} (Spotify: {sp_score}{', Last.fm used' if fallback_triggered else ''})")
+    return score, days_since
+
+
 def select_best_spotify_match(results, track_title):
-    def clean(s): return re.sub(r"[^\w\s]", "", s.lower()).strip()
-    cleaned_title = clean(track_title)
-    exact = next((r for r in results if clean(r["name"]) == cleaned_title), None)
-    if exact: return exact
-    filtered = [r for r in results if not re.search(r"(unplugged|live|remix|edit|version)", r["name"].lower())]
+    allow_live_remix = version_requested(track_title)
+    filtered = [r for r in results if is_valid_version(r["name"], allow_live_remix)]
     return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
+
 
 
 def build_cache_entry(stars, score, artist=None):
@@ -187,6 +223,44 @@ channel_cache = load_channel_cache()
 def save_channel_cache(cache):
     with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2)
+
+import os
+import requests
+import time
+from typing import List, Dict
+
+API_KEY = os.getenv("YOUTUBE_API_KEY")
+CSE_ID  = os.getenv("GOOGLE_CSE_ID")
+SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+
+def search_single_track(artist: str, title: str, max_results: int = 5, retries: int = 3) -> List[Dict]:
+    query = f"{artist} {title} site:youtube.com"
+    params = {
+        "key": API_KEY,
+        "cx": CSE_ID,
+        "q": query,
+        "num": max_results
+    }
+
+    for attempt in range(retries):
+        try:
+            resp = requests.get(SEARCH_URL, params=params)
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            return [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("link"),
+                    "snippet": item.get("snippet")
+                }
+                for item in items
+            ]
+        except Exception as e:
+            print(f"[search_single_track] Retry {attempt+1}/{retries} failed: {e}")
+            time.sleep(2 ** attempt)
+
+    return []
+
 
 def search_youtube_video(title, artist):
     global youtube_api_unavailable
@@ -406,25 +480,19 @@ def get_spotify_token():
         res.raise_for_status()
         return res.json()["access_token"]
     except requests.exceptions.HTTPError as e:
-        error_info = res.json()
-        error_description = error_info.get("error_description", "Unknown error")
-        logging.error(f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}")
-        sys.exit(1)
+        try:
+            error_info = e.response.json()
+            error_description = error_info.get("error_description", "Unknown error")
+        except:
+            error_description = "Failed to parse error from Spotify"
 
-def get_auth_params():
-    base = os.getenv("NAV_BASE_URL")
-    user = os.getenv("NAV_USER")
-    password = os.getenv("NAV_PASS")
-    if not all([base, user, password]):
-        print("❌ Missing Navidrome credentials.")
-        return None, None
-    return base, {
-        "u": user,
-        "p": password,
-        "v": "1.16.1",
-        "c": "sptnr-pipe",
-        "f": "json"
-    }
+        logging.error(f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"{LIGHT_RED}Spotify Connection Error: {type(e).__name__} - {e}{RESET}")
+    except Exception as e:
+        logging.error(f"{LIGHT_RED}Unexpected Spotify Token Error: {type(e).__name__} - {e}{RESET}")
+
+    sys.exit(1)
 
 def get_lastfm_track_info(artist, title):
     api_key = os.getenv("LASTFMAPIKEY")
@@ -520,26 +588,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     if not nav_base or not auth:
         return {}
 
-    spotify_token = get_spotify_token()
-    headers = {"Authorization": f"Bearer {spotify_token}"}
     single_cache = load_single_cache()
     track_cache = load_rating_cache()
     skipped = 0
     rated_map = {}
-
-    # Load weight config
-    try:
-        SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.3"))
-        LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
-        AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
-        SINGLE_BOOST = float(os.getenv("SINGLE_BOOST", "10"))
-        LEGACY_BOOST = float(os.getenv("LEGACY_BOOST", "4"))
-    except ValueError:
-        SPOTIFY_WEIGHT = 0.3
-        LASTFM_WEIGHT = 0.5
-        AGE_WEIGHT = 0.2
-        SINGLE_BOOST = 10
-        LEGACY_BOOST = 4
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -548,63 +600,52 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     except:
         return {}
 
+    def fetch_album_tracks(album):
+        try:
+            res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
+            res.raise_for_status()
+            return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        except:
+            return []
+
     raw_tracks = []
 
     for album in albums:
-        try:
-            song_res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
-            song_res.raise_for_status()
-            songs = song_res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-        except:
-            continue
-
+        songs = fetch_album_tracks(album)
         for song in songs:
             title = song["title"]
             track_id = song["id"]
+            album_name = album["name"]
+            nav_date = song.get("created", "").split("T")[0]
 
             if not force and track_id in track_cache:
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
                     if datetime.now() - last < timedelta(days=7):
                         if verbose:
-                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recently scanned){RESET}")
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
                         skipped += 1
                         continue
                 except:
                     pass
-            elif verbose and force:
-                print(f"{LIGHT_GREEN}🔁 Force re-scan: '{title}'{RESET}")
-
-            album_name = album["name"]
-            nav_date = song.get("created", "").split("T")[0]
 
             if verbose:
                 print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
             spotify_results = search_spotify_track(title, artist_name, album_name)
-            selected = select_best_spotify_match(spotify_results, title)
+            allow_live_remix = version_requested(title)
+            filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
+            selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            if verbose:
-                print(f"{LIGHT_YELLOW}📡 Fetching Last.fm stats...{RESET}")
-            lf_data = get_lastfm_track_info(artist_name, title)
-            lf_track = lf_data["track_play"] if lf_data else 0
-            lf_artist = lf_data["artist_play"] if lf_data else 0
-            lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-            momentum, days_since = score_by_age(lf_track, release_date)
-
-            score = (
-                SPOTIFY_WEIGHT * sp_score +
-                LASTFM_WEIGHT * lf_ratio +
-                AGE_WEIGHT * momentum
-            )
+            score, days_since, lf_ratio = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+            source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
             if verbose:
                 print(f"{LIGHT_CYAN}🧠 Detecting single status...{RESET}")
             single_status = detect_single_status(title, artist_name, single_cache, force=force)
             if single_status["is_single"]:
                 score += SINGLE_BOOST
-
             if days_since > 3650 and lf_ratio >= 1.0:
                 score += LEGACY_BOOST
 
@@ -612,66 +653,63 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "title": title,
                 "album": album_name,
                 "id": track_id,
-                "score": score,  # preserve decimals
+                "score": score,
                 "single_confidence": single_status["confidence"],
                 "sources": single_status.get("sources", []),
-                "is_single": single_status["is_single"]
+                "is_single": single_status["is_single"],
+                "source_used": source_used
             })
 
     if not raw_tracks:
         return {}
 
-    # Apply deviation-based album boost
-    album_scores = {}
-    for track in raw_tracks:
-        album_scores.setdefault(track["album"], []).append(track["score"])
-    album_means = {a: mean(scores) for a, scores in album_scores.items()}
+    album_means = {
+        album: mean([t["score"] for t in raw_tracks if t["album"] == album])
+        for album in set(t["album"] for t in raw_tracks)
+    }
 
     for track in raw_tracks:
-        album = track["album"]
-        raw = track["score"]
-        mean_score = album_means[album]
-        if raw > mean_score:
-            boost = (raw - mean_score) * DEV_BOOST_WEIGHT
-            track["score"] = raw + boost
+        avg = album_means[track["album"]]
+        if track["score"] > avg:
+            boost = (track["score"] - avg) * DEV_BOOST_WEIGHT
+            track["score"] += boost
             if verbose:
-                print(f"📈 Boosted → {track['title']} | raw: {round(raw)} | mean: {round(mean_score)} | boost: {round(boost)} | final: {round(track['score'])}")
-        else:
-            track["score"] = raw  # preserve original
+                print(f"📈 Boosted: {track['title']} → +{round(boost)} (final: {round(track['score'])})")
 
-    sorted_tracks = sorted(raw_tracks, key=lambda x: x["score"], reverse=True)
-    total = len(sorted_tracks)
+    albums_grouped = {}
+    for t in raw_tracks:
+        albums_grouped.setdefault(t["album"], []).append(t)
 
-    for i, track in enumerate(sorted_tracks):
-        pct = (i + 1) / total
-        if pct <= 0.10: stars = 5
-        elif pct <= 0.30: stars = 4
-        elif pct <= 0.60: stars = 3
-        elif pct <= 0.85: stars = 2
-        else: stars = 1
-        if track["single_confidence"] == "high":
-            stars = max(stars, 4)
+    for album_name, tracks in albums_grouped.items():
+        sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
+        total = len(sorted_album)
+        for i, track in enumerate(sorted_album):
+            stars = max(1, 5 - round((i / total) * 5))
+            if i == 0:
+                stars = 5
+            if track["single_confidence"] == "high":
+                stars = max(stars, 4)
 
-        final_score = round(track["score"])
-        cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
-        rated_map[track["id"]] = {
-            "id": track["id"],
-            "title": track["title"],
-            "artist": artist_name,
-            "stars": stars,
-            "score": final_score,
-            "is_single": track["is_single"],
-            "last_scanned": cache_entry["last_scanned"]
-        }
+            final_score = round(track["score"])
+            cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
+            rated_map[track["id"]] = {
+                "id": track["id"],
+                "title": track["title"],
+                "artist": artist_name,
+                "stars": stars,
+                "score": final_score,
+                "is_single": track["is_single"],
+                "last_scanned": cache_entry["last_scanned"],
+                "source_used": track["source_used"]
+            }
 
-        print_star_line(track["title"], final_score, stars, track["is_single"])
-
-        if verbose:
-            print(f"🧪 Rated → {track['title']} | stars: {stars} | ID: {track['id']} | score: {final_score}")
+            print_star_line(track["title"], final_score, stars, track["is_single"])
+            if verbose:
+                print(f"🧪 Rated → {track['title']} | stars: {stars} | source: {track['source_used']} | ID: {track['id']}")
 
     save_single_cache(single_cache)
-
     return rated_map
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
