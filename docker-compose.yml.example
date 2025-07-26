@@ -3,8 +3,7 @@ version: '3.8'
 services:
   sptnr:
     container_name: sptnr
-    # Uncomment the next line to use the public Docker image
-    # image: krestaino/sptnr:latest
+    image: moventura/sptnr:latest
     
     # Uncomment the next line to build the Docker image locally
     # build: .
@@ -16,14 +15,16 @@ services:
     # entrypoint: ["gunicorn", "-b", "0.0.0.0:5000", "server:sptnr"]
 
     environment:
-      - NAV_BASE_URL=your_navidrome_server_url
-      - NAV_USER=your_navidrome_username
-      - NAV_PASS=your_navidrome_password
-      - SPOTIFY_CLIENT_ID=your_spotify_client_id
-      - SPOTIFY_CLIENT_SECRET=your_spotify_client_secret
-      - WEB_API_KEY=changeme
-      - ENABLE_WEB_API_KEY=False
+      - NAV_BASE_URL=                      #URL That Navidrome is hosted
+      - NAV_USER=                          #Navidrome User that you want to sync ratings for
+      - NAV_PASS=                          #Navidrome Password
+      - SPOTIFY_CLIENT_ID=                 #Spotify Client ID
+      - SPOTIFY_CLIENT_SECRET=             #Spotify Client Secret
+      - LASTFMAPIKEY=                      #Last.FM API Key
+      - LASTFMAPISECRET=                   #Last.FM Client Secret
+      - SPOTIFY_WEIGHT=0.4                 #Adjust Spotify Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
+      - LASTFM_WEIGHT=0.6                  #Adjust Last.FM Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
     volumes:
-      - ./data:/usr/src/app/data
-    ports:
-      - "3333:5000"
+      - ./logs:/usr/src/app/logs
+
+    command: ["--artist", "Orpheus Omega", "--sync"]

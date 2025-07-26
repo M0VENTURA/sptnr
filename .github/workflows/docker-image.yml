@@ -1,0 +1,35 @@
+name: Build and Push Docker Image
+
+on:
+  push:
+    branches: [main, dev]  # ✅ Trigger on both main and dev branches
+    tags: ['v*']           # Optional: triggers on Git tags like v1.0.0
+  pull_request:
+    branches: [main, dev]
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: 🔁 Checkout code
+        uses: actions/checkout@v3
+
+      - name: 🐳 Set up Docker Buildx
+        uses: docker/setup-buildx-action@v2
+
+      - name: 🔐 Log in to Docker Hub
+        uses: docker/login-action@v2
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+
+      - name: 📦 Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          platforms: linux/amd64,linux/arm64
+          tags: |
+            moventura/sptnr:latest
+            moventura/sptnr:${{ github.ref_name }}
+            moventura/sptnr:dev-${{ github.sha }}  # ✅ Optional: tag dev builds with commit SHA

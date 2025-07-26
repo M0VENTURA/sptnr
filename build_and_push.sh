@@ -1,19 +1,37 @@
 #!/bin/bash
 
-# Ensure the script stops if there is an error
+# 💥 Stop on any error
 set -e
 
-# Read version from the VERSION file
+# 📦 Read version number from VERSION file
 VERSION=$(cat VERSION)
 
-# Set up the builder instance (only needs to be done once, so you can comment this out after the first run)
-# docker buildx create --name mybuilder --use
-# docker buildx inspect mybuilder --bootstrap
+# 🧪 Ensure .env exists
+if [ ! -f .env ]; then
+  echo "❌ Missing .env file. Please create one based on .env.example."
+  exit 1
+fi
 
-# Build and push the Docker image for both arm64 and amd64 platforms with the version tag
-docker buildx build --platform linux/arm64,linux/amd64 -t krestaino/sptnr:$VERSION . --push
+# 🔨 Ensure buildx builder is set up
+BUILDER_NAME="mybuilder"
+if ! docker buildx inspect "$BUILDER_NAME" > /dev/null 2>&1; then
+  echo "🔧 Creating Docker builder '$BUILDER_NAME'..."
+  docker buildx create --name "$BUILDER_NAME" --use
+  docker buildx inspect "$BUILDER_NAME" --bootstrap
+else
+  echo "🧱 Using existing Docker builder '$BUILDER_NAME'"
+  docker buildx use "$BUILDER_NAME"
+fi
 
-# Build and push the 'latest' tag as well
-docker buildx build --platform linux/arm64,linux/amd64 -t krestaino/sptnr:latest . --push
+# 🚀 Build and push versioned image
+echo "📦 Building moventura/sptnr:$VERSION..."
+docker buildx build --platform linux/arm64,linux/amd64 \
+  -t moventura/sptnr:"$VERSION" . --push
 
-echo "Docker images tagged and pushed: $VERSION and latest"
+# 🏷️ Build and push 'latest' tag
+echo "📦 Building moventura/sptnr:latest..."
+docker buildx build --platform linux/arm64,linux/amd64 \
+  -t moventura/sptnr:latest . --push
+
+# 🎉 Completion message
+echo "✅ Successfully pushed: moventura/sptnr:$VERSION and moventura/sptnr:latest"

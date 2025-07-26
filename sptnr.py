@@ -1,496 +1,918 @@
-with open("VERSION", "r") as file:
-    __version__ = file.read().strip()
-
-import argparse
-import base64
-import json
-import logging
-import os
-import re
-import sys
-import time
-import urllib.parse
-
+# 🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm integration
+import argparse, os, sys, requests, time, random, json, logging, base64, re
 from dotenv import load_dotenv
-import requests
 from colorama import init, Fore, Style
-from tqdm import tqdm
 
-# Load environment variables from .env file if it exists
-if os.path.exists(".env"):
-    load_dotenv()
-
-# Record the start time
-start_time = time.time()
-
-# Config
-NAV_BASE_URL = os.getenv("NAV_BASE_URL")
-NAV_USER = os.getenv("NAV_USER")
-NAV_PASS = os.getenv("NAV_PASS")
-SPOTIFY_CLIENT_ID = os.getenv("SPOTIFY_CLIENT_ID")
-SPOTIFY_CLIENT_SECRET = os.getenv("SPOTIFY_CLIENT_SECRET")
-
-# Colors
-LIGHT_PURPLE = Fore.MAGENTA + Style.BRIGHT
-LIGHT_GREEN = Fore.GREEN + Style.BRIGHT
+# 🎨 Colorama setup
+init(autoreset=True)
 LIGHT_RED = Fore.RED + Style.BRIGHT
+LIGHT_GREEN = Fore.GREEN + Style.BRIGHT
 LIGHT_BLUE = Fore.BLUE + Style.BRIGHT
-LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 LIGHT_YELLOW = Fore.YELLOW + Style.BRIGHT
+LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 BOLD = Style.BRIGHT
 RESET = Style.RESET_ALL
 
-# Setup logs
-LOG_DIR = "data/logs"
-if not os.path.exists(LOG_DIR):
-    os.makedirs(LOG_DIR)
+# 🔐 Load environment variables
+load_dotenv()
+client_id = os.getenv("SPOTIFY_CLIENT_ID")
+client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-LOGFILE = os.path.join(LOG_DIR, f"sptnr_{int(time.time())}.log")
-
-
-class NoColorFormatter(logging.Formatter):
-    ansi_escape = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-
-    def format(self, record):
-        record.msg = self.ansi_escape.sub("", record.msg)
-        return super(NoColorFormatter, self).format(record)
-
-
-# Set up the stream handler (console logging) without timestamp
-logging.basicConfig(
-    level=logging.INFO, format="%(message)s", handlers=[logging.StreamHandler()]
-)
-
-# Set up the file handler (file logging) with timestamp
-file_handler = logging.FileHandler(LOGFILE, "a")
-file_handler.setFormatter(NoColorFormatter("[%(asctime)s] %(message)s"))
-logging.getLogger().addHandler(file_handler)
-
-# Auth
-HEX_ENCODED_PASS = NAV_PASS.encode().hex()
-TOKEN_AUTH = base64.b64encode(
-    f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}".encode()
-).decode()
-TOKEN_URL = "https://accounts.spotify.com/api/token"
-response = requests.post(
-    TOKEN_URL,
-    headers={"Authorization": f"Basic {TOKEN_AUTH}"},
-    data={"grant_type": "client_credentials"},
-)
-
-if response.status_code != 200:
-    error_info = response.json()  # Assuming the error response is in JSON format
-    error_description = error_info.get("error_description", "Unknown error")
-    logging.error(
-        f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}"
-    )
+if not client_id or not client_secret:
+    logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
     sys.exit(1)
 
-SPOTIFY_TOKEN = response.json()["access_token"]
-
-init(autoreset=True)
-
-# Default flags
-PREVIEW = 0
-START = 0
-LIMIT = 0
-ARTIST_IDs = []
-ALBUM_IDs = []
-
-# Variables
-ARTISTS_PROCESSED = 0
-TOTAL_TRACKS = 0
-FOUND_AND_UPDATED = 0
-NOT_FOUND = 0
-UNMATCHED_TRACKS = []
-PROCESSED_ALBUMS_FILE = "data/processed_albums.txt"
-
-processed_albums = set()
-
-# Parse arguments
-description_text = "process command-line flags for sync"
-parser = argparse.ArgumentParser()
-
-parser.add_argument(
-    "-p",
-    "--preview",
-    action="store_true",
-    help="execute script in preview mode (no changes made)",
-)
-parser.add_argument(
-    "-a",
-    "--artist",
-    action="append",
-    help="process the artist using the Navidrome artist ID (ignores START and LIMIT)",
-    type=str,
-)
-parser.add_argument(
-    "-b",
-    "--album",
-    action="append",
-    help="process the album using the Navidrome album ID (ignores START and LIMIT)",
-    type=str,
-)
-parser.add_argument(
-    "-s",
-    "--start",
-    default=0,
-    type=int,
-    help="start processing from artist at index [NUM] (0-based index, so 0 is the first artist)",
-)
-parser.add_argument(
-    "-l",
-    "--limit",
-    default=0,
-    type=int,
-    help="limit to processing [NUM] artists from the start index",
-)
-
-parser.add_argument(
-    "-v", "--version", action="version", version=f"%(prog)s {__version__}"
-)
-
-parser.add_argument(
-    "-f",
-    "--force",
-    action="store_true",
-    help="force processing of all albums, even if they were processed previously",
-)
-
-
-args = parser.parse_args()
-
-ARTIST_IDs = args.artist if args.artist else []
-ALBUM_IDs = args.album if args.album else []
-START = args.start
-LIMIT = args.limit
-
-logging.info(f"{BOLD}Version:{RESET} {LIGHT_YELLOW}sptnr v{__version__}{RESET}")
-
-if args.preview:
-    logging.info(f"{LIGHT_YELLOW}Preview mode, no changes will be made.{RESET}")
-    PREVIEW = 1
-
-# Check if both ARTIST_ID and START/LIMIT are provided
-if ARTIST_IDs and (START != 0 or LIMIT != 0):
-    START = 0
-    LIMIT = 0
-    logging.info(
-        f"{LIGHT_YELLOW}Warning: The --artist flag overrides --start and --limit. Ignoring these settings.{RESET}"
-    )
-
-if not args.preview:
-    logging.info(
-        f"{BOLD}Syncing Spotify {LIGHT_CYAN}popularity{RESET}{BOLD} with Navidrome {LIGHT_BLUE}rating{RESET}...{RESET}"
-    )
-
-
-def validate_url(url):
-    if not re.match(r"https?://", url):
-        logging.error(
-            f"{LIGHT_RED}Config Error: URL must start with 'http://' or 'https://'.{RESET}"
-        )
-        return False
-    if url.endswith("/"):
-        logging.error(
-            f"{LIGHT_RED}Config Error: URL must not end with a trailing slash.{RESET}"
-        )
-        return False
-    return True
-
-
-def url_encode(string):
-    return urllib.parse.quote_plus(string)
-
-
-def get_rating_from_popularity(popularity):
-    popularity = float(popularity)
-    if popularity < 16.66:
-        return 0
-    elif popularity < 33.33:
-        return 1
-    elif popularity < 50:
-        return 2
-    elif popularity < 66.66:
-        return 3
-    elif popularity < 83.33:
-        return 4
-    else:
-        return 5
-
-
-def process_track(track_id, artist_name, album, track_name):
-    def search_spotify(query):
-        spotify_url = f"https://api.spotify.com/v1/search?q={query}&type=track&limit=1"
-        headers = {"Authorization": f"Bearer {SPOTIFY_TOKEN}"}
-
-        try:
-            response = requests.get(spotify_url, headers=headers)
-        except requests.exceptions.ConnectionError:
-            logging.error(f"{LIGHT_RED}Spotify Error: Unable to reach server.{RESET}")
-            sys.exit(1)
-
-        if response.status_code != 200:
-            if response.status_code == 429:
-                logging.error(
-                    f"{LIGHT_RED}Spotify Error {response.status_code}: Retry after {BOLD}{response.headers.get('Retry-After', 'some time')}s{RESET}"
-                )
-            else:
-                logging.error(
-                    f"{LIGHT_RED}Spotify Error {response.status_code}: {response.text}{RESET}"
-                )
-            sys.exit(1)
-        try:
-            return response.json()
-        except ValueError as e:
-            logging.error(
-                f"{LIGHT_RED}Spotify Error: Error decoding JSON from Spotify API: {e}{RESET}"
-            )
-            sys.exit(1)
-
-    def remove_parentheses_content(s):
-        """Remove content inside parentheses from a string."""
-        return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
-
-    encoded_track_name = url_encode(track_name)
-    encoded_artist_name = url_encode(artist_name)
-    encoded_album = url_encode(album)
-
-    # Primary Search (with album)
-    spotify_data = search_spotify(
-        f"{encoded_track_name}%20artist:{encoded_artist_name}%20album:{encoded_album}"
-    )
-
-    found_track = len(spotify_data.get("tracks", {}).get("items", [])) > 0
-
-    if not found_track:
-        # Secondary Search (without album and parentheses content)
-        sanitized_track_name = url_encode(remove_parentheses_content(track_name))
-        spotify_data = search_spotify(
-            f"{sanitized_track_name}%20artist:{encoded_artist_name}"
-        )
-        found_track = len(spotify_data.get("tracks", {}).get("items", [])) > 0
-
-    if not found_track:
-        # Tertiary Search (replace 'Part' with 'Pt.')
-        modified_track_name = track_name.replace("Part", "Pt.")
-        encoded_modified_track_name = url_encode(modified_track_name)
-        spotify_data = search_spotify(
-            f"{encoded_modified_track_name}%20artist:{encoded_artist_name}"
-        )
-        found_track = len(spotify_data.get("tracks", {}).get("items", []))
-
-    if found_track:
-        popularity = spotify_data["tracks"]["items"][0].get("popularity", 0)
-        rating = get_rating_from_popularity(popularity)
-        popularity_str = f"{popularity} " if 0 <= popularity <= 9 else str(popularity)
-        message = f"    p:{LIGHT_CYAN}{popularity_str}{RESET} → r:{LIGHT_BLUE}{rating}{RESET} | {LIGHT_GREEN}{track_name}{RESET}"
-        logging.info(message)
-        if PREVIEW != 1:
-            nav_url = f"{NAV_BASE_URL}/rest/setRating?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=myapp&id={track_id}&rating={rating}"
-            requests.get(nav_url)
-        global FOUND_AND_UPDATED
-        FOUND_AND_UPDATED += 1
-    else:
-        logging.info(
-            f"    p:{LIGHT_RED}??{RESET} → r:{LIGHT_BLUE}0{RESET} | {LIGHT_RED}(not found) {track_name}{RESET}"
-        )
-        global UNMATCHED_TRACKS
-        UNMATCHED_TRACKS.append(f"{artist_name} - {album} - {track_name}")
-        global NOT_FOUND
-        NOT_FOUND += 1
-
-    global TOTAL_TRACKS
-    TOTAL_TRACKS += 1
-
-
-def process_album(album_id):
-    if not args.force:
-        global processed_albums
-
-        if album_id in processed_albums:
-            logging.info(f"    {LIGHT_CYAN}Skipping already processed album{RESET}")
-            return
-
-    nav_url = f"{NAV_BASE_URL}/rest/getAlbum?id={album_id}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
-    response = requests.get(nav_url).json()
-
-    album_info = response["subsonic-response"]["album"]
-    album_artist = album_info["artist"]
-    tracks = [
-        (song["id"], album_artist, song["album"], song["title"])
-        for song in album_info.get("song", [])
-    ]
-
-    for track in tracks:
-        process_track(*track)
-
-    processed_albums.add(album_id)
-    with open(PROCESSED_ALBUMS_FILE, "a") as file:
-        file.write(f"{album_id}\n")
-
-
-def process_artist(artist_id):
-    nav_url = f"{NAV_BASE_URL}/rest/getArtist?id={artist_id}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
-    response = requests.get(nav_url).json()
-
-    albums = [
-        (album["id"], album["name"])
-        for album in response["subsonic-response"]["artist"].get("album", [])
-    ]
-
-    for album_id, album_name in albums:
-        logging.info(f"  Album: {LIGHT_YELLOW}{album_name}{RESET} ({album_id})")
-        process_album(album_id)
-
-
-def fetch_data(url):
-    try:
-        response = requests.get(url)
-        response_data = json.loads(response.text)
-
-        if "subsonic-response" not in response_data:
-            logging.error(
-                f"{LIGHT_RED}Unexpected response format from Navidrome.{RESET}"
-            )
-            sys.exit(1)
-
-        nav_response = response_data["subsonic-response"]
-
-        if "error" in nav_response:
-            error_message = nav_response["error"].get("message", "Unknown error")
-            logging.error(f"{LIGHT_RED}Navidrome Error: {error_message}{RESET}")
-            sys.exit(1)
-
-        return nav_response
-
-    except requests.exceptions.ConnectionError:
-        logging.error(
-            f"{LIGHT_RED}Connection Error: Failed to connect to the provided URL. Please check if the URL is correct and the server is reachable.{RESET}"
-        )
-        sys.exit(1)
-    except requests.exceptions.RequestException as e:
-        logging.error(
-            f"{LIGHT_RED}Connection Error: An error occurred while trying to connect to Navidrome: {e}{RESET}"
-        )
-        sys.exit(1)
-    except json.JSONDecodeError:
-        logging.error(
-            f"{LIGHT_RED}JSON Parsing Error: Failed to parse JSON response from Navidrome. Please check if the provided URL is a valid Navidrome server.{RESET}"
-        )
-        sys.exit(1)
-
-
-# Load processed albums
-if os.path.exists(PROCESSED_ALBUMS_FILE) and not args.force:
-    with open(PROCESSED_ALBUMS_FILE, "r") as file:
-        processed_albums = set(file.read().splitlines())
-
+# ⚙️ Global constants
 try:
-    validate_url(NAV_BASE_URL)
-except ValueError as e:
-    logging.error(f"{LIGHT_RED}{e}{RESET}")
-    sys.exit(1)
+    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.5"))
+    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+except ValueError:
+    print("⚠️ Invalid weight in .env — using defaults.")
+    SPOTIFY_WEIGHT = 0.5
+    LASTFM_WEIGHT = 0.5
 
-if ARTIST_IDs:
-    for ARTIST_ID in ARTIST_IDs:
-        url = f"{NAV_BASE_URL}/rest/getArtist?id={ARTIST_ID}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
-        data = fetch_data(url)
-        ARTIST_NAME = data["artist"]["name"]
+SLEEP_TIME = 1.5
 
-        logging.info("")
-        logging.info(f"Artist: {LIGHT_PURPLE}{ARTIST_NAME}{RESET} ({ARTIST_ID})")
-        process_artist(ARTIST_ID)
+# 📁 Cache paths (aligned with mounted volume)
 
-elif ALBUM_IDs:
-    for ALBUM_ID in ALBUM_IDs:
-        url = f"{NAV_BASE_URL}/rest/getAlbum?id={ALBUM_ID}&u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
-        data = fetch_data(url)
-        ARTIST_NAME = data["album"]["artist"]
-        ARTIST_ID = data["album"]["artistId"]
-        ALBUM_NAME = data["album"]["name"]
+DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
+os.makedirs(DATA_DIR, exist_ok=True)
+INDEX_FILE = os.path.join(DATA_DIR, "artist_index.json")
+RATING_CACHE_FILE = os.path.join(DATA_DIR, "rating_cache.json")
+SINGLE_CACHE_FILE = os.path.join(DATA_DIR, "single_cache.json")
+CHANNEL_CACHE_FILE = os.path.join(DATA_DIR, "channel_cache.json")
 
-        logging.info("")
-        logging.info(f"Artist: {LIGHT_PURPLE}{ARTIST_NAME}{RESET} ({ARTIST_ID})")
-        logging.info(f"  Album: {LIGHT_YELLOW}{ALBUM_NAME}{RESET} ({ALBUM_ID})")
-        process_album(ALBUM_ID)
+#confirm files exist
+for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, CHANNEL_CACHE_FILE, INDEX_FILE]:
+    if not os.path.exists(path):
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("{}")  # safe empty JSON object
 
-else:
-    url = f"{NAV_BASE_URL}/rest/getArtists?u={NAV_USER}&p=enc:{HEX_ENCODED_PASS}&v=1.12.0&c=spotify_sync&f=json"
-    data = fetch_data(url)
-    ARTIST_DATA = [
-        (artist["id"], artist["name"])
-        for index_entry in data["artists"]["index"]
-        for artist in index_entry["artist"]
+youtube_api_unavailable = False
+
+def strip_parentheses(s):
+    return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+
+def score_by_age(playcount, release_str):
+    try:
+        release_date = datetime.strptime(release_str, "%Y-%m-%d")
+        days_since = max((datetime.now() - release_date).days, 30)
+        capped_days = min(days_since, 5 * 365)
+        decay = 1 / math.log2(capped_days + 2)
+        return playcount * decay, days_since
+    except:
+        return 0, 9999
+
+def search_spotify_track(title, artist, album=None):
+    def query(q):
+        params = {"q": q, "type": "track", "limit": 10}
+        token = get_spotify_token()
+        headers = {"Authorization": f"Bearer " + token}
+        res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+        res.raise_for_status()
+        return res.json().get("tracks", {}).get("items", [])
+
+    queries = [
+        f"{title} artist:{artist} album:{album}" if album else None,
+        f"{strip_parentheses(title)} artist:{artist}",
+        f"{title.replace('Part', 'Pt.')} artist:{artist}"
     ]
 
-    if START == 0 and LIMIT == 0:
-        data_slice = ARTIST_DATA
-        total_count = len(ARTIST_DATA)
+    for q in filter(None, queries):
+        try:
+            results = query(q)
+            if results:
+                return results
+        except:
+            continue
+    return []
+
+def version_requested(track_title):
+    keywords = ["live", "remix"]
+    return any(k in track_title.lower() for k in keywords)
+
+def is_valid_version(track_title, allow_live_remix):
+    title = track_title.lower()
+    blacklist = ["live", "remix", "mix", "edit", "rework", "bootleg"]
+    whitelist = ["remaster"]
+
+    if allow_live_remix:
+        blacklist = [b for b in blacklist if b not in ["live", "remix"]]
+
+    return any(w in title for w in whitelist) or not any(b in title for b in blacklist)
+
+def compute_track_score(title, artist_name, release_date, sp_score, verbose=False):
+    fallback_triggered = False
+
+    if not sp_score or sp_score <= 20:
+        fallback_triggered = True
+        if verbose:
+            print(f"{LIGHT_YELLOW}⚠️ Weak Spotify score ({sp_score}) — applying Last.fm fallback{RESET}")
+
+        lf_data = get_lastfm_track_info(artist_name, title)
+        lf_track = lf_data["track_play"] if lf_data else 0
+        lf_artist = lf_data["artist_play"] if lf_data else 0
+        lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
+        momentum, days_since = score_by_age(lf_track, release_date)
+
+        score = LASTFM_WEIGHT * lf_ratio + AGE_WEIGHT * momentum
     else:
-        if LIMIT == 0:
-            data_slice = ARTIST_DATA[START:]
+        momentum, days_since = score_by_age(0, release_date)
+        score = SPOTIFY_WEIGHT * sp_score + AGE_WEIGHT * momentum
+
+    if verbose:
+        print(f"🔢 Final score for '{title}': {round(score)} (Spotify: {sp_score}{', Last.fm used' if fallback_triggered else ''})")
+    return score, days_since
+
+
+def select_best_spotify_match(results, track_title):
+    allow_live_remix = version_requested(track_title)
+    filtered = [r for r in results if is_valid_version(r["name"], allow_live_remix)]
+    return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
+
+
+
+def build_cache_entry(stars, score, artist=None):
+    return {
+        "stars": stars,
+        "score": score,
+        "artist": artist,
+        "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    }
+
+def print_star_line(title, score, stars, is_single=False):
+    star_str = "★" * stars
+    line = f"🎵 {title}"
+    if is_single:
+        line += " (Single)"
+    print(f"{line} → score: {score} | stars: {star_str}")
+
+def canonical_title(title):
+    return re.sub(r"[^\w\s]", "", title.lower()).strip()
+
+def get_resume_artist_from_cache():
+    cache = load_rating_cache()
+    latest_time = datetime.min
+    latest_track_id = None
+
+    for tid, entry in cache.items():
+        ts = entry.get("last_scanned")
+        if ts:
+            try:
+                dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+                if dt > latest_time:
+                    latest_time = dt
+                    latest_track_id = tid
+            except:
+                continue
+
+    if not latest_track_id:
+        return None
+
+    # Attempt reverse match using artist_index.json
+    artist_map = load_artist_index()
+    for name, artist_id in artist_map.items():
+        if str(artist_id) in latest_track_id:
+            return name
+    return None
+
+def print_rating_summary(rated_tracks, skipped):
+    star_counts = {s: 0 for s in range(1, 6)}
+    source_counts = {}
+    confirmed_singles = []
+
+    for track in rated_tracks:
+        s = track["stars"]
+        star_counts[s] += 1
+        if track.get("sources"):
+            confirmed_singles.append(track)
+            for src in track["sources"]:
+                source_counts[src] = source_counts.get(src, 0) + 1
+
+    print(f"\n📈 Star Distribution:")
+    for s in range(5, 0, -1):
+        print(f"{'★' * s} : {star_counts[s]}")
+
+    print(f"\n📡 Single Sources Used:")
+    for src, count in source_counts.items():
+        print(f"- {src}: {count} track{'s' if count != 1 else ''}")
+
+    print(f"\n🎬 Singles Detected: {len(confirmed_singles)} song{'s' if len(confirmed_singles) != 1 else ''}")
+    for s in confirmed_singles:
+        srcs = ", ".join(s["sources"])
+        print(f"- {s['title']} ({srcs})")
+
+    if skipped > 0:
+        print(f"\n🛑 Skipped {skipped} track{'s' if skipped != 1 else ''} (cached <7 days, use --force to override)")
+
+
+def load_rating_cache():
+    if os.path.exists(RATING_CACHE_FILE):
+        with open(RATING_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def load_channel_cache():
+    if os.path.exists(CHANNEL_CACHE_FILE):
+        with open(CHANNEL_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+channel_cache = load_channel_cache()
+
+def save_channel_cache(cache):
+    with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
+
+import os
+import requests
+import time
+from typing import List, Dict
+
+API_KEY = os.getenv("YOUTUBE_API_KEY")
+CSE_ID  = os.getenv("GOOGLE_CSE_ID")
+SEARCH_URL = "https://www.googleapis.com/customsearch/v1"
+
+def search_single_track(artist: str, title: str, max_results: int = 5, retries: int = 3) -> List[Dict]:
+    query = f"{artist} {title} site:youtube.com"
+    params = {
+        "key": API_KEY,
+        "cx": CSE_ID,
+        "q": query,
+        "num": max_results
+    }
+
+    for attempt in range(retries):
+        try:
+            resp = requests.get(SEARCH_URL, params=params)
+            resp.raise_for_status()
+            items = resp.json().get("items", [])
+            return [
+                {
+                    "title": item.get("title"),
+                    "url": item.get("link"),
+                    "snippet": item.get("snippet")
+                }
+                for item in items
+            ]
+        except Exception as e:
+            print(f"[search_single_track] Retry {attempt+1}/{retries} failed: {e}")
+            time.sleep(2 ** attempt)
+
+    return []
+
+
+def search_youtube_video(title, artist):
+    global youtube_api_unavailable
+
+    if youtube_api_unavailable:
+        return []
+
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    query = f"{artist} {title} official video"
+    url = "https://www.googleapis.com/youtube/v3/search"
+    params = {
+        "part": "snippet",
+        "q": query,
+        "type": "video",
+        "maxResults": 3,
+        "key": api_key
+    }
+
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("items", [])
+    except requests.exceptions.HTTPError as e:
+        code = e.response.status_code
+        reason = e.response.reason
+        youtube_api_unavailable = True
+        print(f"{LIGHT_RED}🚫 YouTube API disabled for session ({code} {reason}) — skipping future scans{RESET}")
+        return []
+    except requests.exceptions.RequestException as e:
+        youtube_api_unavailable = True
+        print(f"{LIGHT_RED}⚠️ YouTube API unreachable — disabled for session ({type(e).__name__}){RESET}")
+        return []
+
+import difflib
+
+def is_official_youtube_channel(channel_id, artist=None):
+    # Load trusted channel IDs from .env
+    trusted_raw = os.getenv("TRUSTED_CHANNEL_IDS", "")
+    trusted_env = [c.strip() for c in trusted_raw.split(",") if c.strip()]
+    if channel_id in trusted_env:
+        channel_cache[channel_id] = True
+        return True
+
+    # Already cached
+    if channel_id in channel_cache:
+        return channel_cache[channel_id]
+
+    api_key = os.getenv("YOUTUBE_API_KEY")
+    url = "https://www.googleapis.com/youtube/v3/channels"
+    params = {
+        "part": "snippet",
+        "id": channel_id,
+        "key": api_key
+    }
+
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        data = res.json().get("items", [])
+        if not data:
+            result = False
         else:
-            data_slice = ARTIST_DATA[START : START + LIMIT]
-        total_count = len(data_slice)
+            snippet = data[0]["snippet"]
+            title = snippet["title"].lower()
+            description = snippet.get("description", "").lower()
 
-    logging.info(f"Total artists to process: {LIGHT_GREEN}{total_count}{RESET}")
+            # Trust keywords
+            keywords = ["official", "records", "label", "vevo"]
+            result = any(k in title or k in description for k in keywords)
 
-    for index, ARTIST_ENTRY in tqdm(
-        enumerate(data_slice), total=total_count, leave=False, unit="artist"
-    ):
-        ARTIST_ID, ARTIST_NAME = ARTIST_ENTRY
+            # Fuzzy match with artist name
+            if artist:
+                artist_norm = artist.lower()
+                match_ratio = difflib.SequenceMatcher(None, artist_norm, title).ratio()
+                if match_ratio >= 0.75:
+                    result = True
 
-        logging.info("")
-        logging.info(
-            f"Artist: {LIGHT_PURPLE}{ARTIST_NAME}{RESET} ({ARTIST_ID})[{index}]"
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ YouTube channel check failed: {type(e).__name__} - {e}{RESET}")
+        result = False
+
+    channel_cache[channel_id] = result
+    return result
+
+def normalize_title(s):
+    s = s.lower()
+    s = re.sub(r"\(.*?\)", "", s)  # remove parentheticals
+    s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
+    return s.strip()
+
+def is_lastfm_single(title, artist):
+    import requests
+    from bs4 import BeautifulSoup
+
+    query = f"{artist} {title}".replace(" ", "+")
+    url = f"https://www.last.fm/music/{artist.replace(' ', '+')}/{title.replace(' ', '+')}"
+    try:
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        track_count = soup.find_all("td", class_="chartlist-duration")
+        return len(track_count) == 1
+    except:
+        return False
+
+def is_youtube_single(title, artist, verbose=False):
+    videos = search_youtube_video(title, artist)
+    if not videos:
+        if verbose:
+            print(f"{LIGHT_CYAN}ℹ️ Skipped YouTube scan — API unavailable or blocked{RESET}")
+        return False
+
+    nav_title = normalize_title(title)
+
+    for v in videos:
+        yt_title = normalize_title(v["snippet"]["title"])
+        channel_id = v["snippet"]["channelId"]
+
+        if "official video" in yt_title and nav_title in yt_title:
+            if is_official_youtube_channel(channel_id, artist):
+                return True
+
+    # 🎯 Fuzzy fallback
+    yt_titles = [normalize_title(v["snippet"]["title"]) for v in videos]
+    matches = difflib.get_close_matches(nav_title, yt_titles, n=1, cutoff=0.7)
+    if matches:
+        match_title = matches[0]
+        match_video = next(
+            v for v in videos if normalize_title(v["snippet"]["title"]) == match_title
         )
-        process_artist(ARTIST_ID)
+        channel_id = match_video["snippet"]["channelId"]
+        if is_official_youtube_channel(channel_id, artist):
+            if verbose:
+                print(f"{LIGHT_GREEN}🔍 Fuzzy matched '{title}' → '{match_title}' (trusted channel){RESET}")
+            return True
 
-        ARTISTS_PROCESSED += 1
+    if verbose:
+        print(f"{LIGHT_RED}⚠️ No YouTube match for '{title}' by '{artist}'{RESET}")
+    return False
+
+def is_musicbrainz_single(title, artist):
+    query = f'"{title}" AND artist:"{artist}" AND primarytype:Single'
+    url = "https://musicbrainz.org/ws/2/release-group/"
+    params = {
+        "query": query,
+        "fmt": "json",
+        "limit": 5
+    }
+    headers = {"User-Agent": "sptnr-cli/1.0 (your@email.com)"}
+
+    try:
+        res = requests.get(url, params=params, headers=headers)
+        res.raise_for_status()
+        data = res.json().get("release-groups", [])
+        return any(rg.get("primary-type", "").lower() == "single" for rg in data)
+    except Exception as e:
+        print(f"⚠️ MusicBrainz lookup failed for '{title}': {type(e).__name__} - {e}")
+        return False
+
+def is_discogs_single(title, artist):
+    token = os.getenv("DISCOGS_TOKEN")
+    if not token:
+        print("❌ Missing Discogs token.")
+        return False
+
+    headers = {
+        "Authorization": f"Discogs token={token}",
+        "User-Agent": "sptnr-cli/1.0"
+    }
+    query = f"{artist} {title}"
+    url = "https://api.discogs.com/database/search"
+    params = {
+        "q": query,
+        "type": "release",
+        "format": "Single",
+        "per_page": 5
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        results = res.json().get("results", [])
+        return any("Single" in r.get("format", []) for r in results)
+    except Exception as e:
+        print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
+        return False
 
 
-# Display the results
-logging.info("")
+def load_single_cache():
+    if os.path.exists(SINGLE_CACHE_FILE):
+        with open(SINGLE_CACHE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
 
-# Check if TOTAL_TRACKS is zero to avoid division by zero error
-if TOTAL_TRACKS > 0:
-    MATCH_PERCENTAGE = (FOUND_AND_UPDATED / TOTAL_TRACKS) * 100
-else:
-    MATCH_PERCENTAGE = 0
+def save_single_cache(cache):
+    with open(SINGLE_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
 
-FORMATTED_MATCH_PERCENTAGE = round(MATCH_PERCENTAGE, 2)
-TOTAL_BLOCKS = 20
+def save_rating_cache(cache):
+    with open(RATING_CACHE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cache, f, indent=2)
 
-color_found = LIGHT_GREEN if FOUND_AND_UPDATED == TOTAL_TRACKS else LIGHT_YELLOW
-color_found_white = LIGHT_GREEN if FOUND_AND_UPDATED == TOTAL_TRACKS else BOLD
-color_not_found = LIGHT_GREEN if NOT_FOUND == 0 else LIGHT_RED
+def get_spotify_token():
+    auth_str = f"{client_id}:{client_secret}"
+    auth_bytes = auth_str.encode("utf-8")
+    auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
 
-# Adjust the progress bar calculation
-blocks_found = (
-    "█" * round(FOUND_AND_UPDATED * TOTAL_BLOCKS / TOTAL_TRACKS)
-    if TOTAL_TRACKS > 0
-    else ""
-)
-blocks_not_found = "█" * (TOTAL_BLOCKS - len(blocks_found))
-full_blocks_found = f"{color_found_white}{blocks_found}{RESET}"
-full_blocks_not_found = f"{color_not_found}{blocks_not_found}{RESET}"
+    headers = {
+        "Authorization": f"Basic {auth_base64}",
+        "Content-Type": "application/x-www-form-urlencoded"
+    }
+    data = {"grant_type": "client_credentials"}
 
-# Calculate elapsed time
-elapsed_time = time.time() - start_time
-hours, remainder = divmod(elapsed_time, 3600)
-minutes, seconds = divmod(remainder, 60)
+    try:
+        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        res.raise_for_status()
+        return res.json()["access_token"]
+    except requests.exceptions.HTTPError as e:
+        try:
+            error_info = e.response.json()
+            error_description = error_info.get("error_description", "Unknown error")
+        except:
+            error_description = "Failed to parse error from Spotify"
 
-parts = []
-if hours:
-    parts.append(f"{int(hours)}h")
-if minutes:
-    parts.append(f"{int(minutes)}m")
-if seconds or not parts:  # Show seconds if it's the only value, even if it's 0
-    parts.append(f"{int(seconds)}s")
+        logging.error(f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}")
+    except requests.exceptions.RequestException as e:
+        logging.error(f"{LIGHT_RED}Spotify Connection Error: {type(e).__name__} - {e}{RESET}")
+    except Exception as e:
+        logging.error(f"{LIGHT_RED}Unexpected Spotify Token Error: {type(e).__name__} - {e}{RESET}")
 
-formatted_elapsed_time = " ".join(parts)
+    sys.exit(1)
 
-logging.info(
-    f"Tracks: {LIGHT_PURPLE}{TOTAL_TRACKS}{RESET} | Found: {color_found}{FOUND_AND_UPDATED}{RESET} |{full_blocks_found}{full_blocks_not_found}| Not Found: {color_not_found}{NOT_FOUND}{RESET} | Match: {color_found}{FORMATTED_MATCH_PERCENTAGE}%{RESET} | Time: {LIGHT_PURPLE}{formatted_elapsed_time}{RESET}"
-)
+def get_lastfm_track_info(artist, title):
+    api_key = os.getenv("LASTFMAPIKEY")
+    headers = {"User-Agent": "sptnr-cli"}
+    params = {
+        "method": "track.getInfo",
+        "artist": artist,
+        "track": title,
+        "api_key": api_key,
+        "format": "json"
+    }
+
+    try:
+        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+        res.raise_for_status()
+        data = res.json().get("track", {})
+        track_play = int(data.get("playcount", 0))
+        artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
+        return {"track_play": track_play, "artist_play": artist_play}
+    except Exception as e:
+        print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+        return None
+
+from datetime import datetime, timedelta
+
+def detect_single_status(title, artist, cache={}, force=False):
+    key = f"{artist.lower()}::{title.lower()}"
+    entry = cache.get(key)
+
+    # ⏱️ Skip fresh scans unless forced
+    if entry and not force:
+        last_ts = entry.get("last_scanned")
+        if last_ts:
+            try:
+                scanned_date = datetime.strptime(last_ts, "%Y-%m-%dT%H:%M:%S")
+                if datetime.now() - scanned_date < timedelta(days=7):
+                    return entry
+            except:
+                pass
+
+    # 🧪 First check — Last.fm "1 track" release
+    sources = []
+    if is_lastfm_single(title, artist):
+        sources.append("Last.fm")
+        result = {
+            "is_single": True,
+            "confidence": "high",
+            "sources": sources,
+            "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+        }
+        cache[key] = result
+        return result
+
+    # 👇 Proceed to multi-source fallback
+    if is_youtube_single(title, artist):
+        sources.append("YouTube")
+    if is_musicbrainz_single(title, artist):
+        sources.append("MusicBrainz")
+    if is_discogs_single(title, artist):
+        sources.append("Discogs")
+
+    confidence = (
+        "high" if len(sources) >= 2 else
+        "medium" if len(sources) == 1 else
+        "low"
+    )
+
+    result = {
+        "is_single": len(sources) >= 2,
+        "confidence": confidence,
+        "sources": sources,
+        "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+    }
+
+    cache[key] = result
+    return result
+
+import math
+from datetime import datetime
+from statistics import mean
+
+from statistics import mean
+from datetime import datetime, timedelta
+import os
+import requests
+
+DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
+
+def rate_artist(artist_id, artist_name, verbose=False, force=False):
+    print(f"\n🔍 Scanning - {artist_name}")
+
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return {}
+
+    single_cache = load_single_cache()
+    track_cache = load_rating_cache()
+    skipped = 0
+    rated_map = {}
+
+    try:
+        res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        res.raise_for_status()
+        albums = res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
+    except:
+        return {}
+
+    def fetch_album_tracks(album):
+        try:
+            res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
+            res.raise_for_status()
+            return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+        except:
+            return []
+
+    raw_tracks = []
+
+    for album in albums:
+        songs = fetch_album_tracks(album)
+        for song in songs:
+            title = song["title"]
+            track_id = song["id"]
+            album_name = album["name"]
+            nav_date = song.get("created", "").split("T")[0]
+
+            if not force and track_id in track_cache:
+                try:
+                    last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                    if datetime.now() - last < timedelta(days=7):
+                        if verbose:
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
+                        skipped += 1
+                        continue
+                except:
+                    pass
+
+            if verbose:
+                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
+            spotify_results = search_spotify_track(title, artist_name, album_name)
+            allow_live_remix = version_requested(title)
+            filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
+            selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
+            sp_score = selected.get("popularity", 0)
+            release_date = selected.get("album", {}).get("release_date") or nav_date
+
+            score, days_since, lf_ratio = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+            source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
+
+            if verbose:
+                print(f"{LIGHT_CYAN}🧠 Detecting single status...{RESET}")
+            single_status = detect_single_status(title, artist_name, single_cache, force=force)
+            if single_status["is_single"]:
+                score += SINGLE_BOOST
+            if days_since > 3650 and lf_ratio >= 1.0:
+                score += LEGACY_BOOST
+
+            raw_tracks.append({
+                "title": title,
+                "album": album_name,
+                "id": track_id,
+                "score": score,
+                "single_confidence": single_status["confidence"],
+                "sources": single_status.get("sources", []),
+                "is_single": single_status["is_single"],
+                "source_used": source_used
+            })
+
+    if not raw_tracks:
+        return {}
+
+    album_means = {
+        album: mean([t["score"] for t in raw_tracks if t["album"] == album])
+        for album in set(t["album"] for t in raw_tracks)
+    }
+
+    for track in raw_tracks:
+        avg = album_means[track["album"]]
+        if track["score"] > avg:
+            boost = (track["score"] - avg) * DEV_BOOST_WEIGHT
+            track["score"] += boost
+            if verbose:
+                print(f"📈 Boosted: {track['title']} → +{round(boost)} (final: {round(track['score'])})")
+
+    albums_grouped = {}
+    for t in raw_tracks:
+        albums_grouped.setdefault(t["album"], []).append(t)
+
+    for album_name, tracks in albums_grouped.items():
+        sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
+        total = len(sorted_album)
+        for i, track in enumerate(sorted_album):
+            stars = max(1, 5 - round((i / total) * 5))
+            if i == 0:
+                stars = 5
+            if track["single_confidence"] == "high":
+                stars = max(stars, 4)
+
+            final_score = round(track["score"])
+            cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
+            rated_map[track["id"]] = {
+                "id": track["id"],
+                "title": track["title"],
+                "artist": artist_name,
+                "stars": stars,
+                "score": final_score,
+                "is_single": track["is_single"],
+                "last_scanned": cache_entry["last_scanned"],
+                "source_used": track["source_used"]
+            }
+
+            print_star_line(track["title"], final_score, stars, track["is_single"])
+            if verbose:
+                print(f"🧪 Rated → {track['title']} | stars: {stars} | source: {track['source_used']} | ID: {track['id']}")
+
+    save_single_cache(single_cache)
+    return rated_map
+
+    
+def load_artist_index():
+    if not os.path.exists(INDEX_FILE):
+        logging.error(f"{LIGHT_RED}Artist index file not found: {INDEX_FILE}{RESET}")
+        return {}
+    with open(INDEX_FILE, "r", encoding="utf-8") as f:
+        return json.load(f)
+
+def build_artist_index():
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return {}
+    try:
+        res = requests.get(f"{nav_base}/rest/getArtists.view", params=auth)
+        res.raise_for_status()
+        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
+        artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
+        with open(INDEX_FILE, "w") as f:
+            json.dump(artist_map, f, indent=2)
+        print(f"✅ Cached {len(artist_map)} artists to {INDEX_FILE}")
+        return artist_map
+    except Exception as e:
+        print(f"⚠️ Failed to build artist index: {e}")
+        return {}
+
+def fetch_all_artists():
+    try:
+        with open(INDEX_FILE) as f:
+            artist_map = json.load(f)
+        return list(artist_map.keys())
+    except Exception as e:
+        print(f"\n❌ Failed to fetch cached artist list: {type(e).__name__} - {e}")
+        sys.exit(1)
+
+import difflib
+
+def sync_to_navidrome(track_ratings, artist_name):
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return
+
+    cache = load_rating_cache()
+    updated_cache = cache.copy()
+    matched = 0
+    changed = 0
+
+    for track in track_ratings:
+        title = track["title"]
+        stars = track.get("stars", 0)
+        score = track.get("score")
+        track_id = track.get("id")
+
+        if not track_id:
+            print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
+            continue
+
+        last_rating_entry = cache.get(track_id, {})
+        cached_stars = last_rating_entry.get("stars", 0)
+
+        print(f"🧪 Sync check → {title} | current stars: {stars} | cached: {cached_stars}")
+
+        if cached_stars == stars:
+            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
+            matched += 1
+            continue
+
+        try:
+            set_params = {**auth, "id": track_id, "rating": stars}
+            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+            set_res.raise_for_status()
+
+            print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
+
+            updated_cache[track_id] = build_cache_entry(stars, score)
+            matched += 1
+            changed += 1
+        except Exception as e:
+            print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
+
+    save_rating_cache(updated_cache)
+    print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
+
+    
+def pipe_output(search_term=None):
+    try:
+        with open(INDEX_FILE) as f:
+            artist_map = json.load(f)
+        filtered = {
+            name: aid for name, aid in artist_map.items()
+            if not search_term or search_term.lower() in name.lower()
+        }
+        print(f"\n📁 Cached Artist Index ({len(filtered)} match{'es' if len(filtered) != 1 else ''}):\n")
+        for name, aid in filtered.items():
+            print(f"🎨 {name} → ID: {aid}")
+        sys.exit(0)
+    except Exception as e:
+        print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
+        sys.exit(1)
+        
+def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
+    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
+
+    artists = fetch_all_artists()
+    artist_index = load_artist_index()
+
+    resume_hit = False if resume_from else True
+    for name in sorted(artists):
+        # Skip until resume match
+        if not resume_hit:
+            if name.lower() == resume_from.lower():
+                resume_hit = True
+                print(f"{LIGHT_YELLOW}🎯 Resuming from: {name}{RESET}")
+            elif resume_from.lower() in name.lower():
+                resume_hit = True
+                print(f"{LIGHT_YELLOW}🔍 Fuzzy resume match: {resume_from} → {name}{RESET}")
+            else:
+                continue
+
+        print(f"\n🎧 Processing: {name}")
+        artist_id = artist_index.get(name)
+        if not artist_id:
+            print(f"{LIGHT_RED}⚠️ No ID found for '{name}', skipping.{RESET}")
+            continue
+
+        if dry_run:
+            print(f"{LIGHT_CYAN}👀 Dry run: would scan '{name}' (ID {artist_id}){RESET}")
+            continue
+
+        rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
+        if sync and rated:
+            sync_to_navidrome(list(rated.values()), name)
+
+        time.sleep(SLEEP_TIME)
+
+    print(f"\n{LIGHT_GREEN}✅ Batch rating complete.{RESET}")
+
+def run_perpetual_mode():
+    while True:
+        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
+        build_artist_index()
+
+        resume_artist = None
+        if args.artist:
+            resume_artist = " ".join(args.artist).strip()
+            print(f"{LIGHT_CYAN}⏩ Starting from artist: {resume_artist}{RESET}")
+        elif args.resume:
+            resume_artist = get_resume_artist_from_cache()
+            if resume_artist:
+                print(f"{LIGHT_CYAN}⏩ Resuming from: {resume_artist}{RESET}")
+            else:
+                print(f"{LIGHT_RED}⚠️ No valid resume point found{RESET}")
+        else:
+            print(f"{LIGHT_CYAN}🚀 Starting from beginning of artist list{RESET}")
+
+        batch_rate(
+            sync=args.sync,
+            dry_run=args.dry_run,
+            force=args.force,
+            resume_from=resume_artist
+        )
+
+        print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
+        time.sleep(12 * 60 * 60)
+
+
+        
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm")
+    parser.add_argument("--artist", type=str, nargs="+", help="Rate one or more artists")
+    parser.add_argument("--batchrate", action="store_true", help="Rate entire library")
+    parser.add_argument("--dry-run", action="store_true", help="Preview artist list only")
+    parser.add_argument("--sync", action="store_true", help="Push ratings to Navidrome")
+    parser.add_argument("--refresh", action="store_true", help="Rebuild artist index")
+    parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index (optionally filter)")
+    parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")  # ✅ Add this
+    parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
+    parser.add_argument("--resume", action="store_true", help="Resume batch scan from last synced artist")
+    parser.add_argument("--force", action="store_true", help="Force re-scan of all tracks (override cache)")
+
+    args = parser.parse_args()
+
+    if args.refresh or not os.path.exists(INDEX_FILE):
+        build_artist_index()
+    if args.pipeoutput is not None:
+        pipe_output(args.pipeoutput)
+    elif args.refresh or not os.path.exists(INDEX_FILE):
+        build_artist_index()
+    elif args.perpetual:
+        run_perpetual_mode()
+    elif args.artist:
+        artist_index = load_artist_index()
+        for name in args.artist:
+            artist_id = artist_index.get(name)
+            if not artist_id:
+                print(f"⚠️ No ID found for '{name}', skipping.")
+                continue
+            rated = rate_artist(artist_id, name, verbose=args.verbose, force=args.force)
+            if args.sync and not args.dry_run:
+                sync_to_navidrome(rated, name)
+            time.sleep(SLEEP_TIME)
+    elif args.batchrate:
+        batch_rate(sync=args.sync, dry_run=args.dry_run)
+    else:
+        print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
+
+    
