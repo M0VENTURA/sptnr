@@ -30,4 +30,5 @@ jobs:
           platforms: linux/amd64,linux/arm64
           tags: |
             moventura/sptnr:latest
-            moventura/sptnr:${{ github.ref_name }}
+            moventura/sptnr:merge-1
+            moventura/sptnr:dev-${{ github.sha }}
