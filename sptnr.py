@@ -62,6 +62,14 @@ def score_by_age(playcount, release_str):
         return playcount * decay, days_since
     except:
         return 0, 9999
+        
+def get_auth_params():
+    nav_base = os.getenv("NAVIDROME_BASE")
+    token = os.getenv("NAVIDROME_TOKEN")
+    if not nav_base or not token:
+        print("❌ Missing Navidrome credentials.")
+        return None, None
+    return nav_base, {"u": "admin", "t": token, "v": "1.16.1", "c": "sptnr", "f": "json"}
 
 def search_spotify_track(title, artist, album=None):
     def query(q):
