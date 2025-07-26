@@ -17,3 +17,6 @@ COPY . .
 # Install Python packages
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
+
+# Entrypoint
+ENTRYPOINT ["python", "./sptnr.py"]
