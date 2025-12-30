@@ -812,8 +812,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         track["single_confidence"] = single_status["confidence"]
         track["sources"] = single_status.get("sources", [])
 
-        if track["is_single"]:
-            track["stars"] = max(track["stars"], 5)  # Boost to 5★ if single
+        
+        if track["is_single"] and track["single_confidence"] == "high":
+            track["stars"] = 5
+
 
         # Build cache entry
         final_score = round(track["score"])
