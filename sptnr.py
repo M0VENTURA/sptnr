@@ -24,16 +24,25 @@ if not client_id or not client_secret:
 
 # ⚙️ Global constants
 try:
-    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.5"))
-    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
-    AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.3"))  # ✅ Add this line
+    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.4"))       # Default 40%
+    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.3"))         # Default 30%
+    LISTENBRAINZ_WEIGHT = float(os.getenv("LISTENBRAINZ_WEIGHT", "0.2"))  # Default 20%
+    AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.1"))               # Default 10%
 except ValueError:
     print("⚠️ Invalid weight in .env — using defaults.")
-    SPOTIFY_WEIGHT = 0.5
-    LASTFM_WEIGHT = 0.5
-    AGE_WEIGHT = 0.3
+    SPOTIFY_WEIGHT = 0.4
+    LASTFM_WEIGHT = 0.3
+    LISTENBRAINZ_WEIGHT = 0.2
+    AGE_WEIGHT = 0.1
 
-SLEEP_TIME = 1.5
+# ✅ Optional: Normalize if custom .env values don't sum to 1
+total_weight = SPOTIFY_WEIGHT + LASTFM_WEIGHT + LISTENBRAINZ_WEIGHT + AGE_WEIGHT
+if abs(total_weight - 1.0) > 0.001:  # Allow tiny floating-point tolerance
+    SPOTIFY_WEIGHT /= total_weight
+    LASTFM_WEIGHT /= total_weight
+    LISTENBRAINZ_WEIGHT /= total_weight
+    AGE_WEIGHT /= total_weight
+
 
 # 📁 Cache paths (aligned with mounted volume)
 
@@ -54,6 +63,17 @@ youtube_api_unavailable = False
 
 def strip_parentheses(s):
     return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+
+def get_listenbrainz_track_info(mbid):
+    url = f"https://api.listenbrainz.org/1/stats/recordings?recording_mbid={mbid}"
+    try:
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        data = res.json().get("payload", {}).get("recording_stats", {})
+        return data.get("listen_count", 0)
+    except Exception as e:
+        print(f"⚠️ ListenBrainz fetch failed: {e}")
+        return 0
 
 def score_by_age(playcount, release_str):
     try:
@@ -114,29 +134,33 @@ def is_valid_version(track_title, allow_live_remix):
 
     return any(w in title for w in whitelist) or not any(b in title for b in blacklist)
 
-def compute_track_score(title, artist_name, release_date, sp_score, verbose=False):
+
+def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
     fallback_triggered = False
 
-    if not sp_score or sp_score <= 20:
-        fallback_triggered = True
-        if verbose:
-            print(f"{LIGHT_YELLOW}⚠️ Weak Spotify score ({sp_score}) — applying Last.fm fallback{RESET}")
+    # Last.fm ratio
+    lf_data = get_lastfm_track_info(artist_name, title)
+    lf_track = lf_data["track_play"] if lf_data else 0
+    lf_artist = lf_data["artist_play"] if lf_data else 0
+    lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
 
-        lf_data = get_lastfm_track_info(artist_name, title)
-        lf_track = lf_data["track_play"] if lf_data else 0
-        lf_artist = lf_data["artist_play"] if lf_data else 0
-        lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-        momentum, days_since = score_by_age(lf_track, release_date)
+    # Age decay
+    momentum, days_since = score_by_age(lf_track, release_date)
 
-        score = LASTFM_WEIGHT * lf_ratio + AGE_WEIGHT * momentum
-    else:
-        momentum, days_since = score_by_age(0, release_date)
-        score = SPOTIFY_WEIGHT * sp_score + AGE_WEIGHT * momentum
+    # ListenBrainz popularity
+    lb_score = get_listenbrainz_track_info(mbid) if mbid else 0
+
+    # Combine weights
+    score = (SPOTIFY_WEIGHT * sp_score) + \
+            (LASTFM_WEIGHT * lf_ratio) + \
+            (LISTENBRAINZ_WEIGHT * lb_score) + \
+            (AGE_WEIGHT * momentum)
 
     if verbose:
-        print(f"🔢 Final score for '{title}': {round(score)} (Spotify: {sp_score}{', Last.fm used' if fallback_triggered else ''})")
-    return score, days_since
+        print(f"🔢 Final score for '{title}': {round(score)} "
+              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, LB: {lb_score}, Age: {momentum})")
 
+    return score, days_since
 
 def select_best_spotify_match(results, track_title):
     allow_live_remix = version_requested(track_title)
