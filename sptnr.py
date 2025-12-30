@@ -719,8 +719,6 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -857,6 +855,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     return rated_map
 
 
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -892,6 +891,7 @@ def fetch_all_artists():
         sys.exit(1)
 
 import difflib
+
 
 
 
@@ -952,6 +952,7 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
+
     
 def pipe_output(search_term=None):
     try:
