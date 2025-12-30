@@ -65,6 +65,7 @@ def normalize_genre(genre):
     }
     return synonyms.get(genre, genre)
 
+
 def get_top_genres(sources, title="", album=""):
     genre_scores = defaultdict(float)
 
@@ -77,13 +78,20 @@ def get_top_genres(sources, title="", album=""):
 
     # Add special genres
     if "live" in title.lower() or "live" in album.lower():
-        genre_scores["live"] += 0.5  # Strong boost for Live
+        genre_scores["live"] += 0.5
     if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
-        genre_scores["christmas"] += 0.5  # Strong boost for Christmas
+        genre_scores["christmas"] += 0.5
 
-    # Sort and pick top 3
+    # Sort by score
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
-    return [g.capitalize() for g, _ in sorted_genres[:3]]
+
+    # ✅ Filter out generic genres if specific ones exist
+    generic_genres = {"rock", "pop", "alternative", "indie"}
+    filtered = [g for g, _ in sorted_genres if g not in generic_genres or len(sorted_genres) <= 3]
+
+    # Pick top 3 after filtering
+    return [g.capitalize() for g in filtered[:3]]
+3]]
 
 
 # 📁 Cache paths (aligned with mounted volume)
