@@ -845,11 +845,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         if verbose:
             print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
     
-    # ✅ Save cache and return inside the function
-    save_single_cache(single_cache)
-    return rated_map
-
-
+        # ✅ Save cache and return inside the function
+        save_single_cache(single_cache)
+        return rated_map
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
