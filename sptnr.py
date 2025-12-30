@@ -982,18 +982,15 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
-def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
-    print(f"\n🔍 Scanning - {artist_name}")
 
+def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return {}
 
     single_cache = load_single_cache()
     track_cache = load_rating_cache()
-    skipped = 0
     rated_map = {}
-    album_score_map = []
     artist_genre_map = {}
 
     try:
@@ -1003,7 +1000,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     except:
         return {}
 
-    print(f"📀 Found {len(albums)} albums for {artist_name}")
+    if verbose:
+        print(f"\n📀 Found {len(albums)} albums for {artist_name}")
 
     def fetch_album_tracks(album):
         try:
@@ -1013,13 +1011,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         except:
             return []
 
-    for idx, album in enumerate(albums, start=1):
+    for album in albums:
         album_name = album["name"]
         songs = fetch_album_tracks(album)
         if not songs:
             continue
 
-        print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
+        if verbose:
+            print(f"\n🔍 Scanning album: {album_name} ({len(songs)} tracks)")
 
         album_tracks = []
 
@@ -1034,13 +1033,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
                     if datetime.now() - last < timedelta(days=7):
                         if verbose:
-                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
-                        skipped += 1
+                            print(f"⏩ Skipped: '{title}' (recent scan)")
                         continue
                 except:
                     pass
 
-            # ✅ Spotify lookup
+            # Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -1048,11 +1046,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            # ✅ Compute score
+            # Compute score
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-            # ✅ Fetch genres from sources
+            # Fetch genres
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
             discogs_genres = get_discogs_genres(title, artist_name)
@@ -1071,10 +1069,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
-            # ✅ Deduplicate and adjust
-            top_genres = adjust_genres(top_genres)
-
-            # ✅ Remove generic 'rock' if metal genres exist
+            # Remove generic 'rock' if metal genres exist
             if any("metal" in g.lower() for g in top_genres):
                 top_genres = [g for g in top_genres if g.lower() != "rock"]
 
@@ -1096,19 +1091,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "single_confidence": single_info["confidence"]
             })
 
-            # ✅ Clean output: only show genres in verbose mode
-            print(f"🎵 {title} → score: {round(score)}")
+            # Verbose-only debug info
             if verbose:
+                print(f"🎵 {title} → score: {round(score)}")
                 print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
                 print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
-            print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
+                print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
 
-        # ✅ Album rating logic remains
-        if album_tracks:
-            median_score = median(track["score"] for track in album_tracks)
-            album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
-
-        # ✅ Sort and assign stars
+        # Assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 4)
@@ -1141,14 +1131,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "last_scanned": cache_entry["last_scanned"],
                 "source_used": track["source_used"]
             }
-
-            print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
-
-    # ✅ Artist-level genre suggestion only in verbose mode
-    if artist_genre_map and verbose:
-        sorted_artist_genres = sorted(artist_genre_map.items(), key=lambda x: x[1], reverse=True)
-        top_artist_genres = [g for g, _ in sorted_artist_genres[:3]]
-        print(f"\n💡 Suggested artist genres for '{artist_name}' → {', '.join(top_artist_genres)}")
 
     save_single_cache(single_cache)
     return rated_map
@@ -1190,6 +1172,7 @@ def fetch_all_artists():
 import difflib
 
 
+
 def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1206,50 +1189,39 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
         albums.setdefault(album_name, []).append(track)
 
     for album_name, tracks in albums.items():
-        album_changed = False
-        if verbose:
-            print(f"\n🎨 Syncing album: {album_name} ({len(tracks)} tracks)")
-
-        # ✅ Determine new genre suggestion from rated tracks
+        # Determine new genre suggestion
         new_genre = ", ".join(sorted({g for t in tracks for g in t.get("genres", [])}))
-        
-        # ✅ Fetch current album genre from Navidrome
+
+        # Fetch current album genre
         try:
-            album_id = tracks[0].get("id")  # Use first track to get album info
+            album_id = tracks[0].get("id")
             res_album = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
             res_album.raise_for_status()
             album_info = res_album.json().get("subsonic-response", {}).get("album", {})
             current_genre = album_info.get("genre", "")
-        except Exception as e:
+        except:
             current_genre = ""
-            if verbose:
-                print(f"{LIGHT_RED}⚠️ Failed to fetch album genre for '{album_name}': {type(e).__name__} - {e}{RESET}")
 
-        # ✅ Compare and log genre changes
+        # Compare and log genre changes
         if current_genre.lower() != new_genre.lower():
-            print(f"🔄 Updating album genre for '{album_name}': '{current_genre or 'None'}' → '{new_genre}'")
-        elif verbose:
-            print(f"ℹ️ No genre change for '{album_name}' (current: '{current_genre}')")
+            print(f"\n🔄 Updating album genre for '{album_name}': '{current_genre or 'None'}' → '{new_genre}'")
 
-        # ✅ Sync track ratings
+        # Show final ratings for each track
         for track in tracks:
-            title = track["title"]
+            print(f"✅ Final rating: {track['title']} → stars: {'★' * track['stars']} | score: {track['score']}")
+
+            track_id = track.get("id")
             stars = track.get("stars", 0)
             score = track.get("score")
-            track_id = track.get("id")
 
             if not track_id:
-                if verbose:
-                    print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
                 continue
 
             try:
                 res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
                 res.raise_for_status()
                 nav_rating = res.json().get("subsonic-response", {}).get("song", {}).get("userRating", 0)
-            except Exception as e:
-                if verbose:
-                    print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
+            except:
                 nav_rating = 0
 
             if nav_rating == stars:
@@ -1261,24 +1233,15 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
                 set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
                 set_res.raise_for_status()
 
-                album_changed = True
-                if verbose:
-                    print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
-                else:
-                    print(f"✅ Track '{title}' updated to {'★' * stars}")
-
                 updated_cache[track_id] = build_cache_entry(stars, score)
                 matched += 1
                 changed += 1
-            except Exception as e:
-                if verbose:
-                    print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
-
-        if not album_changed and not verbose:
-            print(f"ℹ️ Album '{album_name}' unchanged (all ratings already up-to-date)")
+            except:
+                continue
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
+
 
 def pipe_output(search_term=None):
     try:
