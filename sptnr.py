@@ -1016,18 +1016,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
+            
             band_index = i // band_size
-            stars = max(1, 4 - band_index)  # ✅ Base rating: 1–4 stars
-
-            # ✅ Boost to 5 stars if big jump or single
-            single_status = detect_single_status(track["title"], artist_name, single_cache, force=force, album_track_count=len(sorted_album))
-            track["is_single"] = single_status["is_single"]
-            track["single_confidence"] = single_status["confidence"]
-
-            if track["score"] >= jump_threshold or (track["is_single"] and track["single_confidence"] in ["high", "medium"]):
+            stars = max(1, 4 - band_index)  # Base rating: 1–4 stars
+            
+            # Boost for big jump
+            if track["score"] >= jump_threshold:
                 stars = 5
+            
+            # Boost for singles only if score is decent
+            if track["is_single"]:
+                if track["single_confidence"] == "high" and track["score"] >= median_score:
+                    stars = 5
+                elif track["single_confidence"] == "medium" and track["score"] >= (median_score * 0.8):
+                    stars = min(stars + 1, 5)
 
-            track["stars"] = stars
 
             final_score = round(track["score"])
             cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
