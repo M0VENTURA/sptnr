@@ -720,6 +720,7 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -809,11 +810,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
 
+        # ✅ Smarter star assignment
+        max_score = sorted_album[0]["score"] if sorted_album else 0
+        threshold = max_score * 0.85  # Top ~15% gets special consideration
+
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
             stars = max(1, 5 - band_index)
-            if i == 0:
+
+            # Only give 5★ if:
+            # - Track is a single with high confidence OR
+            # - Track score is >= 85% of album's top score
+            if track["score"] >= threshold:
                 stars = 5
+
             track["stars"] = stars
 
         # ✅ Apply single detection boost
@@ -830,6 +840,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             track["single_confidence"] = single_status["confidence"]
             track["sources"] = single_status.get("sources", [])
 
+            # Boost for singles
             if track["is_single"] and track["single_confidence"] == "high":
                 track["stars"] = 5
             elif track["is_single"] and track["single_confidence"] == "medium":
@@ -880,7 +891,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     save_single_cache(single_cache)
     return rated_map
-
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -916,6 +926,7 @@ def fetch_all_artists():
         sys.exit(1)
 
 import difflib
+
 
 def sync_to_navidrome(track_ratings, artist_name):
     """
@@ -995,7 +1006,6 @@ def sync_to_navidrome(track_ratings, artist_name):
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
 
-    
 def pipe_output(search_term=None):
     try:
         with open(INDEX_FILE) as f:
