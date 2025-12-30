@@ -720,6 +720,7 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -739,7 +740,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     except:
         return {}
 
-    # ✅ Print album count immediately
     print(f"📀 Found {len(albums)} albums for {artist_name}")
 
     def fetch_album_tracks(album):
@@ -750,25 +750,22 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         except:
             return []
 
-    # ✅ Process each album separately
     for idx, album in enumerate(albums, start=1):
         album_name = album["name"]
         songs = fetch_album_tracks(album)
         if not songs:
             continue
 
-        # ✅ Show album progress
         print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
 
         album_tracks = []
 
-        # ✅ Pass 1: Compute scores for album tracks
+        # Pass 1: Compute scores
         for song in songs:
             title = song["title"]
             track_id = song["id"]
             nav_date = song.get("created", "").split("T")[0]
 
-            # Skip recently scanned tracks unless forced
             if not force and track_id in track_cache:
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
@@ -780,7 +777,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 except:
                     pass
 
-            # ✅ Show Spotify lookup progress
             if verbose:
                 print(f"🎶 Looking up '{title}' on Spotify...")
 
@@ -803,7 +799,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": source_used
             })
 
-        # ✅ Pass 2: Normalize stars within album
+        # Pass 2: Normalize stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
@@ -814,13 +810,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             if i == 0:
                 stars = 5
             track["stars"] = stars
-            print_star_line(track["title"], round(track["score"]), track["stars"], False)
 
-        # ✅ Pass 3: Apply single detection boost
+        # Pass 3: Apply single detection boost
         album_rated_map = {}
         for track in sorted_album:
-            if verbose:
-                print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
             single_status = detect_single_status(
                 track["title"],
                 artist_name,
@@ -850,20 +843,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": track["source_used"]
             }
 
-            print_star_line(track["title"], final_score, track["stars"], track["is_single"])
+            # ✅ Only print stars if verbose
             if verbose:
-                print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
+                print_star_line(track["title"], final_score, track["stars"], track["is_single"])
 
-        # ✅ Sync immediately after album rating
+        # Sync per album if enabled
         if args.sync and album_rated_map:
             sync_to_navidrome(list(album_rated_map.values()), artist_name)
 
-        # Merge into overall rated_map for summary
         rated_map.update(album_rated_map)
 
-    # ✅ Save caches AFTER all albums processed
     save_single_cache(single_cache)
     return rated_map
+
 
     
 def load_artist_index():
@@ -903,11 +895,8 @@ import difflib
 
 
 
+
 def sync_to_navidrome(track_ratings, artist_name):
-    """
-    Sync calculated ratings to Navidrome, using Navidrome's current rating as the source of truth.
-    Cached ratings are used only for informational purposes.
-    """
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
@@ -927,7 +916,7 @@ def sync_to_navidrome(track_ratings, artist_name):
             print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
             continue
 
-        # ✅ Fetch current rating from Navidrome FIRST
+        # Fetch current Navidrome rating
         try:
             res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
             res.raise_for_status()
@@ -936,35 +925,31 @@ def sync_to_navidrome(track_ratings, artist_name):
             print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
             nav_rating = 0
 
-        # ✅ Get cached rating for informational purposes
-        last_rating_entry = cache.get(track_id, {})
-        cached_stars = last_rating_entry.get("stars", 0)
+        cached_stars = cache.get(track_id, {}).get("stars", 0)
 
-        # ✅ Print sync check details
+        # Print sync check
         print(f"🧪 Sync check → {title} | Navidrome: {nav_rating} | New: {stars} | Cached: {cached_stars}")
 
-        # ✅ Skip if Navidrome already matches new stars
         if nav_rating == stars:
             print(f"{LIGHT_BLUE}⏩ No change: '{title}' (Navidrome already has {'★' * stars}){RESET}")
             matched += 1
             continue
 
-        # ✅ Push update only if Navidrome differs
+        # Push update
         try:
             set_params = {**auth, "id": track_id, "rating": stars}
             set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
             set_res.raise_for_status()
 
+            # ✅ Show star rating only here
             print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
 
-            # ✅ Update local cache after successful sync
             updated_cache[track_id] = build_cache_entry(stars, score)
             matched += 1
             changed += 1
         except Exception as e:
             print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
 
-    # ✅ Save updated cache
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
     
