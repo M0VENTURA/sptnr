@@ -611,6 +611,7 @@ from datetime import datetime, timedelta
 
 
 
+
 def detect_single_status(title, artist, cache={}, force=False, use_google=False, use_ai=False, album_track_count=None):
     key = f"{artist.lower()}::{title.lower()}"
     entry = cache.get(key)
@@ -623,7 +624,7 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
         except:
             pass
 
-    # ✅ Ignore obvious non-singles by keywords
+    # Ignore obvious non-singles by keywords
     IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
     if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
         result = {
@@ -637,7 +638,7 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
 
     sources = []
 
-    # ✅ Spotify check
+    # Spotify check
     try:
         spotify_results = search_spotify_track(title, artist)
         if spotify_results:
@@ -650,21 +651,21 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
     except Exception as e:
         print(f"⚠️ Spotify check failed: {e}")
 
-    # ✅ MusicBrainz check
+    # MusicBrainz check
     try:
         if is_musicbrainz_single(title, artist):
             sources.append("MusicBrainz")
     except Exception as e:
         print(f"⚠️ MusicBrainz check failed: {e}")
 
-    # ✅ Discogs check
+    # Discogs check
     try:
         if is_discogs_single(title, artist):
             sources.append("Discogs")
     except Exception as e:
         print(f"⚠️ Discogs check failed: {e}")
 
-    # ✅ Google fallback
+    # Google fallback
     if use_google and not sources:
         hits = search_google_for_single(artist, title)
         for hit in hits:
@@ -673,18 +674,22 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
                 sources.append("Google")
                 break
 
-    # ✅ AI fallback
+    # AI fallback
     if use_ai and not sources:
         ai_result = classify_with_ai(f"Is '{title}' by '{artist}' a single?")
         if ai_result == "single":
             sources.append("AI")
 
-    # ✅ Confidence calculation
+    # Confidence calculation
     if len(sources) >= 2:
         confidence = "high"
     elif len(sources) == 1:
         confidence = "medium"
     else:
+        confidence = "low"
+
+    # ✅ Album context rule: downgrade medium confidence if album has >3 tracks
+    if confidence == "medium" and album_track_count and album_track_count > 3:
         confidence = "low"
 
     result = {
