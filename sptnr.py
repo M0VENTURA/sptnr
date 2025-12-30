@@ -717,6 +717,7 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -845,7 +846,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     # ✅ Save caches AFTER all tracks processed
     save_single_cache(single_cache)
-    return rated_map
+    return rated_map  # <-- Correct indentation inside the function
 
     
 def load_artist_index():
