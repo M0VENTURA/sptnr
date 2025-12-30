@@ -745,69 +745,68 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     raw_tracks = []
 
-    # ✅ Pass 1: Compute scores for all tracks
-    for album in albums:
-        songs = fetch_album_tracks(album)
-        for song in songs:
-            title = song["title"]
-            track_id = song["id"]
-            album_name = album["name"]
-            nav_date = song.get("created", "").split("T")[0]
 
-            # Skip recently scanned tracks unless forced
-            if not force and track_id in track_cache:
-                try:
-                    last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
-                    if datetime.now() - last < timedelta(days=7):
-                        if verbose:
-                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
-                        skipped += 1
-                        continue
-                except:
-                    pass
+# ✅ Pass 1: Compute scores for all tracks
+for album in albums:
+    songs = fetch_album_tracks(album)
+    for song in songs:
+        title = song["title"]
+        track_id = song["id"]
+        album_name = album["name"]
+        nav_date = song.get("created", "").split("T")[0]
 
-            if verbose:
-                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
-            spotify_results = search_spotify_track(title, artist_name, album_name)
-            allow_live_remix = version_requested(title)
-            filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
-            selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
-            sp_score = selected.get("popularity", 0)
-            release_date = selected.get("album", {}).get("release_date") or nav_date
+        # Skip recently scanned tracks unless forced
+        if not force and track_id in track_cache:
+            try:
+                last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                if datetime.now() - last < timedelta(days=7):
+                    if verbose:
+                        print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
+                    skipped += 1
+                    continue
+            except:
+                pass
 
-            score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
-            source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
+        if verbose:
+            print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
+        spotify_results = search_spotify_track(title, artist_name, album_name)
+        allow_live_remix = version_requested(title)
+        filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
+        selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
+        sp_score = selected.get("popularity", 0)
+        release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            raw_tracks.append({
-                "title": title,
-                "album": album_name,
-                "id": track_id,
-                "score": score,
-                "release_date": release_date,
-                "source_used": source_used
-            })
+        score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+        source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-    if not raw_tracks:
-        return {}
+        raw_tracks.append({
+            "title": title,
+            "album": album_name,
+            "id": track_id,
+            "score": score,
+            "release_date": release_date,
+            "source_used": source_used
+        })
 
-    # ✅ Pass 2: Normalize stars within each album
-    albums_grouped = {}
-    for t in raw_tracks:
-        albums_grouped.setdefault(t["album"], []).append(t)
+# ✅ Pass 2: Normalize stars within each album
+albums_grouped = {}
+for t in raw_tracks:
+    albums_grouped.setdefault(t["album"], []).append(t)
 
-    for album_name, tracks in albums_grouped.items():
-        sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
-        total = len(sorted_album)
-        band_size = math.ceil(total / 5)
+for album_name, tracks in albums_grouped.items():
+    sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
+    total = len(sorted_album)
+    band_size = math.ceil(total / 5)
 
-        for i, track in enumerate(sorted_album):
-            # Assign stars based on band position
-            band_index = i // band_size
-            stars = max(1, 5 - band_index)
-            if i == 0:
-                stars = 5  # Ensure top track is always 5★
+    for i, track in enumerate(sorted_album):
+        band_index = i // band_size
+        stars = max(1, 5 - band_index)
+        if i == 0:
+            stars = 5
+        track["stars"] = stars
 
-            track["stars"] = stars
+        # ✅ Print progress for every song here
+        print_star_line(track["title"], round(track["score"]), track["stars"], False)
 
 
 
@@ -889,6 +888,7 @@ def fetch_all_artists():
 
 import difflib
 
+
 def sync_to_navidrome(track_ratings, artist_name):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -912,13 +912,25 @@ def sync_to_navidrome(track_ratings, artist_name):
         last_rating_entry = cache.get(track_id, {})
         cached_stars = last_rating_entry.get("stars", 0)
 
-        print(f"🧪 Sync check → {title} | current stars: {stars} | cached: {cached_stars}")
+        # ✅ Fetch current rating from Navidrome
+        try:
+            res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
+            res.raise_for_status()
+            nav_rating = res.json().get("subsonic-response", {}).get("song", {}).get("userRating", 0)
+        except Exception as e:
+            print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
+            nav_rating = 0
 
-        if cached_stars == stars:
+        # ✅ Print sync check details
+        print(f"🧪 Sync check → {title} | Navidrome: {nav_rating} | New: {stars} | Cached: {cached_stars}")
+
+        # ✅ Skip if no change
+        if cached_stars == stars and nav_rating == stars:
             print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
             matched += 1
             continue
 
+        # ✅ Push update to Navidrome
         try:
             set_params = {**auth, "id": track_id, "rating": stars}
             set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
@@ -934,7 +946,6 @@ def sync_to_navidrome(track_ratings, artist_name):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
-
     
 def pipe_output(search_term=None):
     try:
