@@ -846,7 +846,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         # ✅ Smarter star assignment: big jump compared to average
         avg_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
-        jump_threshold = avg_score * 1.3  # ✅ Track must be 30% higher than album average
+        jump_threshold = avg_score * 1.7 # ✅ Track must be 30% higher than album average
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
