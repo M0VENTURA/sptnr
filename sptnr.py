@@ -983,6 +983,7 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1014,7 +1015,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             continue
 
         print(f"\n🎧 Processing album: {album_name}")
-
         album_tracks = []
 
         for song in songs:
@@ -1037,8 +1037,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=False)
-            source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
+            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
 
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
@@ -1058,11 +1057,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
-            if any("metal" in g.lower() for g in top_genres):
-                top_genres = [g for g in top_genres if g.lower() != "rock"]
-
-            top_genres = list(dict.fromkeys(top_genres))
-
             single_info = detect_single_status(title, artist_name, cache=single_cache, force=force, use_google=use_google, use_ai=use_ai)
 
             album_tracks.append({
@@ -1070,22 +1064,24 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "album": album_name,
                 "id": track_id,
                 "score": score,
-                "source_used": source_used,
+                "source_used": "spotify" if sp_score > 20 else "lastfm",
                 "genres": top_genres,
                 "is_single": single_info["is_single"],
                 "single_confidence": single_info["confidence"]
             })
 
-        # Assign stars
+        # Assign stars based on median banding
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 4)
         median_score = median(track["score"] for track in sorted_album)
+        if median_score == 0:
+            median_score = 10  # Fallback baseline
         jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
-            stars = max(1, 4 - band_index)
+            stars = max(1, 4 - band_index)  # Minimum 1 star
             if track["score"] >= jump_threshold:
                 stars = 5
             if track["is_single"]:
@@ -1094,7 +1090,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 elif track["single_confidence"] == "medium":
                     stars = min(stars + 1, 5)
 
-            final_score = round(track["score"])
+            stars = max(stars, 1)  # Ensure stars are never zero
+            final_score = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
+
             cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
 
             rated_map[track["id"]] = {
@@ -1110,7 +1108,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": track["source_used"]
             }
 
-        # ✅ Sync this album immediately
         if album_tracks:
             sync_to_navidrome(album_tracks, artist_name)
 
@@ -1155,6 +1152,7 @@ def fetch_all_artists():
 import difflib
 
 
+
 def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1171,6 +1169,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     for track in album_tracks:
         track_id = track.get("id")
         stars = track.get("stars", 0)
+        stars = max(stars, 1)  # Ensure minimum 1 star before syncing
         star_display = f"{stars}/5 ({'★' * stars if stars > 0 else 'No stars'})"
         new_genre = ", ".join(track.get("genres", [])) if track.get("genres") else "Unknown"
         single_tag = " (Single)" if track.get("is_single") else ""
@@ -1184,13 +1183,11 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
         except:
             current_genre = "None"
 
-        # Show final rating with genre comparison and single tag
-        print(f"✅ Final rating: {track['title']}{single_tag} → stars: {star_display} | Genre: {current_genre} → {new_genre}")
+        print(f"✅ Final rating: {track['title']}{single_tag} → stars: {star_display} | score: {track['score']} | Genre: {current_genre} → {new_genre}")
 
         if not track_id:
             continue
 
-        # Sync rating
         try:
             nav_rating = nav_song.get("userRating", 0)
         except:
@@ -1213,6 +1210,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Album sync summary for '{album_name}': {changed} updated, {matched} checked")
+
 
 
 def pipe_output(search_term=None):
