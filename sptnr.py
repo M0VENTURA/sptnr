@@ -923,12 +923,27 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
                     if datetime.now() - last < timedelta(days=7):
-                        if verbose:
-                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
+                        # ✅ Still show genres even if skipped
+                        spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
+                        lastfm_tags = get_lastfm_tags(artist_name)
+                        discogs_genres = get_discogs_genres(title, artist_name)
+                        audiodb_genres = get_audiodb_genres(artist_name)
+                        mb_genres = get_musicbrainz_genres(title, artist_name)
+            
+                        top_genres = get_top_genres({
+                            "spotify": spotify_genres,
+                            "lastfm": lastfm_tags,
+                            "discogs": discogs_genres,
+                            "audiodb": audiodb_genres,
+                            "musicbrainz": mb_genres
+                        }, title=title, album=album_name)
+            
+                        print(f"🎵 {title} → genres: {', '.join(top_genres)} (cached)")
                         skipped += 1
                         continue
                 except:
                     pass
+
 
             if verbose:
                 print(f"🎶 Looking up '{title}' on Spotify...")
