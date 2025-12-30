@@ -342,12 +342,15 @@ def build_cache_entry(stars, score, artist=None):
         "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
     }
 
+
 def print_star_line(title, score, stars, is_single=False):
-    star_str = "★" * stars
+    star_str = "★" * stars if stars > 0 else "No stars"
+    numeric_rating = f"{stars}/5"
     line = f"🎵 {title}"
     if is_single:
         line += " (Single)"
-    print(f"{line} → score: {score} | stars: {star_str}")
+    print(f"{line} → score: {score} | stars: {star_str} ({numeric_rating})")
+
 
 def canonical_title(title):
     return re.sub(r"[^\w\s]", "", title.lower()).strip()
@@ -1168,7 +1171,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     for track in album_tracks:
         track_id = track.get("id")
         stars = track.get("stars", 0)
-        star_display = "★" * stars if stars > 0 else "No stars"
+        star_display = f"{stars}/5 ({'★' * stars if stars > 0 else 'No stars'})"
         new_genre = ", ".join(track.get("genres", [])) if track.get("genres") else "Unknown"
         single_tag = " (Single)" if track.get("is_single") else ""
 
