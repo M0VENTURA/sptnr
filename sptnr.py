@@ -1079,37 +1079,44 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             median_score = 10  # Fallback baseline
         jump_threshold = median_score * 1.7
 
-        for i, track in enumerate(sorted_album):
-            band_index = i // band_size
-            stars = max(1, 4 - band_index)  # Minimum 1 star
-            if track["score"] >= jump_threshold:
+        
+    for i, track in enumerate(sorted_album):
+        band_index = i // band_size
+        stars = max(1, 4 - band_index)  # Minimum 1 star
+        if track["score"] >= jump_threshold:
+            stars = 5
+        if track["is_single"]:
+            if track["single_confidence"] == "high":
                 stars = 5
-            if track["is_single"]:
-                if track["single_confidence"] == "high":
-                    stars = 5
-                elif track["single_confidence"] == "medium":
-                    stars = min(stars + 1, 5)
-
-            stars = max(stars, 1)  # Ensure stars are never zero
-            final_score = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
-
-            cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
-
-            rated_map[track["id"]] = {
-                "id": track["id"],
-                "title": track["title"],
-                "artist": artist_name,
-                "album": track["album"],
-                "stars": stars,
-                "score": final_score,
-                "is_single": track["is_single"],
-                "genres": track["genres"],
-                "last_scanned": cache_entry["last_scanned"],
-                "source_used": track["source_used"]
-            }
-
-        if album_tracks:
-            sync_to_navidrome(album_tracks, artist_name)
+            elif track["single_confidence"] == "medium":
+                stars = min(stars + 1, 5)
+    
+        stars = max(stars, 1)
+        final_score = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
+    
+        # Add stars back to album_tracks for sync
+        track["stars"] = stars
+        track["score"] = final_score
+    
+        cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
+    
+        rated_map[track["id"]] = {
+            "id": track["id"],
+            "title": track["title"],
+            "artist": artist_name,
+            "album": track["album"],
+            "stars": stars,
+            "score": final_score,
+            "is_single": track["is_single"],
+            "genres": track["genres"],
+            "last_scanned": cache_entry["last_scanned"],
+            "source_used": track["source_used"]
+        }
+    
+    # ✅ Sync this album immediately with stars included
+    if album_tracks:
+        sync_to_navidrome(sorted_album, artist_name)
+    
 
     save_single_cache(single_cache)
     return rated_map
