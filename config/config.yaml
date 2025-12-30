@@ -29,3 +29,12 @@ database:
 logging:
   level: "INFO"
   file: "/config/app.log"
+
+features:
+  dry_run: false
+  sync: true
+  force: false
+  verbose: false
+  perpetual: false
+  batchrate: false
+  artist: []
