@@ -95,7 +95,7 @@ def get_top_genres(sources, title="", album=""):
         filtered = [g for g, _ in sorted_genres]
 
     # ✅ Pick top 3 after filtering
-    return [g.capitalize() for g in filtered[:3]]
+    return [g.capitalize() for g in filtered[:3]
 
 
 # 📁 Cache paths (aligned with mounted volume)
