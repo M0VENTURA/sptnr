@@ -864,7 +864,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         # ✅ Sync per album if enabled
         if args.sync and album_rated_map:
-            sync_to_navidrome(list(album_rated_map.values()), artist_name)
+            sync_to_navidrome(list(album_rated_map.values()), artist_name, verbose=verbose)
 
         rated_map.update(album_rated_map)
 
@@ -1053,7 +1053,7 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None, use_goo
 
         rated = rate_artist(artist_id, name, verbose=args.verbose, force=force, use_google=use_google, use_ai=use_ai)
         if sync and rated:
-            sync_to_navidrome(list(rated.values()), name)
+            sync_to_navidrome(list(rated.values()), name, verbose=args.verbose)
 
         time.sleep(SLEEP_TIME)
 
