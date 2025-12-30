@@ -1092,11 +1092,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             })
 
             # Verbose-only debug info
+            
             if verbose:
                 print(f"🎵 {title} → score: {round(score)}")
                 print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
                 print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
                 print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
+
 
         # Assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
