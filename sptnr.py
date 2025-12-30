@@ -979,6 +979,7 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1003,17 +1004,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         except:
             return []
 
-    
-        for album in albums:
-            album_name = album["name"]
-            songs = fetch_album_tracks(album)
-            if not songs:
-                continue
-        
-            print(f"\n🎧 Processing album: {album_name}")  # ✅ Added this line
-        
-            album_tracks = []
+    for album in albums:
+        album_name = album["name"]
+        songs = fetch_album_tracks(album)
+        if not songs:
+            continue
 
+        print(f"\n🎧 Processing album: {album_name}")
+
+        album_tracks = []
 
         for song in songs:
             title = song["title"]
@@ -1169,8 +1168,9 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     for track in album_tracks:
         track_id = track.get("id")
         stars = track.get("stars", 0)
-        score = track.get("score")
+        star_display = "★" * stars if stars > 0 else "No stars"
         new_genre = ", ".join(track.get("genres", [])) if track.get("genres") else "Unknown"
+        single_tag = " (Single)" if track.get("is_single") else ""
 
         # Fetch current track genre from Navidrome
         try:
@@ -1181,8 +1181,8 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
         except:
             current_genre = "None"
 
-        # Show final rating with genre comparison
-        print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {score} | Genre: {current_genre} → {new_genre}")
+        # Show final rating with genre comparison and single tag
+        print(f"✅ Final rating: {track['title']}{single_tag} → stars: {star_display} | Genre: {current_genre} → {new_genre}")
 
         if not track_id:
             continue
@@ -1202,7 +1202,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
             set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
             set_res.raise_for_status()
 
-            updated_cache[track_id] = build_cache_entry(stars, score)
+            updated_cache[track_id] = build_cache_entry(stars, track.get("score", 0))
             matched += 1
             changed += 1
         except:
@@ -1210,6 +1210,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Album sync summary for '{album_name}': {changed} updated, {matched} checked")
+
 
 def pipe_output(search_term=None):
     try:
