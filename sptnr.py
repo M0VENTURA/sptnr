@@ -70,19 +70,24 @@ def normalize_genre(genre):
 
 
 
-def get_top_genres(sources, title="", album=""):
+
+def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
+    """
+    Combine online-sourced genres with Navidrome genres for comparison.
+    Removes generic genres and 'heavy metal' if sub-genres exist.
+    """
     from collections import defaultdict
 
     genre_scores = defaultdict(float)
 
-    # Aggregate weighted genres
+    # Aggregate weighted genres from online sources
     for source, genres in sources.items():
         weight = GENRE_WEIGHTS.get(source, 0)
         for genre in genres:
             norm = normalize_genre(genre)
             genre_scores[norm] += weight
 
-    # Add special genres
+    # Add special genres based on title/album
     if "live" in title.lower() or "live" in album.lower():
         genre_scores["live"] += 0.5
     if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
@@ -91,23 +96,73 @@ def get_top_genres(sources, title="", album=""):
     # Sort by score
     sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
 
-    # ✅ Remove generic genres if more specific ones exist
+    # Remove generic genres
     generic_genres = {"rock", "pop", "alternative", "indie", "metal"}
     filtered = [g for g, _ in sorted_genres if g not in generic_genres]
 
-    # ✅ Special handling for "heavy metal"
-    # If there are other metal sub-genres, drop "heavy metal"
+    # Remove "heavy metal" if sub-genres exist
     metal_subgenres = [g for g in filtered if "metal" in g.lower() and g.lower() != "heavy metal"]
     if metal_subgenres:
         filtered = [g for g in filtered if g.lower() != "heavy metal"]
 
-    # ✅ If filtering removes everything, fall back to original list
+    # Fallback if filtering removes everything
     if not filtered:
         filtered = [g for g, _ in sorted_genres]
 
-    # ✅ Pick top 3 after filtering
-    return [g.capitalize() for g in filtered[:3]]
+    # Pick top 3
+    online_top = [g.capitalize() for g in filtered[:3]]
 
+    # ✅ Compare with Navidrome genres
+    nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
+
+    print("\n🎨 Genre Comparison:")
+    print(f"🌐 Online sources → {', '.join(online_top) if online_top else 'None'}")
+    print(f"📀 Navidrome tags → {', '.join(nav_cleaned) if nav_cleaned else 'None'}")
+
+    return online_top, nav_cleaned
+
+
+def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
+    from collections import defaultdict
+
+    genre_scores = defaultdict(float)
+
+    # Aggregate weighted genres from online sources
+    for source, genres in sources.items():
+        weight = GENRE_WEIGHTS.get(source, 0)
+        for genre in genres:
+            norm = normalize_genre(genre)
+            genre_scores[norm] += weight
+
+    # Add special genres based on title/album
+    if "live" in title.lower() or "live" in album.lower():
+        genre_scores["live"] += 0.5
+    if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
+        genre_scores["christmas"] += 0.5
+
+    # Sort by score
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+
+    # Remove generic genres
+    generic_genres = {"rock", "pop", "alternative", "indie", "metal"}
+    filtered = [g for g, _ in sorted_genres if g not in generic_genres]
+
+    # Remove "heavy metal" if sub-genres exist
+    metal_subgenres = [g for g in filtered if "metal" in g.lower() and g.lower() != "heavy metal"]
+    if metal_subgenres:
+        filtered = [g for g in filtered if g.lower() != "heavy metal"]
+
+    # Fallback if filtering removes everything
+    if not filtered:
+        filtered = [g for g, _ in sorted_genres]
+
+    # Pick top 3
+    online_top = [g.capitalize() for g in filtered[:3]]
+
+    # Clean Navidrome genres
+    nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
+
+    return online_top, nav_cleaned
 
 
 # 📁 Cache paths (aligned with mounted volume)
@@ -922,6 +977,7 @@ def adjust_genres(genres):
         return adjusted
     return genres
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -997,13 +1053,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             audiodb_genres = get_audiodb_genres(artist_name)
             mb_genres = get_musicbrainz_genres(title, artist_name)
 
-            top_genres = get_top_genres({
+            # ✅ Navidrome genres from track metadata
+            nav_genres = []
+            if "genre" in song:
+                nav_genres = [song["genre"]] if isinstance(song["genre"], str) else song["genre"]
+
+            # ✅ Compare online vs Navidrome genres
+            top_genres, nav_genres_cleaned = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
                 "discogs": discogs_genres,
                 "audiodb": audiodb_genres,
                 "musicbrainz": mb_genres
-            }, title=title, album=album_name)
+            }, nav_genres, title=title, album=album_name)
 
             # ✅ Adjust genres if 2+ metal sub-genres exist
             top_genres = adjust_genres(top_genres)
@@ -1017,51 +1079,46 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "genres": top_genres
             })
 
+            # ✅ Print comparison for every track
+            stars = 0  # Placeholder, will calculate later
+            print(f"🎵 {title} → score: {round(score)}")
+            print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
+            print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}\n")
+
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
 
+        # ✅ Sort and assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
-        band_size = math.ceil(total / 4)  # ✅ 4 bands for 1–4 stars
+        band_size = math.ceil(total / 4)  # 4 bands for 1–4 stars
         median_score = median(track["score"] for track in sorted_album)
         jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
-            
             band_index = i // band_size
             stars = max(1, 4 - band_index)  # Base rating: 1–4 stars
-            
-            # Boost for big jump
+
             if track["score"] >= jump_threshold:
                 stars = 5
-            
-            # Boost for singles only if score is decent
-            if track["is_single"]:
-                if track["single_confidence"] == "high" and track["score"] >= median_score:
-                    stars = 5
-                elif track["single_confidence"] == "medium" and track["score"] >= (median_score * 0.8):
-                    stars = min(stars + 1, 5)
-
 
             final_score = round(track["score"])
-            cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
+            cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
 
             rated_map[track["id"]] = {
                 "id": track["id"],
                 "title": track["title"],
                 "artist": artist_name,
                 "album": track["album"],
-                "stars": track["stars"],
+                "stars": stars,
                 "score": final_score,
-                "is_single": track["is_single"],
                 "genres": track["genres"],
                 "last_scanned": cache_entry["last_scanned"],
                 "source_used": track["source_used"]
             }
 
-            # ✅ Print output with genres
-            print(f"🎵 {track['title']} → score: {final_score} | stars: {'★' * track['stars']} | genres: {', '.join(track['genres'])}")
+            print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
 
     # ✅ Album ratings
     if rate_albums and album_score_map:
@@ -1072,27 +1129,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             stars = max(1, 5 - (i // band_size))
             album["stars"] = stars
             print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
-
-    # ✅ Create Essential Playlist if artist has >50 tracks
-    if len(rated_map) > 100:
-        essentials = sorted(rated_map.values(), key=lambda x: x["score"], reverse=True)
-        top_count = max(10, int(len(essentials) * 0.10))  # ✅ At least 10 tracks
-        top_tracks = essentials[:top_count]
-        playlist_name = f"Essential {artist_name}"
-
-        try:
-            # Create playlist
-            create_res = requests.get(f"{nav_base}/rest/createPlaylist.view", params={**auth, "name": playlist_name})
-            create_res.raise_for_status()
-            playlist_id = create_res.json().get("subsonic-response", {}).get("playlist", {}).get("id")
-
-            # Add tracks
-            for track in top_tracks:
-                requests.get(f"{nav_base}/rest/updatePlaylist.view", params={**auth, "playlistId": playlist_id, "songId": track["id"]})
-
-            print(f"✅ Created playlist '{playlist_name}' with {top_count} tracks")
-        except Exception as e:
-            print(f"⚠️ Failed to create playlist for {artist_name}: {type(e).__name__} - {e}")
 
     save_single_cache(single_cache)
     return rated_map
