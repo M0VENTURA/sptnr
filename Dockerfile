@@ -25,4 +25,5 @@ RUN mkdir /database
 VOLUME ["/database"]
 
 # Entrypoint
-ENTRYPOINT ["python", "./main.py"]
+ENTRYPOINT ["python", "./start.py"]
+
