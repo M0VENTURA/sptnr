@@ -611,7 +611,7 @@ from datetime import datetime, timedelta
 
 
 
-def detect_single_status(title, artist, cache={}, force=False, use_google=False, use_ai=False):
+def detect_single_status(title, artist, cache={}, force=False, use_google=False, use_ai=False, album_track_count=None):
     key = f"{artist.lower()}::{title.lower()}"
     entry = cache.get(key)
 
