@@ -45,6 +45,47 @@ if abs(total_weight - 1.0) > 0.001:  # Allow tiny floating-point tolerance
 
 SLEEP_TIME = 1.5  # Default sleep time between artist scans
 
+
+from collections import defaultdict
+
+GENRE_WEIGHTS = {
+    "spotify": 0.05,
+    "lastfm": 0.15,
+    "discogs": 0.25,
+    "audiodb": 0.20,
+    "musicbrainz": 0.35
+}
+
+def normalize_genre(genre):
+    genre = genre.lower().strip()
+    synonyms = {
+        "hip hop": "hip-hop",
+        "electronic": "electro",
+        "r&b": "rnb"
+    }
+    return synonyms.get(genre, genre)
+
+def get_top_genres(sources, title="", album=""):
+    genre_scores = defaultdict(float)
+
+    # Aggregate weighted genres
+    for source, genres in sources.items():
+        weight = GENRE_WEIGHTS.get(source, 0)
+        for genre in genres:
+            norm = normalize_genre(genre)
+            genre_scores[norm] += weight
+
+    # Add special genres
+    if "live" in title.lower() or "live" in album.lower():
+        genre_scores["live"] += 0.5  # Strong boost for Live
+    if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
+        genre_scores["christmas"] += 0.5  # Strong boost for Christmas
+
+    # Sort and pick top 3
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    return [g.capitalize() for g, _ in sorted_genres[:3]]
+
+
 # 📁 Cache paths (aligned with mounted volume)
 
 DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
@@ -759,6 +800,69 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+def get_lastfm_tags(artist):
+    api_key = os.getenv("LASTFMAPIKEY")
+    if not api_key:
+        return []
+    try:
+        res = requests.get("https://ws.audioscrobbler.com/2.0/", params={
+            "method": "artist.getInfo",
+            "artist": artist,
+            "api_key": api_key,
+            "format": "json"
+        }, timeout=10)
+        res.raise_for_status()
+        tags = res.json().get("artist", {}).get("tags", {}).get("tag", [])
+        return [t["name"] for t in tags]
+    except:
+        return []
+
+def get_discogs_genres(title, artist):
+    token = os.getenv("DISCOGS_TOKEN")
+    if not token:
+        return []
+    try:
+        res = requests.get("https://api.discogs.com/database/search", headers={
+            "Authorization": f"Discogs token={token}"
+        }, params={"q": f"{artist} {title}", "type": "release"}, timeout=10)
+        res.raise_for_status()
+        results = res.json().get("results", [])
+        genres = []
+        for r in results:
+            genres.extend(r.get("genre", []))
+            genres.extend(r.get("style", []))
+        return genres
+    except:
+        return []
+
+def get_audiodb_genres(artist):
+    key = os.getenv("AUDIODB_API_KEY", "1")  # Public key fallback
+    try:
+        res = requests.get(f"https://theaudiodb.com/api/v1/json/{key}/search.php?s={artist}", timeout=10)
+        res.raise_for_status()
+        data = res.json().get("artists", [])
+        if data:
+            return [data[0].get("strGenre", "")] if data[0].get("strGenre") else []
+        return []
+    except:
+        return []
+
+def get_musicbrainz_genres(title, artist):
+    try:
+        res = requests.get("https://musicbrainz.org/ws/2/recording/", params={
+            "query": f'"{title}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": 1
+        }, headers={"User-Agent": "sptnr-cli/2.0"}, timeout=10)
+        res.raise_for_status()
+        recordings = res.json().get("recordings", [])
+        if recordings and "tags" in recordings[0]:
+            return [t["name"] for t in recordings[0]["tags"]]
+        return []
+    except:
+        return []
+
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -781,6 +885,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     print(f"📀 Found {len(albums)} albums for {artist_name}")
 
+    
     def fetch_album_tracks(album):
         try:
             res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
@@ -818,6 +923,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             if verbose:
                 print(f"🎶 Looking up '{title}' on Spotify...")
 
+            # ✅ Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -825,40 +931,49 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
+            # ✅ Compute score
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
+            # ✅ Fetch genres from sources
+            spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
+            lastfm_tags = get_lastfm_tags(artist_name)  # Implemented below
+            discogs_genres = get_discogs_genres(title, artist_name)  # Implemented below
+            audiodb_genres = get_audiodb_genres(artist_name)  # Implemented below
+            mb_genres = get_musicbrainz_genres(title, artist_name)  # Implemented below
+
+            top_genres = get_top_genres({
+                "spotify": spotify_genres,
+                "lastfm": lastfm_tags,
+                "discogs": discogs_genres,
+                "audiodb": audiodb_genres,
+                "musicbrainz": mb_genres
+            }, title=title, album=album_name)
+
             album_tracks.append({
                 "title": title,
-                "album": album_name,  # ✅ Include album name for sync
+                "album": album_name,
                 "id": track_id,
                 "score": score,
-                "source_used": source_used
+                "source_used": source_used,
+                "genres": top_genres
             })
 
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
 
-
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
 
-        # ✅ Smarter star assignment: big jump compared to average
-        median_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
-        jump_threshold = median_score * 1.7 # ✅ Track must be 30% higher than album average
+        jump_threshold = median(track["score"] for track in sorted_album) * 1.7
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
             stars = max(1, 5 - band_index)
-
-            # Only give 5★ if:
-            # - Track score is 30% higher than album average OR
-            # - Track is a confirmed single with high confidence
             if track["score"] >= jump_threshold:
                 stars = 5
-
             track["stars"] = stars
 
         album_rated_map = {}
@@ -867,7 +982,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             track["is_single"] = single_status["is_single"]
             track["single_confidence"] = single_status["confidence"]
 
-            # Boost for singles
             if track["is_single"] and track["single_confidence"] == "high":
                 track["stars"] = 5
             elif track["is_single"] and track["single_confidence"] == "medium":
@@ -875,27 +989,26 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             final_score = round(track["score"])
             cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
+
             album_rated_map[track["id"]] = {
                 "id": track["id"],
                 "title": track["title"],
                 "artist": artist_name,
-                "album": track["album"],  # ✅ Include album name for sync
+                "album": track["album"],
                 "stars": track["stars"],
                 "score": final_score,
                 "is_single": track["is_single"],
+                "genres": track["genres"],  # ✅ Added genres
                 "last_scanned": cache_entry["last_scanned"],
                 "source_used": track["source_used"]
             }
 
-            if verbose:
-                print_star_line(track["title"], final_score, track["stars"], track["is_single"])
-
-        if args.sync and album_rated_map:
-            sync_to_navidrome(list(album_rated_map.values()), artist_name, verbose=verbose)
+            # ✅ Print output with genres
+            print(f"🎵 {track['title']} → score: {final_score} | stars: {'★' * track['stars']} | genres: {', '.join(track['genres'])}")
 
         rated_map.update(album_rated_map)
 
-    # ✅ Rate albums if flag is enabled
+    # ✅ Album ratings
     if rate_albums and album_score_map:
         print(f"\n📀 Calculating album ratings for {artist_name}...")
         sorted_albums = sorted(album_score_map, key=lambda x: x["median_score"], reverse=True)
@@ -904,16 +1017,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             stars = max(1, 5 - (i // band_size))
             album["stars"] = stars
             print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
-            if args.sync:
-                try:
-                    set_params = {**auth, "id": album["album_id"], "rating": stars}
-                    requests.get(f"{nav_base}/rest/setRating.view", params=set_params).raise_for_status()
-                    print(f"{LIGHT_GREEN}✅ Synced album: {album['album_name']} (stars: {'★' * stars}){RESET}")
-                except Exception as e:
-                    print(f"{LIGHT_RED}⚠️ Failed to sync album '{album['album_name']}': {type(e).__name__} - {e}{RESET}")
 
     save_single_cache(single_cache)
     return rated_map
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
