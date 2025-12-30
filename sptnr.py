@@ -978,6 +978,7 @@ def adjust_genres(genres):
     return genres
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -1070,6 +1071,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             # ✅ Adjust genres if 2+ metal sub-genres exist
             top_genres = adjust_genres(top_genres)
 
+            # ✅ Remove "Heavy metal" if other metal sub-genres exist
+            metal_subgenres = [g for g in top_genres if "metal" in g.lower() and g.lower() != "heavy metal"]
+            if metal_subgenres:
+                top_genres = [g for g in top_genres if g.lower() != "heavy metal"]
+
+            # ✅ Deduplicate genres
+            top_genres = list(dict.fromkeys(top_genres))
+
             album_tracks.append({
                 "title": title,
                 "album": album_name,
@@ -1080,7 +1089,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             })
 
             # ✅ Print comparison for every track
-            stars = 0  # Placeholder, will calculate later
             print(f"🎵 {title} → score: {round(score)}")
             print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
             print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}\n")
@@ -1132,6 +1140,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     save_single_cache(single_cache)
     return rated_map
+
 
     
 def load_artist_index():
