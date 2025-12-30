@@ -885,6 +885,19 @@ def get_musicbrainz_genres(title, artist):
         return []
 
 
+def adjust_genres(genres):
+    """
+    Adjust genres if 2 or more are metal sub-genres and one is Rock or Prog Rock.
+    Converts Rock/Prog Rock to Progressive Metal for better accuracy.
+    """
+    metal_count = sum(1 for g in genres if "metal" in g.lower())
+    if metal_count >= 2:
+        return [
+            "Progressive metal" if g.lower() in ["rock", "prog rock", "progressive rock"] else g
+            for g in genres
+        ]
+    return genres
+
 
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
