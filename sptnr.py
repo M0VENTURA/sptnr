@@ -909,6 +909,7 @@ import difflib
 
 
 
+
 def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -976,6 +977,7 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
+
 
 def pipe_output(search_term=None):
     try:
