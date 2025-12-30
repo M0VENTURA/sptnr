@@ -719,6 +719,7 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -738,6 +739,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     except:
         return {}
 
+    # ✅ Print album count immediately
+    print(f"📀 Found {len(albums)} albums for {artist_name}")
+
     def fetch_album_tracks(album):
         try:
             res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
@@ -747,13 +751,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             return []
 
     # ✅ Process each album separately
-    for album in albums:
+    for idx, album in enumerate(albums, start=1):
         album_name = album["name"]
         songs = fetch_album_tracks(album)
         if not songs:
             continue
 
-        print(f"\n🎨 Album: {album_name} ({len(songs)} tracks)")
+        # ✅ Show album progress
+        print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
+
         album_tracks = []
 
         # ✅ Pass 1: Compute scores for album tracks
@@ -774,8 +780,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 except:
                     pass
 
+            # ✅ Show Spotify lookup progress
             if verbose:
-                print(f"{LIGHT_GREEN}🎶 Searching Spotify for '{title}'...{RESET}")
+                print(f"🎶 Looking up '{title}' on Spotify...")
+
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
