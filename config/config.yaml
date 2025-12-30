@@ -19,10 +19,6 @@ weights:
   listenbrainz: 0.2
   age: 0.1
 
-features:
-  use_google: false
-  use_ai: false
-
 database:
   path: "/database/sptnr.db"
 
@@ -35,6 +31,7 @@ features:
   sync: true
   force: false
   verbose: false
-  perpetual: false
+  perpetual: true
   batchrate: false
   artist: []
+
