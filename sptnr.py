@@ -26,10 +26,12 @@ if not client_id or not client_secret:
 try:
     SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.5"))
     LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+    AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.3"))  # ✅ Add this line
 except ValueError:
     print("⚠️ Invalid weight in .env — using defaults.")
     SPOTIFY_WEIGHT = 0.5
     LASTFM_WEIGHT = 0.5
+    AGE_WEIGHT = 0.3
 
 SLEEP_TIME = 1.5
 
