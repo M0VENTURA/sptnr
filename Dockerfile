@@ -12,7 +12,9 @@ RUN apt-get update && apt-get install -y \
 WORKDIR /usr/src/app
 
 # Copy project files
-COPY . .
+# ✅ Copy the template config.yaml into /config
+COPY config/config.yaml /config/config.yaml
+
 
 # Install Python packages
 RUN pip install --no-cache-dir --upgrade pip && \
@@ -23,4 +25,4 @@ RUN mkdir /database
 VOLUME ["/database"]
 
 # Entrypoint
-ENTRYPOINT ["python", "./sptnr.py"]
+ENTRYPOINT ["python", "./main.py"]
