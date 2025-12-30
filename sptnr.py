@@ -67,6 +67,7 @@ def normalize_genre(genre):
 
 
 
+
 def get_top_genres(sources, title="", album=""):
     genre_scores = defaultdict(float)
 
@@ -96,7 +97,6 @@ def get_top_genres(sources, title="", album=""):
 
     # ✅ Pick top 3 after filtering
     return [g.capitalize() for g in filtered[:3]]
-
 
 # 📁 Cache paths (aligned with mounted volume)
 
