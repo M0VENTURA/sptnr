@@ -76,6 +76,48 @@ def get_listenbrainz_track_info(mbid):
         print(f"⚠️ ListenBrainz fetch failed: {e}")
         return 0
 
+def get_lastfm_track_info(artist, title):
+    """
+    Fetch track and artist play counts from Last.fm.
+    Returns safe defaults if API key is missing or response is invalid.
+    """
+    api_key = os.getenv("LASTFMAPIKEY")
+
+    # ✅ Fallback if API key is missing
+    if not api_key:
+        print(f"⚠️ Last.fm API key missing. Skipping Last.fm lookup for '{title}' by '{artist}'.")
+        return {"track_play": 0, "artist_play": 0}
+
+    headers = {"User-Agent": "sptnr-cli"}
+    params = {
+        "method": "track.getInfo",
+        "artist": artist,
+        "track": title,
+        "api_key": api_key,
+        "format": "json"
+    }
+
+    try:
+        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params, timeout=10)
+        res.raise_for_status()
+
+        # ✅ Validate JSON response
+        try:
+            data = res.json().get("track", {})
+        except ValueError:
+            print(f"⚠️ Last.fm returned invalid JSON for '{title}' by '{artist}'. Using defaults.")
+            return {"track_play": 0, "artist_play": 0}
+
+        # ✅ Extract play counts safely
+        track_play = int(data.get("playcount", 0))
+        artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
+
+        return {"track_play": track_play, "artist_play": artist_play}
+
+    except requests.exceptions.RequestException as e:
+        print(f"⚠️ Last.fm fetch failed for '{title}': {type(e).__name__} - {e}")
+        return {"track_play": 0, "artist_play": 0}
+
 def score_by_age(playcount, release_str):
     try:
         release_date = datetime.strptime(release_str, "%Y-%m-%d")
