@@ -1152,7 +1152,6 @@ def fetch_all_artists():
 
 import difflib
 
-
 def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1163,8 +1162,9 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     matched = 0
     changed = 0
 
-    album_name = album_tracks.get("album", "Unknown Album")
+    album_name = album_tracks[0].get("album", "Unknown Album") if album_tracks else "Unknown Album"
     print(f"\n📀 Album: {album_name}")
+
 
     for track in album_tracks:
         track_id = track.get("id")
