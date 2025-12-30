@@ -718,12 +718,9 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
-
-
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
+
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return {}
@@ -765,6 +762,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             track_id = song["id"]
             nav_date = song.get("created", "").split("T")[0]
 
+            # Skip recently scanned tracks unless forced
             if not force and track_id in track_cache:
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
@@ -776,6 +774,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 except:
                     pass
 
+            if verbose:
+                print(f"🎶 Looking up '{title}' on Spotify...")
+
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -786,22 +787,36 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-            album_tracks.append({"title": title, "album": album_name, "id": track_id, "score": score, "source_used": source_used})
+            album_tracks.append({
+                "title": title,
+                "album": album_name,
+                "id": track_id,
+                "score": score,
+                "source_used": source_used
+            })
 
         if album_tracks:
             avg_score = sum(track["score"] for track in album_tracks) / len(album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "avg_score": avg_score})
 
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
-        band_size = math.ceil(len(sorted_album) / 5)
-        max_score = sorted_album[0]["score"] if sorted_album else 0
-        threshold = max_score * 0.85
+        total = len(sorted_album)
+        band_size = math.ceil(total / 5)
+
+        # ✅ Smarter star assignment: big jump compared to average
+        avg_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
+        jump_threshold = avg_score * 1.5  # Track must be 50% higher than album average
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
             stars = max(1, 5 - band_index)
-            if track["score"] >= threshold:
+
+            # Only give 5★ if:
+            # - Track score is 50% higher than album average OR
+            # - Track is a confirmed single with high confidence
+            if track["score"] >= jump_threshold:
                 stars = 5
+
             track["stars"] = stars
 
         album_rated_map = {}
@@ -809,6 +824,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             single_status = detect_single_status(track["title"], artist_name, single_cache, force=force, album_track_count=len(sorted_album))
             track["is_single"] = single_status["is_single"]
             track["single_confidence"] = single_status["confidence"]
+
+            # Boost for singles
             if track["is_single"] and track["single_confidence"] == "high":
                 track["stars"] = 5
             elif track["is_single"] and track["single_confidence"] == "medium":
@@ -817,9 +834,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             final_score = round(track["score"])
             cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
             album_rated_map[track["id"]] = {
-                "id": track["id"], "title": track["title"], "artist": artist_name,
-                "stars": track["stars"], "score": final_score, "is_single": track["is_single"],
-                "last_scanned": cache_entry["last_scanned"], "source_used": track["source_used"]
+                "id": track["id"],
+                "title": track["title"],
+                "artist": artist_name,
+                "stars": track["stars"],
+                "score": final_score,
+                "is_single": track["is_single"],
+                "last_scanned": cache_entry["last_scanned"],
+                "source_used": track["source_used"]
             }
 
             if verbose:
@@ -830,6 +852,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         rated_map.update(album_rated_map)
 
+    # ✅ Rate albums if flag is enabled
     if rate_albums and album_score_map:
         print(f"\n📀 Calculating album ratings for {artist_name}...")
         sorted_albums = sorted(album_score_map, key=lambda x: x["avg_score"], reverse=True)
