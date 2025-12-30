@@ -721,9 +721,9 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
-
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return {}
@@ -732,7 +732,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     track_cache = load_rating_cache()
     skipped = 0
     rated_map = {}
-    album_score_map = []  # ✅ Store album scores for later album rating
+    album_score_map = []
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -760,8 +760,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
 
         album_tracks = []
-
-        # ✅ Pass 1: Compute scores for album tracks
         for song in songs:
             title = song["title"]
             track_id = song["id"]
@@ -778,9 +776,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 except:
                     pass
 
-            if verbose:
-                print(f"🎶 Looking up '{title}' on Spotify...")
-
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -788,59 +783,32 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-            album_tracks.append({
-                "title": title,
-                "album": album_name,
-                "id": track_id,
-                "score": score,
-                "release_date": release_date,
-                "source_used": source_used
-            })
+            album_tracks.append({"title": title, "album": album_name, "id": track_id, "score": score, "source_used": source_used})
 
-        # ✅ Calculate album average score
         if album_tracks:
             avg_score = sum(track["score"] for track in album_tracks) / len(album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "avg_score": avg_score})
 
-        # ✅ Normalize stars within album (track-level)
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
-        total = len(sorted_album)
-        band_size = math.ceil(total / 5)
-
-        # ✅ Smarter star assignment
+        band_size = math.ceil(len(sorted_album) / 5)
         max_score = sorted_album[0]["score"] if sorted_album else 0
-        threshold = max_score * 0.85  # Top ~15% gets special consideration
+        threshold = max_score * 0.85
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
             stars = max(1, 5 - band_index)
-
-            # Only give 5★ if:
-            # - Track is a single with high confidence OR
-            # - Track score is >= 85% of album's top score
             if track["score"] >= threshold:
                 stars = 5
-
             track["stars"] = stars
 
-        # ✅ Apply single detection boost
         album_rated_map = {}
         for track in sorted_album:
-            single_status = detect_single_status(
-                track["title"],
-                artist_name,
-                single_cache,
-                force=force,
-                album_track_count=len(sorted_album)
-            )
+            single_status = detect_single_status(track["title"], artist_name, single_cache, force=force, album_track_count=len(sorted_album))
             track["is_single"] = single_status["is_single"]
             track["single_confidence"] = single_status["confidence"]
-            track["sources"] = single_status.get("sources", [])
-
-            # Boost for singles
             if track["is_single"] and track["single_confidence"] == "high":
                 track["stars"] = 5
             elif track["is_single"] and track["single_confidence"] == "medium":
@@ -849,48 +817,38 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             final_score = round(track["score"])
             cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
             album_rated_map[track["id"]] = {
-                "id": track["id"],
-                "title": track["title"],
-                "artist": artist_name,
-                "stars": track["stars"],
-                "score": final_score,
-                "is_single": track["is_single"],
-                "last_scanned": cache_entry["last_scanned"],
-                "source_used": track["source_used"]
+                "id": track["id"], "title": track["title"], "artist": artist_name,
+                "stars": track["stars"], "score": final_score, "is_single": track["is_single"],
+                "last_scanned": cache_entry["last_scanned"], "source_used": track["source_used"]
             }
 
             if verbose:
                 print_star_line(track["title"], final_score, track["stars"], track["is_single"])
 
-        # ✅ Sync per album if enabled
         if args.sync and album_rated_map:
             sync_to_navidrome(list(album_rated_map.values()), artist_name, verbose=verbose)
 
         rated_map.update(album_rated_map)
 
-    # ✅ Rate albums if flag is enabled
     if rate_albums and album_score_map:
         print(f"\n📀 Calculating album ratings for {artist_name}...")
         sorted_albums = sorted(album_score_map, key=lambda x: x["avg_score"], reverse=True)
         band_size = math.ceil(len(sorted_albums) / 5)
-
         for i, album in enumerate(sorted_albums):
             stars = max(1, 5 - (i // band_size))
             album["stars"] = stars
             print(f"🎨 {album['album_name']} → avg score: {round(album['avg_score'])} | stars: {'★' * stars}")
-
-            # ✅ Sync album rating to Navidrome
             if args.sync:
                 try:
                     set_params = {**auth, "id": album["album_id"], "rating": stars}
-                    set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
-                    set_res.raise_for_status()
+                    requests.get(f"{nav_base}/rest/setRating.view", params=set_params).raise_for_status()
                     print(f"{LIGHT_GREEN}✅ Synced album: {album['album_name']} (stars: {'★' * stars}){RESET}")
                 except Exception as e:
                     print(f"{LIGHT_RED}⚠️ Failed to sync album '{album['album_name']}': {type(e).__name__} - {e}{RESET}")
 
     save_single_cache(single_cache)
     return rated_map
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -928,12 +886,8 @@ def fetch_all_artists():
 import difflib
 
 
+
 def sync_to_navidrome(track_ratings, artist_name, verbose=False):
-    """
-    Sync track ratings to Navidrome and provide album-level summary output.
-    - Verbose ON: Shows detailed per-track sync info.
-    - Verbose OFF: Shows only updated tracks and one summary line for unchanged albums.
-    """
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
@@ -943,7 +897,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     matched = 0
     changed = 0
 
-    # ✅ Group tracks by album
     albums = {}
     for track in track_ratings:
         album_name = track.get("album", "Unknown Album")
@@ -951,7 +904,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
 
     for album_name, tracks in albums.items():
         album_changed = False
-
         if verbose:
             print(f"\n🎨 Syncing album: {album_name} ({len(tracks)} tracks)")
 
@@ -966,7 +918,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
                     print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
                 continue
 
-            # Fetch current Navidrome rating
             try:
                 res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
                 res.raise_for_status()
@@ -980,7 +931,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
                 matched += 1
                 continue
 
-            # Push update
             try:
                 set_params = {**auth, "id": track_id, "rating": stars}
                 set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
@@ -999,7 +949,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
                 if verbose:
                     print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
 
-        # ✅ Album summary if no changes
         if not album_changed and not verbose:
             print(f"ℹ️ Album '{album_name}' unchanged (all ratings already up-to-date)")
 
@@ -1108,6 +1057,7 @@ if __name__ == "__main__":
     parser.add_argument("--resume", action="store_true", help="Resume batch scan from last synced artist")
     parser.add_argument("--force", action="store_true", help="Force re-scan of all tracks (override cache)")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
+    parser.add_argument("--noalbums", action="store_true", help="Skip album rating (only rate tracks)")
 
     # ✅ New detection enhancements
     parser.add_argument("--use-google", action="store_true", help="Enable Google Custom Search fallback for single detection")
