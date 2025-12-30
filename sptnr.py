@@ -716,6 +716,7 @@ import requests
 DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -745,114 +746,106 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     raw_tracks = []
 
+    # ✅ Pass 1: Compute scores for all tracks
+    for album in albums:
+        songs = fetch_album_tracks(album)
+        for song in songs:
+            title = song["title"]
+            track_id = song["id"]
+            album_name = album["name"]
+            nav_date = song.get("created", "").split("T")[0]
 
-# ✅ Pass 1: Compute scores for all tracks
-for album in albums:
-    songs = fetch_album_tracks(album)
-    for song in songs:
-        title = song["title"]
-        track_id = song["id"]
-        album_name = album["name"]
-        nav_date = song.get("created", "").split("T")[0]
+            # Skip recently scanned tracks unless forced
+            if not force and track_id in track_cache:
+                try:
+                    last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                    if datetime.now() - last < timedelta(days=7):
+                        if verbose:
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
+                        skipped += 1
+                        continue
+                except:
+                    pass
 
-        # Skip recently scanned tracks unless forced
-        if not force and track_id in track_cache:
-            try:
-                last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
-                if datetime.now() - last < timedelta(days=7):
-                    if verbose:
-                        print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
-                    skipped += 1
-                    continue
-            except:
-                pass
+            if verbose:
+                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
+            spotify_results = search_spotify_track(title, artist_name, album_name)
+            allow_live_remix = version_requested(title)
+            filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
+            selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
+            sp_score = selected.get("popularity", 0)
+            release_date = selected.get("album", {}).get("release_date") or nav_date
 
+            score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+            source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
+
+            raw_tracks.append({
+                "title": title,
+                "album": album_name,
+                "id": track_id,
+                "score": score,
+                "release_date": release_date,
+                "source_used": source_used
+            })
+
+    # ✅ Pass 2: Normalize stars within each album
+    albums_grouped = {}
+    for t in raw_tracks:
+        albums_grouped.setdefault(t["album"], []).append(t)
+
+    for album_name, tracks in albums_grouped.items():
+        sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
+        total = len(sorted_album)
+        band_size = math.ceil(total / 5)
+
+        for i, track in enumerate(sorted_album):
+            band_index = i // band_size
+            stars = max(1, 5 - band_index)
+            if i == 0:
+                stars = 5
+            track["stars"] = stars
+            print_star_line(track["title"], round(track["score"]), track["stars"], False)
+
+    # ✅ Pass 3: Apply single detection boost
+    for track in raw_tracks:
         if verbose:
-            print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
-        spotify_results = search_spotify_track(title, artist_name, album_name)
-        allow_live_remix = version_requested(title)
-        filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
-        selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
-        sp_score = selected.get("popularity", 0)
-        release_date = selected.get("album", {}).get("release_date") or nav_date
+            print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
+        single_status = detect_single_status(
+            track["title"],
+            artist_name,
+            single_cache,
+            force=force,
+            album_track_count=len(albums_grouped.get(track["album"], []))
+        )
+        track["is_single"] = single_status["is_single"]
+        track["single_confidence"] = single_status["confidence"]
+        track["sources"] = single_status.get("sources", [])
 
-        score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
-        source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
+        if track["is_single"] and track["single_confidence"] == "high":
+            track["stars"] = 5
+        elif track["is_single"] and track["single_confidence"] == "medium":
+            track["stars"] = min(track["stars"] + 1, 5)
 
-        raw_tracks.append({
-            "title": title,
-            "album": album_name,
-            "id": track_id,
-            "score": score,
-            "release_date": release_date,
-            "source_used": source_used
-        })
+        final_score = round(track["score"])
+        cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
+        rated_map[track["id"]] = {
+            "id": track["id"],
+            "title": track["title"],
+            "artist": artist_name,
+            "stars": track["stars"],
+            "score": final_score,
+            "is_single": track["is_single"],
+            "last_scanned": cache_entry["last_scanned"],
+            "source_used": track["source_used"]
+        }
 
-# ✅ Pass 2: Normalize stars within each album
-albums_grouped = {}
-for t in raw_tracks:
-    albums_grouped.setdefault(t["album"], []).append(t)
+        print_star_line(track["title"], final_score, track["stars"], track["is_single"])
+        if verbose:
+            print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
 
-for album_name, tracks in albums_grouped.items():
-    sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
-    total = len(sorted_album)
-    band_size = math.ceil(total / 5)
-
-    for i, track in enumerate(sorted_album):
-        band_index = i // band_size
-        stars = max(1, 5 - band_index)
-        if i == 0:
-            stars = 5
-        track["stars"] = stars
-
-        # ✅ Print progress for every song here
-        print_star_line(track["title"], round(track["score"]), track["stars"], False)
-
-
-
-    
-# ✅ Pass 3: Apply single detection boost
-for track in raw_tracks:
-    if verbose:
-        print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
-    single_status = detect_single_status(
-        track["title"],
-        artist_name,
-        single_cache,
-        force=force,
-        album_track_count=len(albums_grouped.get(track["album"], []))
-    )
-    track["is_single"] = single_status["is_single"]
-    track["single_confidence"] = single_status["confidence"]
-    track["sources"] = single_status.get("sources", [])
-
-    # ✅ Hard boost only for HIGH confidence singles
-    if track["is_single"] and track["single_confidence"] == "high":
-        track["stars"] = 5
-    elif track["is_single"] and track["single_confidence"] == "medium":
-        track["stars"] = min(track["stars"] + 1, 5)
-
-    # Build cache entry
-    final_score = round(track["score"])
-    cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
-    rated_map[track["id"]] = {
-        "id": track["id"],
-        "title": track["title"],
-        "artist": artist_name,
-        "stars": track["stars"],
-        "score": final_score,
-        "is_single": track["is_single"],
-        "last_scanned": cache_entry["last_scanned"],
-        "source_used": track["source_used"]
-    }
-
-    print_star_line(track["title"], final_score, track["stars"], track["is_single"])
-    if verbose:
-        print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
-
-# ✅ Save caches AFTER all tracks processed
-save_single_cache(single_cache)
-return rated_map
+    # ✅ Save caches AFTER all tracks processed
+    save_single_cache(single_cache)
+    return rated_map
 
     
 def load_artist_index():
