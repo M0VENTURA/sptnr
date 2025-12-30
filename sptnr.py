@@ -886,6 +886,7 @@ def get_musicbrainz_genres(title, artist):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -1033,6 +1034,27 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             stars = max(1, 5 - (i // band_size))
             album["stars"] = stars
             print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
+
+    # ✅ Create Essential Playlist if artist has >50 tracks
+    if len(rated_map) > 50:
+        essentials = sorted(rated_map.values(), key=lambda x: x["score"], reverse=True)
+        top_count = max(10, int(len(essentials) * 0.10))  # ✅ At least 10 tracks
+        top_tracks = essentials[:top_count]
+        playlist_name = f"Essential {artist_name}"
+
+        try:
+            # Create playlist
+            create_res = requests.get(f"{nav_base}/rest/createPlaylist.view", params={**auth, "name": playlist_name})
+            create_res.raise_for_status()
+            playlist_id = create_res.json().get("subsonic-response", {}).get("playlist", {}).get("id")
+
+            # Add tracks
+            for track in top_tracks:
+                requests.get(f"{nav_base}/rest/updatePlaylist.view", params={**auth, "playlistId": playlist_id, "songId": track["id"]})
+
+            print(f"✅ Created playlist '{playlist_name}' with {top_count} tracks")
+        except Exception as e:
+            print(f"⚠️ Failed to create playlist for {artist_name}: {type(e).__name__} - {e}")
 
     save_single_cache(single_cache)
     return rated_map
