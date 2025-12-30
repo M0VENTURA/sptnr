@@ -18,5 +18,9 @@ COPY . .
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt
 
+# Create database directory
+RUN mkdir /database
+VOLUME ["/database"]
+
 # Entrypoint
 ENTRYPOINT ["python", "./sptnr.py"]
