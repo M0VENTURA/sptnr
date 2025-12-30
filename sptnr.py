@@ -717,7 +717,6 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -789,7 +788,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             album_tracks.append({
                 "title": title,
-                "album": album_name,
+                "album": album_name,  # ✅ Include album name for sync
                 "id": track_id,
                 "score": score,
                 "source_used": source_used
@@ -805,14 +804,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         # ✅ Smarter star assignment: big jump compared to average
         avg_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
-        jump_threshold = avg_score * 1.5  # Track must be 50% higher than album average
+        jump_threshold = avg_score * 1.3  # ✅ Track must be 30% higher than album average
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
             stars = max(1, 5 - band_index)
 
             # Only give 5★ if:
-            # - Track score is 50% higher than album average OR
+            # - Track score is 30% higher than album average OR
             # - Track is a confirmed single with high confidence
             if track["score"] >= jump_threshold:
                 stars = 5
@@ -837,6 +836,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "id": track["id"],
                 "title": track["title"],
                 "artist": artist_name,
+                "album": track["album"],  # ✅ Include album name for sync
                 "stars": track["stars"],
                 "score": final_score,
                 "is_single": track["is_single"],
@@ -871,7 +871,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     save_single_cache(single_cache)
     return rated_map
-
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
