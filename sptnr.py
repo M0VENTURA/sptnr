@@ -415,24 +415,53 @@ def is_youtube_single(title, artist, verbose=False):
         print(f"{LIGHT_RED}⚠️ No YouTube match for '{title}' by '{artist}'{RESET}")
     return False
 
-def is_musicbrainz_single(title, artist):
+
+def is_musicbrainz_single(title, artist, cache=None, retries=3, backoff_factor=2):
+    """
+    Check if a track is a single using MusicBrainz API with retry and caching.
+    
+    :param title: Track title
+    :param artist: Artist name
+    :param cache: Dictionary for caching results
+    :param retries: Number of retry attempts
+    :param backoff_factor: Exponential backoff multiplier
+    :return: Boolean indicating if track is a single
+    """
+    if cache is None:
+        cache = {}
+
+    # Create cache key
+    key = f"{artist.lower()}::{title.lower()}"
+    if key in cache:
+        return cache[key]
+
     query = f'"{title}" AND artist:"{artist}" AND primarytype:Single'
     url = "https://musicbrainz.org/ws/2/release-group/"
-    params = {
-        "query": query,
-        "fmt": "json",
-        "limit": 5
-    }
-    headers = {"User-Agent": "sptnr-cli/1.0 (your@email.com)"}
+    params = {"query": query, "fmt": "json", "limit": 5}
+    headers = {"User-Agent": "sptnr-cli/2.0 (your@email.com)"}
 
-    try:
-        res = requests.get(url, params=params, headers=headers)
-        res.raise_for_status()
-        data = res.json().get("release-groups", [])
-        return any(rg.get("primary-type", "").lower() == "single" for rg in data)
-    except Exception as e:
-        print(f"⚠️ MusicBrainz lookup failed for '{title}': {type(e).__name__} - {e}")
-        return False
+    for attempt in range(retries):
+        try:
+            res = requests.get(url, params=params, headers=headers, timeout=10)
+            res.raise_for_status()
+            data = res.json().get("release-groups", [])
+            is_single = any(rg.get("primary-type", "").lower() == "single" for rg in data)
+
+            # Cache result
+            cache[key] = is_single
+            return is_single
+
+        except requests.exceptions.RequestException as e:
+            print(f"⚠️ MusicBrainz lookup failed for '{title}' (attempt {attempt+1}/{retries}): {e}")
+            if attempt < retries - 1:
+                sleep_time = backoff_factor ** attempt
+                print(f"⏳ Retrying in {sleep_time} seconds...")
+                time.sleep(sleep_time)
+
+    # Cache failure as False to avoid repeated lookups
+    cache[key] = False
+    return False
+
 
 def is_discogs_single(title, artist):
     token = os.getenv("DISCOGS_TOKEN")
