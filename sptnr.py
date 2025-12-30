@@ -1037,7 +1037,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
 
-            spotify_genres = selected.get("artists", [{}]).get("genres", [])
+            spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name)
