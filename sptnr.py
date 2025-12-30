@@ -750,7 +750,7 @@ import math
 from datetime import datetime
 from statistics import mean
 
-from statistics import mean
+from statistics import median
 from datetime import datetime, timedelta
 import os
 import requests
@@ -837,16 +837,17 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             })
 
         if album_tracks:
-            avg_score = sum(track["score"] for track in album_tracks) / len(album_tracks)
-            album_score_map.append({"album_id": album["id"], "album_name": album_name, "avg_score": avg_score})
+            median_score = median(track["score"] for track in album_tracks)
+            album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
+
 
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
 
         # ✅ Smarter star assignment: big jump compared to average
-        avg_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
-        jump_threshold = avg_score * 1.7 # ✅ Track must be 30% higher than album average
+        median_score = sum(track["score"] for track in sorted_album) / len(sorted_album)
+        jump_threshold = median_score * 1.7 # ✅ Track must be 30% higher than album average
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
@@ -897,12 +898,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     # ✅ Rate albums if flag is enabled
     if rate_albums and album_score_map:
         print(f"\n📀 Calculating album ratings for {artist_name}...")
-        sorted_albums = sorted(album_score_map, key=lambda x: x["avg_score"], reverse=True)
+        sorted_albums = sorted(album_score_map, key=lambda x: x["median_score"], reverse=True)
         band_size = math.ceil(len(sorted_albums) / 5)
         for i, album in enumerate(sorted_albums):
             stars = max(1, 5 - (i // band_size))
             album["stars"] = stars
-            print(f"🎨 {album['album_name']} → avg score: {round(album['avg_score'])} | stars: {'★' * stars}")
+            print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
             if args.sync:
                 try:
                     set_params = {**auth, "id": album["album_id"], "rating": stars}
