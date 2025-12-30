@@ -995,7 +995,8 @@ def adjust_genres(genres):
     return genres
 
 
-def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
+
+def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True, update_album_genres=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
     nav_base, auth = get_auth_params()
@@ -1034,10 +1035,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
 
         album_tracks = []
+        album_genre_map = {}
+
         for song in songs:
             title = song["title"]
             track_id = song["id"]
-            nav_date = song.get("created", "").split("T")
+            nav_date = song.get("created", "").split("T")[0]
 
             # Skip recently scanned tracks unless forced
             if not force and track_id in track_cache:
@@ -1055,7 +1058,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
-            selected = max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {}
+            selected = select_best_spotify_match(filtered, title)
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
@@ -1064,7 +1067,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
             # ✅ Fetch genres from sources
-            spotify_genres = selected.get("artists", [{}]).get("genres", [])
+            spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name)
@@ -1109,6 +1112,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "single_confidence": single_info["confidence"]
             })
 
+            # ✅ Aggregate genres for album
+            for genre in top_genres:
+                album_genre_map[genre] = album_genre_map.get(genre, 0) + 1
+
             # ✅ Print comparison for every track
             print(f"🎵 {title} → score: {round(score)}")
             print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
@@ -1134,11 +1141,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             if track["score"] >= jump_threshold:
                 stars = 5
 
-            # ✅ Boost for singles
+            # ✅ Aggressive boost for singles
             if track["is_single"]:
-                if track["single_confidence"] == "high" and track["score"] >= median_score:
+                if track["single_confidence"] == "high":
                     stars = 5
-                elif track["single_confidence"] == "medium" and track["score"] >= (median_score * 0.8):
+                elif track["single_confidence"] == "medium":
                     stars = min(stars + 1, 5)
 
             final_score = round(track["score"])
@@ -1159,6 +1166,18 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
 
+        # ✅ Update album genre with top 3 genres
+        if update_album_genres and album_genre_map:
+            sorted_album_genres = sorted(album_genre_map.items(), key=lambda x: x[1], reverse=True)
+            top_album_genres = [g for g, _ in sorted_album_genres[:3]]
+            try:
+                update_params = {**auth, "id": album["id"], "genre": ", ".join(top_album_genres)}
+                res = requests.get(f"{nav_base}/rest/updateAlbum.view", params=update_params)
+                res.raise_for_status()
+                print(f"✅ Updated album genre for '{album_name}' → {', '.join(top_album_genres)}")
+            except Exception as e:
+                print(f"⚠️ Failed to update album genre for '{album_name}': {type(e).__name__} - {e}")
+
     # ✅ Album ratings
     if rate_albums and album_score_map:
         print(f"\n📀 Calculating album ratings for {artist_name}...")
@@ -1171,6 +1190,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     save_single_cache(single_cache)
     return rated_map
+
 
 
 def load_artist_index():
