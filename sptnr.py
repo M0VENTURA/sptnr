@@ -719,7 +719,8 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
-def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
+
+def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
     nav_base, auth = get_auth_params()
@@ -730,6 +731,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     track_cache = load_rating_cache()
     skipped = 0
     rated_map = {}
+    album_score_map = []  # ✅ Store album scores for later album rating
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -758,7 +760,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         album_tracks = []
 
-        # Pass 1: Compute scores
+        # ✅ Pass 1: Compute scores for album tracks
         for song in songs:
             title = song["title"]
             track_id = song["id"]
@@ -797,7 +799,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": source_used
             })
 
-        # Pass 2: Normalize stars
+        # ✅ Calculate album average score
+        if album_tracks:
+            avg_score = sum(track["score"] for track in album_tracks) / len(album_tracks)
+            album_score_map.append({"album_id": album["id"], "album_name": album_name, "avg_score": avg_score})
+
+        # ✅ Normalize stars within album (track-level)
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
@@ -809,7 +816,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 stars = 5
             track["stars"] = stars
 
-        # Pass 3: Apply single detection boost
+        # ✅ Apply single detection boost
         album_rated_map = {}
         for track in sorted_album:
             single_status = detect_single_status(
@@ -841,20 +848,38 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": track["source_used"]
             }
 
-            # ✅ Only print stars if verbose
             if verbose:
                 print_star_line(track["title"], final_score, track["stars"], track["is_single"])
 
-        # Sync per album if enabled
+        # ✅ Sync per album if enabled
         if args.sync and album_rated_map:
             sync_to_navidrome(list(album_rated_map.values()), artist_name)
 
         rated_map.update(album_rated_map)
 
+    # ✅ Rate albums if flag is enabled
+    if rate_albums and album_score_map:
+        print(f"\n📀 Calculating album ratings for {artist_name}...")
+        sorted_albums = sorted(album_score_map, key=lambda x: x["avg_score"], reverse=True)
+        band_size = math.ceil(len(sorted_albums) / 5)
+
+        for i, album in enumerate(sorted_albums):
+            stars = max(1, 5 - (i // band_size))
+            album["stars"] = stars
+            print(f"🎨 {album['album_name']} → avg score: {round(album['avg_score'])} | stars: {'★' * stars}")
+
+            # ✅ Sync album rating to Navidrome
+            if args.sync:
+                try:
+                    set_params = {**auth, "id": album["album_id"], "rating": stars}
+                    set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+                    set_res.raise_for_status()
+                    print(f"{LIGHT_GREEN}✅ Synced album: {album['album_name']} (stars: {'★' * stars}){RESET}")
+                except Exception as e:
+                    print(f"{LIGHT_RED}⚠️ Failed to sync album '{album['album_name']}': {type(e).__name__} - {e}{RESET}")
+
     save_single_cache(single_cache)
     return rated_map
-
-
 
     
 def load_artist_index():
