@@ -308,8 +308,7 @@ def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, v
             (AGE_WEIGHT * momentum)
 
     if verbose:
-        print(f"🔢 Final score for '{title}': {round(score)} "
-              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, LB: {lb_score}, Age: {momentum})")
+        print(f"🔢 Final score for '{title}': {final_score} (Spotify: {sp_score}, Last.fm: {lf_ratio}, LB: {lb_score}, Age: {momentum})")
 
     return score, days_since
 
