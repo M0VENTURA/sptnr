@@ -817,14 +817,19 @@ def get_lastfm_tags(artist):
     except:
         return []
 
+
 def get_discogs_genres(title, artist):
     token = os.getenv("DISCOGS_TOKEN")
     if not token:
         return []
+
     try:
-        res = requests.get("https://api.discogs.com/database/search", headers={
-            "Authorization": f"Discogs token={token}"
-        }, params={"q": f"{artist} {title}", "type": "release"}, timeout=10)
+        res = requests.get(
+            "https://api.discogs.com/database/search",
+            headers={"Authorization": f"Discogs token={token}"},
+            params={"q": f"{artist} {title}", "type": "release"},
+            timeout=10
+        )
         res.raise_for_status()
         results = res.json().get("results", [])
         genres = []
@@ -832,8 +837,13 @@ def get_discogs_genres(title, artist):
             genres.extend(r.get("genre", []))
             genres.extend(r.get("style", []))
         return genres
-    except:
+    except requests.exceptions.ConnectionError:
+        print(f"⚠️ Discogs unreachable — skipping genre lookup for '{title}'")
         return []
+    except Exception as e:
+        print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
+        return []
+
 
 def get_audiodb_genres(artist):
     key = os.getenv("AUDIODB_API_KEY", "1")  # Public key fallback
