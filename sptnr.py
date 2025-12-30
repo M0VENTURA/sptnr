@@ -885,6 +885,7 @@ def get_musicbrainz_genres(title, artist):
         return []
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -907,7 +908,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     print(f"📀 Found {len(albums)} albums for {artist_name}")
 
-    
     def fetch_album_tracks(album):
         try:
             res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
@@ -935,30 +935,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
                     if datetime.now() - last < timedelta(days=7):
-                        # ✅ Still show genres even if skipped
-                        spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
-                        lastfm_tags = get_lastfm_tags(artist_name)
-                        discogs_genres = get_discogs_genres(title, artist_name)
-                        audiodb_genres = get_audiodb_genres(artist_name)
-                        mb_genres = get_musicbrainz_genres(title, artist_name)
-            
-                        top_genres = get_top_genres({
-                            "spotify": spotify_genres,
-                            "lastfm": lastfm_tags,
-                            "discogs": discogs_genres,
-                            "audiodb": audiodb_genres,
-                            "musicbrainz": mb_genres
-                        }, title=title, album=album_name)
-            
-                        print(f"🎵 {title} → genres: {', '.join(top_genres)} (cached)")
+                        if verbose:
+                            print(f"{LIGHT_BLUE}⏩ Skipped: '{title}' (recent scan){RESET}")
                         skipped += 1
                         continue
                 except:
                     pass
-
-
-            if verbose:
-                print(f"🎶 Looking up '{title}' on Spotify...")
 
             # ✅ Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
@@ -974,10 +956,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             # ✅ Fetch genres from sources
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
-            lastfm_tags = get_lastfm_tags(artist_name)  # Implemented below
-            discogs_genres = get_discogs_genres(title, artist_name)  # Implemented below
-            audiodb_genres = get_audiodb_genres(artist_name)  # Implemented below
-            mb_genres = get_musicbrainz_genres(title, artist_name)  # Implemented below
+            lastfm_tags = get_lastfm_tags(artist_name)
+            discogs_genres = get_discogs_genres(title, artist_name)
+            audiodb_genres = get_audiodb_genres(artist_name)
+            mb_genres = get_musicbrainz_genres(title, artist_name)
 
             top_genres = get_top_genres({
                 "spotify": spotify_genres,
@@ -986,6 +968,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "audiodb": audiodb_genres,
                 "musicbrainz": mb_genres
             }, title=title, album=album_name)
+
+            # ✅ Adjust genres if 2+ metal sub-genres exist
+            top_genres = adjust_genres(top_genres)
 
             album_tracks.append({
                 "title": title,
@@ -1002,32 +987,28 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
-        band_size = math.ceil(total / 5)
-
-        jump_threshold = median(track["score"] for track in sorted_album) * 1.7
+        band_size = math.ceil(total / 4)  # ✅ 4 bands for 1–4 stars
+        median_score = median(track["score"] for track in sorted_album)
+        jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
-            stars = max(1, 5 - band_index)
-            if track["score"] >= jump_threshold:
-                stars = 5
-            track["stars"] = stars
+            stars = max(1, 4 - band_index)  # ✅ Base rating: 1–4 stars
 
-        album_rated_map = {}
-        for track in sorted_album:
+            # ✅ Boost to 5 stars if big jump or single
             single_status = detect_single_status(track["title"], artist_name, single_cache, force=force, album_track_count=len(sorted_album))
             track["is_single"] = single_status["is_single"]
             track["single_confidence"] = single_status["confidence"]
 
-            if track["is_single"] and track["single_confidence"] == "high":
-                track["stars"] = 5
-            elif track["is_single"] and track["single_confidence"] == "medium":
-                track["stars"] = min(track["stars"] + 1, 5)
+            if track["score"] >= jump_threshold or (track["is_single"] and track["single_confidence"] in ["high", "medium"]):
+                stars = 5
+
+            track["stars"] = stars
 
             final_score = round(track["score"])
             cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
 
-            album_rated_map[track["id"]] = {
+            rated_map[track["id"]] = {
                 "id": track["id"],
                 "title": track["title"],
                 "artist": artist_name,
@@ -1035,15 +1016,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "stars": track["stars"],
                 "score": final_score,
                 "is_single": track["is_single"],
-                "genres": track["genres"],  # ✅ Added genres
+                "genres": track["genres"],
                 "last_scanned": cache_entry["last_scanned"],
                 "source_used": track["source_used"]
             }
 
             # ✅ Print output with genres
             print(f"🎵 {track['title']} → score: {final_score} | stars: {'★' * track['stars']} | genres: {', '.join(track['genres'])}")
-
-        rated_map.update(album_rated_map)
 
     # ✅ Album ratings
     if rate_albums and album_score_map:
