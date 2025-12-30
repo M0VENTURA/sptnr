@@ -949,20 +949,18 @@ def get_musicbrainz_genres(title, artist):
 
 
 
-def adjust_genres(genres):
+
+def adjust_genres(genres, artist_is_metal=False):
     """
-    Adjust genres for better accuracy:
-    - If 2+ metal sub-genres exist:
-        * Rock / Prog Rock / Progressive Rock → Progressive Metal
-        * Folk Rock → Folk Metal
-        * Goth Rock → Gothic Metal
+    Adjust genres based on artist context:
+    - If artist is metal-dominant, convert rock sub-genres to metal equivalents.
+    - Always deduplicate and remove generic 'metal' if sub-genres exist.
     """
-    metal_count = sum(1 for g in genres if "metal" in g.lower())
-    if metal_count >= 2:
-        adjusted = []
-        for g in genres:
-            g_lower = g.lower()
-            if g_lower in ["rock", "prog rock", "progressive rock"]:
+    adjusted = []
+    for g in genres:
+        g_lower = g.lower()
+        if artist_is_metal:
+            if g_lower in ["prog rock", "progressive rock"]:
                 adjusted.append("Progressive metal")
             elif g_lower == "folk rock":
                 adjusted.append("Folk metal")
@@ -970,12 +968,19 @@ def adjust_genres(genres):
                 adjusted.append("Gothic metal")
             else:
                 adjusted.append(g)
-        return adjusted
-    return genres
+        else:
+            adjusted.append(g)
+
+    # Remove generic 'metal' if specific sub-genres exist
+    metal_subgenres = [x for x in adjusted if "metal" in x.lower() and x.lower() != "metal"]
+    if metal_subgenres:
+        adjusted = [x for x in adjusted if x.lower() not in ["metal", "heavy metal"]]
+
+    return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
 
-def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True, update_album_genres=True):
+def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
     nav_base, auth = get_auth_params()
@@ -987,6 +992,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     skipped = 0
     rated_map = {}
     album_score_map = []
+    artist_genre_map = {}  # ✅ For artist-level genre aggregation
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -1014,7 +1020,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         print(f"\n🔍 Currently scanning {artist_name} – {album_name} ({len(songs)} tracks) [Album {idx}/{len(albums)}]")
 
         album_tracks = []
-        album_genre_map = {}
 
         for song in songs:
             title = song["title"]
@@ -1057,7 +1062,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             if "genre" in song:
                 nav_genres = [song["genre"]] if isinstance(song["genre"], str) else song["genre"]
 
-            # ✅ Compare online vs Navidrome genres
+            # ✅ Weighted genre logic
             top_genres, nav_genres_cleaned = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
@@ -1066,16 +1071,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
-            # ✅ Adjust genres if 2+ metal sub-genres exist
+            # ✅ Deduplicate and adjust
             top_genres = adjust_genres(top_genres)
-
-            # ✅ Remove "Heavy metal" if other metal sub-genres exist
             metal_subgenres = [g for g in top_genres if "metal" in g.lower() and g.lower() != "heavy metal"]
             if metal_subgenres:
                 top_genres = [g for g in top_genres if g.lower() != "heavy metal"]
-
-            # ✅ Deduplicate genres
             top_genres = list(dict.fromkeys(top_genres))
+
+            # ✅ Aggregate for artist-level genre mapping
+            for genre in top_genres:
+                artist_genre_map[genre] = artist_genre_map.get(genre, 0) + 1
 
             # ✅ Detect single status
             single_info = detect_single_status(title, artist_name, cache=single_cache, force=force, use_google=use_google, use_ai=use_ai)
@@ -1091,16 +1096,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "single_confidence": single_info["confidence"]
             })
 
-            # ✅ Aggregate genres for album
-            for genre in top_genres:
-                album_genre_map[genre] = album_genre_map.get(genre, 0) + 1
-
-            # ✅ Print comparison for every track
+            # ✅ Print comparison
             print(f"🎵 {title} → score: {round(score)}")
             print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
             print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
             print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
 
+        # ✅ Album rating logic remains
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
@@ -1108,19 +1110,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         # ✅ Sort and assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
-        band_size = math.ceil(total / 4)  # 4 bands for 1–4 stars
+        band_size = math.ceil(total / 4)
         median_score = median(track["score"] for track in sorted_album)
         jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
-            stars = max(1, 4 - band_index)  # Base rating: 1–4 stars
-
-            # ✅ Boost for big jump
+            stars = max(1, 4 - band_index)
             if track["score"] >= jump_threshold:
                 stars = 5
-
-            # ✅ Aggressive boost for singles
             if track["is_single"]:
                 if track["single_confidence"] == "high":
                     stars = 5
@@ -1145,32 +1143,32 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
 
-        # ✅ Update album genre with top 3 genres
-        if update_album_genres and album_genre_map:
-            sorted_album_genres = sorted(album_genre_map.items(), key=lambda x: x[1], reverse=True)
-            top_album_genres = [g for g, _ in sorted_album_genres[:3]]
-            try:
-                update_params = {**auth, "id": album["id"], "genre": ", ".join(top_album_genres)}
-                res = requests.get(f"{nav_base}/rest/updateAlbum.view", params=update_params)
-                res.raise_for_status()
-                print(f"✅ Updated album genre for '{album_name}' → {', '.join(top_album_genres)}")
-            except Exception as e:
-                print(f"⚠️ Failed to update album genre for '{album_name}': {type(e).__name__} - {e}")
+    # ✅ Artist-level genre suggestion
+    if artist_genre_map:
+        sorted_artist_genres = sorted(artist_genre_map.items(), key=lambda x: x[1], reverse=True)
+        top_artist_genres = [g for g, _ in sorted_artist_genres[:3]]
+        print(f"\n💡 Suggested artist genres for '{artist_name}' → {', '.join(top_artist_genres)}")
 
-    # ✅ Album ratings
-    if rate_albums and album_score_map:
-        print(f"\n📀 Calculating album ratings for {artist_name}...")
-        sorted_albums = sorted(album_score_map, key=lambda x: x["median_score"], reverse=True)
-        band_size = math.ceil(len(sorted_albums) / 5)
-        for i, album in enumerate(sorted_albums):
-            stars = max(1, 5 - (i // band_size))
-            album["stars"] = stars
-            print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
+    # ✅ Playlist generation check
+    if len(rated_map) > 100:
+        essentials = sorted(rated_map.values(), key=lambda x: x["score"], reverse=True)
+        top_count = max(10, int(len(essentials) * 0.10))
+        playlist_name = f"Essential {artist_name}"
+        try:
+            create_res = requests.get(f"{nav_base}/rest/createPlaylist.view", params={**auth, "name": playlist_name})
+            create_res.raise_for_status()
+            playlist_id = create_res.json().get("subsonic-response", {}).get("playlist", {}).get("id")
+            if not playlist_id:
+                print(f"⚠️ Playlist creation failed for '{artist_name}' (no ID returned)")
+            else:
+                for track in essentials[:top_count]:
+                    requests.get(f"{nav_base}/rest/updatePlaylist.view", params={**auth, "playlistId": playlist_id, "songId": track["id"]})
+                print(f"✅ Created playlist '{playlist_name}' with {top_count} tracks")
+        except Exception as e:
+            print(f"⚠️ Failed to create playlist for {artist_name}: {type(e).__name__} - {e}")
 
     save_single_cache(single_cache)
     return rated_map
-
-
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
