@@ -1049,7 +1049,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             print(f"🎨 {album['album_name']} → median score: {round(album['median_score'])} | stars: {'★' * stars}")
 
     # ✅ Create Essential Playlist if artist has >50 tracks
-    if len(rated_map) > 50:
+    if len(rated_map) > 100:
         essentials = sorted(rated_map.values(), key=lambda x: x["score"], reverse=True)
         top_count = max(10, int(len(essentials) * 0.10))  # ✅ At least 10 tracks
         top_tracks = essentials[:top_count]
