@@ -980,6 +980,7 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -992,7 +993,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     skipped = 0
     rated_map = {}
     album_score_map = []
-    artist_genre_map = {}  # ✅ For artist-level genre aggregation
+    artist_genre_map = {}
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -1057,12 +1058,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             audiodb_genres = get_audiodb_genres(artist_name)
             mb_genres = get_musicbrainz_genres(title, artist_name)
 
-            # ✅ Navidrome genres from track metadata
             nav_genres = []
             if "genre" in song:
                 nav_genres = [song["genre"]] if isinstance(song["genre"], str) else song["genre"]
 
-            # ✅ Weighted genre logic
             top_genres, nav_genres_cleaned = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
@@ -1071,18 +1070,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
-            # ✅ Deduplicate and adjust
             top_genres = adjust_genres(top_genres)
             metal_subgenres = [g for g in top_genres if "metal" in g.lower() and g.lower() != "heavy metal"]
             if metal_subgenres:
                 top_genres = [g for g in top_genres if g.lower() != "heavy metal"]
             top_genres = list(dict.fromkeys(top_genres))
 
-            # ✅ Aggregate for artist-level genre mapping
             for genre in top_genres:
                 artist_genre_map[genre] = artist_genre_map.get(genre, 0) + 1
 
-            # ✅ Detect single status
             single_info = detect_single_status(title, artist_name, cache=single_cache, force=force, use_google=use_google, use_ai=use_ai)
 
             album_tracks.append({
@@ -1096,16 +1092,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "single_confidence": single_info["confidence"]
             })
 
-            # ✅ Print comparison
+            # ✅ Clean output: only show genres in verbose mode
             print(f"🎵 {title} → score: {round(score)}")
-            print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
-            print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
+            if verbose:
+                print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
+                print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
             print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
 
         # ✅ Album rating logic remains
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
+
+        # ✅ No genre update here — handled in sync_to_navidrome()
+        if verbose:
+            print(f"ℹ️ Suggested album genres: {', '.join(top_genres)}")
 
         # ✅ Sort and assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
@@ -1144,31 +1145,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
 
     # ✅ Artist-level genre suggestion
-    if artist_genre_map:
+    if artist_genre_map and verbose:
         sorted_artist_genres = sorted(artist_genre_map.items(), key=lambda x: x[1], reverse=True)
         top_artist_genres = [g for g, _ in sorted_artist_genres[:3]]
         print(f"\n💡 Suggested artist genres for '{artist_name}' → {', '.join(top_artist_genres)}")
 
-    # ✅ Playlist generation check
-    if len(rated_map) > 100:
-        essentials = sorted(rated_map.values(), key=lambda x: x["score"], reverse=True)
-        top_count = max(10, int(len(essentials) * 0.10))
-        playlist_name = f"Essential {artist_name}"
-        try:
-            create_res = requests.get(f"{nav_base}/rest/createPlaylist.view", params={**auth, "name": playlist_name})
-            create_res.raise_for_status()
-            playlist_id = create_res.json().get("subsonic-response", {}).get("playlist", {}).get("id")
-            if not playlist_id:
-                print(f"⚠️ Playlist creation failed for '{artist_name}' (no ID returned)")
-            else:
-                for track in essentials[:top_count]:
-                    requests.get(f"{nav_base}/rest/updatePlaylist.view", params={**auth, "playlistId": playlist_id, "songId": track["id"]})
-                print(f"✅ Created playlist '{playlist_name}' with {top_count} tracks")
-        except Exception as e:
-            print(f"⚠️ Failed to create playlist for {artist_name}: {type(e).__name__} - {e}")
-
     save_single_cache(single_cache)
     return rated_map
+
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
@@ -1206,8 +1190,6 @@ def fetch_all_artists():
 import difflib
 
 
-
-
 def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1228,6 +1210,28 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
         if verbose:
             print(f"\n🎨 Syncing album: {album_name} ({len(tracks)} tracks)")
 
+        # ✅ Determine new genre suggestion from rated tracks
+        new_genre = ", ".join(sorted({g for t in tracks for g in t.get("genres", [])}))
+        
+        # ✅ Fetch current album genre from Navidrome
+        try:
+            album_id = tracks[0].get("id")  # Use first track to get album info
+            res_album = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
+            res_album.raise_for_status()
+            album_info = res_album.json().get("subsonic-response", {}).get("album", {})
+            current_genre = album_info.get("genre", "")
+        except Exception as e:
+            current_genre = ""
+            if verbose:
+                print(f"{LIGHT_RED}⚠️ Failed to fetch album genre for '{album_name}': {type(e).__name__} - {e}{RESET}")
+
+        # ✅ Compare and log genre changes
+        if current_genre.lower() != new_genre.lower():
+            print(f"🔄 Updating album genre for '{album_name}': '{current_genre or 'None'}' → '{new_genre}'")
+        elif verbose:
+            print(f"ℹ️ No genre change for '{album_name}' (current: '{current_genre}')")
+
+        # ✅ Sync track ratings
         for track in tracks:
             title = track["title"]
             stars = track.get("stars", 0)
@@ -1275,7 +1279,6 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
-
 
 def pipe_output(search_term=None):
     try:
