@@ -917,11 +917,12 @@ def fetch_all_artists():
 
 import difflib
 
-
-
-
-
 def sync_to_navidrome(track_ratings, artist_name):
+    """
+    Sync track ratings to Navidrome and provide album-level summary output.
+    - Verbose ON: Shows detailed per-track sync info.
+    - Verbose OFF: Shows only updated tracks and one summary line for unchanged albums.
+    """
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
@@ -931,49 +932,65 @@ def sync_to_navidrome(track_ratings, artist_name):
     matched = 0
     changed = 0
 
+    # ✅ Group tracks by album
+    albums = {}
     for track in track_ratings:
-        title = track["title"]
-        stars = track.get("stars", 0)
-        score = track.get("score")
-        track_id = track.get("id")
+        album_name = track.get("album", "Unknown Album")
+        albums.setdefault(album_name, []).append(track)
 
-        if not track_id:
-            print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
-            continue
+    for album_name, tracks in albums.items():
+        album_changed = False
 
-        # Fetch current Navidrome rating
-        try:
-            res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
-            res.raise_for_status()
-            nav_rating = res.json().get("subsonic-response", {}).get("song", {}).get("userRating", 0)
-        except Exception as e:
-            print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
-            nav_rating = 0
+        if verbose:
+            print(f"\n🎨 Syncing album: {album_name} ({len(tracks)} tracks)")
 
-        cached_stars = cache.get(track_id, {}).get("stars", 0)
+        for track in tracks:
+            title = track["title"]
+            stars = track.get("stars", 0)
+            score = track.get("score")
+            track_id = track.get("id")
 
-        # Print sync check
-        print(f"🧪 Sync check → {title} | Navidrome: {nav_rating} | New: {stars} | Cached: {cached_stars}")
+            if not track_id:
+                if verbose:
+                    print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
+                continue
 
-        if nav_rating == stars:
-            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (Navidrome already has {'★' * stars}){RESET}")
-            matched += 1
-            continue
+            # Fetch current Navidrome rating
+            try:
+                res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
+                res.raise_for_status()
+                nav_rating = res.json().get("subsonic-response", {}).get("song", {}).get("userRating", 0)
+            except Exception as e:
+                if verbose:
+                    print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
+                nav_rating = 0
 
-        # Push update
-        try:
-            set_params = {**auth, "id": track_id, "rating": stars}
-            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
-            set_res.raise_for_status()
+            if nav_rating == stars:
+                matched += 1
+                continue
 
-            # ✅ Show star rating only here
-            print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
+            # Push update
+            try:
+                set_params = {**auth, "id": track_id, "rating": stars}
+                set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+                set_res.raise_for_status()
 
-            updated_cache[track_id] = build_cache_entry(stars, score)
-            matched += 1
-            changed += 1
-        except Exception as e:
-            print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
+                album_changed = True
+                if verbose:
+                    print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
+                else:
+                    print(f"✅ Track '{title}' updated to {'★' * stars}")
+
+                updated_cache[track_id] = build_cache_entry(stars, score)
+                matched += 1
+                changed += 1
+            except Exception as e:
+                if verbose:
+                    print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
+
+        # ✅ Album summary if no changes
+        if not album_changed and not verbose:
+            print(f"ℹ️ Album '{album_name}' unchanged (all ratings already up-to-date)")
 
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
