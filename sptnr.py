@@ -718,6 +718,7 @@ DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -745,15 +746,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         except:
             return []
 
-    raw_tracks = []
-
-    # ✅ Pass 1: Compute scores for all tracks
+    # ✅ Process each album separately
     for album in albums:
+        album_name = album["name"]
         songs = fetch_album_tracks(album)
+        if not songs:
+            continue
+
+        print(f"\n🎨 Album: {album_name} ({len(songs)} tracks)")
+        album_tracks = []
+
+        # ✅ Pass 1: Compute scores for album tracks
         for song in songs:
             title = song["title"]
             track_id = song["id"]
-            album_name = album["name"]
             nav_date = song.get("created", "").split("T")[0]
 
             # Skip recently scanned tracks unless forced
@@ -769,7 +775,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                     pass
 
             if verbose:
-                print(f"{LIGHT_GREEN}🎶 Searching Spotify...{RESET}")
+                print(f"{LIGHT_GREEN}🎶 Searching Spotify for '{title}'...{RESET}")
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -780,7 +786,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             score, days_since = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-            raw_tracks.append({
+            album_tracks.append({
                 "title": title,
                 "album": album_name,
                 "id": track_id,
@@ -789,13 +795,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": source_used
             })
 
-    # ✅ Pass 2: Normalize stars within each album
-    albums_grouped = {}
-    for t in raw_tracks:
-        albums_grouped.setdefault(t["album"], []).append(t)
-
-    for album_name, tracks in albums_grouped.items():
-        sorted_album = sorted(tracks, key=lambda x: x["score"], reverse=True)
+        # ✅ Pass 2: Normalize stars within album
+        sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         total = len(sorted_album)
         band_size = math.ceil(total / 5)
 
@@ -807,46 +808,54 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             track["stars"] = stars
             print_star_line(track["title"], round(track["score"]), track["stars"], False)
 
-    # ✅ Pass 3: Apply single detection boost
-    for track in raw_tracks:
-        if verbose:
-            print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
-        single_status = detect_single_status(
-            track["title"],
-            artist_name,
-            single_cache,
-            force=force,
-            album_track_count=len(albums_grouped.get(track["album"], []))
-        )
-        track["is_single"] = single_status["is_single"]
-        track["single_confidence"] = single_status["confidence"]
-        track["sources"] = single_status.get("sources", [])
+        # ✅ Pass 3: Apply single detection boost
+        album_rated_map = {}
+        for track in sorted_album:
+            if verbose:
+                print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
+            single_status = detect_single_status(
+                track["title"],
+                artist_name,
+                single_cache,
+                force=force,
+                album_track_count=len(sorted_album)
+            )
+            track["is_single"] = single_status["is_single"]
+            track["single_confidence"] = single_status["confidence"]
+            track["sources"] = single_status.get("sources", [])
 
-        if track["is_single"] and track["single_confidence"] == "high":
-            track["stars"] = 5
-        elif track["is_single"] and track["single_confidence"] == "medium":
-            track["stars"] = min(track["stars"] + 1, 5)
+            if track["is_single"] and track["single_confidence"] == "high":
+                track["stars"] = 5
+            elif track["is_single"] and track["single_confidence"] == "medium":
+                track["stars"] = min(track["stars"] + 1, 5)
 
-        final_score = round(track["score"])
-        cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
-        rated_map[track["id"]] = {
-            "id": track["id"],
-            "title": track["title"],
-            "artist": artist_name,
-            "stars": track["stars"],
-            "score": final_score,
-            "is_single": track["is_single"],
-            "last_scanned": cache_entry["last_scanned"],
-            "source_used": track["source_used"]
-        }
+            final_score = round(track["score"])
+            cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
+            album_rated_map[track["id"]] = {
+                "id": track["id"],
+                "title": track["title"],
+                "artist": artist_name,
+                "stars": track["stars"],
+                "score": final_score,
+                "is_single": track["is_single"],
+                "last_scanned": cache_entry["last_scanned"],
+                "source_used": track["source_used"]
+            }
 
-        print_star_line(track["title"], final_score, track["stars"], track["is_single"])
-        if verbose:
-            print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
+            print_star_line(track["title"], final_score, track["stars"], track["is_single"])
+            if verbose:
+                print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
 
-    # ✅ Save caches AFTER all tracks processed
+        # ✅ Sync immediately after album rating
+        if args.sync and album_rated_map:
+            sync_to_navidrome(list(album_rated_map.values()), artist_name)
+
+        # Merge into overall rated_map for summary
+        rated_map.update(album_rated_map)
+
+    # ✅ Save caches AFTER all albums processed
     save_single_cache(single_cache)
-    return rated_map  # <-- Correct indentation inside the function
+    return rated_map
 
     
 def load_artist_index():
@@ -885,7 +894,12 @@ def fetch_all_artists():
 import difflib
 
 
+
 def sync_to_navidrome(track_ratings, artist_name):
+    """
+    Sync calculated ratings to Navidrome, using Navidrome's current rating as the source of truth.
+    Cached ratings are used only for informational purposes.
+    """
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
@@ -905,10 +919,7 @@ def sync_to_navidrome(track_ratings, artist_name):
             print(f"{LIGHT_RED}❌ Missing ID for: '{title}', skipping sync.{RESET}")
             continue
 
-        last_rating_entry = cache.get(track_id, {})
-        cached_stars = last_rating_entry.get("stars", 0)
-
-        # ✅ Fetch current rating from Navidrome
+        # ✅ Fetch current rating from Navidrome FIRST
         try:
             res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
             res.raise_for_status()
@@ -917,16 +928,20 @@ def sync_to_navidrome(track_ratings, artist_name):
             print(f"{LIGHT_RED}⚠️ Failed to fetch Navidrome rating for '{title}': {type(e).__name__} - {e}{RESET}")
             nav_rating = 0
 
+        # ✅ Get cached rating for informational purposes
+        last_rating_entry = cache.get(track_id, {})
+        cached_stars = last_rating_entry.get("stars", 0)
+
         # ✅ Print sync check details
         print(f"🧪 Sync check → {title} | Navidrome: {nav_rating} | New: {stars} | Cached: {cached_stars}")
 
-        # ✅ Skip if no change
-        if cached_stars == stars and nav_rating == stars:
-            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (stars: {'★' * stars}){RESET}")
+        # ✅ Skip if Navidrome already matches new stars
+        if nav_rating == stars:
+            print(f"{LIGHT_BLUE}⏩ No change: '{title}' (Navidrome already has {'★' * stars}){RESET}")
             matched += 1
             continue
 
-        # ✅ Push update to Navidrome
+        # ✅ Push update only if Navidrome differs
         try:
             set_params = {**auth, "id": track_id, "rating": stars}
             set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
@@ -934,12 +949,14 @@ def sync_to_navidrome(track_ratings, artist_name):
 
             print(f"{LIGHT_GREEN}✅ Synced: {title} (stars: {'★' * stars}){RESET}")
 
+            # ✅ Update local cache after successful sync
             updated_cache[track_id] = build_cache_entry(stars, score)
             matched += 1
             changed += 1
         except Exception as e:
             print(f"{LIGHT_RED}⚠️ Sync failed for '{title}': {type(e).__name__} - {e}{RESET}")
 
+    # ✅ Save updated cache
     save_rating_cache(updated_cache)
     print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
     
