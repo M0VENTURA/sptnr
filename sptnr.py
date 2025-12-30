@@ -274,14 +274,17 @@ def search_spotify_track(title, artist, album=None):
         f"{title.replace('Part', 'Pt.')} artist:{artist}"
     ]
 
+    all_results = []
     for q in filter(None, queries):
         try:
             results = query(q)
             if results:
-                return results
+                all_results.extend(results)
         except:
             continue
-    return []
+
+    return all_results
+
 
 def version_requested(track_title):
     keywords = ["live", "remix"]
@@ -331,10 +334,24 @@ def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, v
 
     return score, days_since
 
+
 def select_best_spotify_match(results, track_title):
     allow_live_remix = version_requested(track_title)
+
+    # Filter invalid versions
     filtered = [r for r in results if is_valid_version(r["name"], allow_live_remix)]
-    return max(filtered, key=lambda r: r.get("popularity", 0)) if filtered else {"popularity": 0}
+
+    if not filtered:
+        return {"popularity": 0}
+
+    # ✅ Prefer single releases first
+    singles = [r for r in filtered if r.get("album", {}).get("album_type", "").lower() == "single"]
+    if singles:
+        return max(singles, key=lambda r: r.get("popularity", 0))
+
+    # ✅ Otherwise, return most popular overall
+    return max(filtered, key=lambda r: r.get("popularity", 0))
+
 
 
 
@@ -978,8 +995,6 @@ def adjust_genres(genres):
     return genres
 
 
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -1022,7 +1037,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         for song in songs:
             title = song["title"]
             track_id = song["id"]
-            nav_date = song.get("created", "").split("T")[0]
+            nav_date = song.get("created", "").split("T")
 
             # Skip recently scanned tracks unless forced
             if not force and track_id in track_cache:
@@ -1049,7 +1064,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
             # ✅ Fetch genres from sources
-            spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
+            spotify_genres = selected.get("artists", [{}]).get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name)
@@ -1156,6 +1171,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     save_single_cache(single_cache)
     return rated_map
+
 
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
