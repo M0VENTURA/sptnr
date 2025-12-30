@@ -286,6 +286,7 @@ def is_valid_version(track_title, allow_live_remix=False):
 
 
 
+
 def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
     fallback_triggered = False
 
@@ -308,10 +309,10 @@ def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, v
             (AGE_WEIGHT * momentum)
 
     if verbose:
-        print(f"🔢 Final score for '{title}': {final_score} (Spotify: {sp_score}, Last.fm: {lf_ratio}, LB: {lb_score}, Age: {momentum})")
+        print(f"🔢 Raw score for '{title}': {round(score)} "
+              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, LB: {lb_score}, Age: {momentum})")
 
     return score, days_since
-
 
 def select_best_spotify_match(results, track_title):
     allow_live_remix = version_requested(track_title)
@@ -981,6 +982,7 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -1017,7 +1019,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         for song in songs:
             title = song["title"]
             track_id = song["id"]
-            nav_date = song.get("created", "").split("T")
+            nav_date = song.get("created", "").split("T")[0]
 
             if not force and track_id in track_cache:
                 try:
@@ -1032,9 +1034,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
             selected = select_best_spotify_match(filtered, title)
             sp_score = selected.get("popularity", 0)
-            release_date = selected.get("album", {}).get("release_date") or nav_date
+            release_date = selected.get("album", {}).get("release_date") or nav_date or "1992-01-01"
 
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+
+            if verbose:
+                print(f"[DEBUG] Track: {title}, Raw score: {score}, Release date: {release_date}")
 
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
@@ -1042,10 +1047,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             audiodb_genres = get_audiodb_genres(artist_name)
             mb_genres = get_musicbrainz_genres(title, artist_name)
 
-            nav_genres = []
-            if "genre" in song:
-                nav_genres = [song["genre"]] if isinstance(song["genre"], str) else song["genre"]
-
+            nav_genres = [song["genre"]] if song.get("genre") else []
             top_genres, _ = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
@@ -1073,12 +1075,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         band_size = math.ceil(total / 4)
         median_score = median(track["score"] for track in sorted_album)
         if median_score == 0:
-            median_score = 10  # Fallback baseline
+            median_score = 10
         jump_threshold = median_score * 1.7
 
         for i, track in enumerate(sorted_album):
             band_index = i // band_size
-            stars = max(1, 4 - band_index)  # Minimum 1 star
+            stars = max(1, 4 - band_index)
             if track["score"] >= jump_threshold:
                 stars = 5
             if track["is_single"]:
@@ -1087,10 +1089,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 elif track["single_confidence"] == "medium":
                     stars = min(stars + 1, 5)
 
-            stars = max(stars, 1)  # Ensure stars are never zero
+            stars = max(stars, 1)
             final_score = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
 
-            # Add stars back to album_tracks for sync
             track["stars"] = stars
             track["score"] = final_score
 
@@ -1109,7 +1110,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": track["source_used"]
             }
 
-        # ✅ Sync this album immediately with stars included
         if album_tracks:
             sync_to_navidrome(sorted_album, artist_name)
 
