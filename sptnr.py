@@ -1003,13 +1003,17 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         except:
             return []
 
-    for album in albums:
-        album_name = album["name"]
-        songs = fetch_album_tracks(album)
-        if not songs:
-            continue
+    
+        for album in albums:
+            album_name = album["name"]
+            songs = fetch_album_tracks(album)
+            if not songs:
+                continue
+        
+            print(f"\n🎧 Processing album: {album_name}")  # ✅ Added this line
+        
+            album_tracks = []
 
-        album_tracks = []
 
         for song in songs:
             title = song["title"]
