@@ -981,6 +981,7 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -1070,10 +1071,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
+            # ✅ Deduplicate and adjust
             top_genres = adjust_genres(top_genres)
-            metal_subgenres = [g for g in top_genres if "metal" in g.lower() and g.lower() != "heavy metal"]
-            if metal_subgenres:
-                top_genres = [g for g in top_genres if g.lower() != "heavy metal"]
+
+            # ✅ Remove generic 'rock' if metal genres exist
+            if any("metal" in g.lower() for g in top_genres):
+                top_genres = [g for g in top_genres if g.lower() != "rock"]
+
             top_genres = list(dict.fromkeys(top_genres))
 
             for genre in top_genres:
@@ -1103,10 +1107,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
             album_score_map.append({"album_id": album["id"], "album_name": album_name, "median_score": median_score})
-
-        # ✅ No genre update here — handled in sync_to_navidrome()
-        if verbose:
-            print(f"ℹ️ Suggested album genres: {', '.join(top_genres)}")
 
         # ✅ Sort and assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
@@ -1144,7 +1144,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {final_score}")
 
-    # ✅ Artist-level genre suggestion
+    # ✅ Artist-level genre suggestion only in verbose mode
     if artist_genre_map and verbose:
         sorted_artist_genres = sorted(artist_genre_map.items(), key=lambda x: x[1], reverse=True)
         top_artist_genres = [g for g, _ in sorted_artist_genres[:3]]
