@@ -124,15 +124,21 @@ def version_requested(track_title):
     keywords = ["live", "remix"]
     return any(k in track_title.lower() for k in keywords)
 
-def is_valid_version(track_title, allow_live_remix):
+
+def is_valid_version(track_title, allow_live_remix=False):
     title = track_title.lower()
     blacklist = ["live", "remix", "mix", "edit", "rework", "bootleg"]
     whitelist = ["remaster"]
 
+    # If live/remix allowed, remove those from blacklist
     if allow_live_remix:
         blacklist = [b for b in blacklist if b not in ["live", "remix"]]
 
-    return any(w in title for w in whitelist) or not any(b in title for b in blacklist)
+    # Reject if any blacklist term is present (unless whitelisted)
+    if any(b in title for b in blacklist) and not any(w in title for w in whitelist):
+        return False
+    return True
+
 
 
 def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
@@ -622,9 +628,11 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
         spotify_results = search_spotify_track(title, artist)
         if spotify_results:
             album_type = select_best_spotify_match(spotify_results, title).get("album", {}).get("album_type", "").lower()
-            if album_type == "single":
-                sources.append("Spotify")
-                confidence = "high"
+                album_name = select_best_spotify_match(spotify_results, title).get("album", {}).get("name", "").lower()
+                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
+                    sources.append("Spotify")
+                    confidence = "high"
+
     except:
         pass
 
