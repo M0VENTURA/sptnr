@@ -979,6 +979,7 @@ def adjust_genres(genres):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     print(f"\n🔍 Scanning - {artist_name}")
 
@@ -1079,19 +1080,25 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             # ✅ Deduplicate genres
             top_genres = list(dict.fromkeys(top_genres))
 
+            # ✅ Detect single status
+            single_info = detect_single_status(title, artist_name, cache=single_cache, force=force, use_google=use_google, use_ai=use_ai)
+
             album_tracks.append({
                 "title": title,
                 "album": album_name,
                 "id": track_id,
                 "score": score,
                 "source_used": source_used,
-                "genres": top_genres
+                "genres": top_genres,
+                "is_single": single_info["is_single"],
+                "single_confidence": single_info["confidence"]
             })
 
             # ✅ Print comparison for every track
             print(f"🎵 {title} → score: {round(score)}")
             print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
-            print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}\n")
+            print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
+            print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
 
         if album_tracks:
             median_score = median(track["score"] for track in album_tracks)
@@ -1108,8 +1115,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             band_index = i // band_size
             stars = max(1, 4 - band_index)  # Base rating: 1–4 stars
 
+            # ✅ Boost for big jump
             if track["score"] >= jump_threshold:
                 stars = 5
+
+            # ✅ Boost for singles
+            if track["is_single"]:
+                if track["single_confidence"] == "high" and track["score"] >= median_score:
+                    stars = 5
+                elif track["single_confidence"] == "medium" and track["score"] >= (median_score * 0.8):
+                    stars = min(stars + 1, 5)
 
             final_score = round(track["score"])
             cache_entry = build_cache_entry(stars, final_score, artist=artist_name)
@@ -1121,6 +1136,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "album": track["album"],
                 "stars": stars,
                 "score": final_score,
+                "is_single": track["is_single"],
                 "genres": track["genres"],
                 "last_scanned": cache_entry["last_scanned"],
                 "source_used": track["source_used"]
@@ -1141,8 +1157,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     save_single_cache(single_cache)
     return rated_map
 
-
-    
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
         logging.error(f"{LIGHT_RED}Artist index file not found: {INDEX_FILE}{RESET}")
