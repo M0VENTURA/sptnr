@@ -928,7 +928,7 @@ def fetch_all_artists():
 import difflib
 
 
-def sync_to_navidrome(track_ratings, artist_name):
+def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     """
     Sync track ratings to Navidrome and provide album-level summary output.
     - Verbose ON: Shows detailed per-track sync info.
