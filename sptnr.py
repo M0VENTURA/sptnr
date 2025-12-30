@@ -979,10 +979,6 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
-
-
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=False, use_ai=False, rate_albums=True):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
@@ -991,7 +987,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     single_cache = load_single_cache()
     track_cache = load_rating_cache()
     rated_map = {}
-    artist_genre_map = {}
 
     try:
         res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
@@ -999,9 +994,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         albums = res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
     except:
         return {}
-
-    if verbose:
-        print(f"\n📀 Found {len(albums)} albums for {artist_name}")
 
     def fetch_album_tracks(album):
         try:
@@ -1017,9 +1009,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
         if not songs:
             continue
 
-        if verbose:
-            print(f"\n🔍 Scanning album: {album_name} ({len(songs)} tracks)")
-
         album_tracks = []
 
         for song in songs:
@@ -1027,18 +1016,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             track_id = song["id"]
             nav_date = song.get("created", "").split("T")[0]
 
-            # Skip recently scanned tracks unless forced
             if not force and track_id in track_cache:
                 try:
                     last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
                     if datetime.now() - last < timedelta(days=7):
-                        if verbose:
-                            print(f"⏩ Skipped: '{title}' (recent scan)")
                         continue
                 except:
                     pass
 
-            # Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
             allow_live_remix = version_requested(title)
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
@@ -1046,11 +1031,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             sp_score = selected.get("popularity", 0)
             release_date = selected.get("album", {}).get("release_date") or nav_date
 
-            # Compute score
-            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
+            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=False)
             source_used = "lastfm" if not sp_score or sp_score <= 20 else "spotify"
 
-            # Fetch genres
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             lastfm_tags = get_lastfm_tags(artist_name)
             discogs_genres = get_discogs_genres(title, artist_name)
@@ -1061,7 +1044,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             if "genre" in song:
                 nav_genres = [song["genre"]] if isinstance(song["genre"], str) else song["genre"]
 
-            top_genres, nav_genres_cleaned = get_top_genres_with_navidrome({
+            top_genres, _ = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
                 "discogs": discogs_genres,
@@ -1069,14 +1052,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
 
-            # Remove generic 'rock' if metal genres exist
             if any("metal" in g.lower() for g in top_genres):
                 top_genres = [g for g in top_genres if g.lower() != "rock"]
 
             top_genres = list(dict.fromkeys(top_genres))
-
-            for genre in top_genres:
-                artist_genre_map[genre] = artist_genre_map.get(genre, 0) + 1
 
             single_info = detect_single_status(title, artist_name, cache=single_cache, force=force, use_google=use_google, use_ai=use_ai)
 
@@ -1090,15 +1069,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "is_single": single_info["is_single"],
                 "single_confidence": single_info["confidence"]
             })
-
-            # Verbose-only debug info
-            
-            if verbose:
-                print(f"🎵 {title} → score: {round(score)}")
-                print(f"   🌐 Online genres: {', '.join(top_genres) if top_genres else 'None'}")
-                print(f"   📀 Navidrome genres: {', '.join(nav_genres_cleaned) if nav_genres_cleaned else 'None'}")
-                print(f"   🔍 Single detected: {single_info['is_single']} (confidence: {single_info['confidence']})\n")
-
 
         # Assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
@@ -1134,8 +1104,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": track["source_used"]
             }
 
+        # ✅ Sync this album immediately
+        if album_tracks:
+            sync_to_navidrome(album_tracks, artist_name)
+
     save_single_cache(single_cache)
     return rated_map
+
 
 
 def load_artist_index():
@@ -1174,8 +1149,7 @@ def fetch_all_artists():
 import difflib
 
 
-
-def sync_to_navidrome(track_ratings, artist_name, verbose=False):
+def sync_to_navidrome(album_tracks, artist_name, verbose=False):
     nav_base, auth = get_auth_params()
     if not nav_base or not auth:
         return
@@ -1185,65 +1159,53 @@ def sync_to_navidrome(track_ratings, artist_name, verbose=False):
     matched = 0
     changed = 0
 
-    albums = {}
-    for track in track_ratings:
-        album_name = track.get("album", "Unknown Album")
-        albums.setdefault(album_name, []).append(track)
+    album_name = album_tracks[0].get("album", "Unknown Album")
+    print(f"\n📀 Album: {album_name}")
 
-    for album_name, tracks in albums.items():
-        # Determine new genre suggestion
-        new_genre = ", ".join(sorted({g for t in tracks for g in t.get("genres", [])}))
+    for track in album_tracks:
+        track_id = track.get("id")
+        stars = track.get("stars", 0)
+        score = track.get("score")
+        new_genre = ", ".join(track.get("genres", [])) if track.get("genres") else "Unknown"
 
-        # Fetch current album genre
+        # Fetch current track genre from Navidrome
         try:
-            album_id = tracks[0].get("id")
-            res_album = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album_id})
-            res_album.raise_for_status()
-            album_info = res_album.json().get("subsonic-response", {}).get("album", {})
-            current_genre = album_info.get("genre", "")
+            res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
+            res.raise_for_status()
+            nav_song = res.json().get("subsonic-response", {}).get("song", {})
+            current_genre = nav_song.get("genre", "None")
         except:
-            current_genre = ""
+            current_genre = "None"
 
-        # Compare and log genre changes
-        if current_genre.lower() != new_genre.lower():
-            print(f"\n🔄 Updating album genre for '{album_name}': '{current_genre or 'None'}' → '{new_genre}'")
+        # Show final rating with genre comparison
+        print(f"✅ Final rating: {track['title']} → stars: {'★' * stars} | score: {score} | Genre: {current_genre} → {new_genre}")
 
-        # Show final ratings for each track
-        for track in tracks:
-            print(f"✅ Final rating: {track['title']} → stars: {'★' * track['stars']} | score: {track['score']}")
+        if not track_id:
+            continue
 
-            track_id = track.get("id")
-            stars = track.get("stars", 0)
-            score = track.get("score")
+        # Sync rating
+        try:
+            nav_rating = nav_song.get("userRating", 0)
+        except:
+            nav_rating = 0
 
-            if not track_id:
-                continue
+        if nav_rating == stars:
+            matched += 1
+            continue
 
-            try:
-                res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
-                res.raise_for_status()
-                nav_rating = res.json().get("subsonic-response", {}).get("song", {}).get("userRating", 0)
-            except:
-                nav_rating = 0
+        try:
+            set_params = {**auth, "id": track_id, "rating": stars}
+            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+            set_res.raise_for_status()
 
-            if nav_rating == stars:
-                matched += 1
-                continue
-
-            try:
-                set_params = {**auth, "id": track_id, "rating": stars}
-                set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
-                set_res.raise_for_status()
-
-                updated_cache[track_id] = build_cache_entry(stars, score)
-                matched += 1
-                changed += 1
-            except:
-                continue
+            updated_cache[track_id] = build_cache_entry(stars, score)
+            matched += 1
+            changed += 1
+        except:
+            continue
 
     save_rating_cache(updated_cache)
-    print(f"\n📊 Sync summary: {changed} updated, {matched} total checked, {len(track_ratings)} total rated")
-
+    print(f"\n📊 Album sync summary for '{album_name}': {changed} updated, {matched} checked")
 
 def pipe_output(search_term=None):
     try:
