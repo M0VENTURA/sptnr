@@ -49,16 +49,46 @@ perpetual = config["features"]["perpetual"]
 batchrate = config["features"]["batchrate"]
 artist_list = config["features"]["artist"]
 
+def validate_config(config):
+    issues = []
+
+    # Check Navidrome credentials
+    if config["navidrome"].get("user") in ["admin", "", None]:
+        issues.append("Navidrome username is not set (currently 'admin').")
+    if config["navidrome"].get("pass") in ["password", "", None]:
+        issues.append("Navidrome password is not set (currently 'password').")
+
+    # Check Spotify credentials
+    if config["spotify"].get("client_id") in ["your_spotify_client_id", "", None]:
+        issues.append("Spotify Client ID is missing or placeholder.")
+    if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
+        issues.append("Spotify Client Secret is missing or placeholder.")
+
+    # Check Last.fm API key
+    if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
+        issues.append("Last.fm API key is missing or placeholder.")
+
+    # Report issues
+    if issues:
+        print("\n⚠️ Configuration issues detected:")
+        for issue in issues:
+            print(f" - {issue}")
+        print("\n❌ Please update config.yaml before running the script.")
+        sys.exit(1)
+
+# ✅ Call this right after loading config
+validate_config(config)
+
 # ✅ Validate that there is work to do
 if not artist_list and not batchrate and not perpetual:
     print("⚠️ No artist specified and batchrate/perpetual not enabled. Nothing to do.")
     sys.exit(0)
 
-
-# ✅ Credentials and settings
+# ✅ Extract credentials and settings
 NAV_BASE_URL = config["navidrome"]["base_url"]
-NAV_TOKEN = config["navidrome"]["api_token"]
-AUTH_HEADERS = {"Authorization": f"Bearer {NAV_TOKEN}"}
+USERNAME = config["navidrome"]["user"]
+PASSWORD = config["navidrome"]["pass"]
+
 
 client_id = config["spotify"]["client_id"]
 client_secret = config["spotify"]["client_secret"]
@@ -70,6 +100,28 @@ LISTENBRAINZ_WEIGHT = config["weights"]["listenbrainz"]
 AGE_WEIGHT = config["weights"]["age"]
 
 DB_PATH = config["database"]["path"]
+
+
+# ✅ Compatibility check for OpenSubsonic extensions
+def get_supported_extensions():
+    url = f"{NAV_BASE_URL}/rest/getOpenSubsonicExtensions.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
+    try:
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        extensions = res.json().get("subsonic-response", {}).get("openSubsonicExtensions", [])
+        print(f"✅ Supported extensions: {extensions}")
+        return extensions
+    except Exception as e:
+        print(f"⚠️ Failed to fetch extensions: {e}")
+        return []
+
+SUPPORTED_EXTENSIONS = get_supported_extensions()
+
+# ✅ Decide feature usage
+USE_FORMPOST = "formPost" in SUPPORTED_EXTENSIONS
+USE_SEARCH3 = "search3" in SUPPORTED_EXTENSIONS
+
 
 # ✅ Logging setup
 logging.basicConfig(
@@ -331,94 +383,76 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
     return online_top, nav_cleaned
 
-# --- Navidrome API Integration ---
-
-def update_track_genre(track_id, new_genres):
-    """
-    Update the genre(s) of a track in Navidrome using the API.
-    :param track_id: Track ID in Navidrome
-    :param new_genres: List of genres to set
-    """
-    url = f"{NAV_BASE_URL}/api/song/{track_id}"
-    payload = {"genre": ", ".join(new_genres)}
-    try:
-        res = requests.put(url, headers=AUTH_HEADERS, json=payload)
-        res.raise_for_status()
-        logging.info(f"✅ Updated genres for track {track_id}: {new_genres}")
-    except Exception as e:
-        logging.error(f"❌ Failed to update genres for track {track_id}: {e}")
-
 def set_track_rating(track_id, stars):
     """
-    Set user rating for a track in Navidrome using the API.
+    Set user rating for a track in Navidrome using Subsonic API.
     :param track_id: Track ID in Navidrome
     :param stars: Rating (1–5)
     """
-    url = f"{NAV_BASE_URL}/api/rating"
-    payload = {"itemId": track_id, "rating": stars}
+    url = f"{NAV_BASE_URL}/rest/setRating.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": track_id, "rating": stars}
     try:
-        res = requests.post(url, headers=AUTH_HEADERS, json=payload)
+        res = requests.get(url, params=params)
         res.raise_for_status()
         logging.info(f"✅ Set rating {stars}/5 for track {track_id}")
     except Exception as e:
         logging.error(f"❌ Failed to set rating for track {track_id}: {e}")
 
+
 def create_playlist(name, track_ids):
-    """
-    Create a playlist in Navidrome using the API.
-    :param name: Playlist name
-    :param track_ids: List of track IDs to include
-    """
-    url = f"{NAV_BASE_URL}/api/playlist"
-    payload = {"name": name, "songIds": track_ids}
-    try:
-        res = requests.post(url, headers=AUTH_HEADERS, json=payload)
-        res.raise_for_status()
-        logging.info(f"✅ Playlist '{name}' created with {len(track_ids)} tracks.")
-    except Exception as e:
-        logging.error(f"❌ Failed to create playlist '{name}': {e}")
+    url = f"{NAV_BASE_URL}/rest/createPlaylist.view"
+    if USE_FORMPOST:
+        print("ℹ️ Using formPost for playlist creation.")
+        data = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "name": name}
+        for tid in track_ids:
+            data.setdefault("songId", []).append(tid)
+        res = requests.post(url, data=data)
+    else:
+        params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "name": name}
+        for tid in track_ids:
+            params.setdefault("songId", []).append(tid)
+        res = requests.get(url, params=params)
+    res.raise_for_status()
+    print(f"✅ Playlist '{name}' created with {len(track_ids)} tracks.")
+
 
 def fetch_artist_albums(artist_id):
-    """
-    Fetch all albums for an artist using Navidrome API.
-    :param artist_id: Artist ID in Navidrome
-    :return: List of album objects
-    """
-    url = f"{NAV_BASE_URL}/api/artist/{artist_id}/albums"
+    url = f"{NAV_BASE_URL}/rest/getArtist.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": artist_id, "f": "json"}
     try:
-        res = requests.get(url, headers=AUTH_HEADERS)
+        res = requests.get(url, params=params)
         res.raise_for_status()
-        return res.json().get("albums", [])
+        return res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
     except Exception as e:
         logging.error(f"❌ Failed to fetch albums for artist {artist_id}: {e}")
         return []
 
+
 def fetch_album_tracks(album_id):
     """
-    Fetch all tracks for an album using Navidrome API.
+    Fetch all tracks for an album using Subsonic API.
     :param album_id: Album ID in Navidrome
     :return: List of track objects
     """
-    url = f"{NAV_BASE_URL}/api/album/{album_id}/songs"
+    url = f"{NAV_BASE_URL}/rest/getAlbum.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": album_id, "f": "json"}
     try:
-        res = requests.get(url, headers=AUTH_HEADERS)
+        res = requests.get(url, params=params)
         res.raise_for_status()
-        return res.json().get("songs", [])
+        return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
     except Exception as e:
         logging.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
         return []
 
+
 def build_artist_index():
-    """
-    Build a local cache of all artists from Navidrome.
-    :return: Dictionary {artist_name: artist_id}
-    """
-    url = f"{NAV_BASE_URL}/api/artist"
+    url = f"{NAV_BASE_URL}/rest/getArtists.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
     try:
-        res = requests.get(url, headers=AUTH_HEADERS)
+        res = requests.get(url, params=params)
         res.raise_for_status()
-        artists = res.json().get("artists", [])
-        artist_map = {a["name"]: a["id"] for a in artists}
+        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
+        artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
         with open(INDEX_FILE, "w") as f:
             json.dump(artist_map, f, indent=2)
         logging.info(f"✅ Cached {len(artist_map)} artists to {INDEX_FILE}")
@@ -515,7 +549,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             # Update Navidrome rating and genres
             set_track_rating(track["id"], stars)
-            update_track_genre(track["id"], track["genres"])
 
             # Add top-rated tracks to playlist
             if stars >= 4:
@@ -529,6 +562,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         create_playlist(playlist_name, playlist_tracks)
 
     return rated_map
+
 
 
 # --- CLI Handling ---
@@ -545,30 +579,23 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
     args = parser.parse_args()
 
-    # ✅ PATCH START: Update config.yaml with CLI overrides
+    # ✅ Update config.yaml with CLI overrides if provided
     def update_config_with_cli(args, config, config_path=CONFIG_PATH):
         updated = False
-        if args.dry_run is not None:
-            config["features"]["dry_run"] = args.dry_run
-            updated = True
-        if args.sync is not None:
-            config["features"]["sync"] = args.sync
-            updated = True
-        if args.force is not None:
-            config["features"]["force"] = args.force
-            updated = True
-        if args.verbose is not None:
-            config["features"]["verbose"] = args.verbose
-            updated = True
-        if args.perpetual is not None:
-            config["features"]["perpetual"] = args.perpetual
-            updated = True
-        if args.batchrate is not None:
-            config["features"]["batchrate"] = args.batchrate
-            updated = True
+        if args.dry_run:
+            config["features"]["dry_run"] = True; updated = True
+        if args.sync:
+            config["features"]["sync"] = True; updated = True
+        if args.force:
+            config["features"]["force"] = True; updated = True
+        if args.verbose:
+            config["features"]["verbose"] = True; updated = True
+        if args.perpetual:
+            config["features"]["perpetual"] = True; updated = True
+        if args.batchrate:
+            config["features"]["batchrate"] = True; updated = True
         if args.artist:
-            config["features"]["artist"] = args.artist
-            updated = True
+            config["features"]["artist"] = args.artist; updated = True
 
         if updated:
             try:
@@ -579,9 +606,8 @@ if __name__ == "__main__":
                 print(f"❌ Failed to update config.yaml: {e}")
 
     update_config_with_cli(args, config)
-    # ✅ PATCH END
 
-    # Merge config values for runtime
+    # ✅ Merge config values for runtime
     dry_run = config["features"]["dry_run"]
     sync = config["features"]["sync"]
     force = config["features"]["force"]
@@ -590,10 +616,11 @@ if __name__ == "__main__":
     batchrate = config["features"]["batchrate"]
     artist_list = config["features"]["artist"]
 
-    # --- Existing logic continues ---
+    # ✅ Refresh artist index if requested or missing
     if args.refresh or not os.path.exists(INDEX_FILE):
         build_artist_index()
 
+    # ✅ Pipe output if requested
     if args.pipeoutput is not None:
         with open(INDEX_FILE) as f:
             artist_map = json.load(f)
@@ -603,9 +630,12 @@ if __name__ == "__main__":
             print(f"🎨 {name} → ID: {aid}")
         sys.exit(0)
 
+    # ✅ Load artist index
     artist_index = json.load(open(INDEX_FILE))
 
+    # ✅ Determine execution mode
     if artist_list:
+        print("ℹ️ Running artist-specific rating based on config.yaml...")
         for name in artist_list:
             artist_id = artist_index.get(name)
             if not artist_id:
@@ -618,6 +648,7 @@ if __name__ == "__main__":
             print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
 
     elif batchrate:
+        print("ℹ️ Running full library batch rating based on config.yaml...")
         for name, artist_id in artist_index.items():
             if dry_run:
                 print(f"👀 Dry run: would scan '{name}' (ID {artist_id})")
@@ -627,6 +658,7 @@ if __name__ == "__main__":
             time.sleep(1.5)
 
     elif perpetual:
+        print("ℹ️ Running perpetual mode based on config.yaml...")
         while True:
             print("🔄 Starting scheduled scan...")
             for name, artist_id in artist_index.items():
@@ -635,15 +667,7 @@ if __name__ == "__main__":
                 time.sleep(1.5)
             print("🕒 Scan complete. Sleeping for 12 hours...")
             time.sleep(12 * 60 * 60)
-    
+
     else:
-        # ✅ Fallback: Default to perpetual mode if no valid command provided
-        print("⚠️ No valid command provided. Defaulting to perpetual mode...")
-        while True:
-            print("🔄 Starting scheduled scan (default mode)...")
-            for name, artist_id in artist_index.items():
-                rated = rate_artist(artist_id, name, verbose=verbose, force=force)
-                print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
-                time.sleep(1.5)
-            print("🕒 Scan complete. Sleeping for 12 hours...")
-        time.sleep(12 * 60 * 60)
+        print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
+        sys.exit(0)
