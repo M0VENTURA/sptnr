@@ -68,7 +68,11 @@ def normalize_genre(genre):
 
 
 
+
+
 def get_top_genres(sources, title="", album=""):
+    from collections import defaultdict
+
     genre_scores = defaultdict(float)
 
     # Aggregate weighted genres
@@ -91,12 +95,20 @@ def get_top_genres(sources, title="", album=""):
     generic_genres = {"rock", "pop", "alternative", "indie", "metal"}
     filtered = [g for g, _ in sorted_genres if g not in generic_genres]
 
+    # ✅ Special handling for "heavy metal"
+    # If there are other metal sub-genres, drop "heavy metal"
+    metal_subgenres = [g for g in filtered if "metal" in g.lower() and g.lower() != "heavy metal"]
+    if metal_subgenres:
+        filtered = [g for g in filtered if g.lower() != "heavy metal"]
+
     # ✅ If filtering removes everything, fall back to original list
     if not filtered:
         filtered = [g for g, _ in sorted_genres]
 
     # ✅ Pick top 3 after filtering
     return [g.capitalize() for g in filtered[:3]]
+
+
 
 # 📁 Cache paths (aligned with mounted volume)
 
