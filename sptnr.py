@@ -43,6 +43,7 @@ if abs(total_weight - 1.0) > 0.001:  # Allow tiny floating-point tolerance
     LISTENBRAINZ_WEIGHT /= total_weight
     AGE_WEIGHT /= total_weight
 
+SLEEP_TIME = 1.5  # Default sleep time between artist scans
 
 # 📁 Cache paths (aligned with mounted volume)
 
