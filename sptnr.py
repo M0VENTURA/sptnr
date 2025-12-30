@@ -810,48 +810,50 @@ for album_name, tracks in albums_grouped.items():
 
 
 
-    # ✅ Pass 3: Apply single detection boost
-    for track in raw_tracks:
-        if verbose:
-            print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
-        single_status = detect_single_status(
-            track["title"],
-            artist_name,
-            single_cache,
-            force=force,
-            album_track_count=len(albums_grouped.get(track["album"], []))
-        )
-        track["is_single"] = single_status["is_single"]
-        track["single_confidence"] = single_status["confidence"]
-        track["sources"] = single_status.get("sources", [])
     
-        # ✅ Hard boost only for HIGH confidence singles
-        if track["is_single"] and track["single_confidence"] == "high":
-            track["stars"] = 5
-        elif track["is_single"] and track["single_confidence"] == "medium":
-            track["stars"] = min(track["stars"] + 1, 5)
-    
-        # Build cache entry
-        final_score = round(track["score"])
-        cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
-        rated_map[track["id"]] = {
-            "id": track["id"],
-            "title": track["title"],
-            "artist": artist_name,
-            "stars": track["stars"],
-            "score": final_score,
-            "is_single": track["is_single"],
-            "last_scanned": cache_entry["last_scanned"],
-            "source_used": track["source_used"]
-        }
-    
-        print_star_line(track["title"], final_score, track["stars"], track["is_single"])
-        if verbose:
-            print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
-    
-        # ✅ Save cache and return inside the function
-        save_single_cache(single_cache)
-        return rated_map
+# ✅ Pass 3: Apply single detection boost
+for track in raw_tracks:
+    if verbose:
+        print(f"{LIGHT_CYAN}🧠 Detecting single status for '{track['title']}'...{RESET}")
+    single_status = detect_single_status(
+        track["title"],
+        artist_name,
+        single_cache,
+        force=force,
+        album_track_count=len(albums_grouped.get(track["album"], []))
+    )
+    track["is_single"] = single_status["is_single"]
+    track["single_confidence"] = single_status["confidence"]
+    track["sources"] = single_status.get("sources", [])
+
+    # ✅ Hard boost only for HIGH confidence singles
+    if track["is_single"] and track["single_confidence"] == "high":
+        track["stars"] = 5
+    elif track["is_single"] and track["single_confidence"] == "medium":
+        track["stars"] = min(track["stars"] + 1, 5)
+
+    # Build cache entry
+    final_score = round(track["score"])
+    cache_entry = build_cache_entry(track["stars"], final_score, artist=artist_name)
+    rated_map[track["id"]] = {
+        "id": track["id"],
+        "title": track["title"],
+        "artist": artist_name,
+        "stars": track["stars"],
+        "score": final_score,
+        "is_single": track["is_single"],
+        "last_scanned": cache_entry["last_scanned"],
+        "source_used": track["source_used"]
+    }
+
+    print_star_line(track["title"], final_score, track["stars"], track["is_single"])
+    if verbose:
+        print(f"🧪 Rated → {track['title']} | stars: {track['stars']} | source: {track['source_used']} | ID: {track['id']}")
+
+# ✅ Save caches AFTER all tracks processed
+save_single_cache(single_cache)
+return rated_map
+
     
 def load_artist_index():
     if not os.path.exists(INDEX_FILE):
