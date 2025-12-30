@@ -635,6 +635,15 @@ if __name__ == "__main__":
                 time.sleep(1.5)
             print("🕒 Scan complete. Sleeping for 12 hours...")
             time.sleep(12 * 60 * 60)
-
+    
     else:
-        print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
+        # ✅ Fallback: Default to perpetual mode if no valid command provided
+        print("⚠️ No valid command provided. Defaulting to perpetual mode...")
+        while True:
+            print("🔄 Starting scheduled scan (default mode)...")
+            for name, artist_id in artist_index.items():
+                rated = rate_artist(artist_id, name, verbose=verbose, force=force)
+                print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+                time.sleep(1.5)
+            print("🕒 Scan complete. Sleeping for 12 hours...")
+        time.sleep(12 * 60 * 60)
