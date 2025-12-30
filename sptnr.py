@@ -1034,7 +1034,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             filtered = [r for r in spotify_results if is_valid_version(r["name"], allow_live_remix)]
             selected = select_best_spotify_match(filtered, title)
             sp_score = selected.get("popularity", 0)
-            release_date = selected.get("album", {}).get("release_date") or nav_date or "1992-01-01"
+            release_date = selected.get("album", {}).get("release_date") or "1992-01-01"
 
             score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
 
