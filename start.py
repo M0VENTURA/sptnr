@@ -521,7 +521,7 @@ def _respect_retry_after(resp):
 
 # Very small in-memory cache to reduce Discogs API calls during batch runs.
 # Keyed by normalized (artist, title) -> result dict returned by the function below.
-_DISCogs_VID_CACHE: dict[tuple[str, str], dict] = {}
+_DISCOGS_VID_CACHE: dict[tuple[str, str], dict] = {}
 
 
 def discogs_official_video_signal(
@@ -1911,6 +1911,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
