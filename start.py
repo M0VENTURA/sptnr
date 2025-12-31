@@ -676,59 +676,109 @@ def discogs_official_video_signal(
 
 def is_discogs_single(title: str, artist: str) -> bool:
     """
-    Check if a track is a single using Discogs search (format=Single) with title-aware matching.
-    Uses shared session, throttle, and Retry-After handling to mitigate 429s.
+    Strict Discogs single detection:
+    - Release title must match track title (canonicalized)
+    - Tracklist must contain the track as track 1
+    - Format must indicate a true single:
+        * Single
+        * Promo
+        * Vinyl (with 7" or Single in descriptions)
+        * CD (with Single in descriptions)
+        * File (digital single)
     """
     if not DISCOGS_TOKEN:
-        logging.warning("Missing Discogs token in config.yaml.")
         return False
 
     headers = {
         "Authorization": f"Discogs token={DISCOGS_TOKEN}",
         "User-Agent": _DEF_USER_AGENT,
     }
-    # Fewer rows reduces follow-on calls and risk of 429
+
+    nav_title = _canon(strip_parentheses(title))
+    nav_artist = _canon(artist)
+
     params = {
         "q": f"{artist} {title}",
         "type": "release",
-        "format": "Single",
-        "per_page": 3,
+        "per_page": 10,
     }
 
     session = _get_discogs_session()
 
+    # --- Search Discogs for releases matching artist + title ---
     try:
         _throttle_discogs()
-        res = session.get("https://api.discogs.com/database/search", headers=headers, params=params, timeout=10)
+        res = session.get(
+            "https://api.discogs.com/database/search",
+            headers=headers,
+            params=params,
+            timeout=10
+        )
         if res.status_code == 429:
             _respect_retry_after(res)
         res.raise_for_status()
-
-        results = res.json().get("results", []) or []
-        if not results:
-            return False
-
-        nav_title  = _canon(strip_parentheses(title))
-        nav_artist = _canon(artist)
-
-        for r in results:
-            formats = r.get("format", []) or []
-            rtitle  = _canon(r.get("title") or "")
-
-            # Require "Single" AND reasonable title/artist match
-            if "Single" in formats:
-                # Accept "Artist - Title" or title contained
-                title_match = (nav_title in rtitle) or rtitle.startswith(f"{nav_artist} - {nav_title}")
-                if title_match:
-                    return True
-
+    except:
         return False
 
-    except Exception as e:
-        logging.debug(f"Discogs singles search failed for '{title}': {e}")
+    results = res.json().get("results", []) or []
+    if not results:
         return False
 
+    # --- Evaluate each candidate release ---
+    for r in results:
+        release_id = r.get("id")
+        if not release_id:
+            continue
 
+        # Release title must contain the track title
+        rel_title = _canon(r.get("title", ""))
+        if nav_title not in rel_title:
+            continue
+
+        # Fetch full release details
+        try:
+            _throttle_discogs()
+            rel = session.get(
+                f"https://api.discogs.com/releases/{release_id}",
+                headers=headers,
+                timeout=10
+            )
+            if rel.status_code == 429:
+                _respect_retry_after(rel)
+            rel.raise_for_status()
+        except:
+            continue
+
+        data = rel.json()
+
+        # --- Format validation ---
+        formats = [f.get("name", "").lower() for f in data.get("formats", [])]
+        descriptions = [
+            d.lower()
+            for f in data.get("formats", [])
+            for d in f.get("descriptions", []) or []
+        ]
+
+        allowed_format_names = {"single", "promo", "vinyl", "cd", "file"}
+        allowed_format_desc = {"single", "7\"", "7-inch", "promo"}
+
+        # Must match either a valid format name OR a valid description
+        if not (
+            any(name in allowed_format_names for name in formats)
+            or any(desc in allowed_format_desc for desc in descriptions)
+        ):
+            continue
+
+        # --- Tracklist validation ---
+        tracks = data.get("tracklist", [])
+        if not tracks:
+            continue
+
+        first_track = _canon(tracks[0].get("title", ""))
+        if nav_title == first_track:
+            return True
+
+    return False
 
 def is_musicbrainz_single(title: str, artist: str) -> bool:
     """
@@ -1980,6 +2030,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
