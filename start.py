@@ -753,6 +753,7 @@ def is_musicbrainz_single(title: str, artist: str) -> bool:
         return False
 
 
+
 def detect_single_status(
     title: str,
     artist: str,
@@ -763,33 +764,44 @@ def detect_single_status(
     use_lastfm: bool = False,
     min_sources: int = 1,
 ) -> dict:
+    """
+    Detect if a track is a single using multiple sources.
+    Early short-circuit: If Discogs confirms (Single format OR Official Video), return immediately.
+    """
     sources: list[str] = []
 
+    # Known singles override
     if known_list and title in known_list:
         return {"is_single": True, "confidence": "high", "sources": ["known_list"]}
 
-    # MusicBrainz
-    if is_musicbrainz_single(title, artist):
-        sources.append("musicbrainz")
-
-    # Discogs (existing Single format check)
-    try:
-        if discogs_token and is_discogs_single(title, artist):
-            sources.append("discogs")
-    except Exception as e:
-        logging.debug(f"Discogs 'Single' signal failed: {e}")
-
-    # NEW: Discogs official video check
+    # --- Discogs-first short-circuit ---
     if discogs_token:
-        dv = discogs_official_video_signal(title, artist, discogs_token=discogs_token)
-        if dv.get("match"):
-            sources.append("discogs_video")
-            # Optional: stash URI on the result for later persistence or playlist notes
-            # You can also return these extras to the caller if needed
-            # e.g., attach dv['uri'] and dv['ratio'] to the return dict
-    # YouTube
+        # Check Discogs "Single" format
+        try:
+            if is_discogs_single(title, artist):
+                return {"is_single": True, "confidence": "high", "sources": ["discogs"]}
+        except Exception as e:
+            logging.debug(f"Discogs 'Single' check failed for '{title}': {e}")
+
+        # Check Discogs Official (Lyric) Video
+        try:
+            dv = discogs_official_video_signal(title, artist, discogs_token=discogs_token)
+            if dv.get("match"):
+                return {"is_single": True, "confidence": "high", "sources": ["discogs_video"]}
+        except Exception as e:
+            logging.debug(f"Discogs official video check failed for '{title}': {e}")
+
+    # --- If no Discogs match, continue with other sources ---
+    # MusicBrainz
+    try:
+        if is_musicbrainz_single(title, artist):
+            sources.append("musicbrainz")
+    except Exception as e:
+        logging.debug(f"MusicBrainz check failed for '{title}': {e}")
+
+    # YouTube (optional, if implemented)
     if youtube_api_key:
-        # ... unchanged (your existing YouTube signal)
+        # Placeholder for YouTube official video logic
         pass
 
     # Last.fm single page heuristic
@@ -797,17 +809,15 @@ def detect_single_status(
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
     except Exception as e:
-        logging.debug(f"Last.fm signal failed: {e}")
+        logging.debug(f"Last.fm check failed for '{title}': {e}")
 
-    # Confidence
+    # Confidence calculation for fallback path
     confidence = "high" if len(sources) >= max(2, min_sources) else ("medium" if len(sources) == 1 else "low")
+
     return {
         "is_single": len(sources) >= min_sources,
         "confidence": confidence,
         "sources": sources,
-        # Optionally expose dv details for the caller:
-        # "discogs_video_uri": dv.get("uri") if discogs_token else None,
-        # "discogs_video_ratio": dv.get("ratio") if discogs_token else None,
     }
 
 
@@ -1911,6 +1921,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
