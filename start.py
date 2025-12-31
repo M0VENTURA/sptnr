@@ -1064,70 +1064,115 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                          (adaptive['listenbrainz'] * lb) + \
                          (AGE_WEIGHT * age)
 
-        # --- Star assignment for the whole album -----------------------------
+        # --- Star assignment for the whole album -----------------------------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
-
-        # Base quartile banding (singles will override later)
+        
+        # Base quartile banding (singles will override below)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
         for i, trk in enumerate(sorted_album):
             trk["stars"] = max(1, 4 - (i // band_size))
-            trk["is_single"] = False  # init
-
-        # First pass — mark canonical singles as 5★ (and remove from standout pool)
+            trk["is_single"] = False            # init
+            trk["single_confidence"] = "low"    # init
+            trk["single_sources"] = []          # init
+        
+        # ---------- STRICTER SINGLE DETECTION (canonical only) ----------
+        # Rules:
+        # • canonical==True AND (≥2 evidence sources) → mark single, set 5★
+        # • OR canonical==True AND (Spotify says "single" AND album/release has ≤2 tracks)
+        # • Otherwise, do not mark as single.
         for trk in sorted_album:
             title = trk["title"]
             canonical = is_valid_version(title, allow_live_remix=False)
-
-            single_sources = []
-            if trk.get("is_spotify_single"):
-                single_sources.append("spotify")
-            if is_discogs_single(title, artist_name):
-                single_sources.append("discogs")
-            if len(tracks) == 1:
-                single_sources.append("album_length")
-
-            if single_sources and canonical:
+        
+            # Evidence sources
+            spotify_source = bool(trk.get("is_spotify_single"))          # album_type == "single"
+            discogs_source = is_discogs_single(title, artist_name)       # Discogs 'Single' release found
+            short_release_source = (len(tracks) <= 2)                    # only for short releases (single/2-track EP)
+        
+            sources = []
+            if spotify_source:
+                sources.append("spotify")
+            if discogs_source:
+                sources.append("discogs")
+            if short_release_source:
+                sources.append("short_release")
+        
+            # Confidence label
+            confidence = (
+                "high" if len(sources) >= 2 else
+                "medium" if len(sources) == 1 else
+                "low"
+            )
+        
+            # Apply stricter single rule
+            if canonical and (
+                len(sources) >= 2 or
+                (spotify_source and short_release_source)
+            ):
                 trk["is_single"] = True
                 trk["stars"] = 5
-                trk["single_confidence"] = "high" if len(single_sources) >= 2 else "medium"
-            elif single_sources and not canonical:
+                trk["single_confidence"] = confidence
+                trk["single_sources"] = sources
+            elif sources and not canonical:
+                # evidence present but non‑canonical (live/remix etc.) → ignore as single
+                trk["is_single"] = False
                 trk["single_confidence"] = "ignored-noncanonical"
+                trk["single_sources"] = sources
             else:
-                trk["single_confidence"] = "low"
-
-        # Build non‑single pool for standout calc
+                trk["is_single"] = False
+                trk["single_confidence"] = confidence
+                trk["single_sources"] = sources
+        
+        # ---------- Standout logic from NON‑SINGLES ONLY ----------
         non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
         non_single_scores = [t["score"] for t in non_single_tracks]
-
-        # Compute median ONLY from non‑singles; if none remain, skip standout logic
+        
+        # Compute median ONLY from non‑singles; if none remain, skip standout
+        standout_multiplier = 1.9  # tweak via config if desired
         if non_single_scores:
             median_non_single = median(non_single_scores)
-            jump_threshold = median_non_single * 1.9  # slightly stricter than 1.7
-
-            # Second pass — award 5★ to non‑singles above threshold
+            jump_threshold = median_non_single * standout_multiplier
             for trk in non_single_tracks:
                 if trk["score"] >= jump_threshold:
                     trk["stars"] = 5
-
-        # Finalize, persist, and print prior → new comparison with (single) label
+        
+        # ---------- Finalize, persist, and print prior → new comparison ----------
+        single_count = 0
+        non_single_fives = 0
+        
         for trk in sorted_album:
+            # Cosmetic rounding for DB
             trk["score"] = round(trk["score"]) if trk["score"] > 0 else random.randint(5, 15)
-
+        
+            # Fetch prior rating for comparison
             prior_stars = get_current_rating(trk["id"])
-
+        
+            # Save + set rating
             save_to_db(trk)
             set_track_rating(trk["id"], trk["stars"])
-
-            label = " (single)" if trk.get("is_single") else ""
+        
+            # Output with (single) and source details
+            single_label = " (single)" if trk.get("is_single") else ""
+            src = trk.get("single_sources", [])
+            src_str = f" [sources: {', '.join(src)}]" if trk.get("is_single") and src else ""
+        
+            title = trk["title"]
             if prior_stars is None:
-                print(f"   ✅ Navidrome rating updated: {trk['title']}{label} → {trk['stars']} stars")
+                print(f"   ✅ Navidrome rating updated: {title}{single_label}{src_str} → {trk['stars']} stars")
             else:
-                print(f"   ✅ Navidrome rating updated: {trk['title']}{label} — {prior_stars}★ → {trk['stars']}★")
-
-            if trk["stars"] == 5:
-                all_five_star_tracks.append(trk["id"])
-
+                print(f"   ✅ Navidrome rating updated: {title}{single_label}{src_str} — {prior_stars}★ → {trk['stars']}★")
+        
+            # Summary counts
+            if trk.get("is_single"):
+                single_count += 1
+            elif trk["stars"] == 5:
+                non_single_fives += 1
+        
             rated_map[trk["id"]] = trk
+        
+        # Per‑album summary line for quick sanity check
+        print(f"   ℹ️ Singles detected: {single_count} | Non‑single 5★: {non_single_fives} | Standout multiplier: {standout_multiplier}")
+        
 
         print(f"✔ Completed album: {album_name}")
 
@@ -1429,6 +1474,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
