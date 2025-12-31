@@ -673,6 +673,34 @@ def load_artist_map():
     return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
 
 
+def adjust_genres(genres, artist_is_metal=False):
+    """
+    Adjust genres based on artist context:
+    - If artist is metal-dominant, convert rock sub-genres to metal equivalents.
+    - Always deduplicate and remove generic 'metal' if sub-genres exist.
+    """
+    adjusted = []
+    for g in genres:
+        g_lower = g.lower()
+        if artist_is_metal:
+            if g_lower in ["prog rock", "progressive rock"]:
+                adjusted.append("Progressive metal")
+            elif g_lower == "folk rock":
+                adjusted.append("Folk metal")
+            elif g_lower == "goth rock":
+                adjusted.append("Gothic metal")
+            else:
+                adjusted.append(g)
+        else:
+            adjusted.append(g)
+
+    # Remove generic 'metal' if specific sub-genres exist
+    metal_subgenres = [x for x in adjusted if "metal" in x.lower() and x.lower() != "metal"]
+    if metal_subgenres:
+        adjusted = [x for x in adjusted if x.lower() not in ["metal", "heavy metal"]]
+
+    return list(dict.fromkeys(adjusted))  # Deduplicate
+
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
@@ -741,9 +769,23 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             )
 
             # ✅ Full genre enrichment
-            discogs_genres = get_discogs_genres(title, artist_name)
-            audiodb_genres = get_audiodb_genres(artist_name)
-            mb_genres = get_musicbrainz_genres(title, artist_name)
+            discogs_genres = get_discogs_genres(title, artist_name)  # Always used
+            audiodb_genres = []
+            if use_audiodb and AUDIODB_API_KEY:
+                audiodb_genres = get_audiodb_genres(artist_name)
+            
+            mb_genres = get_musicbrainz_genres(title, artist_name)  # Always used
+            
+            if use_google and GOOGLE_API_KEY and GOOGLE_CSE_ID:
+                # Perform Google lookup for single detection
+            else:
+                logging.info("Skipping Google lookup (disabled in config)")
+            
+            if use_youtube and YOUTUBE_API_KEY:
+                # Perform YouTube lookup for single detection
+            else:
+                logging.info("Skipping YouTube lookup (disabled in config)")
+
             lastfm_tags = []  # Optional: fetch Last.fm tags if needed
             
             # ✅ Weighted aggregation
@@ -927,6 +969,10 @@ if __name__ == "__main__":
     perpetual = config["features"]["perpetual"]
     batchrate = config["features"]["batchrate"]
     artist_list = config["features"]["artist"]
+    use_google = config["features"].get("use_google", False)
+    use_youtube = config["features"].get("use_youtube", False)
+    use_audiodb = config["features"].get("use_audiodb", False)
+
 
     # ✅ Refresh artist index if requested or missing
     if args.refresh:
@@ -1051,6 +1097,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
