@@ -327,14 +327,18 @@ def select_best_spotify_match(results, track_title):
         return max(singles, key=lambda r: r.get("popularity", 0))
     return max(filtered, key=lambda r: r.get("popularity", 0))
 
+
 def is_discogs_single(title, artist):
-    token = os.getenv("DISCOGS_TOKEN")
-    if not token:
-        print("❌ Missing Discogs token.")
+    """
+    Check if a track is a single using Discogs API.
+    Always use token from config.yaml.
+    """
+    if not DISCOGS_TOKEN:
+        print("❌ Missing Discogs token in config.yaml.")
         return False
 
     headers = {
-        "Authorization": f"Discogs token={token}",
+        "Authorization": f"Discogs token={DISCOGS_TOKEN}",
         "User-Agent": "sptnr-cli/1.0"
     }
     query = f"{artist} {title}"
@@ -355,9 +359,14 @@ def is_discogs_single(title, artist):
         print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
         return False
 
+
 def get_discogs_genres(title, artist):
+    """
+    Fetch genres and styles from Discogs API.
+    Always use token from config.yaml.
+    """
     if not DISCOGS_TOKEN:
-        logging.warning("Discogs token missing. Skipping Discogs genre lookup.")
+        logging.warning("Discogs token missing in config.yaml. Skipping Discogs genre lookup.")
         return []
 
     headers = {
@@ -1135,6 +1144,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
