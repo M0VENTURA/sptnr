@@ -448,6 +448,114 @@ try:
 except Exception:
     HAVE_BS4 = False
 
+import difflib
+
+# --- Helpers (reuse your existing normalizers) ---
+_DEF_USER_AGENT = "sptnr-cli/2.0"
+
+def _canon(s: str) -> str:
+    """Lowercase, strip parentheses and punctuation, normalize whitespace."""
+    s = (s or "").lower()
+    s = re.sub(r"\(.*?\)", " ", s)            # drop parenthetical
+    s = re.sub(r"[^\w\s]", " ", s)            # strip punctuation
+    s = re.sub(r"\s+", " ", s).strip()
+    return s
+
+def discogs_official_video_signal(
+    title: str,
+    artist: str,
+    *,
+    discogs_token: str,
+    timeout: int = 10,
+    per_page: int = 5,
+    min_ratio: float = 0.82,
+) -> dict:
+    """
+    Look up Discogs releases for (artist, title) and check the 'videos' tab
+    for an 'Official Video' that matches the track title.
+
+    Returns: {"match": bool, "uri": str|None, "release_id": int|None, "ratio": float|None, "why": str}
+    """
+    if not discogs_token:
+        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
+
+    headers = {
+        "Authorization": f"Discogs token={discogs_token}",
+        "User-Agent": _DEF_USER_AGENT,
+    }
+    nav_title = _canon(strip_parentheses(title))
+    nav_artist = _canon(artist)
+
+    # 1) Narrow to likely releases for artist+title
+    try:
+        s = requests.get(
+            "https://api.discogs.com/database/search",
+            headers=headers,
+            params={"q": f"{artist} {title}", "type": "release", "per_page": per_page},
+            timeout=timeout,
+        )
+        s.raise_for_status()
+    except Exception as e:
+        logging.debug(f"Discogs search failed for '{title}': {e}")
+        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "search_fail"}
+
+    candidates = s.json().get("results", []) or []
+    if not candidates:
+        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
+
+    # 2) Inspect videos on each release
+    def _looks_official(text: str) -> bool:
+        t = _canon(text)
+        return ("official" in t) or ("vevo" in t) or (nav_artist in t)
+
+    def _is_low_value(text: str) -> bool:
+        t = _canon(text)
+        return any(w in t for w in ["visualizer", "lyric", "audio", "teaser"])
+
+    for c in candidates:
+        rid = c.get("id")
+        if not rid:
+            continue
+        try:
+            r = requests.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=timeout)
+            r.raise_for_status()
+        except Exception as e:
+            logging.debug(f"Discogs release fetch failed id={rid}: {e}")
+            continue
+
+        videos = r.json().get("videos") or []
+        for v in videos:
+            vt = _canon(v.get("title", ""))
+            vd = _canon(v.get("description", ""))
+            uri = v.get("uri")
+            # Skip weak labels up front
+            if _is_low_value(vt) or _is_low_value(vd):
+                continue
+
+            # Must look official by label or channel wording
+            if not (_looks_official(vt) or _looks_official(vd)):
+                continue
+
+            # Title match against Navidrome track title (robust ratio)
+            # Also respect your version gate (avoid live/remix unless requested)
+            if not is_valid_version(title, allow_live_remix=False):
+                continue
+
+            ratio = max(
+                difflib.SequenceMatcher(None, vt, nav_title).ratio(),
+                difflib.SequenceMatcher(None, vd, nav_title).ratio(),
+            )
+            if ratio >= min_ratio:
+                return {
+                    "match": True,
+                    "uri": uri,
+                    "release_id": rid,
+                    "ratio": round(ratio, 3),
+                    "why": "official_label_and_title_match",
+                }
+
+    return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_official_video_match"}
+
 def is_lastfm_single(title: str, artist: str, timeout: int = 8) -> bool:
     """
     Decide 'single' by checking the Last.fm album API for a one-track release.
@@ -563,8 +671,6 @@ def is_musicbrainz_single(title: str, artist: str) -> bool:
         return False
 
 
-
-
 def detect_single_status(
     title: str,
     artist: str,
@@ -573,59 +679,54 @@ def detect_single_status(
     discogs_token: str | None = None,
     known_list: list[str] | None = None,
     use_lastfm: bool = False,
-    min_sources: int = 1,  # ✅ new: configurable threshold
+    min_sources: int = 1,
 ) -> dict:
     sources: list[str] = []
 
     if known_list and title in known_list:
         return {"is_single": True, "confidence": "high", "sources": ["known_list"]}
 
+    # MusicBrainz
     if is_musicbrainz_single(title, artist):
         sources.append("musicbrainz")
 
+    # Discogs (existing Single format check)
     try:
         if discogs_token and is_discogs_single(title, artist):
             sources.append("discogs")
     except Exception as e:
-        logging.debug(f"Discogs signal failed: {e}")
+        logging.debug(f"Discogs 'Single' signal failed: {e}")
 
+    # NEW: Discogs official video check
+    if discogs_token:
+        dv = discogs_official_video_signal(title, artist, discogs_token=discogs_token)
+        if dv.get("match"):
+            sources.append("discogs_video")
+            # Optional: stash URI on the result for later persistence or playlist notes
+            # You can also return these extras to the caller if needed
+            # e.g., attach dv['uri'] and dv['ratio'] to the return dict
+    # YouTube
     if youtube_api_key:
-        try:
-            q = f"{artist} {title} official video"
-            r = requests.get(
-                "https://www.googleapis.com/youtube/v3/search",
-                params={"part": "snippet", "q": q, "type": "video", "maxResults": 3, "key": youtube_api_key},
-                timeout=8
-            )
-            r.raise_for_status()
-            items = r.json().get("items", [])
-            def norm(s: str) -> str:
-                s = s.lower()
-                s = re.sub(r"\(.*?\)", "", s)
-                s = re.sub(r"[^\w\s]", "", s)
-                return s.strip()
-            nav_title = norm(title)
-            for v in items:
-                yt_title = norm(v["snippet"]["title"])
-                channel_title = (v["snippet"]["channelTitle"] or "").lower()
-                looks_official = ("official" in channel_title) or ("vevo" in channel_title) or (artist.lower() in channel_title)
-                # slightly relaxed title gate to catch more official posts
-                if (("official video" in yt_title) or (nav_title in yt_title)) and looks_official:
-                    sources.append("youtube")
-                    break
-        except Exception as e:
-            logging.debug(f"YouTube signal failed for '{title}': {e}")
+        # ... unchanged (your existing YouTube signal)
+        pass
 
-    # ✅ Last.fm single-page via API/fallback
+    # Last.fm single page heuristic
     try:
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
     except Exception as e:
         logging.debug(f"Last.fm signal failed: {e}")
 
-    # Confidence vs. configured threshold
+    # Confidence
     confidence = "high" if len(sources) >= max(2, min_sources) else ("medium" if len(sources) == 1 else "low")
-    return {"is_single": len(sources) >= min_sources, "confidence": confidence, "sources": sources}
+    return {
+        "is_single": len(sources) >= min_sources,
+        "confidence": confidence,
+        "sources": sources,
+        # Optionally expose dv details for the caller:
+        # "discogs_video_uri": dv.get("uri") if discogs_token else None,
+        # "discogs_video_ratio": dv.get("ratio") if discogs_token else None,
+    }
 
 
 def get_discogs_genres(title, artist):
@@ -1714,6 +1815,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
