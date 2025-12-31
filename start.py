@@ -834,19 +834,20 @@ def adjust_genres(genres, artist_is_metal=False):
 
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
-
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
       - Enrich per-track metadata (Spotify, Last.fm, ListenBrainz, Age, Genres)
       - Compute adaptive source weights per album (MAD/coverage-based, clamped)
-      - Recompute combined score using adapted weights (+ age)
-      - Strict single detection -> singles become 5★
+      - High-confidence single detection:
+            * canonical title (no live/remix), AND
+            * (Spotify 'single' + short release) OR
+              (Spotify 'single' + Discogs 'Single') OR
+              (Discogs 'Single' + short release)
+            => singles become 5★
       - Non-singles spread via Median/MAD into 1★–4★ (no 5★ for non-singles)
       - Cap density of 4★ among non-singles to keep albums realistic
-      - Save to DB; update Navidrome (respecting sync/dry_run); print prior → new comparison
+      - Save to DB; optionally push ratings to Navidrome (respecting sync/dry_run)
       - Build 5★ list for "Essential {artist}" playlist creation
 
     Returns:
@@ -855,7 +856,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     from statistics import median
     import math
 
-    # --- Adaptive weighting helpers (local, robust) -------------------------
+    # Tunables (pull from config if present)
+    CLAMP_MIN = config["features"].get("clamp_min", 0.75)
+    CLAMP_MAX = config["features"].get("clamp_max", 1.25)
+    CAP_TOP4_PCT = config["features"].get("cap_top4_pct", 0.25)  # 25% cap
+
+    # --- Adaptive weighting helpers -----------------------------------------
     def _clean_values(values):
         return [v for v in values if v is not None]
 
@@ -887,7 +893,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         size_factor = min(1.0, n_effective / 8.0)
         return disp * coverage * size_factor
 
-    def compute_adaptive_weights(album_tracks, base_weights, clamp=(0.75, 1.25), use='mad'):
+    def compute_adaptive_weights(album_tracks, base_weights, clamp=(CLAMP_MIN, CLAMP_MAX), use='mad'):
         sp_vals = [t.get('spotify_score') for t in album_tracks]
         lf_vals = [t.get('lastfm_ratio')   for t in album_tracks]
         lb_vals = [t.get('listenbrainz_score') for t in album_tracks]
@@ -921,7 +927,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         adapted = {k: adapted[k] / total for k in adapted}
         return adapted
 
-    # --- Fetch albums -------------------------------------------------------
+    # --- Fetch albums --------------------------------------------------------
     albums = fetch_artist_albums(artist_id)
     if not albums:
         print(f"⚠️ No albums found for artist '{artist_name}'")
@@ -942,7 +948,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
         album_tracks = []
 
-        # ── Per-track enrichment ─────────────────────────────────────────────
+        # --- Per-track enrichment -------------------------------------------
         for track in tracks:
             track_id = track["id"]
             title = track["title"]
@@ -973,7 +979,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
 
-            # Core score components
+            # Initial score components
             score, momentum, lb_score = compute_track_score(
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
@@ -1005,7 +1011,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "album": album_name,
                 "artist": artist_name,
 
-                # combined score (will be updated after adaptive weighting)
+                # combined score (updated after adaptive weighting)
                 "score": score,
 
                 # components for adaptive weighting
@@ -1042,13 +1048,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "stars": 1,
             })
 
-        # --- Adaptive weights per album & recompute combined score -----------
+        # --- Adaptive weights & recompute combined score ---------------------
         base_weights = {
             'spotify': SPOTIFY_WEIGHT,
             'lastfm': LASTFM_WEIGHT,
             'listenbrainz': LISTENBRAINZ_WEIGHT,
         }
-        adaptive = compute_adaptive_weights(album_tracks, base_weights=base_weights, clamp=(0.75, 1.25), use='mad')
+        adaptive = compute_adaptive_weights(
+            album_tracks, base_weights=base_weights, clamp=(CLAMP_MIN, CLAMP_MAX), use='mad'
+        )
 
         for t in album_tracks:
             sp = t.get('spotify_score', 0)
@@ -1060,42 +1068,52 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                          (adaptive['listenbrainz'] * lb) + \
                          (AGE_WEIGHT * age)
 
-        
-        # Evidence sources
-        spotify_source = bool(trk.get("is_spotify_single"))
-        discogs_source = is_discogs_single(title, artist_name)    # title-aware version recommended
-        short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
-        
-        # Confidence label (keep for visibility)
-        sources = []
-        if spotify_source:       sources.append("spotify")
-        if discogs_source:       sources.append("discogs")
-        if short_release_source: sources.append("short_release")
-        
-        confidence = (
-            "high"   if (spotify_source or discogs_source) else
-            "medium" if short_release_source else
-            "low"
-        )
-        
-        # ✅ Relaxed rule: any ONE strong signal (Spotify or Discogs) OR short_release marks as single
-        if canonical and (spotify_source or discogs_source or short_release_source):
-            trk["is_single"] = True
-            trk["stars"] = 5
-            trk["single_confidence"] = confidence
-            trk["single_sources"] = sources
-        else:
-            trk["is_single"] = False
-            trk["single_confidence"] = confidence
-            trk["single_sources"] = sources
+        # --- HIGH-CONFIDENCE singles detection (INSIDE a loop!) --------------
+        for trk in album_tracks:
+            title = trk["title"]
+            canonical = is_valid_version(title, allow_live_remix=False)
 
+            spotify_source = bool(trk.get("is_spotify_single"))
+            discogs_source = is_discogs_single(title, artist_name)        # title-aware recommended
+            short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
 
-        # --- Sort by score and normalize WITHOUT random bump -----------------
+            sources = []
+            if spotify_source:       sources.append("spotify")
+            if discogs_source:       sources.append("discogs")
+            if short_release_source: sources.append("short_release")
+
+            high_signals = int(spotify_source) + int(discogs_source)
+            medium_signals = int(short_release_source)
+
+            confidence = (
+                "high"   if high_signals >= 2 else
+                "medium" if (high_signals == 1 and medium_signals >= 1) else
+                "low"
+            )
+
+            if canonical and (high_signals >= 2 or (high_signals == 1 and medium_signals >= 1)):
+                trk["is_single"] = True
+                trk["stars"] = 5
+                trk["single_confidence"] = confidence
+                trk["single_sources"] = sources
+            else:
+                trk["is_single"] = False
+                trk["single_confidence"] = confidence
+                trk["single_sources"] = sources
+
+            if verbose:
+                print(
+                    f"   🔎 Single check: {title} | canonical={canonical} | "
+                    f"spotify_single={spotify_source} | short_release={short_release_source} | "
+                    f"discogs_single={discogs_source} | confidence={confidence}"
+                )
+
+        # --- Sort by score & normalize WITHOUT random bump -------------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         for trk in sorted_album:
-            trk["score"] = max(0.0, float(trk["score"]))  # clamp to non-negative, no artificial inflation
+            trk["score"] = max(0.0, float(trk["score"]))  # clamp to non-negative, keep float
 
-        # --- Median/MAD spreading for NON‑SINGLES (1★–4★ only) --------------
+        # --- Median/MAD spreading for NON‑SINGLES (1★–4★) -------------------
         EPS = 1e-6
         scores_all = [t["score"] for t in sorted_album]
         med = median(scores_all)
@@ -1127,60 +1145,57 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     break
 
         # Cap 4★ density among non‑singles (default ~25%)
-        CAP_TOP4_PCT = 0.25
         top4 = [t for (t, z) in z_list if t.get("stars") == 4]
         max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
         if len(top4) > max_top4:
             top4_sorted = sorted(
                 [(t, zrobust(t["score"])) for t in top4],
-                key=lambda x: x[1],
-                reverse=True
+                key=lambda x: x[1], reverse=True
             )
             for t, _ in top4_sorted[max_top4:]:
                 t["stars"] = 3
 
-        # --- Singles override to 5★ -----------------------------------------
-        single_count = 0
-        non_single_fours = sum(1 for t in non_single_tracks if t.get("stars") == 4)
-        for trk in sorted_album:
-            if trk.get("is_single"):
-                trk["stars"] = 5
-                single_count += 1
-
         # --- Finalize, persist, and print prior → new comparison ------------
-        
+        single_count = sum(1 for trk in sorted_album if trk.get("is_single"))
+        non_single_fours = sum(1 for t in non_single_tracks if t.get("stars") == 4)
+
         for trk in sorted_album:
             prior_stars = get_current_rating(trk["id"])
-        
+
             # Save to DB
             save_to_db(trk)
-        
+
             # Set rating only when allowed
             if sync and not dry_run:
                 set_track_rating(trk["id"], trk["stars"])
                 action_prefix = "✅ Navidrome rating updated:"
             else:
                 action_prefix = "🧪 DRY-RUN (no push):"
-        
-            # ⬅️ INSERT THE SINGLE-SOURCE LABEL RIGHT HERE
-            # inside the finalize loop (rate_artist), before print:
+
+            # Show single confirmation source inline
             is_single = trk.get("is_single")
             src = trk.get("single_sources", [])
             src_str = f" (single via {', '.join(src)})" if is_single and src else (" (single)" if is_single else "")
-        
+
             title = trk["title"]
             if prior_stars is None:
                 print(f"   {action_prefix} {title}{src_str} → {trk['stars']}★")
             else:
                 print(f"   {action_prefix} {title}{src_str} — {prior_stars}★ → {trk['stars']}★")
-        
+
             if trk["stars"] == 5:
                 all_five_star_tracks.append(trk["id"])
-        
 
         # Per‑album summary
         print(f"   ℹ️ Singles detected: {single_count} | Non‑single 4★: {non_single_fours} "
-              f"| Cap: 25% | MAD: {mad_val:.2f} | Weights clamp: (0.75, 1.25)")
+              f"| Cap: {int(CAP_TOP4_PCT*100)}% | MAD: {mad_val:.2f} | Weights clamp: ({CLAMP_MIN}, {CLAMP_MAX})")
+
+        if single_count > 0 and verbose:
+            single_titles = [f"{t['title']} (via {', '.join(t.get('single_sources', []))}, conf={t.get('single_confidence','')})"
+                             for t in sorted_album if t.get("is_single")]
+            print("   🎯 Singles:")
+            for s in single_titles:
+                print(f"      • {s}")
 
         print(f"✔ Completed album: {album_name}")
 
@@ -1487,6 +1502,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
