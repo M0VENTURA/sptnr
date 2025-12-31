@@ -767,7 +767,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 mbid,
                 verbose
             )
-
+    
             # ✅ Full genre enrichment
             discogs_genres = get_discogs_genres(title, artist_name)  # Always used
             audiodb_genres = []
@@ -776,16 +776,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             
             mb_genres = get_musicbrainz_genres(title, artist_name)  # Always used
             
+            # ✅ Placeholder for Google lookup
             if use_google and GOOGLE_API_KEY and GOOGLE_CSE_ID:
-                # Perform Google lookup for single detection
+                # TODO: Implement Google lookup for single detection
+                pass
             else:
                 logging.info("Skipping Google lookup (disabled in config)")
             
+            # ✅ Placeholder for YouTube lookup
             if use_youtube and YOUTUBE_API_KEY:
-                # Perform YouTube lookup for single detection
+                # TODO: Implement YouTube lookup for single detection
+                pass
             else:
                 logging.info("Skipping YouTube lookup (disabled in config)")
-
+            
             lastfm_tags = []  # Optional: fetch Last.fm tags if needed
             
             # ✅ Weighted aggregation
@@ -1097,6 +1101,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
