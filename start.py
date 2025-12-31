@@ -20,6 +20,7 @@ RESET = Style.RESET_ALL
 
 CONFIG_PATH = "/config/config.yaml"
 
+
 def create_default_config(path):
     default_config = {
         "navidrome": {
@@ -33,6 +34,19 @@ def create_default_config(path):
         },
         "lastfm": {
             "api_key": "your_lastfm_api_key"
+        },
+        "discogs": {
+            "token": "your_discogs_token"
+        },
+        "audiodb": {
+            "api_key": "your_audiodb_api_key"
+        },
+        "google": {
+            "api_key": "your_google_api_key",
+            "cse_id": "your_google_cse_id"
+        },
+        "youtube": {
+            "api_key": "your_youtube_api_key"
         },
         "listenbrainz": {
             "enabled": True
@@ -69,6 +83,7 @@ def create_default_config(path):
     except Exception as e:
         print(f"❌ Failed to create default config.yaml: {e}")
         sys.exit(1)
+
 
 
 def load_config():
@@ -117,11 +132,11 @@ def validate_config(config):
         issues.append("Spotify Client ID is missing or placeholder.")
     if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
         issues.append("Spotify Client Secret is missing or placeholder.")
-
+    
     # Check Last.fm API key
     if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
         issues.append("Last.fm API key is missing or placeholder.")
-
+    
     if issues:
         print("\n⚠️ Configuration issues detected:")
         for issue in issues:
@@ -146,21 +161,41 @@ def validate_config(config):
 validate_config(config)
 
 
+
 # ✅ Extract credentials and settings
 NAV_BASE_URL = config["navidrome"]["base_url"]
 USERNAME = config["navidrome"]["user"]
 PASSWORD = config["navidrome"]["pass"]
 
-client_id = config["spotify"]["client_id"]
-client_secret = config["spotify"]["client_secret"]
+# Spotify
+SPOTIFY_CLIENT_ID = config["spotify"]["client_id"]
+SPOTIFY_CLIENT_SECRET = config["spotify"]["client_secret"]
+
+# Last.fm
 LASTFM_API_KEY = config["lastfm"]["api_key"]
 
+# Discogs
+DISCOGS_TOKEN = config["discogs"]["token"]
+
+# AudioDB
+AUDIODB_API_KEY = config["audiodb"]["api_key"]
+
+# Google Custom Search
+GOOGLE_API_KEY = config["google"]["api_key"]
+GOOGLE_CSE_ID = config["google"]["cse_id"]
+
+# YouTube
+YOUTUBE_API_KEY = config["youtube"]["api_key"]
+
+# Weights
 SPOTIFY_WEIGHT = config["weights"]["spotify"]
 LASTFM_WEIGHT = config["weights"]["lastfm"]
 LISTENBRAINZ_WEIGHT = config["weights"]["listenbrainz"]
 AGE_WEIGHT = config["weights"]["age"]
 
+# Database path
 DB_PATH = config["database"]["path"]
+
 
 # ✅ Ensure database directory exists
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
@@ -236,7 +271,7 @@ import difflib
 
 def get_spotify_token():
     """Retrieve Spotify API token using client credentials."""
-    auth_str = f"{client_id}:{client_secret}"
+    auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
     auth_bytes = auth_str.encode("utf-8")
     auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
 
@@ -291,6 +326,90 @@ def select_best_spotify_match(results, track_title):
     if singles:
         return max(singles, key=lambda r: r.get("popularity", 0))
     return max(filtered, key=lambda r: r.get("popularity", 0))
+
+def is_discogs_single(title, artist):
+    token = os.getenv("DISCOGS_TOKEN")
+    if not token:
+        print("❌ Missing Discogs token.")
+        return False
+
+    headers = {
+        "Authorization": f"Discogs token={token}",
+        "User-Agent": "sptnr-cli/1.0"
+    }
+    query = f"{artist} {title}"
+    url = "https://api.discogs.com/database/search"
+    params = {
+        "q": query,
+        "type": "release",
+        "format": "Single",
+        "per_page": 5
+    }
+
+    try:
+        res = requests.get(url, headers=headers, params=params)
+        res.raise_for_status()
+        results = res.json().get("results", [])
+        return any("Single" in r.get("format", []) for r in results)
+    except Exception as e:
+        print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
+        return False
+
+def get_discogs_genres(title, artist):
+    if not DISCOGS_TOKEN:
+        logging.warning("Discogs token missing. Skipping Discogs genre lookup.")
+        return []
+
+    headers = {
+        "Authorization": f"Discogs token={DISCOGS_TOKEN}",
+        "User-Agent": "sptnr-cli/1.0"
+    }
+    params = {"q": f"{artist} {title}", "type": "release", "per_page": 5}
+
+    try:
+        res = requests.get("https://api.discogs.com/database/search", headers=headers, params=params)
+        res.raise_for_status()
+        results = res.json().get("results", [])
+        genres = []
+        for r in results:
+            genres.extend(r.get("genre", []))
+            genres.extend(r.get("style", []))
+        return genres
+    except Exception as e:
+        logging.error(f"Discogs lookup failed for '{title}': {e}")
+        return []
+
+
+def get_audiodb_genres(artist):
+    if not AUDIODB_API_KEY:
+        return []
+    try:
+        res = requests.get(f"https://theaudiodb.com/api/v1/json/{AUDIODB_API_KEY}/search.php?s={artist}", timeout=10)
+        res.raise_for_status()
+        data = res.json().get("artists", [])
+        if data and data[0].get("strGenre"):
+            return [data[0]["strGenre"]]
+        return []
+    except Exception as e:
+        logging.warning(f"AudioDB lookup failed for '{artist}': {e}")
+        return []
+
+def get_musicbrainz_genres(title, artist):
+    try:
+        res = requests.get("https://musicbrainz.org/ws/2/recording/", params={
+            "query": f'"{title}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": 1
+        }, headers={"User-Agent": "sptnr-cli/2.0"}, timeout=10)
+        res.raise_for_status()
+        recordings = res.json().get("recordings", [])
+        if recordings and "tags" in recordings[0]:
+            return [t["name"] for t in recordings[0]["tags"]]
+        return []
+    except Exception as e:
+        logging.warning(f"MusicBrainz lookup failed for '{title}': {e}")
+        return []
+
 
 def version_requested(track_title):
     """Check if track title suggests a live or remix version."""
@@ -621,14 +740,25 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 verbose
             )
 
-            # ✅ Genre aggregation
+            # ✅ Full genre enrichment
+            discogs_genres = get_discogs_genres(title, artist_name)
+            audiodb_genres = get_audiodb_genres(artist_name)
+            mb_genres = get_musicbrainz_genres(title, artist_name)
+            lastfm_tags = []  # Optional: fetch Last.fm tags if needed
+            
+            # ✅ Weighted aggregation
             top_genres, _ = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
-                "discogs": [],
-                "audiodb": [],
-                "musicbrainz": []
+                "discogs": discogs_genres,
+                "audiodb": audiodb_genres,
+                "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
+            
+            # ✅ Apply contextual adjustments for metal-heavy artists
+            artist_is_metal = any("metal" in g.lower() for g in top_genres)
+            top_genres = adjust_genres(top_genres, artist_is_metal=artist_is_metal)
+
 
             album_tracks.append({
                 "id": track_id,
@@ -666,14 +796,27 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 stars = 5
 
             # ✅ Detect single
+            
             is_single = False
             single_confidence = ""
+            sources = []
+            
             if selected.get("album", {}).get("album_type", "").lower() == "single":
+                sources.append("spotify")
+            if is_discogs_single(title, artist_name):
+                sources.append("discogs")
+            if len(tracks) == 1:
+                sources.append("album_length")
+            
+            if sources:
                 is_single = True
-                single_confidence = "spotify"
-            elif len(tracks) == 1:
-                is_single = True
-                single_confidence = "album_length"
+                if len(sources) >= 2:
+                    single_confidence = "high"
+                elif len(sources) == 1:
+                    single_confidence = "medium"
+                else:
+                    single_confidence = "low"
+
 
             # ✅ Boost stars for singles
             if is_single and stars < 4:
@@ -691,18 +834,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 INSERT OR REPLACE INTO tracks (
                     id, artist, album, title, spotify_score, lastfm_score, listenbrainz_score,
                     age_score, final_score, stars, genres, navidrome_genres, spotify_genres, lastfm_tags,
+                    discogs_genres, audiodb_genres, musicbrainz_genres,  -- ✅ NEW
                     spotify_album, spotify_artist, spotify_popularity, spotify_release_date, spotify_album_art_url,
                     lastfm_track_playcount, lastfm_artist_playcount, file_path, is_single, single_confidence, last_scanned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, (
                 track["id"], track["artist"], track["album"], track["title"],
                 track.get("spotify_score", 0), lf_ratio, track["listenbrainz_score"], track["age_score"],
                 track["score"], track["stars"], ",".join(track["genres"]),
                 ",".join(track["navidrome_genres"]), ",".join(track["spotify_genres"]), ",".join(track["lastfm_tags"]),
+                ",".join(discogs_genres), ",".join(audiodb_genres), ",".join(mb_genres),  # ✅ NEW
                 track["spotify_album"], track["spotify_artist"], track["spotify_popularity"], track["spotify_release_date"], track["spotify_album_art_url"],
                 track["lastfm_track_playcount"], track["lastfm_artist_playcount"], track["file_path"],
                 track["is_single"], track["single_confidence"], track["last_scanned"]
             ))
+
             conn.commit()
             conn.close()
 
@@ -905,6 +1051,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
