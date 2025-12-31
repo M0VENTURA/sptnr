@@ -523,7 +523,6 @@ def _respect_retry_after(resp):
 # Keyed by normalized (artist, title) -> result dict returned by the function below.
 _DISCOGS_VID_CACHE: dict[tuple[str, str], dict] = {}
 
-
 def discogs_official_video_signal(
     title: str,
     artist: str,
@@ -531,30 +530,21 @@ def discogs_official_video_signal(
     discogs_token: str,
     timeout: int = 10,
     per_page: int = 5,
-    min_ratio: float = 0.82,
+    min_ratio: float = 0.60,   # relaxed threshold
 ) -> dict:
     """
-    Look up Discogs releases for (artist, title) and check the 'videos' tab
-    for an 'Official Video' or 'Official Lyric Video' that matches the track title.
-
-    Returns:
-      {
-        "match": bool,
-        "uri": str | None,
-        "release_id": int | None,
-        "ratio": float | None,
-        "why": str,
-      }
-
-    Policy:
-      - ALLOW: "Official Video", "Official Lyric Video"
-      - BLOCK: "Official Audio", "visualizer", "teaser"
-      - Require robust title match ratio >= min_ratio and canonical title gate
+    Detect ANY official or lyric video for a track on Discogs.
+    Rules:
+      ✔ Must contain 'official' or 'lyric'
+      ✔ Must NOT be live
+      ✔ Must NOT be remix (radio edits allowed)
+      ✔ Does NOT require track 1
+      ✔ Does NOT require single-format release
+      ✔ Does NOT require canonical version
     """
     if not discogs_token:
         return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
 
-    # Cache key (normalized)
     cache_key = (_canon(artist), _canon(strip_parentheses(title)))
     if cache_key in _DISCOGS_VID_CACHE:
         return _DISCOGS_VID_CACHE[cache_key]
@@ -564,32 +554,10 @@ def discogs_official_video_signal(
         "User-Agent": _DEF_USER_AGENT,
     }
 
-    nav_title  = _canon(strip_parentheses(title))
-    nav_artist = _canon(artist)
-    session    = _get_discogs_session()
+    nav_title = _canon(strip_parentheses(title))
+    session = _get_discogs_session()
 
-    def _looks_official(text: str) -> bool:
-        t = _canon(text)
-        return ("official" in t) or ("vevo" in t) or (nav_artist in t)
-
-    def _is_low_value(text: str) -> bool:
-        """
-        Block Official Audio / visualizer / teaser.
-        Allow Official Video or Official Lyric Video.
-        Treat anything else as low-value.
-        """
-        t = _canon(text)
-        is_official = "official" in t
-        is_videoish = ("video" in t) or ("lyric" in t)
-        is_banned   = ("audio" in t) or ("visualizer" in t) or ("teaser" in t)
-
-        if is_banned:
-            return True
-        if is_official and is_videoish:
-            return False
-        return True
-
-    # 1) Search likely releases
+    # 1) Search releases
     try:
         _throttle_discogs()
         s = session.get(
@@ -612,42 +580,54 @@ def discogs_official_video_signal(
         _DISCOGS_VID_CACHE[cache_key] = result
         return result
 
-    # 2) Inspect videos across candidate releases; keep best match
-    best: dict | None = None
+    best = None
 
+    # 2) Inspect videos
     for c in candidates:
         rid = c.get("id")
         if not rid:
             continue
+
         try:
             _throttle_discogs()
             r = session.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=timeout)
             if r.status_code == 429:
                 _respect_retry_after(r)
             r.raise_for_status()
-        except Exception as e:
-            logging.debug(f"Discogs release fetch failed id={rid}: {e}")
+        except:
             continue
 
         videos = r.json().get("videos") or []
         for v in videos:
-            vt  = _canon(v.get("title", "") or "")
-            vd  = _canon(v.get("description", "") or "")
+            vt_raw = v.get("title", "") or ""
+            vd_raw = v.get("description", "") or ""
+            vt = _canon(vt_raw)
+            vd = _canon(vd_raw)
             uri = v.get("uri")
 
-            # Require at least one strong field
-            if _is_low_value(vt) and _is_low_value(vd):
+            # Must be official or lyric
+            if "official" not in vt and "official" not in vd and "lyric" not in vt and "lyric" not in vd:
                 continue
 
-            # Must look official
-            if not (_looks_official(vt) or _looks_official(vd)):
+            # Reject live
+            if "live" in vt_raw.lower() or "live" in vd_raw.lower():
                 continue
 
-            # Respect canonical gate (avoid live/remix unless requested)
-            if not is_valid_version(title, allow_live_remix=False):
+            # Reject remixes (radio edits allowed)
+            if "remix" in vt_raw.lower() or "remix" in vd_raw.lower():
                 continue
 
-            # Robust match ratio against track title
+            # Reject alternate mixes unless radio edit
+            if "mix" in vt_raw.lower() or "mix" in vd_raw.lower():
+                if "radio" not in vt_raw.lower() and "radio" not in vd_raw.lower():
+                    continue
+
+            # Reject edits unless radio edit
+            if "edit" in vt_raw.lower() or "edit" in vd_raw.lower():
+                if "radio" not in vt_raw.lower() and "radio" not in vd_raw.lower():
+                    continue
+
+            # Similarity check (relaxed)
             ratio = max(
                 difflib.SequenceMatcher(None, vt, nav_title).ratio(),
                 difflib.SequenceMatcher(None, vd, nav_title).ratio(),
@@ -659,21 +639,19 @@ def discogs_official_video_signal(
                     "uri": uri,
                     "release_id": rid,
                     "ratio": round(ratio, 3),
-                    "why": "official_label_and_title_match",
+                    "why": "official_or_lyric_video_detected",
                 }
-                if (best is None) or (current["ratio"] > best["ratio"]):
+                if best is None or current["ratio"] > best["ratio"]:
                     best = current
 
-    # Cache & return
     if best:
         _DISCOGS_VID_CACHE[cache_key] = best
         return best
 
-    result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_official_video_match"}
+    result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
     _DISCOGS_VID_CACHE[cache_key] = result
     return result
-
-
+    
 def is_discogs_single(title: str, artist: str) -> bool:
     """
     Strict Discogs single detection (refined):
@@ -818,54 +796,56 @@ def detect_single_status(
     min_sources: int = 1,
 ) -> dict:
     """
-    Detect if a track is a single using multiple sources.
-    Early short-circuit: If Discogs confirms (Single format OR Official Video), return immediately.
+    Detect if a track is a single.
+    NEW ORDER:
+      1. Discogs official/lyric video (first)
+      2. Discogs single-format release
+      3. MusicBrainz
+      4. Last.fm
     """
-    sources: list[str] = []
+    sources = []
 
     # Known singles override
     if known_list and title in known_list:
         return {"is_single": True, "confidence": "high", "sources": ["known_list"]}
 
-    # --- Discogs-first short-circuit ---
+    # --- 1. Discogs Official Video FIRST ---
     if discogs_token:
-        # Check Discogs "Single" format
-        try:
-            if is_discogs_single(title, artist):
-                return {"is_single": True, "confidence": "high", "sources": ["discogs"]}
-        except Exception as e:
-            logging.debug(f"Discogs 'Single' check failed for '{title}': {e}")
-
-        # Check Discogs Official (Lyric) Video
         try:
             dv = discogs_official_video_signal(title, artist, discogs_token=discogs_token)
             if dv.get("match"):
                 return {"is_single": True, "confidence": "high", "sources": ["discogs_video"]}
         except Exception as e:
-            logging.debug(f"Discogs official video check failed for '{title}': {e}")
+            logging.debug(f"Discogs video check failed for '{title}': {e}")
 
-    # --- If no Discogs match, continue with other sources ---
-    # MusicBrainz
+    # --- 2. Discogs Single Release ---
+    if discogs_token:
+        try:
+            if is_discogs_single(title, artist):
+                return {"is_single": True, "confidence": "high", "sources": ["discogs"]}
+        except Exception as e:
+            logging.debug(f"Discogs single check failed for '{title}': {e}")
+
+    # --- 3. MusicBrainz ---
     try:
         if is_musicbrainz_single(title, artist):
             sources.append("musicbrainz")
     except Exception as e:
         logging.debug(f"MusicBrainz check failed for '{title}': {e}")
 
-    # YouTube (optional, if implemented)
-    if youtube_api_key:
-        # Placeholder for YouTube official video logic
-        pass
-
-    # Last.fm single page heuristic
+    # --- 4. Last.fm ---
     try:
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
     except Exception as e:
         logging.debug(f"Last.fm check failed for '{title}': {e}")
 
-    # Confidence calculation for fallback path
-    confidence = "high" if len(sources) >= max(2, min_sources) else ("medium" if len(sources) == 1 else "low")
+    # Confidence
+    confidence = (
+        "high" if len(sources) >= max(2, min_sources)
+        else "medium" if len(sources) == 1
+        else "low"
+    )
 
     return {
         "is_single": len(sources) >= min_sources,
@@ -2033,6 +2013,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
