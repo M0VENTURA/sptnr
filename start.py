@@ -738,15 +738,18 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
     - Compute scores (Spotify, Last.fm, ListenBrainz, Age)
-    - Detect singles (Spotify album_type or album length)
-    - Assign stars (boost for singles; enforce canonical singles = 5★)
+    - Detect singles (Spotify album_type or album length) and enforce canonical singles = 5★
+    - Assign stars once per album:
+        • base quartile banding (4/3/2/1★) across the album
+        • "standout" to 5★ using a threshold computed from NON‑SINGLES ONLY
     - Save to DB with enriched metadata
-    - Update Navidrome ratings (show prior → new comparison)
-    - Create playlist for top tracks
+    - Update Navidrome ratings and print prior → new comparison
+    - Create 'Essential {artist}' playlist from final 5★ tracks
     """
     albums = fetch_artist_albums(artist_id)
     if not albums:
@@ -787,7 +790,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_artist = selected.get("artists", [{}])[0].get("name", "")
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             spotify_release_date = selected.get("album", {}).get("release_date", "")
-            # safe image access
             images = selected.get("album", {}).get("images") or []
             spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
 
@@ -856,19 +858,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         # ── Star assignment for the whole album ─────────────────────────────
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
+
+        # Base quartile banding across the whole album (singles will override)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
-        median_score = median(t["score"] for t in sorted_album) or 10
-        jump_threshold = median_score * 1.7
-
         for i, trk in enumerate(sorted_album):
-            # Base quartile banding: 4★, 3★, 2★, 1★
-            stars = max(1, 4 - (i // band_size))
+            trk["stars"] = max(1, 4 - (i // band_size))  # initialize band stars
+            trk["is_single"] = False                     # initialize
 
-            # Standout non‑single can still be 5★
-            if trk["score"] >= jump_threshold:
-                stars = 5
-
-            # Canonical single detection (ignore live/remix/etc.)
+        # First pass — mark canonical singles as 5★ (and remove them from "standout" pool)
+        singles_indices = []
+        for idx, trk in enumerate(sorted_album):
             title = trk["title"]
             canonical = is_valid_version(title, allow_live_remix=False)
 
@@ -880,39 +879,49 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if len(tracks) == 1:
                 single_sources.append("album_length")
 
-            is_single = False
             if single_sources and canonical:
-                is_single = True
-                stars = 5
+                trk["is_single"] = True
+                trk["stars"] = 5
+                trk["single_confidence"] = "high" if len(single_sources) >= 2 else "medium"
+                singles_indices.append(idx)
+            elif single_sources and not canonical:
+                trk["single_confidence"] = "ignored-noncanonical"
+            else:
+                trk["single_confidence"] = "low"
 
-            # Confidence label
-            trk["is_single"] = is_single
-            trk["single_confidence"] = (
-                "ignored-noncanonical" if single_sources and not canonical
-                else "high" if len(single_sources) >= 2
-                else "medium" if single_sources
-                else "low"
-            )
+        # Build non‑single pool for standout calculation
+        non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
+        non_single_scores = [t["score"] for t in non_single_tracks]
 
-            # Finalize before persisting
-            trk["stars"] = stars
+        # Compute median ONLY from non‑singles; if none remain, skip standout logic
+        if non_single_scores:
+            median_non_single = median(non_single_scores)
+            jump_threshold = median_non_single * 1.7  # tweak multiplier if you want stricter outliers
+
+            # Second pass — award 5★ to non‑singles above threshold
+            for trk in non_single_tracks:
+                if trk["score"] >= jump_threshold:
+                    trk["stars"] = 5
+
+        # Finalize, persist, and print with prior → new comparison + (single) label
+        for trk in sorted_album:
+            # Round score for DB cosmetics
             trk["score"] = round(trk["score"]) if trk["score"] > 0 else random.randint(5, 15)
 
-            # 🔎 Fetch prior rating for comparison
+            # Fetch prior rating for comparison
             prior_stars = get_current_rating(trk["id"])
 
-            # 💾 Persist + post to Navidrome
+            # Save + set rating
             save_to_db(trk)
-            set_track_rating(trk["id"], stars)
+            set_track_rating(trk["id"], trk["stars"])
 
-            # 🖨️ Print with (single) label and prior→new comparison
-            single_label = " (single)" if is_single else ""
+            label = " (single)" if trk.get("is_single") else ""
             if prior_stars is None:
-                print(f"   ✅ Navidrome rating updated: {title}{single_label} → {stars} stars")
+                print(f"   ✅ Navidrome rating updated: {trk['title']}{label} → {trk['stars']} stars")
             else:
-                print(f"   ✅ Navidrome rating updated: {title}{single_label} — {prior_stars}★ → {stars}★")
+                print(f"   ✅ Navidrome rating updated: {trk['title']}{label} — {prior_stars}★ → {trk['stars']}★")
 
-            if stars == 5:
+            if trk["stars"] == 5:
                 all_five_star_tracks.append(trk["id"])
 
             rated_map[trk["id"]] = trk
@@ -1217,5 +1226,6 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
