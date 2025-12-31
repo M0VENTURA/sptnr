@@ -269,6 +269,98 @@ import requests
 import base64
 import difflib
 
+from statistics import median
+
+def _clean_values(values):
+    """Return list of numeric values excluding None; keep zeros as informative."""
+    return [v for v in values if v is not None]
+
+def _mad(values):
+    """Median Absolute Deviation (robust dispersion)."""
+    vals = _clean_values(values)
+    if not vals:
+        return 0.0
+    m = median(vals)
+    return median([abs(v - m) for v in vals])
+
+def _cv(values):
+    """Coefficient of Variation (std/mean) – simple, less robust; use MAD if you prefer."""
+    vals = _clean_values(values)
+    if not vals:
+        return 0.0
+    mean = sum(vals) / len(vals)
+    if mean == 0:
+        return 0.0
+    # A lightweight std approximation (no statistics.stdev to avoid tiny samples).
+    var = sum((v - mean) ** 2 for v in vals) / max(1, (len(vals) - 1))
+    std = var ** 0.5
+    return std / mean
+
+def _coverage(values):
+    """Fraction of tracks with non-None values."""
+    total = len(values)
+    non_null = len([v for v in values if v is not None])
+    return (non_null / total) if total else 0.0
+
+def _reliability(dispersion, coverage, n_effective, disp_floor=1e-6):
+    """
+    Combine dispersion & coverage into a reliability score.
+    - dispersion: MAD or CV (prefer MAD for robustness)
+    - coverage: fraction in [0,1]
+    - n_effective: non-null count, shrinks score for tiny samples
+    """
+    disp = max(dispersion, disp_floor)
+    size_factor = min(1.0, n_effective / 8.0)  # shrink when few points
+    return disp * coverage * size_factor
+
+def compute_adaptive_weights(album_tracks, base_weights, clamp=(0.25, 1.75), use='mad'):
+    """
+    Compute per-album adaptive weights for spotify/lastfm/listenbrainz.
+    base_weights: dict like {'spotify': 0.4, 'lastfm': 0.3, 'listenbrainz': 0.2}
+    clamp: (min_factor, max_factor) relative to base weight
+    use: 'mad' (robust) or 'cv' (simple)
+    Returns normalized weights that sum to 1 across the three sources.
+    """
+    # Collect per-track raw values
+    sp = [t.get('spotify_score') for t in album_tracks]
+    lf = [t.get('lastfm_ratio')   for t in album_tracks]  # you’ll add this field below
+    lb = [t.get('listenbrainz_score') for t in album_tracks]
+
+    # Choose dispersion metric
+    disp_fn = _mad if use == 'mad' else _cv
+
+    # Compute metrics per source
+    def metrics(vals):
+        disp = disp_fn(vals)
+        cov  = _coverage(vals)
+        n_eff = len([v for v in vals if v is not None])
+        rel = _reliability(disp, cov, n_eff)
+        return disp, cov, n_eff, rel
+
+    sp_d, sp_c, sp_n, sp_rel = metrics(sp)
+    lf_d, lf_c, lf_n, lf_rel = metrics(lf)
+    lb_d, lb_c, lb_n, lb_rel = metrics(lb)
+
+    # Relative reliability as multipliers vs. mean reliability
+    rels = {'spotify': sp_rel, 'lastfm': lf_rel, 'listenbrainz': lb_rel}
+    mean_rel = sum(rels.values()) / max(1, len(rels))
+    # If all reliabilities are ~0 (no info anywhere), fall back to base
+    if mean_rel == 0:
+        return base_weights.copy()
+
+    factors = {k: (rels[k] / mean_rel) for k in rels}
+    # Clamp relative factors to avoid extreme swings
+    min_f, max_f = clamp
+    factors = {k: min(max(factors[k], min_f), max_f) for k in factors}
+
+    # Apply to base weights and renormalize to sum=1
+    adapted = {k: base_weights.get(k, 0.0) * factors[k] for k in factors}
+    total = sum(adapted.values())
+    if total == 0:
+        return base_weights.copy()
+    adapted = {k: adapted[k] / total for k in adapted}
+    return adapted
+
 def get_spotify_token():
     """Retrieve Spotify API token using client credentials."""
     auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
@@ -736,21 +828,106 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
-
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
-    - Compute scores (Spotify, Last.fm, ListenBrainz, Age)
-    - Detect singles (Spotify album_type or album length) and enforce canonical singles = 5★
+    - Enrich per-track metadata (Spotify, Last.fm, ListenBrainz, Age, Genres)
+    - Compute adaptive source weights per album (Spotify/Last.fm/ListenBrainz) based on dispersion & coverage
+    - Recompute combined score using adapted weights
+    - Detect singles (canonical only) and enforce singles = 5★
     - Assign stars once per album:
-        • base quartile banding (4/3/2/1★) across the album
-        • "standout" to 5★ using a threshold computed from NON‑SINGLES ONLY
-    - Save to DB with enriched metadata
-    - Update Navidrome ratings and print prior → new comparison
+        • base quartile banding (4/3/2/1★)
+        • 'standout' to 5★ using threshold computed from NON‑SINGLES ONLY
+    - Save to DB; update Navidrome; print prior → new rating comparison with (single) tag
     - Create 'Essential {artist}' playlist from final 5★ tracks
     """
+
+    # --- Adaptive weighting helpers (local to this function) ----------------
+    from statistics import median
+
+    def _clean_values(values):
+        """Return numeric values excluding None; keep zeros as informative."""
+        return [v for v in values if v is not None]
+
+    def _mad(values):
+        """Median Absolute Deviation (robust dispersion)."""
+        vals = _clean_values(values)
+        if not vals:
+            return 0.0
+        m = median(vals)
+        return median([abs(v - m) for v in vals])
+
+    def _cv(values):
+        """Coefficient of Variation (std/mean) – simple, less robust than MAD."""
+        vals = _clean_values(values)
+        if not vals:
+            return 0.0
+        mean = sum(vals) / len(vals)
+        if mean == 0:
+            return 0.0
+        var = sum((v - mean) ** 2 for v in vals) / max(1, (len(vals) - 1))
+        std = var ** 0.5
+        return std / mean
+
+    def _coverage(values):
+        """Fraction of tracks with non-None values (zeros count as present)."""
+        total = len(values)
+        non_null = len([v for v in values if v is not None])
+        return (non_null / total) if total else 0.0
+
+    def _reliability(dispersion, coverage, n_effective, disp_floor=1e-6):
+        """
+        Combine dispersion & coverage into a reliability score.
+        - dispersion: MAD or CV
+        - coverage: fraction in [0,1]
+        - n_effective: non-null count (shrinks score for tiny samples)
+        """
+        disp = max(dispersion, disp_floor)
+        size_factor = min(1.0, n_effective / 8.0)  # shrink when few points
+        return disp * coverage * size_factor
+
+    def compute_adaptive_weights(album_tracks, base_weights, clamp=(0.25, 1.75), use='mad'):
+        """
+        Compute per-album adaptive weights for spotify/lastfm/listenbrainz.
+        base_weights: dict like {'spotify': 0.4, 'lastfm': 0.3, 'listenbrainz': 0.2}
+        clamp: (min_factor, max_factor) relative to base weight
+        use: 'mad' (robust) or 'cv' (simple)
+        Returns normalized weights that sum to 1 across the three sources.
+        """
+        sp_vals = [t.get('spotify_score') for t in album_tracks]
+        lf_vals = [t.get('lastfm_ratio')   for t in album_tracks]  # we add this below
+        lb_vals = [t.get('listenbrainz_score') for t in album_tracks]
+
+        disp_fn = _mad if use == 'mad' else _cv
+
+        def metrics(vals):
+            disp = disp_fn(vals)
+            cov  = _coverage(vals)
+            n_eff = len([v for v in vals if v is not None])
+            rel = _reliability(disp, cov, n_eff)
+            return disp, cov, n_eff, rel
+
+        sp_d, sp_c, sp_n, sp_rel = metrics(sp_vals)
+        lf_d, lf_c, lf_n, lf_rel = metrics(lf_vals)
+        lb_d, lb_c, lb_n, lb_rel = metrics(lb_vals)
+
+        rels = {'spotify': sp_rel, 'lastfm': lf_rel, 'listenbrainz': lb_rel}
+        mean_rel = sum(rels.values()) / max(1, len(rels))
+        if mean_rel == 0:
+            return base_weights.copy()
+
+        factors = {k: (rels[k] / mean_rel) for k in rels}
+        min_f, max_f = clamp
+        factors = {k: min(max(factors[k], min_f), max_f) for k in factors}
+
+        adapted = {k: base_weights.get(k, 0.0) * factors[k] for k in factors}
+        total = sum(adapted.values())
+        if total == 0:
+            return base_weights.copy()
+        adapted = {k: adapted[k] / total for k in adapted}
+        return adapted
+
+    # --- Fetch albums -------------------------------------------------------
     albums = fetch_artist_albums(artist_id)
     if not albums:
         print(f"⚠️ No albums found for artist '{artist_name}'")
@@ -803,7 +980,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
 
-            # Score
+            # Score components
             score, momentum, lb_score = compute_track_score(
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
@@ -829,13 +1006,25 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
             top_genres = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
 
+            # Build track record
+            
             album_tracks.append({
                 "id": track_id,
                 "title": title,
                 "album": album_name,
                 "artist": artist_name,
+            
+                # ⬇ recomputed later with adaptive weights
                 "score": score,
+            
+                # ⬇ Spotify / Last.fm / LB components
                 "spotify_score": sp_score,
+                "lastfm_ratio": lf_ratio,       # used by adaptive weights
+                "lastfm_score": lf_ratio,       # ✅ keeps DB schema happy
+                "listenbrainz_score": lb_score,
+                "age_score": momentum,
+            
+                # ⬇ genres & metadata
                 "genres": top_genres,
                 "navidrome_genres": nav_genres,
                 "spotify_genres": spotify_genres,
@@ -849,25 +1038,43 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "lastfm_artist_playcount": lf_artist_play,
                 "file_path": file_path,
                 "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                "listenbrainz_score": lb_score,
-                "age_score": momentum,
-                # 🔽 Newly added fields
+            
+                # ⬇ single flags persisted per track
                 "spotify_album_type": spotify_album_type,
                 "is_spotify_single": is_spotify_single,
             })
 
-        # ── Star assignment for the whole album ─────────────────────────────
+
+        # --- Adaptive weights per album & recompute combined score -----------
+        base_weights = {
+            'spotify': SPOTIFY_WEIGHT,
+            'lastfm': LASTFM_WEIGHT,
+            'listenbrainz': LISTENBRAINZ_WEIGHT,
+        }
+        adaptive = compute_adaptive_weights(album_tracks, base_weights=base_weights, clamp=(0.25, 1.75), use='mad')
+
+        # Recompute per-track combined score using adapted weights (keep age fixed)
+        for t in album_tracks:
+            sp = t.get('spotify_score', 0)
+            lf = t.get('lastfm_ratio', 0)
+            lb = t.get('listenbrainz_score', 0)
+            age = t.get('age_score', 0)
+            t['score'] = (adaptive['spotify'] * sp) + \
+                         (adaptive['lastfm'] * lf) + \
+                         (adaptive['listenbrainz'] * lb) + \
+                         (AGE_WEIGHT * age)
+
+        # --- Star assignment for the whole album -----------------------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
 
-        # Base quartile banding across the whole album (singles will override)
+        # Base quartile banding (singles will override later)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
         for i, trk in enumerate(sorted_album):
-            trk["stars"] = max(1, 4 - (i // band_size))  # initialize band stars
-            trk["is_single"] = False                     # initialize
+            trk["stars"] = max(1, 4 - (i // band_size))
+            trk["is_single"] = False  # init
 
-        # First pass — mark canonical singles as 5★ (and remove them from "standout" pool)
-        singles_indices = []
-        for idx, trk in enumerate(sorted_album):
+        # First pass — mark canonical singles as 5★ (and remove from standout pool)
+        for trk in sorted_album:
             title = trk["title"]
             canonical = is_valid_version(title, allow_live_remix=False)
 
@@ -883,35 +1090,31 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 trk["is_single"] = True
                 trk["stars"] = 5
                 trk["single_confidence"] = "high" if len(single_sources) >= 2 else "medium"
-                singles_indices.append(idx)
             elif single_sources and not canonical:
                 trk["single_confidence"] = "ignored-noncanonical"
             else:
                 trk["single_confidence"] = "low"
 
-        # Build non‑single pool for standout calculation
+        # Build non‑single pool for standout calc
         non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
         non_single_scores = [t["score"] for t in non_single_tracks]
 
         # Compute median ONLY from non‑singles; if none remain, skip standout logic
         if non_single_scores:
             median_non_single = median(non_single_scores)
-            jump_threshold = median_non_single * 1.7  # tweak multiplier if you want stricter outliers
+            jump_threshold = median_non_single * 1.9  # slightly stricter than 1.7
 
             # Second pass — award 5★ to non‑singles above threshold
             for trk in non_single_tracks:
                 if trk["score"] >= jump_threshold:
                     trk["stars"] = 5
 
-        # Finalize, persist, and print with prior → new comparison + (single) label
+        # Finalize, persist, and print prior → new comparison with (single) label
         for trk in sorted_album:
-            # Round score for DB cosmetics
             trk["score"] = round(trk["score"]) if trk["score"] > 0 else random.randint(5, 15)
 
-            # Fetch prior rating for comparison
             prior_stars = get_current_rating(trk["id"])
 
-            # Save + set rating
             save_to_db(trk)
             set_track_rating(trk["id"], trk["stars"])
 
@@ -928,7 +1131,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         print(f"✔ Completed album: {album_name}")
 
-    # ✅ Create Essential playlist after all albums processed
+    # --- Essential playlist (post-artist) -----------------------------------
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))  # Deduplicate
     if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10:
         playlist_name = f"Essential {artist_name}"
@@ -1226,6 +1429,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
