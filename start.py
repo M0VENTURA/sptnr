@@ -7,7 +7,6 @@ from datetime import datetime, timedelta
 from statistics import median
 from collections import defaultdict
 from urllib.parse import quote_plus
-import base64
 import difflib
 
 
@@ -121,26 +120,44 @@ batchrate = config["features"]["batchrate"]
 artist_list = config["features"]["artist"]
 
 
+def get_primary_nav_user(cfg: dict) -> dict | None:
+    """
+    Return the first Navidrome user entry if 'navidrome_users' is present,
+    otherwise return the single-user dict under 'navidrome'. If neither exists, None.
+    """
+    if isinstance(cfg.get("navidrome_users"), list) and cfg["navidrome_users"]:
+        return cfg["navidrome_users"][0]
+    if isinstance(cfg.get("navidrome"), dict):
+        return cfg["navidrome"]
+    return None
+
 
 def validate_config(config):
     issues = []
 
-    # Check Navidrome credentials
-    if config["navidrome"].get("user") in ["admin", "", None]:
-        issues.append("Navidrome username is not set (currently 'admin').")
-    if config["navidrome"].get("pass") in ["password", "", None]:
-        issues.append("Navidrome password is not set (currently 'password').")
+    # --- Navidrome credentials (support single or multi) ---
+    primary = get_primary_nav_user(config)
+    if not primary:
+        issues.append("No Navidrome credentials found. Provide either 'navidrome' or 'navidrome_users'.")
 
-    # Check Spotify credentials
+    else:
+        if primary.get("user") in ["admin", "", None]:
+            issues.append("Navidrome username is not set (currently 'admin').")
+        if primary.get("pass") in ["password", "", None]:
+            issues.append("Navidrome password is not set (currently 'password').")
+        if not primary.get("base_url"):
+            issues.append("Navidrome base_url is missing.")
+
+    # --- Spotify ---
     if config["spotify"].get("client_id") in ["your_spotify_client_id", "", None]:
         issues.append("Spotify Client ID is missing or placeholder.")
     if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
         issues.append("Spotify Client Secret is missing or placeholder.")
-    
-    # Check Last.fm API key
+
+    # --- Last.fm ---
     if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
         issues.append("Last.fm API key is missing or placeholder.")
-    
+
     if issues:
         print("\n⚠️ Configuration issues detected:")
         for issue in issues:
@@ -154,11 +171,10 @@ def validate_config(config):
         print("⏸ Waiting for config update... Container will stay alive. Please restart the container after editing the config.")
         try:
             while True:
-                time.sleep(60)  # Sleep indefinitely until container is restarted
+                time.sleep(60)
         except KeyboardInterrupt:
             print("\nℹ️ Exiting script.")
             sys.exit(0)
-
 
 
 # ✅ Call this right after loading config
@@ -169,6 +185,12 @@ validate_config(config)
 
 # ✅ Extract credentials and settings
 NAV_USERS = config.get("navidrome_users", [])
+
+_primary_user = get_primary_nav_user(config) or {"base_url": "", "user": "", "pass": ""}
+
+NAV_BASE_URL = _primary_user.get("base_url", "")
+USERNAME     = _primary_user.get("user", "")
+PASSWORD     = _primary_user.get("pass", "")
 
 # Spotify
 SPOTIFY_CLIENT_ID = config["spotify"]["client_id"]
@@ -857,9 +879,6 @@ def set_track_rating_for_all(track_id, stars):
         except Exception as e:
             logging.error(f"❌ Failed for {user_cfg['user']}: {e}")
 
-
-
-
 def create_playlist_for_all(name, track_ids):
     for user_cfg in NAV_USERS:
         url = f"{user_cfg['base_url']}/rest/createPlaylist.view"
@@ -1301,7 +1320,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))  # dedupe
     if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10 and sync and not dry_run:
         playlist_name = f"Essential {artist_name}"
-        create_playlist(playlist_name, all_five_star_tracks)
+        create_playlist_for_all(playlist_name, all_five_star_tracks)
+
         print(f"🎶 Essential playlist created: {playlist_name} with {len(all_five_star_tracks)} tracks")
     else:
         print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(all_five_star_tracks)})")
@@ -1595,6 +1615,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
