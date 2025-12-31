@@ -33,26 +33,38 @@ required_columns = {
 
 def update_schema(db_path):
     """
-    Ensure the 'tracks' table exists and has all required columns.
+    Ensure the 'tracks' table and 'artist_stats' table exist and have all required columns.
     Creates missing columns if necessary.
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    # ✅ Ensure table exists first (with only primary key if new)
+    # ✅ Ensure tracks table exists
     cursor.execute("CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY);")
 
-    # ✅ Get existing columns
+    # ✅ Get existing columns for tracks
     cursor.execute("PRAGMA table_info(tracks);")
     existing_columns = [row[1] for row in cursor.fetchall()]
 
-    # ✅ Add missing columns
+    # ✅ Add missing columns to tracks
     for col, col_type in required_columns.items():
         if col not in existing_columns:
             print(f"✅ Adding missing column: {col} ({col_type})")
             cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} {col_type};")
         else:
             print(f"✔ Column exists: {col}")
+
+    # ✅ Ensure artist_stats table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS artist_stats (
+            artist_id TEXT PRIMARY KEY,
+            artist_name TEXT,
+            album_count INTEGER,
+            track_count INTEGER,
+            last_updated TEXT
+        );
+    """)
+    print("✔ artist_stats table verified.")
 
     conn.commit()
     conn.close()
