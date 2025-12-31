@@ -554,11 +554,13 @@ def load_artist_map():
     return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
-    Rate all tracks for a given artist and capture full metadata:
+    Rate all tracks for a given artist:
     - Compute scores (Spotify, Last.fm, ListenBrainz, Age)
-    - Assign stars
+    - Detect singles (Spotify album_type or album length)
+    - Assign stars (boost for singles)
     - Save to DB with enriched metadata
     - Update Navidrome ratings
     - Create playlist for top tracks
@@ -662,8 +664,25 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             stars = max(1, 4 - (i // band_size))
             if track["score"] >= jump_threshold:
                 stars = 5
+
+            # ✅ Detect single
+            is_single = False
+            single_confidence = ""
+            if selected.get("album", {}).get("album_type", "").lower() == "single":
+                is_single = True
+                single_confidence = "spotify"
+            elif len(tracks) == 1:
+                is_single = True
+                single_confidence = "album_length"
+
+            # ✅ Boost stars for singles
+            if is_single and stars < 4:
+                stars = min(stars + 1, 5)
+
             track["stars"] = stars
             track["score"] = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
+            track["is_single"] = is_single
+            track["single_confidence"] = single_confidence
 
             # ✅ Save to DB with enriched metadata
             conn = sqlite3.connect(DB_PATH)
@@ -682,7 +701,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 ",".join(track["navidrome_genres"]), ",".join(track["spotify_genres"]), ",".join(track["lastfm_tags"]),
                 track["spotify_album"], track["spotify_artist"], track["spotify_popularity"], track["spotify_release_date"], track["spotify_album_art_url"],
                 track["lastfm_track_playcount"], track["lastfm_artist_playcount"], track["file_path"],
-                False, "", track["last_scanned"]
+                track["is_single"], track["single_confidence"], track["last_scanned"]
             ))
             conn.commit()
             conn.close()
@@ -698,12 +717,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             rated_map[track["id"]] = track
 
         print(f"✔ Completed album: {album_name}")
-
+   
     # ✅ Create playlist for artist's top tracks
-    if playlist_tracks:
-        playlist_name = f"Top Tracks - {artist_name}"
-        create_playlist(playlist_name, playlist_tracks)
-        print(f"🎶 Playlist created: {playlist_name} with {len(playlist_tracks)} tracks")
+    five_star_tracks = [track["id"] for track in sorted_album if track["stars"] == 5]
+    
+    if artist_name.lower() != "various artists" and len(five_star_tracks) > 10:
+        playlist_name = f"Essential {artist_name}"
+        create_playlist(playlist_name, five_star_tracks)
+        print(f"🎶 Essential playlist created: {playlist_name} with {len(five_star_tracks)} tracks")
+    else:
+        print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(five_star_tracks)})")
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
@@ -882,6 +905,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
