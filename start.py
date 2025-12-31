@@ -420,7 +420,8 @@ def select_best_spotify_match(results, track_title):
     return max(filtered, key=lambda r: r.get("popularity", 0))
 
 
-# bs4 is optional; heuristic will auto-disable if not installed
+
+# --- Last.fm Single Heuristic (API first, HTML fallback) --------------------
 try:
     from bs4 import BeautifulSoup
     HAVE_BS4 = True
@@ -429,27 +430,55 @@ except Exception:
 
 def is_lastfm_single(title: str, artist: str, timeout: int = 8) -> bool:
     """
-    Heuristic: treat a release as 'single' when the Last.fm page shows exactly one track row.
-    Scrapes public HTML. If Last.fm changes markup, this may need adjustment.
-
-    Returns:
-        True if we can confidently infer the page represents a single track; otherwise False.
+    Decide 'single' by checking the Last.fm album API for a one-track release.
+    Fallback to HTML scrape (if bs4 installed) when API lacks tracklist.
     """
-    if not HAVE_BS4:
-        # BeautifulSoup not available — skip this heuristic
-        return False
+    # 1) API-first: album.getInfo returns 'tracks.track' list
+    if LASTFM_API_KEY:
+        try:
+            r = requests.get(
+                "https://ws.audioscrobbler.com/2.0/",
+                params={
+                    "method": "album.getInfo",
+                    "artist": artist,
+                    "album": title,
+                    "autocorrect": 1,
+                    "api_key": LASTFM_API_KEY,
+                    "format": "json",
+                },
+                timeout=timeout,
+                headers={"User-Agent": "sptnr-cli/1.0"},
+            )
+            r.raise_for_status()
+            album = r.json().get("album", {})
+            tracks = (album.get("tracks") or {}).get("track", [])
+            # If Last.fm exposes a single track, consider it a single
+            if isinstance(tracks, dict):
+                tracks = [tracks]  # Last.fm may return a single dict instead of list
+            if len(tracks) == 1:
+                return True
+        except Exception as e:
+            logging.debug(f"Last.fm API single check failed for '{title}': {e}")
+            # fall through to HTML if available
 
-    url = f"https://www.last.fm/music/{quote_plus(artist)}/{quote_plus(title)}"
-    try:
-        res = requests.get(url, timeout=timeout, headers={"User-Agent": "sptnr-cli/1.0"})
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
-        # On Last.fm releases, each track row typically shows a duration cell
-        rows = soup.find_all("td", class_="chartlist-duration")
-        return len(rows) == 1
-    except Exception as e:
-        logging.debug(f"Last.fm single check failed for '{title}': {e}")
-        return False
+    # 2) HTML fallback: only if bs4 is installed
+    if HAVE_BS4:
+        try:
+            url = f"https://www.last.fm/music/{quote_plus(artist)}/{quote_plus(title)}"
+            res = requests.get(url, timeout=timeout, headers={"User-Agent": "sptnr-cli/1.0"})
+            res.raise_for_status()
+            soup = BeautifulSoup(res.text, "html.parser")
+            # Be lenient across possible templates: count rows that look like tracks
+            candidates = []
+            candidates += soup.select("td.chartlist-duration")
+            candidates += soup.select("li.tracklist-row")
+            candidates += soup.select("tr.chartlist-row")
+            return len(candidates) == 1
+        except Exception as e:
+            logging.debug(f"Last.fm HTML single check failed for '{title}': {e}")
+
+    return False
+
 
 
 def is_discogs_single(title, artist):
@@ -514,6 +543,8 @@ def is_musicbrainz_single(title: str, artist: str) -> bool:
         return False
 
 
+
+
 def detect_single_status(
     title: str,
     artist: str,
@@ -522,41 +553,22 @@ def detect_single_status(
     discogs_token: str | None = None,
     known_list: list[str] | None = None,
     use_lastfm: bool = False,
+    min_sources: int = 1,  # ✅ new: configurable threshold
 ) -> dict:
-    """
-    Aggregate multiple signals to decide single status.
-    Signals:
-      - Known singles list (config/features.known_singles[artist_name]) → high
-      - MusicBrainz release-group primary-type=Single
-      - Discogs format=Single (title-aware via is_discogs_single)
-      - YouTube: top search matches contain 'official video' and the channel looks official
-      - Last.fm: single-page heuristic (optional; requires bs4)
-
-    Returns:
-      {
-        "is_single": bool,
-        "confidence": "low"|"medium"|"high",
-        "sources": [ ... ]    # e.g., ["musicbrainz", "discogs", "youtube", "lastfm", "known_list"]
-      }
-    """
     sources: list[str] = []
 
-    # ✅ known list
     if known_list and title in known_list:
         return {"is_single": True, "confidence": "high", "sources": ["known_list"]}
 
-    # 🎼 MusicBrainz
     if is_musicbrainz_single(title, artist):
         sources.append("musicbrainz")
 
-    # 💿 Discogs (title-aware)
     try:
         if discogs_token and is_discogs_single(title, artist):
             sources.append("discogs")
     except Exception as e:
         logging.debug(f"Discogs signal failed: {e}")
 
-    # ▶️ YouTube (optional; only if key provided)
     if youtube_api_key:
         try:
             q = f"{artist} {title} official video"
@@ -567,35 +579,33 @@ def detect_single_status(
             )
             r.raise_for_status()
             items = r.json().get("items", [])
-
             def norm(s: str) -> str:
                 s = s.lower()
                 s = re.sub(r"\(.*?\)", "", s)
                 s = re.sub(r"[^\w\s]", "", s)
                 return s.strip()
-
             nav_title = norm(title)
             for v in items:
                 yt_title = norm(v["snippet"]["title"])
                 channel_title = (v["snippet"]["channelTitle"] or "").lower()
-                # simple official heuristic
-                looks_official = ("official" in channel_title) or ("vevo" in channel_title) or \
-                                 (artist.lower() in channel_title)
-                if "official video" in yt_title and nav_title in yt_title and looks_official:
+                looks_official = ("official" in channel_title) or ("vevo" in channel_title) or (artist.lower() in channel_title)
+                # slightly relaxed title gate to catch more official posts
+                if (("official video" in yt_title) or (nav_title in yt_title)) and looks_official:
                     sources.append("youtube")
                     break
         except Exception as e:
             logging.debug(f"YouTube signal failed for '{title}': {e}")
 
-    # 📻 Last.fm single-page heuristic (optional)
+    # ✅ Last.fm single-page via API/fallback
     try:
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
     except Exception as e:
         logging.debug(f"Last.fm signal failed: {e}")
 
-    confidence = "high" if len(sources) >= 2 else ("medium" if len(sources) == 1 else "low")
-    return {"is_single": len(sources) >= 2, "confidence": confidence, "sources": sources}
+    # Confidence vs. configured threshold
+    confidence = "high" if len(sources) >= max(2, min_sources) else ("medium" if len(sources) == 1 else "low")
+    return {"is_single": len(sources) >= min_sources, "confidence": confidence, "sources": sources}
 
 
 def get_discogs_genres(title, artist):
@@ -1577,6 +1587,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
