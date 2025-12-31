@@ -7,6 +7,9 @@ from statistics import median
 from collections import defaultdict
 from urllib.parse import quote_plus
 import difflib
+import threading
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
 
 
 # 🎨 Colorama setup
@@ -461,12 +464,65 @@ def _canon(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+import threading
+from urllib3.util.retry import Retry
+from requests.adapters import HTTPAdapter
+
+# --- Discogs call hygiene: global session with retry/backoff ---
+_discogs_session = None
+_discogs_lock = threading.Lock()
+
+def _get_discogs_session():
+    """Return a shared requests.Session with sensible retries and backoff."""
+    global _discogs_session
+    with _discogs_lock:
+        if _discogs_session is None:
+            s = requests.Session()
+            # Retry on common transient status codes including 429 when allowed
+            retry = Retry(
+                total=5,
+                connect=5,
+                read=5,
+                backoff_factor=1.2,            # exponential: 1.2, 2.4, 4.8...
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset(["GET", "POST"])
+            )
+            s.mount("https://", HTTPAdapter(max_retries=retry))
+            s.mount("http://", HTTPAdapter(max_retries=retry))
+            _discogs_session = s
+        return _discogs_session
+
+# --- Simple RPM throttle (authenticated limit is generous, but be safe) ---
+_last_call_ts = 0.0
+_min_interval_sec = float(config.get("features", {}).get("discogs_min_interval_sec", 0.35))
+# 0.35s ~ 171 req/min theoretical max; adjust to 1.0s if you still see 429s
+
+def _throttle_discogs():
+    """Sleep briefly between Discogs calls to avoid 429s."""
+    global _last_call_ts
+    now = time.time()
+    wait = _min_interval_sec - (now - _last_call_ts)
+    if wait > 0:
+        time.sleep(wait)
+    _last_call_ts = time.time()
+
+def _respect_retry_after(resp):
+    """If Discogs returns Retry-After, sleep that amount."""
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            delay = float(ra)
+            time.sleep(min(delay, 10.0))  # cap at 10s per call
+        except Exception:
+            pass
+
 
 # --- Discogs "Official Video / Official Lyric Video" signal (with cache) ---
 
 # Very small in-memory cache to reduce Discogs API calls during batch runs.
 # Keyed by normalized (artist, title) -> result dict returned by the function below.
 _DISCogs_VID_CACHE: dict[tuple[str, str], dict] = {}
+
 
 def discogs_official_video_signal(
     title: str,
@@ -495,14 +551,13 @@ def discogs_official_video_signal(
       - BLOCK: "Official Audio", "visualizer", "teaser"
       - Require robust title match ratio >= min_ratio and canonical title gate
     """
-    # Early exit if no token
     if not discogs_token:
         return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
 
     # Cache key (normalized)
     cache_key = (_canon(artist), _canon(strip_parentheses(title)))
-    if cache_key in _DISCogs_VID_CACHE:
-        return _DISCogs_VID_CACHE[cache_key]
+    if cache_key in _DISCOGS_VID_CACHE:
+        return _DISCOGS_VID_CACHE[cache_key]
 
     headers = {
         "Authorization": f"Discogs token={discogs_token}",
@@ -511,34 +566,18 @@ def discogs_official_video_signal(
 
     nav_title  = _canon(strip_parentheses(title))
     nav_artist = _canon(artist)
-
-    # 1) Narrow to likely releases for artist+title
-    try:
-        s = requests.get(
-            "https://api.discogs.com/database/search",
-            headers=headers,
-            params={"q": f"{artist} {title}", "type": "release", "per_page": per_page},
-            timeout=timeout,
-        )
-        s.raise_for_status()
-    except Exception as e:
-        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": f"search_fail:{e}"}
-        _DISCogs_VID_CACHE[cache_key] = result
-        return result
-
-    candidates = s.json().get("results", []) or []
-    if not candidates:
-        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
-        _DISCogs_VID_CACHE[cache_key] = result
-        return result
+    session    = _get_discogs_session()
 
     def _looks_official(text: str) -> bool:
         t = _canon(text)
         return ("official" in t) or ("vevo" in t) or (nav_artist in t)
 
     def _is_low_value(text: str) -> bool:
-        # Block Official Audio / visualizer / teaser.
-        # Allow Official Video or Official Lyric Video.
+        """
+        Block Official Audio / visualizer / teaser.
+        Allow Official Video or Official Lyric Video.
+        Treat anything else as low-value.
+        """
         t = _canon(text)
         is_official = "official" in t
         is_videoish = ("video" in t) or ("lyric" in t)
@@ -548,17 +587,43 @@ def discogs_official_video_signal(
             return True
         if is_official and is_videoish:
             return False
-        # Anything else (non-official lyric/video) is low-value for single detection
         return True
 
-    # 2) Inspect videos on each release
-    best: dict | None = None  # keep best match across releases
+    # 1) Search likely releases
+    try:
+        _throttle_discogs()
+        s = session.get(
+            "https://api.discogs.com/database/search",
+            headers=headers,
+            params={"q": f"{artist} {title}", "type": "release", "per_page": per_page},
+            timeout=timeout,
+        )
+        if s.status_code == 429:
+            _respect_retry_after(s)
+        s.raise_for_status()
+    except Exception as e:
+        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": f"search_fail:{e}"}
+        _DISCOGS_VID_CACHE[cache_key] = result
+        return result
+
+    candidates = s.json().get("results", []) or []
+    if not candidates:
+        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
+        _DISCOGS_VID_CACHE[cache_key] = result
+        return result
+
+    # 2) Inspect videos across candidate releases; keep best match
+    best: dict | None = None
+
     for c in candidates:
         rid = c.get("id")
         if not rid:
             continue
         try:
-            r = requests.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=timeout)
+            _throttle_discogs()
+            r = session.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=timeout)
+            if r.status_code == 429:
+                _respect_retry_after(r)
             r.raise_for_status()
         except Exception as e:
             logging.debug(f"Discogs release fetch failed id={rid}: {e}")
@@ -570,131 +635,99 @@ def discogs_official_video_signal(
             vd  = _canon(v.get("description", "") or "")
             uri = v.get("uri")
 
-            # Skip weak labels up front
+            # Require at least one strong field
             if _is_low_value(vt) and _is_low_value(vd):
                 continue
 
-            # Must look official by label or channel wording
+            # Must look official
             if not (_looks_official(vt) or _looks_official(vd)):
                 continue
 
-            # Respect your version gate (avoid live/remix unless requested)
+            # Respect canonical gate (avoid live/remix unless requested)
             if not is_valid_version(title, allow_live_remix=False):
                 continue
 
-            # Robust match ratio against track title (prefer max of title/description)
+            # Robust match ratio against track title
             ratio = max(
                 difflib.SequenceMatcher(None, vt, nav_title).ratio(),
                 difflib.SequenceMatcher(None, vd, nav_title).ratio(),
             )
 
             if ratio >= min_ratio:
-                # Track the best match across all releases
-                current = {"match": True, "uri": uri, "release_id": rid, "ratio": round(ratio, 3),
-                           "why": "official_label_and_title_match"}
+                current = {
+                    "match": True,
+                    "uri": uri,
+                    "release_id": rid,
+                    "ratio": round(ratio, 3),
+                    "why": "official_label_and_title_match",
+                }
                 if (best is None) or (current["ratio"] > best["ratio"]):
                     best = current
 
-    # Return best if found; otherwise no-match
+    # Cache & return
     if best:
-        _DISCogs_VID_CACHE[cache_key] = best
+        _DISCOGS_VID_CACHE[cache_key] = best
         return best
 
     result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_official_video_match"}
-    _DISCogs_VID_CACHE[cache_key] = result
+    _DISCOGS_VID_CACHE[cache_key] = result
     return result
 
 
-def is_lastfm_single(title: str, artist: str, timeout: int = 8) -> bool:
+def is_discogs_single(title: str, artist: str) -> bool:
     """
-    Decide 'single' by checking the Last.fm album API for a one-track release.
-    Fallback to HTML scrape (if bs4 installed) when API lacks tracklist.
-    """
-    # 1) API-first: album.getInfo returns 'tracks.track' list
-    if LASTFM_API_KEY:
-        try:
-            r = requests.get(
-                "https://ws.audioscrobbler.com/2.0/",
-                params={
-                    "method": "album.getInfo",
-                    "artist": artist,
-                    "album": title,
-                    "autocorrect": 1,
-                    "api_key": LASTFM_API_KEY,
-                    "format": "json",
-                },
-                timeout=timeout,
-                headers={"User-Agent": "sptnr-cli/1.0"},
-            )
-            r.raise_for_status()
-            album = r.json().get("album", {})
-            tracks = (album.get("tracks") or {}).get("track", [])
-            # If Last.fm exposes a single track, consider it a single
-            if isinstance(tracks, dict):
-                tracks = [tracks]  # Last.fm may return a single dict instead of list
-            if len(tracks) == 1:
-                return True
-        except Exception as e:
-            logging.debug(f"Last.fm API single check failed for '{title}': {e}")
-            # fall through to HTML if available
-
-    # 2) HTML fallback: only if bs4 is installed
-    if HAVE_BS4:
-        try:
-            url = f"https://www.last.fm/music/{quote_plus(artist)}/{quote_plus(title)}"
-            res = requests.get(url, timeout=timeout, headers={"User-Agent": "sptnr-cli/1.0"})
-            res.raise_for_status()
-            soup = BeautifulSoup(res.text, "html.parser")
-            # Be lenient across possible templates: count rows that look like tracks
-            candidates = []
-            candidates += soup.select("td.chartlist-duration")
-            candidates += soup.select("li.tracklist-row")
-            candidates += soup.select("tr.chartlist-row")
-            return len(candidates) == 1
-        except Exception as e:
-            logging.debug(f"Last.fm HTML single check failed for '{title}': {e}")
-
-    return False
-
-
-
-def is_discogs_single(title, artist):
-    """
-    Check if a track is a single using Discogs API with title-aware matching.
-    Requires a token in config.yaml.
+    Check if a track is a single using Discogs search (format=Single) with title-aware matching.
+    Uses shared session, throttle, and Retry-After handling to mitigate 429s.
     """
     if not DISCOGS_TOKEN:
-        print("❌ Missing Discogs token in config.yaml.")
+        logging.warning("Missing Discogs token in config.yaml.")
         return False
 
     headers = {
         "Authorization": f"Discogs token={DISCOGS_TOKEN}",
-        "User-Agent": "sptnr-cli/1.0"
+        "User-Agent": _DEF_USER_AGENT,
     }
+    # Fewer rows reduces follow-on calls and risk of 429
     params = {
         "q": f"{artist} {title}",
         "type": "release",
         "format": "Single",
-        "per_page": 5
+        "per_page": 3,
     }
 
+    session = _get_discogs_session()
+
     try:
-        res = requests.get("https://api.discogs.com/database/search", headers=headers, params=params, timeout=10)
+        _throttle_discogs()
+        res = session.get("https://api.discogs.com/database/search", headers=headers, params=params, timeout=10)
+        if res.status_code == 429:
+            _respect_retry_after(res)
         res.raise_for_status()
-        results = res.json().get("results", [])
-        title_norm = title.lower().strip()
-        artist_norm = artist.lower().strip()
+
+        results = res.json().get("results", []) or []
+        if not results:
+            return False
+
+        nav_title  = _canon(strip_parentheses(title))
+        nav_artist = _canon(artist)
 
         for r in results:
-            formats = r.get("format", [])
-            rtitle = (r.get("title") or "").lower()
-            # require 'Single' AND a reasonable title match
-            if "Single" in formats and (title_norm in rtitle or rtitle.startswith(f"{artist_norm} - {title_norm}")):
-                return True
+            formats = r.get("format", []) or []
+            rtitle  = _canon(r.get("title") or "")
+
+            # Require "Single" AND reasonable title/artist match
+            if "Single" in formats:
+                # Accept "Artist - Title" or title contained
+                title_match = (nav_title in rtitle) or rtitle.startswith(f"{nav_artist} - {nav_title}")
+                if title_match:
+                    return True
+
         return False
+
     except Exception as e:
-        print(f"⚠️ Discogs lookup failed for '{title}': {type(e).__name__} - {e}")
+        logging.debug(f"Discogs singles search failed for '{title}': {e}")
         return False
+
 
 
 def is_musicbrainz_single(title: str, artist: str) -> bool:
@@ -1850,6 +1883,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
