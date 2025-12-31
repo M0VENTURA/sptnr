@@ -711,6 +711,7 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -728,7 +729,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
-    playlist_tracks = []
+    all_five_star_tracks = []  # Collect all 5★ tracks across albums
 
     for album in albums:
         album_name = album.get("name", "Unknown Album")
@@ -746,7 +747,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             title = track["title"]
             file_path = track.get("path", "")
             nav_genres = [track.get("genre")] if track.get("genre") else []
-            mbid = track.get("mbid", None)  # MusicBrainz ID if available
+            mbid = track.get("mbid", None)
 
             print(f"   🔍 Processing track: {title}")
 
@@ -765,9 +766,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             lf_track_play = lf_data.get("track_play", 0)
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
-            lastfm_tags = []  # Placeholder for future tag fetch
 
-            # ✅ Compute score using unified function
+            # ✅ Compute score
             score, momentum, lb_score = compute_track_score(
                 title,
                 artist_name,
@@ -776,73 +776,17 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 mbid,
                 verbose
             )
-            
-            
-            # ✅ Full genre enrichment
-            discogs_genres = get_discogs_genres(title, artist_name)  # Always used
-            audiodb_genres = []
-            if use_audiodb and AUDIODB_API_KEY:
-                audiodb_genres = get_audiodb_genres(artist_name)
-            
-            mb_genres = get_musicbrainz_genres(title, artist_name)  # Always used
-            
-            # ✅ Placeholder for Google lookup
-            if use_google and GOOGLE_API_KEY and GOOGLE_CSE_ID:
-                # TODO: Implement Google lookup for single detection
-                pass
-            else:
-                logging.info("Skipping Google lookup (disabled in config)")
-            
-            # ✅ Placeholder for YouTube lookup
-            if use_youtube and YOUTUBE_API_KEY:
-                # TODO: Implement YouTube lookup for single detection
-                pass
-            else:
-                logging.info("Skipping YouTube lookup (disabled in config)")
-            
-            lastfm_tags = []  # Optional: fetch Last.fm tags if needed
-            
-            # ✅ Combine all genres from all sources
-            all_genres = spotify_genres + lastfm_tags + discogs_genres + audiodb_genres + mb_genres + nav_genres
-            
-            def determine_weighted_genres(all_genres):
-                """
-                Decide if track should be rock or metal weighted based on full genre collection.
-                Ignore generic 'rock' or 'metal' when sub-genres exist.
-                """
-                normalized = [normalize_genre(g) for g in all_genres if g]
-                normalized = list(dict.fromkeys(normalized))  # Deduplicate
-            
-                # Detect sub-genres
-                metal_subgenres = [g for g in normalized if "metal" in g and g not in ["metal", "heavy metal"]]
-                rock_subgenres = [g for g in normalized if "rock" in g and g != "rock"]
-            
-                if metal_subgenres:
-                    # Remove generic metal if sub-genres exist
-                    normalized = [g for g in normalized if g not in ["metal", "heavy metal"]]
-                    return normalized, "metal"
-                elif rock_subgenres:
-                    # Remove generic rock if sub-genres exist
-                    normalized = [g for g in normalized if g != "rock"]
-                    return normalized, "rock"
-                else:
-                    return normalized, "neutral"
-            
-            # ✅ Determine weighted genres and context
-            adjusted_genres, genre_context = determine_weighted_genres(all_genres)
-            
-            # ✅ Weighted aggregation using cleaned genres instead of raw
-            top_genres, _ = get_top_genres_with_navidrome({
-                "spotify": spotify_genres,
-                "lastfm": lastfm_tags,
-                "discogs": discogs_genres,
-                "audiodb": audiodb_genres,
-                "musicbrainz": mb_genres
-            }, nav_genres, title=title, album=album_name)
-            
-            # ✅ Replace weighted top genres with adjusted genres for final use
-            top_genres = adjust_genres(adjusted_genres, artist_is_metal=(genre_context == "metal"))
 
+            # ✅ Genre enrichment
+            discogs_genres = get_discogs_genres(title, artist_name)
+            audiodb_genres = get_audiodb_genres(artist_name) if use_audiodb and AUDIODB_API_KEY else []
+            mb_genres = get_musicbrainz_genres(title, artist_name)
+            lastfm_tags = []
+
+            # ✅ Combine all genres
+            all_genres = spotify_genres + lastfm_tags + discogs_genres + audiodb_genres + mb_genres + nav_genres
+            adjusted_genres, genre_context = determine_weighted_genres(all_genres)
+            top_genres = adjust_genres(adjusted_genres, artist_is_metal=(genre_context == "metal"))
 
             album_tracks.append({
                 "id": track_id,
@@ -880,83 +824,48 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 stars = 5
 
             # ✅ Detect single
-            
             is_single = False
-            single_confidence = ""
             sources = []
-            
             if selected.get("album", {}).get("album_type", "").lower() == "single":
                 sources.append("spotify")
-            if is_discogs_single(title, artist_name):
+            if is_discogs_single(track["title"], artist_name):
                 sources.append("discogs")
             if len(tracks) == 1:
                 sources.append("album_length")
-            
+
             if sources:
                 is_single = True
-                if len(sources) >= 2:
-                    single_confidence = "high"
-                elif len(sources) == 1:
-                    single_confidence = "medium"
-                else:
-                    single_confidence = "low"
-
-
-            # ✅ Boost stars for singles
-            if is_single and stars < 4:
-                stars = min(stars + 1, 5)
+                if stars < 4:
+                    stars = min(stars + 1, 5)
 
             track["stars"] = stars
-            track["score"] = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
             track["is_single"] = is_single
-            track["single_confidence"] = single_confidence
+            track["single_confidence"] = "high" if len(sources) >= 2 else "medium" if sources else "low"
+            track["score"] = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
 
-            # ✅ Save to DB with enriched metadata
-            conn = sqlite3.connect(DB_PATH)
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO tracks (
-                    id, artist, album, title, spotify_score, lastfm_score, listenbrainz_score,
-                    age_score, final_score, stars, genres, navidrome_genres, spotify_genres, lastfm_tags,
-                    discogs_genres, audiodb_genres, musicbrainz_genres,  -- ✅ NEW
-                    spotify_album, spotify_artist, spotify_popularity, spotify_release_date, spotify_album_art_url,
-                    lastfm_track_playcount, lastfm_artist_playcount, file_path, is_single, single_confidence, last_scanned
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            """, (
-                track["id"], track["artist"], track["album"], track["title"],
-                track.get("spotify_score", 0), lf_ratio, track["listenbrainz_score"], track["age_score"],
-                track["score"], track["stars"], ",".join(track["genres"]),
-                ",".join(track["navidrome_genres"]), ",".join(track["spotify_genres"]), ",".join(track["lastfm_tags"]),
-                ",".join(discogs_genres), ",".join(audiodb_genres), ",".join(mb_genres),  # ✅ NEW
-                track["spotify_album"], track["spotify_artist"], track["spotify_popularity"], track["spotify_release_date"], track["spotify_album_art_url"],
-                track["lastfm_track_playcount"], track["lastfm_artist_playcount"], track["file_path"],
-                track["is_single"], track["single_confidence"], track["last_scanned"]
-            ))
-
-            conn.commit()
-            conn.close()
+            # ✅ Save to DB
+            save_to_db(track)
 
             # ✅ Update Navidrome rating
             set_track_rating(track["id"], stars)
             print(f"   ✅ Navidrome rating updated: {track['title']} → {stars} stars")
 
-            # ✅ Add top-rated tracks to playlist
-            if stars >= 4:
-                playlist_tracks.append(track["id"])
+            # ✅ Collect 5★ tracks globally
+            if stars == 5:
+                all_five_star_tracks.append(track["id"])
 
             rated_map[track["id"]] = track
 
         print(f"✔ Completed album: {album_name}")
-   
-    # ✅ Create playlist for artist's top tracks
-    five_star_tracks = [track["id"] for track in sorted_album if track["stars"] == 5]
-    
-    if artist_name.lower() != "various artists" and len(five_star_tracks) > 10:
+
+    # ✅ Create Essential playlist after all albums processed
+    all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))  # Deduplicate
+    if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10:
         playlist_name = f"Essential {artist_name}"
-        create_playlist(playlist_name, five_star_tracks)
-        print(f"🎶 Essential playlist created: {playlist_name} with {len(five_star_tracks)} tracks")
+        create_playlist(playlist_name, all_five_star_tracks)
+        print(f"🎶 Essential playlist created: {playlist_name} with {len(all_five_star_tracks)} tracks")
     else:
-        print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(five_star_tracks)})")
+        print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(all_five_star_tracks)})")
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
@@ -1050,17 +959,32 @@ if not artist_map:
     print("⚠️ No artist stats found in DB. Building index from Navidrome...")
     artist_map = build_artist_index()  # This should also insert into artist_stats after fetching
 
+
 # ✅ Determine execution mode
 if artist_list:
     print("ℹ️ Running artist-specific rating based on config.yaml...")
+
     for name in artist_list:
         artist_info = artist_map.get(name)
         if not artist_info:
             print(f"⚠️ No data found for '{name}', skipping.")
             continue
+
         if dry_run:
             print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
             continue
+
+        # ✅ If force is enabled, clear cached data for this artist
+        if force:
+            print(f"⚠️ Force enabled: clearing cached data for artist '{name}'...")
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM tracks WHERE artist = ?", (name,))
+            cursor.execute("DELETE FROM artist_stats WHERE artist_name = ?", (name,))
+            conn.commit()
+            conn.close()
+            print(f"✅ Cache cleared for artist '{name}'")
+
         rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
         print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
 
@@ -1076,11 +1000,21 @@ if artist_list:
         conn.commit()
         conn.close()
 
+# ✅ If force is enabled for batch mode, clear entire cache before scanning
+if force and batchrate:
+    print("⚠️ Force enabled: clearing entire cached library...")
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("DELETE FROM tracks")
+    cursor.execute("DELETE FROM artist_stats")
+    conn.commit()
+    conn.close()
+    print("✅ Entire cache cleared. Starting fresh...")
+
 elif batchrate:
     print("ℹ️ Running full library batch rating based on DB...")
     for name, artist_info in artist_map.items():
         # ✅ Check if update is needed
-        
         needs_update = True if force else (
             not artist_info['last_updated'] or
             (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
@@ -1109,6 +1043,7 @@ elif batchrate:
         conn.commit()
         conn.close()
         time.sleep(1.5)
+
 
 if perpetual:
     print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
@@ -1144,6 +1079,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
