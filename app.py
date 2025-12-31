@@ -67,7 +67,7 @@ def tracks():
 @app.route("/run-rating", methods=["POST"])
 def run_rating():
     mode = request.form.get("mode")  # e.g., "batchrate" or "perpetual"
-    cmd = ["python3", "/app/main.py"]
+    cmd = ["python3", "/app/start.py"]
     if mode == "batchrate":
         cmd.append("--batchrate")
     elif mode == "perpetual":
@@ -77,3 +77,4 @@ def run_rating():
 
 if __name__ == "__main__":
     app.run(host="0.0.0.0", port=5000, debug=True)
+
