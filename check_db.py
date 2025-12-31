@@ -76,7 +76,10 @@ def update_schema(db_path):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_last_scanned ON tracks(last_scanned);")
-    
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_discogs_genres ON tracks(discogs_genres);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_audiodb_genres ON tracks(audiodb_genres);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_genres ON tracks(musicbrainz_genres);")
+
     # ✅ Add index for single detection
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_is_single ON tracks(is_single);")
     print("✔ Index for is_single column verified.")
