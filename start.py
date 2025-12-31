@@ -130,7 +130,7 @@ def validate_config(config):
         print("\n❌ Please update config.yaml before continuing.")
         print("👉 To edit the file inside the container, run:")
         print("   vi /config/config.yaml")
-        print("✅ After saving changes, restart the container)
+        print("✅ After saving changes, restart the container")
         # Keep container alive and wait for user action
         print("⏸ Waiting for config update... Container will stay alive. Please restart the container after editing the config.")
         try:
@@ -736,6 +736,7 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
 
 
