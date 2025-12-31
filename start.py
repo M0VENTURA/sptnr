@@ -1071,7 +1071,12 @@ elif batchrate:
     print("ℹ️ Running full library batch rating based on DB...")
     for name, artist_info in artist_map.items():
         # ✅ Check if update is needed
-        needs_update = force or not artist_info['last_updated'] or (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+        
+        needs_update = True if force else (
+            not artist_info['last_updated'] or
+            (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+        )
+
         if not needs_update:
             print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
             continue
@@ -1130,6 +1135,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
