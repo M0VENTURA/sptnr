@@ -532,6 +532,7 @@ def build_artist_index():
 # --- Main Rating Logic ---
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and capture full metadata:
@@ -546,6 +547,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"⚠️ No albums found for artist '{artist_name}'")
         return {}
 
+    print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
     playlist_tracks = []
 
@@ -554,9 +556,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         album_id = album.get("id")
         tracks = fetch_album_tracks(album_id)
         if not tracks:
+            print(f"⚠️ No tracks found in album '{album_name}'")
             continue
 
-        print(f"\n🎧 Processing album: {album_name}")
+        print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
         album_tracks = []
 
         for track in tracks:
@@ -565,6 +568,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             file_path = track.get("path", "")
             nav_genres = [track.get("genre")] if track.get("genre") else []
             mbid = track.get("mbid", None)  # MusicBrainz ID if available
+
+            print(f"   🔍 Processing track: {title}")
 
             # ✅ Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
@@ -602,7 +607,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "musicbrainz": []
             }, nav_genres, title=title, album=album_name)
 
-            # ✅ Assign stars (will adjust after sorting)
             album_tracks.append({
                 "id": track_id,
                 "title": title,
@@ -664,6 +668,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             # ✅ Update Navidrome rating
             set_track_rating(track["id"], stars)
+            print(f"   ✅ Navidrome rating updated: {track['title']} → {stars} stars")
 
             # ✅ Add top-rated tracks to playlist
             if stars >= 4:
@@ -671,14 +676,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             rated_map[track["id"]] = track
 
+        print(f"✔ Completed album: {album_name}")
+
     # ✅ Create playlist for artist's top tracks
     if playlist_tracks:
         playlist_name = f"Top Tracks - {artist_name}"
         create_playlist(playlist_name, playlist_tracks)
+        print(f"🎶 Playlist created: {playlist_name} with {len(playlist_tracks)} tracks")
 
+    print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
-
-
 
 # --- CLI Handling ---
 if __name__ == "__main__":
@@ -786,6 +793,7 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
 
 
