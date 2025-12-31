@@ -241,8 +241,6 @@ def save_to_db(track_data):
     conn.commit()
     conn.close()
 
-init_db()
-
 # --- Spotify API Helpers ---
 import requests
 import base64
@@ -788,6 +786,7 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
 
 
