@@ -145,10 +145,6 @@ def validate_config(config):
 # ✅ Call this right after loading config
 validate_config(config)
 
-# ✅ Validate that there is work to do
-if not artist_list and not batchrate and not perpetual:
-    print("⚠️ No artist specified and batchrate/perpetual not enabled. Nothing to do.")
-    sys.exit(0)
 
 # ✅ Extract credentials and settings
 NAV_BASE_URL = config["navidrome"]["base_url"]
@@ -165,6 +161,14 @@ LISTENBRAINZ_WEIGHT = config["weights"]["listenbrainz"]
 AGE_WEIGHT = config["weights"]["age"]
 
 DB_PATH = config["database"]["path"]
+
+# ✅ Ensure database directory exists
+os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
+
+# ✅ Import schema updater and update DB schema
+from check_db import update_schema
+update_schema(DB_PATH)
+
 
 
 # ✅ Compatibility check for OpenSubsonic extensions
@@ -210,30 +214,6 @@ for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, INDEX_FILE]:
 # ✅ Ensure database directory exists
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
-# ✅ SQLite DB setup
-def init_db():
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    cursor.execute("""
-    CREATE TABLE IF NOT EXISTS tracks (
-        id TEXT PRIMARY KEY,
-        artist TEXT,
-        album TEXT,
-        title TEXT,
-        spotify_score REAL,
-        lastfm_score REAL,
-        listenbrainz_score REAL,
-        age_score REAL,
-        final_score REAL,
-        stars INTEGER,
-        genres TEXT,
-        is_single BOOLEAN,
-        single_confidence TEXT,
-        last_scanned TEXT
-    );
-    """)
-    conn.commit()
-    conn.close()
 
 def save_to_db(track_data):
     conn = sqlite3.connect(DB_PATH)
@@ -241,14 +221,22 @@ def save_to_db(track_data):
     cursor.execute("""
     INSERT OR REPLACE INTO tracks (
         id, artist, album, title, spotify_score, lastfm_score, listenbrainz_score,
-        age_score, final_score, stars, genres, is_single, single_confidence, last_scanned
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        age_score, final_score, stars, genres, navidrome_genres, spotify_genres, lastfm_tags,
+        spotify_album, spotify_artist, spotify_popularity, spotify_release_date, spotify_album_art_url,
+        lastfm_track_playcount, lastfm_artist_playcount, file_path, is_single, single_confidence, last_scanned
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         track_data["id"], track_data["artist"], track_data["album"], track_data["title"],
         track_data.get("spotify_score", 0), track_data.get("lastfm_score", 0),
         track_data.get("listenbrainz_score", 0), track_data.get("age_score", 0),
         track_data["score"], track_data["stars"], ",".join(track_data["genres"]),
-        track_data["is_single"], track_data["single_confidence"], track_data["last_scanned"]
+        ",".join(track_data.get("navidrome_genres", [])), ",".join(track_data.get("spotify_genres", [])),
+        ",".join(track_data.get("lastfm_tags", [])), track_data.get("spotify_album", ""),
+        track_data.get("spotify_artist", ""), track_data.get("spotify_popularity", 0),
+        track_data.get("spotify_release_date", ""), track_data.get("spotify_album_art_url", ""),
+        track_data.get("lastfm_track_playcount", 0), track_data.get("lastfm_artist_playcount", 0),
+        track_data.get("file_path", ""), track_data.get("is_single", False),
+        track_data.get("single_confidence", ""), track_data.get("last_scanned", "")
     ))
     conn.commit()
     conn.close()
@@ -365,7 +353,22 @@ def get_lastfm_track_info(artist, title):
         logging.error(f"Last.fm fetch failed for '{title}': {e}")
         return {"track_play": 0, "artist_play": 0}
 
+def get_listenbrainz_score(mbid):
+    """Fetch ListenBrainz listen count for a track using MBID."""
+    try:
+        url = f"https://api.listenbrainz.org/1/stats/track/{mbid}"
+        res = requests.get(url, timeout=10)
+        res.raise_for_status()
+        data = res.json()
+        return data.get("count", 0)  # Normalize later if needed
+    except Exception as e:
+        logging.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
+        return 0
+
 # --- Scoring Logic ---
+
+
+
 def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
     """Compute weighted score for a track using Spotify, Last.fm, ListenBrainz, and age decay."""
     lf_data = get_lastfm_track_info(artist_name, title)
@@ -373,7 +376,8 @@ def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, v
     lf_artist = lf_data["artist_play"] if lf_data else 0
     lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
     momentum, days_since = score_by_age(lf_track, release_date)
-    lb_score = 0  # ListenBrainz integration placeholder
+
+    lb_score = get_listenbrainz_score(mbid) if mbid and config["listenbrainz"]["enabled"] else 0
 
     score = (SPOTIFY_WEIGHT * sp_score) + \
             (LASTFM_WEIGHT * lf_ratio) + \
@@ -382,9 +386,10 @@ def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, v
 
     if verbose:
         print(f"🔢 Raw score for '{title}': {round(score)} "
-              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, Age: {momentum})")
+              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, ListenBrainz: {lb_score}, Age: {momentum})")
 
-    return score, days_since
+    return score, momentum, lb_score
+
 
 def score_by_age(playcount, release_str):
     """Apply age decay to score based on release date."""
@@ -528,13 +533,14 @@ def build_artist_index():
 
 # --- Main Rating Logic ---
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
-    Rate all tracks for a given artist:
-    - Compute scores
+    Rate all tracks for a given artist and capture full metadata:
+    - Compute scores (Spotify, Last.fm, ListenBrainz, Age)
     - Assign stars
-    - Save to DB
-    - Update Navidrome genres and ratings
+    - Save to DB with enriched metadata
+    - Update Navidrome ratings
     - Create playlist for top tracks
     """
     albums = fetch_artist_albums(artist_id)
@@ -558,32 +564,47 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         for track in tracks:
             track_id = track["id"]
             title = track["title"]
+            file_path = track.get("path", "")
             nav_genres = [track.get("genre")] if track.get("genre") else []
+            mbid = track.get("mbid", None)  # MusicBrainz ID if available
 
-            # Spotify lookup
+            # ✅ Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
             selected = select_best_spotify_match(spotify_results, title)
             sp_score = selected.get("popularity", 0)
-            release_date = selected.get("album", {}).get("release_date") or "1992-01-01"
-
-            # Compute score
-            score, _ = compute_track_score(title, artist_name, release_date, sp_score, verbose=verbose)
-
-            # Genre aggregation
+            spotify_album = selected.get("album", {}).get("name", "")
+            spotify_artist = selected.get("artists", [{}])[0].get("name", "")
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
-            lastfm_tags = []  # Simplified for now
-            discogs_genres = []
-            audiodb_genres = []
-            mb_genres = []
+            spotify_release_date = selected.get("album", {}).get("release_date", "")
+            spotify_album_art_url = selected.get("album", {}).get("images", [{}])[0].get("url", "")
+
+            # ✅ Last.fm lookup
+            lf_data = get_lastfm_track_info(artist_name, title)
+            lf_track_play = lf_data.get("track_play", 0)
+            lf_artist_play = lf_data.get("artist_play", 0)
+            lf_ratio = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
+            lastfm_tags = []  # Placeholder for future tag fetch
+
+            # ✅ Compute score using unified function
+            score, momentum, lb_score = compute_track_score(
+                title,
+                artist_name,
+                spotify_release_date or "1992-01-01",
+                sp_score,
+                mbid,
+                verbose
+            )
+
+            # ✅ Genre aggregation
             top_genres, _ = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
-                "discogs": discogs_genres,
-                "audiodb": audiodb_genres,
-                "musicbrainz": mb_genres
+                "discogs": [],
+                "audiodb": [],
+                "musicbrainz": []
             }, nav_genres, title=title, album=album_name)
 
-            # Build track object
+            # ✅ Assign stars (will adjust after sorting)
             album_tracks.append({
                 "id": track_id,
                 "title": title,
@@ -592,10 +613,23 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "score": score,
                 "spotify_score": sp_score,
                 "genres": top_genres,
-                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                "navidrome_genres": nav_genres,
+                "spotify_genres": spotify_genres,
+                "lastfm_tags": lastfm_tags,
+                "spotify_album": spotify_album,
+                "spotify_artist": spotify_artist,
+                "spotify_popularity": sp_score,
+                "spotify_release_date": spotify_release_date,
+                "spotify_album_art_url": spotify_album_art_url,
+                "lastfm_track_playcount": lf_track_play,
+                "lastfm_artist_playcount": lf_artist_play,
+                "file_path": file_path,
+                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                "listenbrainz_score": lb_score,
+                "age_score": momentum
             })
 
-        # Assign stars based on score distribution
+        # ✅ Sort and assign stars
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
         median_score = median(track["score"] for track in sorted_album) or 10
@@ -605,23 +639,41 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             stars = max(1, 4 - (i // band_size))
             if track["score"] >= jump_threshold:
                 stars = 5
-
             track["stars"] = stars
             track["score"] = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
 
-            # Save to DB
-            save_to_db(track)
+            # ✅ Save to DB with enriched metadata
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO tracks (
+                    id, artist, album, title, spotify_score, lastfm_score, listenbrainz_score,
+                    age_score, final_score, stars, genres, navidrome_genres, spotify_genres, lastfm_tags,
+                    spotify_album, spotify_artist, spotify_popularity, spotify_release_date, spotify_album_art_url,
+                    lastfm_track_playcount, lastfm_artist_playcount, file_path, is_single, single_confidence, last_scanned
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                track["id"], track["artist"], track["album"], track["title"],
+                track.get("spotify_score", 0), lf_ratio, track["listenbrainz_score"], track["age_score"],
+                track["score"], track["stars"], ",".join(track["genres"]),
+                ",".join(track["navidrome_genres"]), ",".join(track["spotify_genres"]), ",".join(track["lastfm_tags"]),
+                track["spotify_album"], track["spotify_artist"], track["spotify_popularity"], track["spotify_release_date"], track["spotify_album_art_url"],
+                track["lastfm_track_playcount"], track["lastfm_artist_playcount"], track["file_path"],
+                False, "", track["last_scanned"]
+            ))
+            conn.commit()
+            conn.close()
 
-            # Update Navidrome rating and genres
+            # ✅ Update Navidrome rating
             set_track_rating(track["id"], stars)
 
-            # Add top-rated tracks to playlist
+            # ✅ Add top-rated tracks to playlist
             if stars >= 4:
                 playlist_tracks.append(track["id"])
 
             rated_map[track["id"]] = track
 
-    # Create playlist for artist's top tracks
+    # ✅ Create playlist for artist's top tracks
     if playlist_tracks:
         playlist_name = f"Top Tracks - {artist_name}"
         create_playlist(playlist_name, playlist_tracks)
@@ -736,6 +788,7 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
 
 
