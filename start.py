@@ -1001,7 +1001,6 @@ if artist_list:
         conn.close()
 
 # ✅ If force is enabled for batch mode, clear entire cache before scanning
-# ✅ If force is enabled for batch mode, clear entire cache before scanning
 if force and batchrate:
     print("⚠️ Force enabled: clearing entire cached library...")
     conn = sqlite3.connect(DB_PATH)
@@ -1031,8 +1030,16 @@ if batchrate:
     artist_stats = cursor.fetchall()
     conn.close()
 
-    artist_map = {row{"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]}
-                  for row in artist_stats}
+    # ✅ Correct dictionary comprehension (key = artist_name at row[1])
+    artist_map = {
+        row{
+            "id": row[0],
+            "album_count": row[2],
+            "track_count": row[3],
+            "last_updated": row[4]
+        }
+        for row in artist_stats
+    }
 
     # If for some reason the index is still empty, try one more rebuild
     if not artist_map:
@@ -1046,8 +1053,15 @@ if batchrate:
         """)
         artist_stats = cursor.fetchall()
         conn.close()
-        artist_map = {row{"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]}
-                      for row in artist_stats}
+        artist_map = {
+            row{
+                "id": row[0],
+                "album_count": row[2],
+                "track_count": row[3],
+                "last_updated": row[4]
+            }
+            for row in artist_stats
+        }
 
     if not artist_map:
         print("❌ No artists found after rebuild. Aborting batch rating.")
