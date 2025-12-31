@@ -676,15 +676,12 @@ def discogs_official_video_signal(
 
 def is_discogs_single(title: str, artist: str) -> bool:
     """
-    Strict Discogs single detection:
-    - Release title must match track title (canonicalized)
+    Strict Discogs single detection (refined):
+    - Release title must closely match the track title
     - Tracklist must contain the track as track 1
-    - Format must indicate a true single:
-        * Single
-        * Promo
-        * Vinyl (with 7" or Single in descriptions)
-        * CD (with Single in descriptions)
-        * File (digital single)
+    - Release must have 1–2 tracks (true single)
+    - Format must indicate a real single (not just promo)
+    - Excludes promo compilations, samplers, and album promos
     """
     if not DISCOGS_TOKEN:
         return False
@@ -695,7 +692,6 @@ def is_discogs_single(title: str, artist: str) -> bool:
     }
 
     nav_title = _canon(strip_parentheses(title))
-    nav_artist = _canon(artist)
 
     params = {
         "q": f"{artist} {title}",
@@ -705,7 +701,6 @@ def is_discogs_single(title: str, artist: str) -> bool:
 
     session = _get_discogs_session()
 
-    # --- Search Discogs for releases matching artist + title ---
     try:
         _throttle_discogs()
         res = session.get(
@@ -724,18 +719,18 @@ def is_discogs_single(title: str, artist: str) -> bool:
     if not results:
         return False
 
-    # --- Evaluate each candidate release ---
     for r in results:
         release_id = r.get("id")
         if not release_id:
             continue
 
-        # Release title must contain the track title
+        # Release title must closely match track title
         rel_title = _canon(r.get("title", ""))
-        if nav_title not in rel_title:
+        ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
+        if ratio < 0.70:
             continue
 
-        # Fetch full release details
+        # Fetch full release
         try:
             _throttle_discogs()
             rel = session.get(
@@ -751,7 +746,17 @@ def is_discogs_single(title: str, artist: str) -> bool:
 
         data = rel.json()
 
-        # --- Format validation ---
+        # Reject releases with too many tracks (promo compilations)
+        tracks = data.get("tracklist", [])
+        if not tracks or len(tracks) > 2:
+            continue
+
+        # Track 1 must match the title
+        first_track = _canon(tracks[0].get("title", ""))
+        if nav_title != first_track:
+            continue
+
+        # Format validation
         formats = [f.get("name", "").lower() for f in data.get("formats", [])]
         descriptions = [
             d.lower()
@@ -759,24 +764,22 @@ def is_discogs_single(title: str, artist: str) -> bool:
             for d in f.get("descriptions", []) or []
         ]
 
-        allowed_format_names = {"single", "promo", "vinyl", "cd", "file"}
-        allowed_format_desc = {"single", "7\"", "7-inch", "promo"}
+        allowed_names = {"single", "vinyl", "cd", "file"}
+        allowed_desc = {"single", "7\"", "7-inch"}
 
-        # Must match either a valid format name OR a valid description
+        # Promo-only releases are excluded unless they are 1-track promos
+        if "promo" in formats or "promo" in descriptions:
+            if len(tracks) == 1:
+                return True
+            continue
+
         if not (
-            any(name in allowed_format_names for name in formats)
-            or any(desc in allowed_format_desc for desc in descriptions)
+            any(n in allowed_names for n in formats)
+            or any(d in allowed_desc for d in descriptions)
         ):
             continue
 
-        # --- Tracklist validation ---
-        tracks = data.get("tracklist", [])
-        if not tracks:
-            continue
-
-        first_track = _canon(tracks[0].get("title", ""))
-        if nav_title == first_track:
-            return True
+        return True
 
     return False
 
@@ -2030,6 +2033,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
