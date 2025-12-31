@@ -71,6 +71,46 @@ def create_default_config(path):
         sys.exit(1)
 
 
+def prompt_for_missing_values(config):
+    print("\n⚠️ Configuration issues detected. Let's fix them now:\n")
+
+    # Navidrome credentials
+    if config["navidrome"].get("user") in ["admin", "", None]:
+        new_user = input("Enter Navidrome username: ").strip()
+        if new_user:
+            config["navidrome"]["user"] = new_user
+
+    if config["navidrome"].get("pass") in ["password", "", None]:
+        new_pass = input("Enter Navidrome password: ").strip()
+        if new_pass:
+            config["navidrome"]["pass"] = new_pass
+
+    # Spotify credentials
+    if config["spotify"].get("client_id") in ["your_spotify_client_id", "", None]:
+        new_client_id = input("Enter Spotify Client ID: ").strip()
+        if new_client_id:
+            config["spotify"]["client_id"] = new_client_id
+
+    if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
+        new_client_secret = input("Enter Spotify Client Secret: ").strip()
+        if new_client_secret:
+            config["spotify"]["client_secret"] = new_client_secret
+
+    # Last.fm API key
+    if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
+        new_lastfm_key = input("Enter Last.fm API Key: ").strip()
+        if new_lastfm_key:
+            config["lastfm"]["api_key"] = new_lastfm_key
+
+    # Save updated config
+    try:
+        with open(CONFIG_PATH, "w") as f:
+            yaml.safe_dump(config, f)
+        print(f"\n✅ Config updated successfully at {CONFIG_PATH}")
+    except Exception as e:
+        print(f"❌ Failed to update config.yaml: {e}")
+        sys.exit(1)
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
         print(f"⚠️ Config file not found at {CONFIG_PATH}. Creating default config...")
@@ -101,6 +141,7 @@ perpetual = config["features"]["perpetual"]
 batchrate = config["features"]["batchrate"]
 artist_list = config["features"]["artist"]
 
+
 def validate_config(config):
     issues = []
 
@@ -120,13 +161,48 @@ def validate_config(config):
     if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
         issues.append("Last.fm API key is missing or placeholder.")
 
-    # Report issues
     if issues:
         print("\n⚠️ Configuration issues detected:")
         for issue in issues:
             print(f" - {issue}")
-        print("\n❌ Please update config.yaml before running the script.")
-        sys.exit(1)
+
+        print("\nℹ️ Let's fix these now. Press Enter to skip any value you don't want to change.\n")
+
+        # Prompt user for missing values
+        if config["navidrome"].get("user") in ["admin", "", None]:
+            new_user = input("Enter Navidrome username: ").strip()
+            if new_user:
+                config["navidrome"]["user"] = new_user
+
+        if config["navidrome"].get("pass") in ["password", "", None]:
+            new_pass = input("Enter Navidrome password: ").strip()
+            if new_pass:
+                config["navidrome"]["pass"] = new_pass
+
+        if config["spotify"].get("client_id") in ["your_spotify_client_id", "", None]:
+            new_client_id = input("Enter Spotify Client ID: ").strip()
+            if new_client_id:
+                config["spotify"]["client_id"] = new_client_id
+
+        if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
+            new_client_secret = input("Enter Spotify Client Secret: ").strip()
+            if new_client_secret:
+                config["spotify"]["client_secret"] = new_client_secret
+
+        if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
+            new_lastfm_key = input("Enter Last.fm API Key: ").strip()
+            if new_lastfm_key:
+                config["lastfm"]["api_key"] = new_lastfm_key
+
+        # Save updated config
+        try:
+            with open(CONFIG_PATH, "w") as f:
+                yaml.safe_dump(config, f)
+            print(f"\n✅ Config updated successfully at {CONFIG_PATH}")
+        except Exception as e:
+            print(f"❌ Failed to update config.yaml: {e}")
+            sys.exit(1)
+
 
 # ✅ Call this right after loading config
 validate_config(config)
@@ -722,5 +798,6 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
 
