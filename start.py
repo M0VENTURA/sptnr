@@ -1246,15 +1246,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
         # Singles detection
-        use_lastfm_single = config["features"].get("use_lastfm_single", True)
-        single_min_sources = int(config["features"].get("single_min_sources", 1))
-        spotify_solo_ok = config["features"].get("spotify_single_solo_ok", True)
+        use_lastfm_single   = config["features"].get("use_lastfm_single", True)
+        single_min_sources  = int(config["features"].get("single_min_sources", 1))
+        spotify_solo_ok     = config["features"].get("spotify_single_solo_ok", True)
 
         for trk in album_tracks:
             title = trk["title"]
             canonical = is_valid_version(title, allow_live_remix=False)
-            spotify_source = bool(trk.get("is_spotify_single"))
-            short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
+            spotify_source        = bool(trk.get("is_spotify_single"))
+            short_release_source  = (trk.get("spotify_total_tracks", 99) <= 2)
 
             agg = detect_single_status(
                 title, artist_name,
@@ -1266,7 +1266,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             )
 
             trk["single_sources"] = []
-            if spotify_source: trk["single_sources"].append("spotify")
+            if spotify_source:       trk["single_sources"].append("spotify")
             if short_release_source: trk["single_sources"].append("short_release")
             trk["single_sources"].extend(agg.get("sources", []))
 
@@ -1322,11 +1322,31 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if trk["stars"] == 5:
                 all_five_star_tracks.append(trk["id"])
 
+        # --- Album summary with singles info (always shown if singles exist) ---
+        single_count = sum(1 for trk in sorted_album if trk.get("is_single"))
+        non_single_fours = sum(1 for t in non_single_tracks if t.get("stars") == 4)
+
+        print(f"   ℹ️ Singles detected: {single_count} | Non‑single 4★: {non_single_fours} "
+              f"| Cap: {int(CAP_TOP4_PCT*100)}% | MAD: {mad_val:.2f} | Weights clamp: ({CLAMP_MIN}, {CLAMP_MAX})")
+
+        if single_count > 0:
+            print("   🎯 Singles:")
+            for t in sorted_album:
+                if t.get("is_single"):
+                    sources = ", ".join(t.get("single_sources", [])) or "-"
+                    confidence = t.get("single_confidence", "")
+                    print(f"      • {t['title']} (via {sources}, conf={confidence})")
+
         print(f"✔ Completed album: {album_name}")
 
+        # (Optional) per-track output when verbose
         for trk in sorted_album:
             if verbose:
                 print(f"   {trk['title']} → {trk['stars']}★ (single={trk['is_single']})")
+
+        # Keep CLI count accurate: add to rated_map
+        for trk in sorted_album:
+            rated_map[trk["id"]] = trk
 
     # --- Essential playlist (ONE public playlist per artist) ---
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))
@@ -1626,6 +1646,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
