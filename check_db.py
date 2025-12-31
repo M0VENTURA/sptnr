@@ -18,6 +18,9 @@ required_columns = {
     "navidrome_genres": "TEXT",
     "spotify_genres": "TEXT",
     "lastfm_tags": "TEXT",
+    "discogs_genres": "TEXT",        # ✅ NEW
+    "audiodb_genres": "TEXT",        # ✅ NEW
+    "musicbrainz_genres": "TEXT",    # ✅ NEW
     "spotify_album": "TEXT",
     "spotify_artist": "TEXT",
     "spotify_popularity": "INTEGER",
@@ -30,6 +33,7 @@ required_columns = {
     "single_confidence": "TEXT",
     "last_scanned": "TEXT"
 }
+
 
 def update_schema(db_path):
     """
