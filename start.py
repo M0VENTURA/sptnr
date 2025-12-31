@@ -1,6 +1,3 @@
-How is this looking now?
-
-
 #!/usr/bin/env python3
 # 🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
 import argparse, os, sys, requests, time, random, json, logging, base64, re, sqlite3, math, yaml
@@ -1629,6 +1626,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
