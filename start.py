@@ -1299,15 +1299,57 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | None:
+    """
+    Return the most recent 'last_scanned' timestamp among tracks already saved
+    for (artist, album). Timestamp is in '%Y-%m-%dT%H:%M:%S' or None if missing.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return (row[0] if row and row[0] else None)
+    except Exception as e:
+        logging.debug(f"get_album_last_scanned_from_db failed for '{artist_name} / {album_name}': {e}")
+        return None
+
+
+def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
+    """
+    Return how many tracks for (artist, album) currently exist in DB.
+    Useful to avoid skipping albums that have no cached tracks yet.
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        count = cursor.fetchone()[0] or 0
+        conn.close()
+        return count
+    except Exception as e:
+        logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
+        return 0
+
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
       - Enrich per-track metadata (Spotify, Last.fm, ListenBrainz, Age, Genres)
       - Compute adaptive source weights per album (MAD/coverage-based, clamped)
+      - Album-level skip/resume (force=False):
+            * Skip album if its cached tracks have a recent 'last_scanned'
+              (config: features.album_skip_days, features.album_skip_min_tracks)
       - Single detection (Discogs-first short-circuit):
             * If Discogs "Single" OR Discogs "Official (Lyric) Video" is present
-              AND title is canonical → mark single immediately (HIGH confidence) and skip the rest
+              AND title is canonical → mark single immediately (HIGH confidence)
             * Otherwise, use aggregated sources and HIGH-confidence-only policy
       - Non-singles spread via Median/MAD into 1★–4★
       - Cap density of 4★ among non-singles
@@ -1319,10 +1361,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     CLAMP_MAX    = config["features"].get("clamp_max", 1.25)
     CAP_TOP4_PCT = config["features"].get("cap_top4_pct", 0.25)
 
+    # Album-level skip knobs
+    ALBUM_SKIP_DAYS       = int(config["features"].get("album_skip_days", 7))
+    ALBUM_SKIP_MIN_TRACKS = int(config["features"].get("album_skip_min_tracks", 1))
+
     use_lastfm_single = config["features"].get("use_lastfm_single", True)
     KNOWN_SINGLES     = (config.get("features", {}).get("known_singles", {}).get(artist_name, [])) or []
 
-    # Discogs and other source weights for confidence computation (fallback path)
+    # Source weights for fallback confidence computation
     SINGLE_SOURCE_WEIGHTS = {
         "discogs": 2,
         "discogs_video": 2,
@@ -1345,7 +1391,24 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     for album in albums:
         album_name = album.get("name", "Unknown Album")
         album_id   = album.get("id")
-        tracks     = fetch_album_tracks(album_id)
+
+        # --- Album-level skip/resume (force=False) --------------------------------
+        if not force:
+            album_last_scanned = get_album_last_scanned_from_db(artist_name, album_name)
+            cached_track_count = get_album_track_count_in_db(artist_name, album_name)
+            if album_last_scanned and cached_track_count >= ALBUM_SKIP_MIN_TRACKS:
+                try:
+                    last_dt = datetime.strptime(album_last_scanned, "%Y-%m-%dT%H:%M:%S")
+                    days_since = (datetime.now() - last_dt).days
+                except Exception:
+                    days_since = 9999  # if parse fails, treat as stale
+
+                if days_since <= ALBUM_SKIP_DAYS:
+                    print(f"⏩ Skipping album: {album_name} (last scanned {album_last_scanned}, "
+                          f"cached tracks={cached_track_count}, threshold={ALBUM_SKIP_DAYS}d)")
+                    continue
+
+        tracks = fetch_album_tracks(album_id)
         if not tracks:
             print(f"⚠️ No tracks found in album '{album_name}'")
             continue
@@ -1380,7 +1443,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
             is_spotify_single     = (spotify_album_type == "single")
 
-            # Last.fm track/artist ratio
+            # Last.fm ratio
             lf_data        = get_lastfm_track_info(artist_name, title)
             lf_track_play  = lf_data.get("track_play", 0)
             lf_artist_play = lf_data.get("artist_play", 0)
@@ -1395,7 +1458,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
             mb_genres      = get_musicbrainz_genres(title, artist_name)
-            lastfm_tags    = []  # optional: add if you fetch Last.fm tags elsewhere
+            lastfm_tags    = []
 
             online_top, _ = get_top_genres_with_navidrome(
                 {
@@ -1466,14 +1529,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             tot                  = trk.get("spotify_total_tracks")
             short_release_source = (tot is not None and tot > 0 and tot <= 2)
 
-            # Aggregated external signals (includes Discogs "Single" + "Official (Lyric) Video")
+            # Aggregated external signals
             agg = detect_single_status(
                 title, artist_name,
                 youtube_api_key=YOUTUBE_API_KEY,
                 discogs_token=DISCOGS_TOKEN,
                 known_list=KNOWN_SINGLES,
                 use_lastfm=use_lastfm_single,
-                min_sources=1,  # we apply weighted logic later only if needed
+                min_sources=1,
             )
 
             # Consolidate sources
@@ -1484,15 +1547,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             sources_set = set(sources)
 
             # --- Discogs-first short-circuit -------------------------------------
-            # If Discogs strong AND canonical → mark as single immediately and skip further checks
             discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
             if canonical and discogs_strong:
                 trk["single_sources"]    = sorted(list(sources_set))
                 trk["single_confidence"] = "high"  # policy: Discogs strong = high
                 trk["is_single"]         = True
                 trk["stars"]             = 5
-                # No need to compute weighted_count, high_combo, etc. for this track
-                continue
+                continue  # skip the rest of the confidence math for this track
 
             # --- Fallback path: compute confidence with aggregated sources --------
             weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources_set)
@@ -1510,7 +1571,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             # Final decision: HIGH confidence only
             decision = canonical and (single_conf == "high")
-
             if decision:
                 trk["is_single"] = True
                 trk["stars"]     = 5
@@ -1537,7 +1597,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         top4 = [t for t in non_single_tracks if t.get("stars") == 4]
         max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
         if len(top4) > max_top4:
-            # demote excess 4★ (highest z first)
             for t in sorted(top4, key=lambda x: zrobust(x["score"]), reverse=True)[max_top4:]:
                 t["stars"] = 3
 
@@ -1921,6 +1980,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
