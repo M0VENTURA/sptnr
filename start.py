@@ -767,7 +767,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 mbid,
                 verbose
             )
-    
+            
+            
             # ✅ Full genre enrichment
             discogs_genres = get_discogs_genres(title, artist_name)  # Always used
             audiodb_genres = []
@@ -792,7 +793,36 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             
             lastfm_tags = []  # Optional: fetch Last.fm tags if needed
             
-            # ✅ Weighted aggregation
+            # ✅ Combine all genres from all sources
+            all_genres = spotify_genres + lastfm_tags + discogs_genres + audiodb_genres + mb_genres + nav_genres
+            
+            def determine_weighted_genres(all_genres):
+                """
+                Decide if track should be rock or metal weighted based on full genre collection.
+                Ignore generic 'rock' or 'metal' when sub-genres exist.
+                """
+                normalized = [normalize_genre(g) for g in all_genres if g]
+                normalized = list(dict.fromkeys(normalized))  # Deduplicate
+            
+                # Detect sub-genres
+                metal_subgenres = [g for g in normalized if "metal" in g and g not in ["metal", "heavy metal"]]
+                rock_subgenres = [g for g in normalized if "rock" in g and g != "rock"]
+            
+                if metal_subgenres:
+                    # Remove generic metal if sub-genres exist
+                    normalized = [g for g in normalized if g not in ["metal", "heavy metal"]]
+                    return normalized, "metal"
+                elif rock_subgenres:
+                    # Remove generic rock if sub-genres exist
+                    normalized = [g for g in normalized if g != "rock"]
+                    return normalized, "rock"
+                else:
+                    return normalized, "neutral"
+            
+            # ✅ Determine weighted genres and context
+            adjusted_genres, genre_context = determine_weighted_genres(all_genres)
+            
+            # ✅ Weighted aggregation using cleaned genres instead of raw
             top_genres, _ = get_top_genres_with_navidrome({
                 "spotify": spotify_genres,
                 "lastfm": lastfm_tags,
@@ -801,9 +831,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "musicbrainz": mb_genres
             }, nav_genres, title=title, album=album_name)
             
-            # ✅ Apply contextual adjustments for metal-heavy artists
-            artist_is_metal = any("metal" in g.lower() for g in top_genres)
-            top_genres = adjust_genres(top_genres, artist_is_metal=artist_is_metal)
+            # ✅ Replace weighted top genres with adjusted genres for final use
+            top_genres = adjust_genres(adjusted_genres, artist_is_metal=(genre_context == "metal"))
 
 
             album_tracks.append({
@@ -1101,6 +1130,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
