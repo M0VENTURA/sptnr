@@ -199,18 +199,6 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(message)s"
 )
 
-# ✅ Cache paths
-DATA_DIR = "data"
-os.makedirs(DATA_DIR, exist_ok=True)
-INDEX_FILE = os.path.join(DATA_DIR, "artist_index.json")
-RATING_CACHE_FILE = os.path.join(DATA_DIR, "rating_cache.json")
-SINGLE_CACHE_FILE = os.path.join(DATA_DIR, "single_cache.json")
-
-for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, INDEX_FILE]:
-    if not os.path.exists(path):
-        with open(path, "w", encoding="utf-8") as f:
-            f.write("{}")
-
 # ✅ Ensure database directory exists
 os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 
@@ -513,6 +501,7 @@ def fetch_album_tracks(album_id):
         return []
 
 
+
 def build_artist_index():
     url = f"{NAV_BASE_URL}/rest/getArtists.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
@@ -520,17 +509,49 @@ def build_artist_index():
         res = requests.get(url, params=params)
         res.raise_for_status()
         index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
-        artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
-        with open(INDEX_FILE, "w") as f:
-            json.dump(artist_map, f, indent=2)
-        logging.info(f"✅ Cached {len(artist_map)} artists to {INDEX_FILE}")
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        artist_map = {}
+        for group in index:
+            for a in group.get("artist", []):
+                artist_id = a["id"]
+                artist_name = a["name"]
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (artist_id, artist_name, 0, 0, None))
+                artist_map[artist_name] = {"id": artist_id, "album_count": 0, "track_count": 0, "last_updated": None}
+        conn.commit()
+        conn.close()
+        logging.info(f"✅ Cached {len(artist_map)} artists in DB")
         return artist_map
     except Exception as e:
         logging.error(f"❌ Failed to build artist index: {e}")
         return {}
 
+
 # --- Main Rating Logic ---
 
+def update_artist_stats(artist_id, artist_name):
+    album_count = len(fetch_artist_albums(artist_id))
+    track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_id))
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+        VALUES (?, ?, ?, ?, ?)
+    """, (artist_id, artist_name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+    conn.commit()
+    conn.close()
+
+
+def load_artist_map():
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
 
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
@@ -739,60 +760,130 @@ if __name__ == "__main__":
     artist_list = config["features"]["artist"]
 
     # ✅ Refresh artist index if requested or missing
-    if args.refresh or not os.path.exists(INDEX_FILE):
+    if args.refresh:
         build_artist_index()
 
+
     # ✅ Pipe output if requested
+    
     if args.pipeoutput is not None:
-        with open(INDEX_FILE) as f:
-            artist_map = json.load(f)
-        filtered = {name: aid for name, aid in artist_map.items() if not args.pipeoutput or args.pipeoutput.lower() in name.lower()}
+        artist_map = load_artist_map()
+        filtered = {name: info for name, info in artist_map.items() if not args.pipeoutput or args.pipeoutput.lower() in name.lower()}
         print(f"\n📁 Cached Artist Index ({len(filtered)} matches):")
-        for name, aid in filtered.items():
-            print(f"🎨 {name} → ID: {aid}")
+        for name, info in filtered.items():
+            print(f"🎨 {name} → ID: {info['id']} (Albums: {info['album_count']}, Tracks: {info['track_count']}, Last Updated: {info['last_updated']})")
         sys.exit(0)
 
-    # ✅ Load artist index
-    artist_index = json.load(open(INDEX_FILE))
 
-    # ✅ Determine execution mode
-    if artist_list:
-        print("ℹ️ Running artist-specific rating based on config.yaml...")
-        for name in artist_list:
-            artist_id = artist_index.get(name)
-            if not artist_id:
-                print(f"⚠️ No ID found for '{name}', skipping.")
-                continue
-            if dry_run:
-                print(f"👀 Dry run: would scan '{name}' (ID {artist_id})")
-                continue
-            rated = rate_artist(artist_id, name, verbose=verbose, force=force)
-            print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+# ✅ Load artist stats from DB instead of JSON
+conn = sqlite3.connect(DB_PATH)
+cursor = conn.cursor()
+cursor.execute("""
+    SELECT artist_id, artist_name, album_count, track_count, last_updated
+    FROM artist_stats
+""")
+artist_stats = cursor.fetchall()
+conn.close()
 
-    elif batchrate:
-        print("ℹ️ Running full library batch rating based on config.yaml...")
-        for name, artist_id in artist_index.items():
-            if dry_run:
-                print(f"👀 Dry run: would scan '{name}' (ID {artist_id})")
-                continue
-            rated = rate_artist(artist_id, name, verbose=verbose, force=force)
-            print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+# Convert to dict for easy lookup
+artist_map = {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in artist_stats}
+
+# ✅ If DB is empty, fallback to Navidrome API
+if not artist_map:
+    print("⚠️ No artist stats found in DB. Building index from Navidrome...")
+    artist_map = build_artist_index()  # This should also insert into artist_stats after fetching
+
+# ✅ Determine execution mode
+if artist_list:
+    print("ℹ️ Running artist-specific rating based on config.yaml...")
+    for name in artist_list:
+        artist_info = artist_map.get(name)
+        if not artist_info:
+            print(f"⚠️ No data found for '{name}', skipping.")
+            continue
+        if dry_run:
+            print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
+            continue
+        rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
+        print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+
+        # ✅ Update artist_stats after rating
+        album_count = len(fetch_artist_albums(artist_info['id']))
+        track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+        conn.commit()
+        conn.close()
+
+elif batchrate:
+    print("ℹ️ Running full library batch rating based on DB...")
+    for name, artist_info in artist_map.items():
+        # ✅ Check if update is needed
+        needs_update = force or not artist_info['last_updated'] or (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+        if not needs_update:
+            print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
+            continue
+
+        if dry_run:
+            print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
+            continue
+
+        rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
+        print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+
+        # ✅ Update artist_stats after rating
+        album_count = len(fetch_artist_albums(artist_info['id']))
+        track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+        conn.commit()
+        conn.close()
+        time.sleep(1.5)
+
+if perpetual:
+    print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
+    while True:
+        # ✅ Query only artists that need updates
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT artist_id, artist_name FROM artist_stats
+            WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
+        """)
+        rows = cursor.fetchall()
+        conn.close()
+
+        if not rows:
+            print("✅ No artists need updating. Sleeping for 12 hours...")
+            time.sleep(12 * 60 * 60)
+            continue
+
+        print(f"🔄 Starting scheduled scan for {len(rows)} stale artists...")
+        for artist_id, artist_name in rows:
+            print(f"🎨 Processing artist: {artist_name} (ID: {artist_id})")
+            rated = rate_artist(artist_id, artist_name, verbose=verbose, force=force)
+            print(f"✅ Completed rating for {artist_name}. Tracks rated: {len(rated)}")
+
+            # ✅ Update artist stats after rating
+            update_artist_stats(artist_id, artist_name)
             time.sleep(1.5)
 
-    elif perpetual:
-        print("ℹ️ Running perpetual mode based on config.yaml...")
-        while True:
-            print("🔄 Starting scheduled scan...")
-            for name, artist_id in artist_index.items():
-                rated = rate_artist(artist_id, name, verbose=verbose, force=force)
-                print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
-                time.sleep(1.5)
-            print("🕒 Scan complete. Sleeping for 12 hours...")
-            time.sleep(12 * 60 * 60)
+        print("🕒 Scan complete. Sleeping for 12 hours...")
+        time.sleep(12 * 60 * 60)
 
-    else:
-        print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
-        sys.exit(0)
+else:
+    print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
+    sys.exit(0)
+
+
 
 
 
