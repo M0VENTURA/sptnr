@@ -1289,28 +1289,30 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
       - Enrich per-track metadata (Spotify, Last.fm, ListenBrainz, Age, Genres)
       - Compute adaptive source weights per album (MAD/coverage-based, clamped)
-      - Single detection (Discogs-first policy):
-            * Confidence must be HIGH to mark as single
-            * HIGH = Discogs strong OR Spotify high combo OR ≥3 sources
-            * Discogs "Single" or "Official Video" counts as strong
-            * Keep canonical title gate (blocks live/remix unless requested)
+      - Single detection (Discogs-first short-circuit):
+            * If Discogs "Single" OR Discogs "Official (Lyric) Video" is present
+              AND title is canonical → mark single immediately (HIGH confidence) and skip the rest
+            * Otherwise, use aggregated sources and HIGH-confidence-only policy
       - Non-singles spread via Median/MAD into 1★–4★
       - Cap density of 4★ among non-singles
       - Save to DB; optionally push ratings to Navidrome (respecting sync/dry_run)
       - Build one public "Essential {artist}" playlist using all 5★ tracks
     """
+    # ----- Tunables & feature flags ------------------------------------------------
     CLAMP_MIN    = config["features"].get("clamp_min", 0.75)
     CLAMP_MAX    = config["features"].get("clamp_max", 1.25)
     CAP_TOP4_PCT = config["features"].get("cap_top4_pct", 0.25)
 
-    use_lastfm_single   = config["features"].get("use_lastfm_single", True)
-    KNOWN_SINGLES       = (config.get("features", {}).get("known_singles", {}).get(artist_name, [])) or []
+    use_lastfm_single = config["features"].get("use_lastfm_single", True)
+    KNOWN_SINGLES     = (config.get("features", {}).get("known_singles", {}).get(artist_name, [])) or []
 
+    # Discogs and other source weights for confidence computation (fallback path)
     SINGLE_SOURCE_WEIGHTS = {
         "discogs": 2,
         "discogs_video": 2,
@@ -1352,7 +1354,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if verbose:
                 print(f"   🔍 Processing track: {title}")
 
-            # Spotify lookup
+            # Spotify lookup & selection
             spotify_results       = search_spotify_track(title, artist_name, album_name)
             selected              = select_best_spotify_match(spotify_results, title)
             sp_score              = selected.get("popularity", 0)
@@ -1363,25 +1365,27 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             images                = selected.get("album", {}).get("images") or []
             spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
             spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
+
+            # IMPORTANT: Use None when unknown to avoid false "short_release" detection
             spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
             is_spotify_single     = (spotify_album_type == "single")
 
-            # Last.fm info
+            # Last.fm track/artist ratio
             lf_data        = get_lastfm_track_info(artist_name, title)
             lf_track_play  = lf_data.get("track_play", 0)
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio       = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
 
-            # Score
+            # Global score (Spotify + Last.fm + ListenBrainz + age)
             score, momentum, lb_score = compute_track_score(
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
 
-            # Genres
+            # Genres (Discogs, AudioDB optional, MB)
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
             mb_genres      = get_musicbrainz_genres(title, artist_name)
-            lastfm_tags    = []
+            lastfm_tags    = []  # optional: add if you fetch Last.fm tags elsewhere
 
             online_top, _ = get_top_genres_with_navidrome(
                 {
@@ -1432,41 +1436,58 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             })
 
         # --- Adaptive weights per album ------------------------------------------
-        base_weights = {'spotify': SPOTIFY_WEIGHT, 'lastfm': LASTFM_WEIGHT, 'listenbrainz': LISTENBRAINZ_WEIGHT}
+        base_weights = {
+            'spotify': SPOTIFY_WEIGHT,
+            'lastfm': LASTFM_WEIGHT,
+            'listenbrainz': LISTENBRAINZ_WEIGHT
+        }
         adaptive = compute_adaptive_weights(album_tracks, base_weights, clamp=(CLAMP_MIN, CLAMP_MAX), use='mad')
         for t in album_tracks:
             sp, lf, lb, age = t['spotify_score'], t['lastfm_ratio'], t['listenbrainz_score'], t['age_score']
             t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
-        # --- Singles detection (HIGH confidence required) -------------------------
+        # --- Singles detection (Discogs-first short-circuit) ----------------------
         for trk in album_tracks:
-            title = trk["title"]
+            title     = trk["title"]
             canonical = is_valid_version(title, allow_live_remix=False)
 
-            spotify_source = bool(trk.get("is_spotify_single"))
-            tot = trk.get("spotify_total_tracks")
+            # Local Spotify-derived signals
+            spotify_source       = bool(trk.get("is_spotify_single"))
+            tot                  = trk.get("spotify_total_tracks")
             short_release_source = (tot is not None and tot > 0 and tot <= 2)
 
+            # Aggregated external signals (includes Discogs "Single" + "Official (Lyric) Video")
             agg = detect_single_status(
                 title, artist_name,
                 youtube_api_key=YOUTUBE_API_KEY,
                 discogs_token=DISCOGS_TOKEN,
                 known_list=KNOWN_SINGLES,
                 use_lastfm=use_lastfm_single,
-                min_sources=1,
+                min_sources=1,  # we apply weighted logic later only if needed
             )
 
+            # Consolidate sources
             sources = []
             if spotify_source:       sources.append("spotify")
             if short_release_source: sources.append("short_release")
             sources.extend(agg.get("sources", []))
-
             sources_set = set(sources)
+
+            # --- Discogs-first short-circuit -------------------------------------
+            # If Discogs strong AND canonical → mark as single immediately and skip further checks
+            discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
+            if canonical and discogs_strong:
+                trk["single_sources"]    = sorted(list(sources_set))
+                trk["single_confidence"] = "high"  # policy: Discogs strong = high
+                trk["is_single"]         = True
+                trk["stars"]             = 5
+                # No need to compute weighted_count, high_combo, etc. for this track
+                continue
+
+            # --- Fallback path: compute confidence with aggregated sources --------
             weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources_set)
             high_combo     = (spotify_source and short_release_source)
-            discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
 
-            # Confidence calculation
             if discogs_strong or high_combo or weighted_count >= 3:
                 single_conf = "high"
             elif weighted_count >= 2:
@@ -1474,7 +1495,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             else:
                 single_conf = "low"
 
-            trk["single_sources"] = sorted(list(sources_set))
+            trk["single_sources"]    = sorted(list(sources_set))
             trk["single_confidence"] = single_conf
 
             # Final decision: HIGH confidence only
@@ -1482,7 +1503,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             if decision:
                 trk["is_single"] = True
-                trk["stars"] = 5
+                trk["stars"]     = 5
 
         # --- Spread non-singles via robust z-bands --------------------------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
@@ -1502,9 +1523,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     t["stars"] = stars
                     break
 
+        # Cap density of 4★ among non-singles
         top4 = [t for t in non_single_tracks if t.get("stars") == 4]
         max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
         if len(top4) > max_top4:
+            # demote excess 4★ (highest z first)
             for t in sorted(top4, key=lambda x: zrobust(x["score"]), reverse=True)[max_top4:]:
                 t["stars"] = 3
 
@@ -1530,21 +1553,26 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"✔ Completed album: {album_name}")
         rated_map.update({t["id"]: t for t in sorted_album})
 
-    # --- Essential playlist -------------------------------------------------------
+    # --- Essential playlist (ONE public list per artist) --------------------------
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))
     if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10 and sync and not dry_run:
         playlist_name = f"Essential {artist_name}"
         owner_cfg = (NAV_USERS[0] if NAV_USERS else {"base_url": NAV_BASE_URL, "user": USERNAME, "pass": PASSWORD})
+
         existing_ids = find_my_playlist_ids(owner_cfg, playlist_name)
         if existing_ids:
             for pid in existing_ids:
                 delete_playlist(owner_cfg, pid)
                 time.sleep(0.1)
-        if create_playlist_for_user(owner_cfg, playlist_name, all_five_star_tracks, use_formpost=USE_FORMPOST):
+
+        ok = create_playlist_for_user(owner_cfg, playlist_name, all_five_star_tracks, use_formpost=USE_FORMPOST)
+        if ok:
             new_ids = find_my_playlist_ids(owner_cfg, playlist_name)
             if new_ids:
                 set_playlist_visibility(owner_cfg, new_ids[-1], public=True)
             print(f"🎶 Essential playlist '{playlist_name}' published ({len(all_five_star_tracks)} tracks)")
+        else:
+            print(f"⚠️ Failed to create playlist '{playlist_name}' for {owner_cfg['user']}")
     else:
         print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(all_five_star_tracks)})")
 
@@ -1883,6 +1911,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
