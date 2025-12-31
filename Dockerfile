@@ -31,4 +31,4 @@ RUN mkdir -p /config /database
 EXPOSE 5000
 
 # Run Flask app
-CMD ["python", "app.py"]
+CMD ["python", "start.py"]
