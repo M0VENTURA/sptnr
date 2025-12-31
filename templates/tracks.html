@@ -1,0 +1,33 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <title>Tracks</title>
+</head>
+<body class="container mt-4">
+    <h1>Tracks in {{ album }}</h1>
+    <table class="table table-striped">
+        <thead>
+            <tr>
+                <th>Title</th>
+                <th>Score</th>
+                <th>Stars</th>
+                <th>Genres</th>
+                <th>Action</th>
+            </tr>
+        </thead>
+        <tbody>
+            {% for track in tracks %}
+            <tr>
+                <td>{{ track[0] }}</td>
+                <td>{{ track[1] }}</td>
+                <td>{{ track[2] }}</td>
+                <td>{{ track[3] }}</td>
+                <td><button class="btn btn-secondary">Update MP3 Tag</button></td>
+            </tr>
+            {% endfor %}
+        </tbody>
+    </table>
+</body>
+</html>

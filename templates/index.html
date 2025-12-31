@@ -1,0 +1,19 @@
+
+<!DOCTYPE html>
+<html>
+<head>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css">
+    <title>Select Artist</title>
+</head>
+<body class="container mt-4">
+    <h1>Select Artist</h1>
+    <form action="/albums" method="POST">
+        <select name="artist" class="form-select">
+            {% for artist in artists %}
+                <option value="{{ artist }}">{{ artist }}</option>
+            {% endfor %}
+        </select>
+        <button class="btn btn-primary mt-3">Next</button>
+    </form>
+</body>
+</html>
