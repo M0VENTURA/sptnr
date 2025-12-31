@@ -70,15 +70,15 @@ def create_default_config(path):
         print(f"❌ Failed to create default config.yaml: {e}")
         sys.exit(1)
 
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"⚠️ Config file missing at {CONFIG_PATH}. Creating default...")
+        print(f"⚠️ Config file not found at {CONFIG_PATH}. Creating default config...")
         create_default_config(CONFIG_PATH)
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
 config = load_config()
-
 
 # ✅ Ensure 'features' section exists in config
 if "features" not in config:
@@ -722,4 +722,5 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
 
