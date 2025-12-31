@@ -1060,44 +1060,35 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                          (adaptive['listenbrainz'] * lb) + \
                          (AGE_WEIGHT * age)
 
-        # --- Strict singles detection (canonical only) -----------------------
-        for trk in album_tracks:
-            title = trk["title"]
-            canonical = is_valid_version(title, allow_live_remix=False)
+        
+        # Evidence sources
+        spotify_source = bool(trk.get("is_spotify_single"))
+        discogs_source = is_discogs_single(title, artist_name)    # title-aware version recommended
+        short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
+        
+        # Confidence label (keep for visibility)
+        sources = []
+        if spotify_source:       sources.append("spotify")
+        if discogs_source:       sources.append("discogs")
+        if short_release_source: sources.append("short_release")
+        
+        confidence = (
+            "high"   if (spotify_source or discogs_source) else
+            "medium" if short_release_source else
+            "low"
+        )
+        
+        # ✅ Relaxed rule: any ONE strong signal (Spotify or Discogs) OR short_release marks as single
+        if canonical and (spotify_source or discogs_source or short_release_source):
+            trk["is_single"] = True
+            trk["stars"] = 5
+            trk["single_confidence"] = confidence
+            trk["single_sources"] = sources
+        else:
+            trk["is_single"] = False
+            trk["single_confidence"] = confidence
+            trk["single_sources"] = sources
 
-            spotify_source = bool(trk.get("is_spotify_single"))          # album_type == "single"
-            discogs_source = is_discogs_single(title, artist_name)       # consider tightening to title-aware matching
-            short_release_source = (trk.get("spotify_total_tracks", 99) <= 2)
-
-            sources = []
-            if spotify_source:
-                sources.append("spotify")
-            if discogs_source:
-                sources.append("discogs")
-            if short_release_source:
-                sources.append("short_release")
-
-            confidence = (
-                "high" if len(sources) >= 2 else
-                "medium" if len(sources) == 1 else
-                "low"
-            )
-
-            if canonical and (
-                len(sources) >= 2 or
-                (spotify_source and short_release_source)
-            ):
-                trk["is_single"] = True
-                trk["single_confidence"] = confidence
-                trk["single_sources"] = sources
-            elif sources and not canonical:
-                trk["is_single"] = False
-                trk["single_confidence"] = "ignored-noncanonical"
-                trk["single_sources"] = sources
-            else:
-                trk["is_single"] = False
-                trk["single_confidence"] = confidence
-                trk["single_sources"] = sources
 
         # --- Sort by score and normalize WITHOUT random bump -----------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
@@ -1157,31 +1148,35 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 single_count += 1
 
         # --- Finalize, persist, and print prior → new comparison ------------
+        
         for trk in sorted_album:
             prior_stars = get_current_rating(trk["id"])
-
+        
             # Save to DB
             save_to_db(trk)
-
+        
             # Set rating only when allowed
             if sync and not dry_run:
                 set_track_rating(trk["id"], trk["stars"])
                 action_prefix = "✅ Navidrome rating updated:"
             else:
                 action_prefix = "🧪 DRY-RUN (no push):"
-
-            single_label = " (single)" if trk.get("is_single") else ""
+        
+            # ⬅️ INSERT THE SINGLE-SOURCE LABEL RIGHT HERE
+            # inside the finalize loop (rate_artist), before print:
+            is_single = trk.get("is_single")
             src = trk.get("single_sources", [])
-            src_str = f" [sources: {', '.join(src)}]" if trk.get("is_single") and src else ""
-
+            src_str = f" (single via {', '.join(src)})" if is_single and src else (" (single)" if is_single else "")
+        
             title = trk["title"]
             if prior_stars is None:
-                print(f"   {action_prefix} {title}{single_label}{src_str} → {trk['stars']}★")
+                print(f"   {action_prefix} {title}{src_str} → {trk['stars']}★")
             else:
-                print(f"   {action_prefix} {title}{single_label}{src_str} — {prior_stars}★ → {trk['stars']}★")
-
+                print(f"   {action_prefix} {title}{src_str} — {prior_stars}★ → {trk['stars']}★")
+        
             if trk["stars"] == 5:
                 all_five_star_tracks.append(trk["id"])
+        
 
         # Per‑album summary
         print(f"   ℹ️ Singles detected: {single_count} | Non‑single 4★: {non_single_fours} "
@@ -1492,6 +1487,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
