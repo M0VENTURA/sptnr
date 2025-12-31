@@ -166,10 +166,9 @@ validate_config(config)
 
 
 
+
 # ✅ Extract credentials and settings
-NAV_BASE_URL = config["navidrome"]["base_url"]
-USERNAME = config["navidrome"]["user"]
-PASSWORD = config["navidrome"]["pass"]
+NAV_USERS = config.get("navidrome_users", [])
 
 # Spotify
 SPOTIFY_CLIENT_ID = config["spotify"]["client_id"]
@@ -839,37 +838,46 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
     return online_top, nav_cleaned
 
-def set_track_rating(track_id, stars):
-    """
-    Set user rating for a track in Navidrome using Subsonic API.
-    :param track_id: Track ID in Navidrome
-    :param stars: Rating (1–5)
-    """
-    url = f"{NAV_BASE_URL}/rest/setRating.view"
-    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": track_id, "rating": stars}
-    try:
-        res = requests.get(url, params=params)
-        res.raise_for_status()
-        logging.info(f"✅ Set rating {stars}/5 for track {track_id}")
-    except Exception as e:
-        logging.error(f"❌ Failed to set rating for track {track_id}: {e}")
+
+def set_track_rating_for_all(track_id, stars):
+    for user_cfg in NAV_USERS:
+        url = f"{user_cfg['base_url']}/rest/setRating.view"
+        params = {
+            "u": user_cfg["user"],
+            "p": user_cfg["pass"],
+            "v": "1.16.1",
+            "c": "sptnr",
+            "id": track_id,
+            "rating": stars
+        }
+        try:
+            res = requests.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            logging.info(f"✅ Set rating {stars}/5 for track {track_id} (user {user_cfg['user']})")
+        except Exception as e:
+            logging.error(f"❌ Failed for {user_cfg['user']}: {e}")
 
 
-def create_playlist(name, track_ids):
-    url = f"{NAV_BASE_URL}/rest/createPlaylist.view"
-    if USE_FORMPOST:
-        print("ℹ️ Using formPost for playlist creation.")
-        data = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "name": name}
-        for tid in track_ids:
-            data.setdefault("songId", []).append(tid)
-        res = requests.post(url, data=data)
-    else:
-        params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "name": name}
+
+
+def create_playlist_for_all(name, track_ids):
+    for user_cfg in NAV_USERS:
+        url = f"{user_cfg['base_url']}/rest/createPlaylist.view"
+        params = {
+            "u": user_cfg["user"],
+            "p": user_cfg["pass"],
+            "v": "1.16.1",
+            "c": "sptnr",
+            "name": name
+        }
         for tid in track_ids:
             params.setdefault("songId", []).append(tid)
-        res = requests.get(url, params=params)
-    res.raise_for_status()
-    print(f"✅ Playlist '{name}' created with {len(track_ids)} tracks.")
+        try:
+            res = requests.get(url, params=params)
+            res.raise_for_status()
+            print(f"✅ Playlist '{name}' created for {user_cfg['user']} with {len(track_ids)} tracks.")
+        except Exception as e:
+            logging.error(f"❌ Playlist failed for {user_cfg['user']}: {e}")
 
 
 def fetch_artist_albums(artist_id):
@@ -1253,7 +1261,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             # Push rating if enabled
             if sync and not dry_run:
-                set_track_rating(trk["id"], trk["stars"])
+                set_track_rating_for_all(trk["id"], trk["stars"])
                 action_prefix = "✅ Navidrome rating updated:"
             else:
                 action_prefix = "🧪 DRY-RUN (no push):"
@@ -1587,6 +1595,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
