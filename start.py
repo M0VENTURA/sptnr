@@ -712,12 +712,13 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
     - Compute scores (Spotify, Last.fm, ListenBrainz, Age)
     - Detect singles (Spotify album_type or album length)
-    - Assign stars (boost for singles)
+    - Assign stars (boost for singles; enforce canonical singles = 5★)
     - Save to DB with enriched metadata
     - Update Navidrome ratings
     - Create playlist for top tracks
@@ -742,6 +743,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
         album_tracks = []
 
+        # ── per‑track enrichment ─────────────────────────────────────────────
         for track in tracks:
             track_id = track["id"]
             title = track["title"]
@@ -751,7 +753,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
             print(f"   🔍 Processing track: {title}")
 
-            # ✅ Spotify lookup
+            # Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
             selected = select_best_spotify_match(spotify_results, title)
             sp_score = selected.get("popularity", 0)
@@ -761,32 +763,41 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_release_date = selected.get("album", {}).get("release_date", "")
             spotify_album_art_url = selected.get("album", {}).get("images", [{}])[0].get("url", "")
 
-            # ✅ Last.fm lookup
+            # ✅ Persist per‑track single info
+            spotify_album_type = selected.get("album", {}).get("album_type", "")
+            is_spotify_single = spotify_album_type.lower() == "single"
+
+            # Last.fm
             lf_data = get_lastfm_track_info(artist_name, title)
             lf_track_play = lf_data.get("track_play", 0)
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
 
-            # ✅ Compute score
+            # Score
             score, momentum, lb_score = compute_track_score(
-                title,
-                artist_name,
-                spotify_release_date or "1992-01-01",
-                sp_score,
-                mbid,
-                verbose
+                title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
 
-            # ✅ Genre enrichment
+            # Genres (combine online sources with navidrome using your helper)
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if use_audiodb and AUDIODB_API_KEY else []
             mb_genres = get_musicbrainz_genres(title, artist_name)
             lastfm_tags = []
 
-            # ✅ Combine all genres
-            all_genres = spotify_genres + lastfm_tags + discogs_genres + audiodb_genres + mb_genres + nav_genres
-            adjusted_genres, genre_context = determine_weighted_genres(all_genres)
-            top_genres = adjust_genres(adjusted_genres, artist_is_metal=(genre_context == "metal"))
+            online_top, _ = get_top_genres_with_navidrome(
+                {
+                    "spotify": spotify_genres,
+                    "lastfm": lastfm_tags,
+                    "discogs": discogs_genres,
+                    "audiodb": audiodb_genres,
+                    "musicbrainz": mb_genres,
+                },
+                nav_genres,
+                title=title,
+                album=album_name,
+            )
+            genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
+            top_genres = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
 
             album_tracks.append({
                 "id": track_id,
@@ -809,52 +820,62 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "file_path": file_path,
                 "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                 "listenbrainz_score": lb_score,
-                "age_score": momentum
+                "age_score": momentum,
+                # 🔽 newly added fields
+                "spotify_album_type": spotify_album_type,
+                "is_spotify_single": is_spotify_single,
             })
 
-        # ✅ Sort and assign stars
+        # ── star assignment for the whole album (run ONCE per album) ─────────
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
-        median_score = median(track["score"] for track in sorted_album) or 10
-        jump_threshold = median_score * 1.7
+        median_score = median(t["score"] for t in sorted_album) or 10
+        jump_threshold = median_score * 1.7  # tweak if you want stricter outliers
 
-        for i, track in enumerate(sorted_album):
+        for i, trk in enumerate(sorted_album):
+            # Quartile banding: 4★, 3★, 2★, 1★
             stars = max(1, 4 - (i // band_size))
-            if track["score"] >= jump_threshold:
+
+            # Standout non‑single can still be 5★
+            if trk["score"] >= jump_threshold:
                 stars = 5
 
-            # ✅ Detect single
-            is_single = False
-            sources = []
-            if selected.get("album", {}).get("album_type", "").lower() == "single":
-                sources.append("spotify")
-            if is_discogs_single(track["title"], artist_name):
-                sources.append("discogs")
+            # Canonical single detection (ignore live/remix/etc.)
+            title = trk["title"]
+            canonical = is_valid_version(title, allow_live_remix=False)
+
+            single_sources = []
+            if trk.get("is_spotify_single"):
+                single_sources.append("spotify")
+            if is_discogs_single(title, artist_name):
+                single_sources.append("discogs")
             if len(tracks) == 1:
-                sources.append("album_length")
+                single_sources.append("album_length")
 
-            if sources:
+            # Enforce singles = 5★ when canonical
+            is_single = False
+            if single_sources and canonical:
                 is_single = True
-                if stars < 4:
-                    stars = min(stars + 1, 5)
+                stars = 5
 
-            track["stars"] = stars
-            track["is_single"] = is_single
-            track["single_confidence"] = "high" if len(sources) >= 2 else "medium" if sources else "low"
-            track["score"] = round(track["score"]) if track["score"] > 0 else random.randint(5, 15)
+            if single_sources and not canonical:
+                trk["single_confidence"] = "ignored-noncanonical"
+                is_single = False
+            else:
+                trk["single_confidence"] = "high" if len(single_sources) >= 2 else ("medium" if single_sources else "low")
 
-            # ✅ Save to DB
-            save_to_db(track)
+            trk["stars"] = stars
+            trk["is_single"] = is_single
+            trk["score"] = round(trk["score"]) if trk["score"] > 0 else random.randint(5, 15)
 
-            # ✅ Update Navidrome rating
-            set_track_rating(track["id"], stars)
-            print(f"   ✅ Navidrome rating updated: {track['title']} → {stars} stars")
+            save_to_db(trk)
+            set_track_rating(trk["id"], stars)
+            print(f"   ✅ Navidrome rating updated: {trk['title']} → {stars} stars")
 
-            # ✅ Collect 5★ tracks globally
             if stars == 5:
-                all_five_star_tracks.append(track["id"])
+                all_five_star_tracks.append(trk["id"])
 
-            rated_map[track["id"]] = track
+            rated_map[trk["id"]] = trk
 
         print(f"✔ Completed album: {album_name}")
 
@@ -952,7 +973,17 @@ artist_stats = cursor.fetchall()
 conn.close()
 
 # Convert to dict for easy lookup
-artist_map = {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in artist_stats}
+
+artist_map = {
+    row[1]: {
+        "id": row[0],
+        "album_count": row[2],
+        "track_count": row[3],
+        "last_updated": row[4],
+    }
+    for row in artist_stats
+}
+
 
 # ✅ If DB is empty, fallback to Navidrome API
 if not artist_map:
@@ -1028,15 +1059,17 @@ if batchrate:
     artist_stats = cursor.fetchall()
     conn.close()
 
+    
     artist_map = {
-        row{
+        row[1]: {
             "id": row[0],
             "album_count": row[2],
             "track_count": row[3],
-            "last_updated": row[4]
+            "last_updated": row[4],
         }
         for row in artist_stats
     }
+
 
     if not artist_map:
         print("⚠️ Artist index is empty; rebuilding once more...")
@@ -1050,11 +1083,11 @@ if batchrate:
         artist_stats = cursor.fetchall()
         conn.close()
         artist_map = {
-            row{
+            row[1]: {
                 "id": row[0],
                 "album_count": row[2],
                 "track_count": row[3],
-                "last_updated": row[4]
+                "last_updated": row[4],
             }
             for row in artist_stats
         }
@@ -1143,3 +1176,4 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
