@@ -17,16 +17,68 @@ LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 RESET = Style.RESET_ALL
 
 # ✅ Load config.yaml
+
 CONFIG_PATH = "/config/config.yaml"
+
+def create_default_config(path):
+    default_config = {
+        "navidrome": {
+            "base_url": "http://localhost:4533",
+            "user": "admin",
+            "pass": "password"
+        },
+        "spotify": {
+            "client_id": "your_spotify_client_id",
+            "client_secret": "your_spotify_client_secret"
+        },
+        "lastfm": {
+            "api_key": "your_lastfm_api_key"
+        },
+        "listenbrainz": {
+            "enabled": True
+        },
+        "weights": {
+            "spotify": 0.4,
+            "lastfm": 0.3,
+            "listenbrainz": 0.2,
+            "age": 0.1
+        },
+        "database": {
+            "path": "/database/sptnr.db"
+        },
+        "logging": {
+            "level": "INFO",
+            "file": "/config/app.log"
+        },
+        "features": {
+            "dry_run": False,
+            "sync": True,
+            "force": False,
+            "verbose": False,
+            "perpetual": False,
+            "batchrate": False,
+            "artist": []
+        }
+    }
+
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w") as f:
+            yaml.safe_dump(default_config, f)
+        print(f"✅ Default config.yaml created at {path}")
+    except Exception as e:
+        print(f"❌ Failed to create default config.yaml: {e}")
+        sys.exit(1)
+
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"❌ Config file missing at {CONFIG_PATH}")
-        sys.exit(1)
+        print(f"⚠️ Config file missing at {CONFIG_PATH}. Creating default...")
+        create_default_config(CONFIG_PATH)
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
-
 config = load_config()
+
 
 # ✅ Ensure 'features' section exists in config
 if "features" not in config:
@@ -88,7 +140,6 @@ if not artist_list and not batchrate and not perpetual:
 NAV_BASE_URL = config["navidrome"]["base_url"]
 USERNAME = config["navidrome"]["user"]
 PASSWORD = config["navidrome"]["pass"]
-
 
 client_id = config["spotify"]["client_id"]
 client_secret = config["spotify"]["client_secret"]
@@ -671,3 +722,4 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
