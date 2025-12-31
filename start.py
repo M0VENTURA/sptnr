@@ -1001,50 +1001,89 @@ if artist_list:
         conn.close()
 
 # ✅ If force is enabled for batch mode, clear entire cache before scanning
+# ✅ If force is enabled for batch mode, clear entire cache before scanning
 if force and batchrate:
     print("⚠️ Force enabled: clearing entire cached library...")
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
+    # Clear ratings and artist stats to truly start fresh
     cursor.execute("DELETE FROM tracks")
     cursor.execute("DELETE FROM artist_stats")
     conn.commit()
     conn.close()
     print("✅ Entire cache cleared. Starting fresh...")
 
-elif batchrate:
+    # 🔁 Immediately rebuild the artist index so subsequent steps have data
+    print("ℹ️ Rebuilding artist index from Navidrome after force clear...")
+    build_artist_index()
+
+# 🔧 Always run batch rating when requested (even if force just ran)
+if batchrate:
     print("ℹ️ Running full library batch rating based on DB...")
-    for name, artist_info in artist_map.items():
-        # ✅ Check if update is needed
-        needs_update = True if force else (
-            not artist_info['last_updated'] or
-            (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
-        )
 
-        if not needs_update:
-            print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
-            continue
+    # Re-load artist_map from DB in case it was freshly rebuilt
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT artist_id, artist_name, album_count, track_count, last_updated
+        FROM artist_stats
+    """)
+    artist_stats = cursor.fetchall()
+    conn.close()
 
-        if dry_run:
-            print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
-            continue
+    artist_map = {row{"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]}
+                  for row in artist_stats}
 
-        rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
-        print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
-
-        # ✅ Update artist_stats after rating
-        album_count = len(fetch_artist_albums(artist_info['id']))
-        track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+    # If for some reason the index is still empty, try one more rebuild
+    if not artist_map:
+        print("⚠️ Artist index is empty; rebuilding once more...")
+        build_artist_index()
         conn = sqlite3.connect(DB_PATH)
         cursor = conn.cursor()
         cursor.execute("""
-            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-        """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
-        conn.commit()
+            SELECT artist_id, artist_name, album_count, track_count, last_updated
+            FROM artist_stats
+        """)
+        artist_stats = cursor.fetchall()
         conn.close()
-        time.sleep(1.5)
+        artist_map = {row{"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]}
+                      for row in artist_stats}
 
+    if not artist_map:
+        print("❌ No artists found after rebuild. Aborting batch rating.")
+    else:
+        for name, artist_info in artist_map.items():
+            # ✅ Check if update is needed (force overrides)
+            needs_update = True if force else (
+                not artist_info['last_updated'] or
+                (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+            )
 
+            if not needs_update:
+                print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
+                continue
+
+            if dry_run:
+                print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
+                continue
+
+            rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
+            print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+
+            # ✅ Update artist_stats after rating
+            album_count = len(fetch_artist_albums(artist_info['id']))
+            track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+            """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+            conn.commit()
+            conn.close()
+            time.sleep(1.5)
+
+# ♻️ Perpetual mode with self-healing index
 if perpetual:
     print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
     while True:
@@ -1057,6 +1096,28 @@ if perpetual:
         """)
         rows = cursor.fetchall()
         conn.close()
+
+        # 🩹 Self-heal: if the table is empty or no stale entries, ensure index exists
+        if not rows:
+            # Check if we actually have any artists at all
+            conn = sqlite3.connect(DB_PATH)
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM artist_stats")
+            total_artists = cursor.fetchone()[0]
+            conn.close()
+
+            if total_artists == 0:
+                print("⚠️ No artists found in DB; rebuilding index from Navidrome...")
+                build_artist_index()
+                # Re-query after rebuild
+                conn = sqlite3.connect(DB_PATH)
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT artist_id, artist_name FROM artist_stats
+                    WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
+                """)
+                rows = cursor.fetchall()
+                conn.close()
 
         if not rows:
             print("✅ No artists need updating. Sleeping for 12 hours...")
@@ -1079,22 +1140,3 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
