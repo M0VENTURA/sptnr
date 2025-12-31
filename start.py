@@ -1106,6 +1106,7 @@ def adjust_genres(genres, artist_is_metal=False):
     return list(dict.fromkeys(adjusted))  # Deduplicate
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -1119,7 +1120,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
       - Non-singles spread via Median/MAD into 1★–4★ (no 5★ for non-singles)
       - Cap density of 4★ among non-singles to keep albums realistic
       - Save to DB; optionally push ratings to Navidrome (respecting sync/dry_run)
-      - Build 5★ list for ONE public "Essential {artist}" playlist
+      - Build 5★ list for ONE public "Essential {artist}" playlist, with duplicate cleanup and
+        skip re-create if unchanged.
     """
     # Tunables
     CLAMP_MIN    = config["features"].get("clamp_min", 0.75)
@@ -1339,21 +1341,87 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         print(f"✔ Completed album: {album_name}")
 
-        # (Optional) per-track output when verbose
+        # Optional: per-track output when verbose
         for trk in sorted_album:
             if verbose:
                 print(f"   {trk['title']} → {trk['stars']}★ (single={trk['is_single']})")
 
-        # Keep CLI count accurate: add to rated_map
+        # Keep CLI count accurate
         for trk in sorted_album:
             rated_map[trk["id"]] = trk
 
-    # --- Essential playlist (ONE public playlist per artist) ---
+    # --- Essential playlist (ONE public playlist per artist, with cleanup/skip logic) ---
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))
     if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10 and sync and not dry_run:
         playlist_name = f"Essential {artist_name}"
         owner_cfg = (NAV_USERS[0] if NAV_USERS else {"base_url": NAV_BASE_URL, "user": USERNAME, "pass": PASSWORD})
-        create_or_refresh_public_playlist(playlist_name, all_five_star_tracks, owner_cfg)
+
+        # 1) Find existing playlists owned by the owner
+        existing_ids = find_my_playlist_ids(owner_cfg, playlist_name)
+
+        # 2) Clean up duplicates if more than one exists, then recreate
+        if len(existing_ids) > 1:
+            for pid in existing_ids:
+                delete_playlist(owner_cfg, pid)
+                time.sleep(0.1)
+            ok = create_playlist_for_user(owner_cfg, playlist_name, all_five_star_tracks, use_formpost=USE_FORMPOST)
+            if ok:
+                new_ids = find_my_playlist_ids(owner_cfg, playlist_name)
+                if new_ids:
+                    set_playlist_visibility(owner_cfg, new_ids[-1], public=True)
+                print(f"🎶 Essential playlist '{playlist_name}' refreshed (duplicates cleaned) by {owner_cfg['user']} "
+                      f"({len(all_five_star_tracks)} tracks)")
+            else:
+                print(f"⚠️ Failed to recreate playlist '{playlist_name}' after duplicate cleanup for {owner_cfg['user']}")
+
+        # 3) If exactly one exists, skip re-create when content unchanged; otherwise update
+        elif len(existing_ids) == 1:
+            pid = existing_ids[0]
+            # Fetch existing track IDs
+            existing_track_ids = []
+            try:
+                url = f"{owner_cfg['base_url']}/rest/getPlaylist.view"
+                params = {
+                    "u": owner_cfg["user"], "p": owner_cfg["pass"],
+                    "v": "1.16.1", "c": "sptnr", "f": "json", "id": pid
+                }
+                r = requests.get(url, params=params, timeout=10)
+                r.raise_for_status()
+                entries = r.json().get("subsonic-response", {}).get("playlist", {}).get("entry", []) or []
+                existing_track_ids = [e.get("id") for e in entries if e.get("id")]
+            except Exception as e:
+                logging.debug(f"getPlaylist.view failed for {owner_cfg['user']} ({playlist_name}): {e}")
+
+            if set(existing_track_ids) == set(all_five_star_tracks):
+                # Ensure it's public anyway
+                set_playlist_visibility(owner_cfg, pid, public=True)
+                print(f"ℹ️ Essential playlist '{playlist_name}' already up-to-date for {owner_cfg['user']} "
+                      f"({len(all_five_star_tracks)} tracks). Skipping recreation.")
+            else:
+                # Update by delete + recreate to keep order clean
+                delete_playlist(owner_cfg, pid)
+                time.sleep(0.1)
+                ok = create_playlist_for_user(owner_cfg, playlist_name, all_five_star_tracks, use_formpost=USE_FORMPOST)
+                if ok:
+                    new_ids = find_my_playlist_ids(owner_cfg, playlist_name)
+                    if new_ids:
+                        set_playlist_visibility(owner_cfg, new_ids[-1], public=True)
+                    print(f"🎶 Essential playlist '{playlist_name}' updated by {owner_cfg['user']} "
+                          f"({len(all_five_star_tracks)} tracks)")
+                else:
+                    print(f"⚠️ Failed to update playlist '{playlist_name}' for {owner_cfg['user']}")
+
+        # 4) If none exists, create fresh and set public
+        else:
+            ok = create_playlist_for_user(owner_cfg, playlist_name, all_five_star_tracks, use_formpost=USE_FORMPOST)
+            if ok:
+                new_ids = find_my_playlist_ids(owner_cfg, playlist_name)
+                if new_ids:
+                    set_playlist_visibility(owner_cfg, new_ids[-1], public=True)
+                print(f"🎶 Essential playlist '{playlist_name}' published by {owner_cfg['user']} "
+                      f"({len(all_five_star_tracks)} tracks)")
+            else:
+                print(f"⚠️ Failed to create playlist '{playlist_name}' for {owner_cfg['user']}")
     else:
         print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(all_five_star_tracks)})")
 
@@ -1646,6 +1714,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
