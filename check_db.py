@@ -33,8 +33,8 @@ required_columns = {
 
 def update_schema(db_path):
     """
-    Ensure the 'tracks' table and 'artist_stats' table exist and have all required columns.
-    Creates missing columns if necessary.
+    Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
+    Creates missing columns if necessary and adds indexes for performance.
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
@@ -66,9 +66,16 @@ def update_schema(db_path):
     """)
     print("✔ artist_stats table verified.")
 
+    # ✅ Create indexes for faster lookups
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist_stats_name ON artist_stats(artist_name);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist_stats_updated ON artist_stats(last_updated);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_last_scanned ON tracks(last_scanned);")
+
     conn.commit()
     conn.close()
-    print("\n✅ Database schema update complete.")
+    print("\n✅ Database schema update complete with indexes.")
 
 # ✅ Standalone usage
 if __name__ == "__main__":
