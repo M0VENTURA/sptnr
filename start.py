@@ -461,6 +461,13 @@ def _canon(s: str) -> str:
     s = re.sub(r"\s+", " ", s).strip()
     return s
 
+
+# --- Discogs "Official Video / Official Lyric Video" signal (with cache) ---
+
+# Very small in-memory cache to reduce Discogs API calls during batch runs.
+# Keyed by normalized (artist, title) -> result dict returned by the function below.
+_DISCogs_VID_CACHE: dict[tuple[str, str], dict] = {}
+
 def discogs_official_video_signal(
     title: str,
     artist: str,
@@ -472,18 +479,37 @@ def discogs_official_video_signal(
 ) -> dict:
     """
     Look up Discogs releases for (artist, title) and check the 'videos' tab
-    for an 'Official Video' that matches the track title.
+    for an 'Official Video' or 'Official Lyric Video' that matches the track title.
 
-    Returns: {"match": bool, "uri": str|None, "release_id": int|None, "ratio": float|None, "why": str}
+    Returns:
+      {
+        "match": bool,
+        "uri": str | None,
+        "release_id": int | None,
+        "ratio": float | None,
+        "why": str,
+      }
+
+    Policy:
+      - ALLOW: "Official Video", "Official Lyric Video"
+      - BLOCK: "Official Audio", "visualizer", "teaser"
+      - Require robust title match ratio >= min_ratio and canonical title gate
     """
+    # Early exit if no token
     if not discogs_token:
         return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
+
+    # Cache key (normalized)
+    cache_key = (_canon(artist), _canon(strip_parentheses(title)))
+    if cache_key in _DISCogs_VID_CACHE:
+        return _DISCogs_VID_CACHE[cache_key]
 
     headers = {
         "Authorization": f"Discogs token={discogs_token}",
         "User-Agent": _DEF_USER_AGENT,
     }
-    nav_title = _canon(strip_parentheses(title))
+
+    nav_title  = _canon(strip_parentheses(title))
     nav_artist = _canon(artist)
 
     # 1) Narrow to likely releases for artist+title
@@ -496,22 +522,37 @@ def discogs_official_video_signal(
         )
         s.raise_for_status()
     except Exception as e:
-        logging.debug(f"Discogs search failed for '{title}': {e}")
-        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "search_fail"}
+        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": f"search_fail:{e}"}
+        _DISCogs_VID_CACHE[cache_key] = result
+        return result
 
     candidates = s.json().get("results", []) or []
     if not candidates:
-        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
+        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
+        _DISCogs_VID_CACHE[cache_key] = result
+        return result
 
-    # 2) Inspect videos on each release
     def _looks_official(text: str) -> bool:
         t = _canon(text)
         return ("official" in t) or ("vevo" in t) or (nav_artist in t)
 
     def _is_low_value(text: str) -> bool:
+        # Block Official Audio / visualizer / teaser.
+        # Allow Official Video or Official Lyric Video.
         t = _canon(text)
-        return any(w in t for w in ["visualizer", "lyric", "audio", "teaser"])
+        is_official = "official" in t
+        is_videoish = ("video" in t) or ("lyric" in t)
+        is_banned   = ("audio" in t) or ("visualizer" in t) or ("teaser" in t)
 
+        if is_banned:
+            return True
+        if is_official and is_videoish:
+            return False
+        # Anything else (non-official lyric/video) is low-value for single detection
+        return True
+
+    # 2) Inspect videos on each release
+    best: dict | None = None  # keep best match across releases
     for c in candidates:
         rid = c.get("id")
         if not rid:
@@ -525,36 +566,44 @@ def discogs_official_video_signal(
 
         videos = r.json().get("videos") or []
         for v in videos:
-            vt = _canon(v.get("title", ""))
-            vd = _canon(v.get("description", ""))
+            vt  = _canon(v.get("title", "") or "")
+            vd  = _canon(v.get("description", "") or "")
             uri = v.get("uri")
+
             # Skip weak labels up front
-            if _is_low_value(vt) or _is_low_value(vd):
+            if _is_low_value(vt) and _is_low_value(vd):
                 continue
 
             # Must look official by label or channel wording
             if not (_looks_official(vt) or _looks_official(vd)):
                 continue
 
-            # Title match against Navidrome track title (robust ratio)
-            # Also respect your version gate (avoid live/remix unless requested)
+            # Respect your version gate (avoid live/remix unless requested)
             if not is_valid_version(title, allow_live_remix=False):
                 continue
 
+            # Robust match ratio against track title (prefer max of title/description)
             ratio = max(
                 difflib.SequenceMatcher(None, vt, nav_title).ratio(),
                 difflib.SequenceMatcher(None, vd, nav_title).ratio(),
             )
-            if ratio >= min_ratio:
-                return {
-                    "match": True,
-                    "uri": uri,
-                    "release_id": rid,
-                    "ratio": round(ratio, 3),
-                    "why": "official_label_and_title_match",
-                }
 
-    return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_official_video_match"}
+            if ratio >= min_ratio:
+                # Track the best match across all releases
+                current = {"match": True, "uri": uri, "release_id": rid, "ratio": round(ratio, 3),
+                           "why": "official_label_and_title_match"}
+                if (best is None) or (current["ratio"] > best["ratio"]):
+                    best = current
+
+    # Return best if found; otherwise no-match
+    if best:
+        _DISCogs_VID_CACHE[cache_key] = best
+        return best
+
+    result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_official_video_match"}
+    _DISCogs_VID_CACHE[cache_key] = result
+    return result
+
 
 def is_lastfm_single(title: str, artist: str, timeout: int = 8) -> bool:
     """
@@ -1469,64 +1518,47 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
 
+
 def _self_test_single_gate():
     """
-    Sanity tests for Discogs-first single gate logic.
+    Sanity tests for Discogs-first single gate logic (HIGH confidence required).
     No network calls; uses synthetic combinations of sources.
     """
     SINGLE_SOURCE_WEIGHTS = {
-        "discogs": 2,
-        "discogs_video": 2,
-        "spotify": 1,
-        "short_release": 1,
-        "musicbrainz": 1,
-        "youtube": 1,
-        "lastfm": 1,
+        "discogs": 2, "discogs_video": 2,
+        "spotify": 1, "short_release": 1,
+        "musicbrainz": 1, "youtube": 1, "lastfm": 1,
     }
-    single_min_sources = 2
-    def decide(canonical, sources_set, spotify_source=False, short_release_source=False):
+
+    def confidence_for(sources_set, spotify_source=False, short_release_source=False):
         weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources_set)
         high_combo     = (spotify_source and short_release_source)
         discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
-        decision = canonical and (
-            discogs_strong or
-            high_combo or
-            (weighted_count >= single_min_sources) or
-            (config["features"].get("spotify_single_solo_ok", True) and spotify_source and weighted_count >= 1)
-        )
-        if decision and (not discogs_strong) and (not high_combo) and (sources_set == {"short_release"}):
-            decision = False
-        return decision, weighted_count, discogs_strong, high_combo
+        if discogs_strong or high_combo or weighted_count >= 3:
+            return "high"
+        elif weighted_count >= 2:
+            return "medium"
+        else:
+            return "low"
 
     cases = [
-        # Discogs-only → should be single
-        ("Discogs Single only", True, {"discogs"}, False, False, True),
-        ("Discogs Official Video only", True, {"discogs_video"}, False, False, True),
-
-        # Non-Discogs single sources need two signals
-        ("MusicBrainz only", True, {"musicbrainz"}, False, False, False),
-        ("YouTube + Last.fm", True, {"youtube", "lastfm"}, False, False, True),
-
-        # Spotify single + short release (local high combo) → single
-        ("Spotify single + short", True, {"spotify", "short_release"}, True, True, True),
-
-        # Short release alone → NOT single
-        ("Short release only", True, {"short_release"}, False, True, False),
-
-        # Spotify single alone (config‑dependent; default True → single)
-        ("Spotify single only (config=true)", True, {"spotify"}, True, False, config["features"].get("spotify_single_solo_ok", True)),
-
-        # Non-canonical (e.g., live/remix) should block even with strong sources
-        ("Discogs strong but non-canonical", False, {"discogs"}, False, False, False),
+        ("Discogs Single only",                 True, {"discogs"},          True),
+        ("Discogs Official Video only",         True, {"discogs_video"},    True),
+        ("YouTube + Last.fm (two sources)",     True, {"youtube","lastfm"}, False),  # medium -> NOT single
+        ("Spotify single + short (combo)",      True, {"spotify","short_release"}, True),
+        ("Short release only",                  True, {"short_release"},    False),
+        ("Spotify single only",                 True, {"spotify"},          False),   # high confidence policy
+        ("Discogs strong but non-canonical",    False, {"discogs"},         False),
     ]
 
-    print("\n🧪 Self-test: single gate")
+    print("\n🧪 Self-test: HIGH confidence required")
     passes = 0
-    for name, canonical, sset, sp, sr, expected in cases:
-        decision, wcount, dstrong, hcombo = decide(canonical, sset, sp, sr)
+    for name, canonical, sset, expected in cases:
+        conf = confidence_for(sset, "spotify" in sset, "short_release" in sset)
+        decision = canonical and (conf == "high")
         ok = (decision == expected)
         passes += int(ok)
-        print(f" - {name:<35} → decision={decision} (weighted={wcount}, discogs={dstrong}, combo={hcombo})  [{'PASS' if ok else 'FAIL'}]")
+        print(f" - {name:<35} → conf={conf}, decision={decision}  [{'PASS' if ok else 'FAIL'}]")
     print(f"✅ {passes}/{len(cases)} cases passed.\n")
 
 
@@ -1818,6 +1850,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
