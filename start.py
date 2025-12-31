@@ -482,6 +482,30 @@ def get_listenbrainz_score(mbid):
 # --- Scoring Logic ---
 
 
+def get_current_rating(track_id: str) -> int | None:
+    """
+    Fetch the current user rating (1–5) for a Navidrome track via Subsonic API.
+    Returns None if not present.
+    """
+    url = f"{NAV_BASE_URL}/rest/getSong.view"
+    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": track_id, "f": "json"}
+    try:
+        res = requests.get(url, params=params, timeout=10)
+        res.raise_for_status()
+        song = res.json().get("subsonic-response", {}).get("song", {})
+        # OpenSubsonic typically uses userRating; some servers expose rating
+        current = song.get("userRating", song.get("rating", None))
+        # Navidrome stores stars 1–5; ensure type int if present
+        if current is None:
+            return None
+        try:
+            return int(current)
+        except (ValueError, TypeError):
+            return None
+    except Exception as e:
+        logging.debug(f"get_current_rating failed for track {track_id}: {e}")
+        return None
+
 
 def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
     """Compute weighted score for a track using Spotify, Last.fm, ListenBrainz, and age decay."""
@@ -713,6 +737,7 @@ def adjust_genres(genres, artist_is_metal=False):
 
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -720,7 +745,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     - Detect singles (Spotify album_type or album length)
     - Assign stars (boost for singles; enforce canonical singles = 5★)
     - Save to DB with enriched metadata
-    - Update Navidrome ratings
+    - Update Navidrome ratings (show prior → new comparison)
     - Create playlist for top tracks
     """
     albums = fetch_artist_albums(artist_id)
@@ -743,7 +768,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
         album_tracks = []
 
-        # ── per‑track enrichment ─────────────────────────────────────────────
+        # ── Per-track enrichment ─────────────────────────────────────────────
         for track in tracks:
             track_id = track["id"]
             title = track["title"]
@@ -751,7 +776,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             nav_genres = [track.get("genre")] if track.get("genre") else []
             mbid = track.get("mbid", None)
 
-            print(f"   🔍 Processing track: {title}")
+            if verbose:
+                print(f"   🔍 Processing track: {title}")
 
             # Spotify lookup
             spotify_results = search_spotify_track(title, artist_name, album_name)
@@ -761,9 +787,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_artist = selected.get("artists", [{}])[0].get("name", "")
             spotify_genres = selected.get("artists", [{}])[0].get("genres", [])
             spotify_release_date = selected.get("album", {}).get("release_date", "")
-            spotify_album_art_url = selected.get("album", {}).get("images", [{}])[0].get("url", "")
+            # safe image access
+            images = selected.get("album", {}).get("images") or []
+            spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
 
-            # ✅ Persist per‑track single info
+            # ✅ Persist per-track single info
             spotify_album_type = selected.get("album", {}).get("album_type", "")
             is_spotify_single = spotify_album_type.lower() == "single"
 
@@ -778,7 +806,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
 
-            # Genres (combine online sources with navidrome using your helper)
+            # Genres
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if use_audiodb and AUDIODB_API_KEY else []
             mb_genres = get_musicbrainz_genres(title, artist_name)
@@ -821,19 +849,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                 "listenbrainz_score": lb_score,
                 "age_score": momentum,
-                # 🔽 newly added fields
+                # 🔽 Newly added fields
                 "spotify_album_type": spotify_album_type,
                 "is_spotify_single": is_spotify_single,
             })
 
-        # ── star assignment for the whole album (run ONCE per album) ─────────
+        # ── Star assignment for the whole album ─────────────────────────────
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         band_size = max(1, math.ceil(len(sorted_album) / 4))
         median_score = median(t["score"] for t in sorted_album) or 10
-        jump_threshold = median_score * 1.7  # tweak if you want stricter outliers
+        jump_threshold = median_score * 1.7
 
         for i, trk in enumerate(sorted_album):
-            # Quartile banding: 4★, 3★, 2★, 1★
+            # Base quartile banding: 4★, 3★, 2★, 1★
             stars = max(1, 4 - (i // band_size))
 
             # Standout non‑single can still be 5★
@@ -852,25 +880,37 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             if len(tracks) == 1:
                 single_sources.append("album_length")
 
-            # Enforce singles = 5★ when canonical
             is_single = False
             if single_sources and canonical:
                 is_single = True
                 stars = 5
 
-            if single_sources and not canonical:
-                trk["single_confidence"] = "ignored-noncanonical"
-                is_single = False
-            else:
-                trk["single_confidence"] = "high" if len(single_sources) >= 2 else ("medium" if single_sources else "low")
-
-            trk["stars"] = stars
+            # Confidence label
             trk["is_single"] = is_single
+            trk["single_confidence"] = (
+                "ignored-noncanonical" if single_sources and not canonical
+                else "high" if len(single_sources) >= 2
+                else "medium" if single_sources
+                else "low"
+            )
+
+            # Finalize before persisting
+            trk["stars"] = stars
             trk["score"] = round(trk["score"]) if trk["score"] > 0 else random.randint(5, 15)
 
+            # 🔎 Fetch prior rating for comparison
+            prior_stars = get_current_rating(trk["id"])
+
+            # 💾 Persist + post to Navidrome
             save_to_db(trk)
             set_track_rating(trk["id"], stars)
-            print(f"   ✅ Navidrome rating updated: {trk['title']} → {stars} stars")
+
+            # 🖨️ Print with (single) label and prior→new comparison
+            single_label = " (single)" if is_single else ""
+            if prior_stars is None:
+                print(f"   ✅ Navidrome rating updated: {title}{single_label} → {stars} stars")
+            else:
+                print(f"   ✅ Navidrome rating updated: {title}{single_label} — {prior_stars}★ → {stars}★")
 
             if stars == 5:
                 all_five_star_tracks.append(trk["id"])
@@ -890,6 +930,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
+
 
 # --- CLI Handling ---
 if __name__ == "__main__":
@@ -1176,4 +1217,5 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
