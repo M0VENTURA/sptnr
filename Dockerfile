@@ -1,7 +1,7 @@
 
 FROM python:3.11-slim
 
-# Install system dependencies
+# Install system dependencies and vim
 RUN apt-get update && apt-get install -y \
     build-essential \
     libssl-dev \
@@ -11,24 +11,24 @@ RUN apt-get update && apt-get install -y \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# ✅ Copy requirements first for caching
-COPY requirements.txt /usr/src/app/
+# Copy requirements first for caching
+COPY requirements.txt /app/
 
-# ✅ Install Python dependencies
+# Install Python dependencies (Flask + your app dependencies)
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install flask
 
-# ✅ Copy the rest of the app
-COPY . /usr/src/app
+# Copy app files
+COPY . /app
 
-# ✅ Copy template config.yaml into /config
-COPY config/config.yaml /config/config.yaml
+# ✅ Create config and database directories
+RUN mkdir -p /config /database
 
-# Create database directory
-RUN mkdir /database
-VOLUME ["/database"]
+# Expose Flask port
+EXPOSE 5000
 
-# ✅ Default to perpetual mode
-ENTRYPOINT ["python", "./start.py"]
+# Run Flask app
+CMD ["python", "app.py"]
