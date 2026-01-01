@@ -2109,25 +2109,21 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
 
-    Policy additions:
-      - Spotify-only (including short-release) is insufficient to confirm a single for 5★.
-      - Spotify-only singles get at most +1★ boost, capped at 4★, applied AFTER z-bands.
-      - 5★ requires at least one strong corroboration: Discogs (single or official video) or MusicBrainz single.
-
-    Flow:
-      1) Prefetch Spotify artist singles (runs in parallel).
-      2) Fetch albums & tracks from Navidrome.
-      3) Per-track enrichment (Spotify + Last.fm + ListenBrainz) concurrently.
-      4) Per-album adaptive weights → recompute 'score' (Spotify normalized).
-      5) Single detection aggregation (Discogs/MusicBrainz + Spotify signals) with strict policy.
-      6) Z-band assignment for non-singles + 4★ density cap.
-      7) Apply Spotify-only +1★ boost (cap at 4★).
-      8) Save to DB and set ratings.
-      9) Create/refresh "Essential {artist}" playlist.
+    Policy:
+      - A track can be marked single ONLY if:
+          * canonical title guard passes (no subtitle variant, high similarity),
+          * at least one source exists (non-empty),
+          * confidence >= MIN_SINGLE_CONF (default 'medium').
+      - Strong sources (Discogs single / Discogs official video / MusicBrainz 'Single') grant immediate 5★.
+      - Z-bands are applied to everyone except strong 5★ singles.
+      - Spotify-only singles:
+          * baseline ≤ 3★ → +1★ (cap at 4★),
+          * baseline 4★ → 5★.
     """
 
     # ----- Tunables & feature flags ------------------------------------------
@@ -2153,10 +2149,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     TITLE_SIM_THRESHOLD = float(config["features"].get("title_sim_threshold", 0.92))
 
-    # Spotify-only boost controls
+    # Confidence policy for singles (configurable; default 'medium')
+    CONF_ORDER = {"low": 0, "medium": 1, "high": 2}
+    MIN_SINGLE_CONF = str(config["features"].get("min_single_conf", "medium")).lower()
+
+    # Spotify-only boost controls (used for <=3★ baseline path)
     STRICT_5STAR = bool(config["features"].get("singles_require_strong_source_for_5_star", True))
-    SPOTIFY_SOLO_MAX_BOOST = int(config["features"].get("spotify_solo_boost", 1))      # +1★ at most
-    SPOTIFY_SOLO_MAX_STARS = int(config["features"].get("spotify_solo_boost_max_stars", 4))  # cap at 4★
+    SPOTIFY_SOLO_MAX_BOOST = int(config["features"].get("spotify_solo_boost", 1))      # +1★ at most (≤3★ case)
+    SPOTIFY_SOLO_MAX_STARS = int(config["features"].get("spotify_solo_boost_max_stars", 4))  # cap at 4★ when ≤3★
 
     # --- Local helpers (subtitle/title similarity guards) ---------------------
     def _canon_local(s: str) -> str:
@@ -2392,7 +2392,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "is_single": False,                         # set later
                     "single_confidence": "low",                 # set later
                     "single_sources": [],                       # set later
-                    "stars": 1,                                  # provisional; z-bands will adjust
+                    "stars": 1,                                 # provisional; z-bands will adjust
                     "mbid": mbid or "",
                     "suggested_mbid": suggested_mbid,
                     "suggested_mbid_confidence": suggested_confidence
@@ -2469,23 +2469,27 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk["single_sources"]    = sorted(list(sources))
             trk["single_confidence"] = single_conf
 
-            # Canonical title guard: only canonical (no subtitle) and high similarity can be single
-            if canonical and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
-                trk["is_single"] = True
-                # Star assignment deferred:
-                # - If strong_ok (Discogs/MusicBrainz present) → will become 5★ after guard below.
-                # - If Spotify-only → z-bands first; then +1★ boost (cap at 4★) after z-bands.
+            # --- Single decision policy (requires confidence >= MIN_SINGLE_CONF and non-empty sources) ---
+            sources_nonempty = len(sources) > 0
+            meets_conf = CONF_ORDER.get(single_conf, 0) >= CONF_ORDER.get(MIN_SINGLE_CONF, 1)
 
-                # If STRICT_5STAR and strong corroboration present, set 5★ now
-                if STRICT_5STAR and strong_ok:
-                    trk["stars"] = 5  # hard-approve
-                # Else leave stars for z-band + boost pass later
+            if canonical and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD and sources_nonempty:
+                if strong_ok:
+                    # Strong corroboration → immediate 5★
+                    trk["is_single"] = True
+                    trk["stars"] = 5  # hard-approve; excluded from z-bands below
+                elif meets_conf:
+                    # Medium/High confidence → mark single (stars set by z-bands + boost later)
+                    trk["is_single"] = True
+                else:
+                    # Low confidence → NOT a single
+                    trk["is_single"] = False
             else:
-                # Not canonical or has subtitle → cannot be a 5★ single; leave stars to z-bands
-                pass
+                # Not canonical or no sources → NOT a single
+                trk["is_single"] = False
 
         # ----------------------------------------------------------------------
-        # Z-BANDS FOR NON-SINGLES
+        # Z-BANDS (apply to everyone except hard-approved 5★ strong singles)
         # ----------------------------------------------------------------------
         sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
         EPS = 1e-6
@@ -2495,7 +2499,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         def zrobust(x): return (x - med) / mad_val
 
-        non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
+        # Only exclude tracks already set to 5★ via strong sources
+        eligible_for_zband = [
+            t for t in sorted_album
+            if not (t.get("is_single") and t.get("stars") == 5)
+        ]
+
         BANDS = [
             (-float("inf"), -1.0, 1),
             (-1.0, -0.3, 2),
@@ -2503,14 +2512,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             (0.6, float("inf"), 4)
         ]
 
-        for t in non_single_tracks:
+        for t in eligible_for_zband:
             z = zrobust(t["score"])
             for lo, hi, stars in BANDS:
                 if lo <= z < hi:
                     t["stars"] = stars
                     break
 
-        # Cap density of 4★ among non-singles
+        # Cap density of 4★ among non-singles (unchanged policy)
+        non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
         top4 = [t for t in non_single_tracks if t.get("stars") == 4]
         max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
         if len(top4) > max_top4:
@@ -2518,16 +2528,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 t["stars"] = 3
 
         # ----------------------------------------------------------------------
-        # Spotify-only single BOOST (+1★ at most, cap at 4★), applied AFTER z-bands
+        # Spotify-only single BOOST (allow 4★ -> 5★; else +1★ capped at 4★), AFTER z-bands
         # ----------------------------------------------------------------------
         for t in sorted_album:
-            # Skip tracks that already got 5★ via strong sources
             already_strong = any(s in t.get("single_sources", []) for s in ("discogs", "discogs_video", "musicbrainz"))
             is_spotify_hint = ("spotify" in t.get("single_sources", [])) or ("short_release" in t.get("single_sources", []))
 
             if t.get("is_single") and is_spotify_hint and not already_strong:
-                # Apply +1★ boost, capped at 4★
-                t["stars"] = min(SPOTIFY_SOLO_MAX_STARS, (t.get("stars", 0) + SPOTIFY_SOLO_MAX_BOOST))
+                current_stars = int(t.get("stars", 0))
+                if current_stars >= 4:
+                    # Allow 4★ -> 5★ for Spotify-only singles
+                    t["stars"] = 5
+                else:
+                    # Otherwise, boost by +1★, capped at 4★
+                    t["stars"] = min(SPOTIFY_SOLO_MAX_STARS, current_stars + SPOTIFY_SOLO_MAX_BOOST)
 
         # ----------------------------------------------------------------------
         # SAVE + SYNC
@@ -2539,9 +2553,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             title     = trk.get("title", trk["id"])
 
             if trk.get("is_single"):
-                srcs = ", ".join(trk.get("single_sources", []))
-                print(f"   🎛️ Rating set (single via {srcs}): '{title}' — {new_stars}★")
-                logging.info(f"Rating set (single via {srcs}): {trk['id']} '{title}' -> {new_stars}★")
+                srcs = ", ".join(trk.get("single_sources") or [])
+                print(f"   🎛️ Rating set (single via {srcs if srcs else 'unknown'}): '{title}' — {new_stars}★")
+                logging.info(f"Rating set (single via {srcs if srcs else 'unknown'}): {trk['id']} '{title}' -> {new_stars}★")
             else:
                 print(f"   🎛️ Rating set: '{title}' — {new_stars}★")
                 logging.info(f"Rating set: {trk['id']} '{title}' -> {new_stars}★")
@@ -2566,7 +2580,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             print("   🎯 Singles:")
             for t in sorted_album:
                 if t.get("is_single"):
-                    print(f"      • {t['title']} (via {', '.join(t['single_sources'])}, conf={t['single_confidence']})")
+                    srcs = ", ".join(t.get("single_sources") or [])
+                    print(f"      • {t['title']} (via {srcs if srcs else 'unknown'}, conf={t['single_confidence']})")
 
         print(f"✔ Completed album: {album_name}")
         rated_map.update({t["id"]: t for t in sorted_album})
@@ -2987,6 +3002,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
