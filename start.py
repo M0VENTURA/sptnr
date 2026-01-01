@@ -1460,7 +1460,6 @@ def strip_parentheses(s):
 def get_lastfm_track_info(artist: str, title: str) -> dict:
     """
     Fetch Last.fm track playcount.
-    Returns raw playcount; normalization happens in compute_track_score().
     """
     if not LASTFM_API_KEY:
         logging.warning("Last.fm API key missing. Skipping lookup.")
@@ -1487,7 +1486,6 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
     """
     Fetch ListenBrainz listen count using MBID or fallback search.
-    Returns raw listen count; normalization happens in compute_track_score().
     """
     if not mbid:
         # Fallback: search by artist/title
@@ -1512,53 +1510,6 @@ def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
     except Exception as e:
         logging.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
         return 0
-
-# --- Scoring Logic ---
-def get_current_rating(track_id: str) -> int | None:
-    """
-    Fetch the current user rating (1–5) for a Navidrome track via Subsonic API.
-    Returns None if not present.
-    """
-    url = f"{NAV_BASE_URL}/rest/getSong.view"
-    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": track_id, "f": "json"}
-    try:
-        res = requests.get(url, params=params, timeout=10)
-        res.raise_for_status()
-        song = res.json().get("subsonic-response", {}).get("song", {})
-        # OpenSubsonic typically uses userRating; some servers expose rating
-        current = song.get("userRating", song.get("rating", None))
-        # Navidrome stores stars 1–5; ensure type int if present
-        if current is None:
-            return None
-        try:
-            return int(current)
-        except (ValueError, TypeError):
-            return None
-    except Exception as e:
-        logging.debug(f"get_current_rating failed for track {track_id}: {e}")
-        return None
-
-def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
-    """
-    Compute weighted score using Spotify, Last.fm, ListenBrainz, and age decay.
-    Last.fm: use raw track playcount.
-    ListenBrainz: use MBID or fallback search.
-    """
-    lf_data = get_lastfm_track_info(artist_name, title)
-    lf_track = lf_data.get("track_play", 0)
-
-    lb_score = get_listenbrainz_score(mbid, artist_name, title) if config["listenbrainz"]["enabled"] else 0
-
-    momentum, _ = score_by_age(lf_track, release_date)
-
-    score = (SPOTIFY_WEIGHT * sp_score) + \
-            (LASTFM_WEIGHT * lf_track) + \
-            (LISTENBRAINZ_WEIGHT * lb_score) + \
-            (AGE_WEIGHT * momentum)
-    if verbose:
-        print(f"🔢 Raw score for '{title}': {round(score)} "
-              f"(Spotify: {sp_score}, Last.fm: {lf_track}, ListenBrainz: {lb_score}, Age: {momentum})")
-    return score, momentum, lb_score
 
 def score_by_age(playcount, release_str):
     """Apply age decay to score based on release date."""
@@ -1643,38 +1594,6 @@ def set_track_rating_for_all(track_id, stars):
         except Exception as e:
             logging.error(f"❌ Failed for {user_cfg['user']}: {e}")
 
-def sync_rating_and_report(trk: dict):
-    """
-    Compare server rating (primary user) with computed stars; print/log only if update is needed.
-    - single check happens once via primary user
-    - applies update to all users
-    - honors dry_run
-    """
-    track_id   = trk["id"]
-    title      = trk.get("title", track_id)
-    new_stars  = int(trk.get("stars", 0))
-    # Fetch current server rating using primary user only
-    old_stars = get_current_rating(track_id)  # None if unrated
-    # No change → stay quiet (unless verbose)
-    if old_stars == new_stars:
-        if verbose:
-            print(f"   ↔️ No change: '{title}' already {new_stars}★")
-        return
-    old_label = f"{old_stars}★" if isinstance(old_stars, int) else "unrated"
-    # 🔹 Single-aware output: include sources when this scan marked the track as a single
-    if trk.get("is_single"):
-        srcs = ", ".join(trk.get("single_sources", []))
-        print(f"   🎛️ Rating update (single via {srcs}): '{title}' — {old_label} → {new_stars}★")
-        logging.info(f"Rating update (single via {srcs}): {track_id} '{title}' {old_label} -> {new_stars}★ (primary check)")
-    else:
-        print(f"   🎛️ Rating update: '{title}' — {old_label} → {new_stars}★")
-        logging.info(f"Rating update: {track_id} '{title}' {old_label} -> {new_stars}★ (primary check)")
-    if dry_run:
-        return
-
-    # Apply the update to all configured users
-    set_track_rating_for_all(track_id, new_stars)
-
 def refresh_all_playlists_from_db():
     print("🔄 Refreshing smart playlists for all artists from DB cache (no track rescans)...")
     # Pull distinct artists that have cached tracks
@@ -1714,17 +1633,6 @@ def _log_resp(resp, action, name):
     except Exception:
         txt = "<no text>"
     logging.info(f"{action} '{name}' → {resp.status_code}: {txt}")
-
-def nav_get_all_playlists():
-    url = f"{NAV_BASE_URL}/api/playlist"
-    try:
-        res = requests.get(url, auth=(USERNAME, PASSWORD))
-        _log_resp(res, "GET /api/playlist", "<list>")
-        res.raise_for_status()
-        return res.json().get("items", [])
-    except Exception as e:
-        logging.error(f"Failed to fetch playlists: {e}")
-        return []
 
 # --- NSP playlist writer replacements for Navidrome API helpers ---
 NSP_ROOT = "/music/playlists"  # default destination for .nsp files
@@ -3021,3 +2929,4 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
