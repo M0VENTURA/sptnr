@@ -2,9 +2,9 @@
 #!/usr/bin/env python3
 import sqlite3
 
-# Define the full schema for the tracks table
+# ✅ Define the full schema for the tracks table
 required_columns = {
-    "id": "TEXT",
+    "id": "TEXT",                       # Primary key
     "artist": "TEXT",
     "album": "TEXT",
     "title": "TEXT",
@@ -12,15 +12,15 @@ required_columns = {
     "lastfm_score": "REAL",
     "listenbrainz_score": "REAL",
     "age_score": "REAL",
-    "final_score": "REAL",
+    "final_score": "REAL",              # ✅ Added for weighted score
     "stars": "INTEGER",
     "genres": "TEXT",
     "navidrome_genres": "TEXT",
     "spotify_genres": "TEXT",
     "lastfm_tags": "TEXT",
-    "discogs_genres": "TEXT",        # ✅ Existing
-    "audiodb_genres": "TEXT",        # ✅ Existing
-    "musicbrainz_genres": "TEXT",    # ✅ Existing
+    "discogs_genres": "TEXT",
+    "audiodb_genres": "TEXT",
+    "musicbrainz_genres": "TEXT",
     "spotify_album": "TEXT",
     "spotify_artist": "TEXT",
     "spotify_popularity": "INTEGER",
@@ -32,25 +32,25 @@ required_columns = {
     "is_single": "BOOLEAN",
     "single_confidence": "TEXT",
     "last_scanned": "TEXT",
-    # ✅ New fields for MBID and related metadata
     "mbid": "TEXT",
     "suggested_mbid": "TEXT",
     "suggested_mbid_confidence": "REAL",
-    "single_sources": "TEXT",          # store as comma-delimited or JSON
-    "is_spotify_single": "INTEGER",    # 0/1
+    "single_sources": "TEXT",           # ✅ JSON or comma-delimited
+    "is_spotify_single": "INTEGER",
     "spotify_total_tracks": "INTEGER",
     "spotify_album_type": "TEXT",
-    "lastfm_ratio": "REAL"
+    "lastfm_ratio": "REAL"              # ✅ Added for Last.fm ratio
 }
-
 
 def update_schema(db_path):
     """
     Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
-    Creates missing columns if necessary and adds indexes for performance.
+    Adds missing columns dynamically and creates indexes for performance.
     """
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
+
+    print(f"🔍 Updating schema for database: {db_path}")
 
     # ✅ Ensure tracks table exists
     cursor.execute("CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY);")
@@ -59,7 +59,7 @@ def update_schema(db_path):
     cursor.execute("PRAGMA table_info(tracks);")
     existing_columns = [row[1] for row in cursor.fetchall()]
 
-    # ✅ Add missing columns to tracks
+    # ✅ Add missing columns
     for col, col_type in required_columns.items():
         if col not in existing_columns:
             print(f"✅ Adding missing column: {col} ({col_type})")
@@ -80,14 +80,18 @@ def update_schema(db_path):
     print("✔ artist_stats table verified.")
 
     # ✅ Create indexes for faster lookups
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist_stats_name ON artist_stats(artist_name);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_artist_stats_updated ON artist_stats(last_updated);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_last_scanned ON tracks(last_scanned);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_is_single ON tracks(is_single);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_mbid ON tracks(mbid);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_suggested_mbid ON tracks(suggested_mbid);")
+    indexes = [
+        ("idx_artist_stats_name", "artist_stats(artist_name)"),
+        ("idx_artist_stats_updated", "artist_stats(last_updated)"),
+        ("idx_tracks_artist", "tracks(artist)"),
+        ("idx_tracks_album", "tracks(album)"),
+        ("idx_tracks_last_scanned", "tracks(last_scanned)"),
+        ("idx_tracks_is_single", "tracks(is_single)"),
+        ("idx_tracks_mbid", "tracks(mbid)"),
+        ("idx_tracks_suggested_mbid", "tracks(suggested_mbid)")
+    ]
+    for idx_name, idx_target in indexes:
+        cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
     print("✔ Indexes verified.")
 
     conn.commit()
