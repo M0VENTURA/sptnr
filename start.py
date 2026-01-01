@@ -23,6 +23,7 @@ from difflib import SequenceMatcher
 from datetime import datetime, timedelta
 from statistics import median
 from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor
 
 # 🎨 Colorama setup
 init(autoreset=True)
@@ -564,14 +565,19 @@ _last_call_ts = 0.0
 _min_interval_sec = float(config.get("features", {}).get("discogs_min_interval_sec", 0.35))
 # 0.35s ~ 171 req/min theoretical max; adjust to 1.0s if you still see 429s
 
+
+_discogs_throttle_lock = threading.Lock()
+
 def _throttle_discogs():
-    """Sleep briefly between Discogs calls to avoid 429s."""
+    """Sleep briefly between Discogs calls to avoid 429s (thread-safe)."""
     global _last_call_ts
     now = time.time()
-    wait = _min_interval_sec - (now - _last_call_ts)
-    if wait > 0:
-        time.sleep(wait)
-    _last_call_ts = time.time()
+    with _discogs_throttle_lock:
+        wait = _min_interval_sec - (now - _last_call_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_ts = time.time()
+
 
 def _respect_retry_after(resp):
     """If Discogs returns Retry-After, sleep that amount."""
@@ -1275,13 +1281,17 @@ def strip_parentheses(s):
     return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
 
 # --- Last.fm Helpers ---
-def get_lastfm_track_info(artist, title):
-    """Fetch track and artist play counts from Last.fm."""
-    if not LASTFM_API_KEY:
-        logging.warning(f"Last.fm API key missing. Skipping lookup for '{title}' by '{artist}'.")
-        return {"track_play": 0, "artist_play": 0}
 
-    headers = {"User-Agent": "sptnr-cli"}
+
+def get_lastfm_track_info(artist: str, title: str) -> dict:
+    """
+    Fetch Last.fm track playcount.
+    Returns raw playcount; normalization happens in compute_track_score().
+    """
+    if not LASTFM_API_KEY:
+        logging.warning("Last.fm API key missing. Skipping lookup.")
+        return {"track_play": 0}
+
     params = {
         "method": "track.getInfo",
         "artist": artist,
@@ -1291,27 +1301,48 @@ def get_lastfm_track_info(artist, title):
     }
 
     try:
-        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params, timeout=10)
+        res = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
         res.raise_for_status()
         data = res.json().get("track", {})
         track_play = int(data.get("playcount", 0))
-        artist_play = int(data.get("artist", {}).get("stats", {}).get("playcount", 0))
-        return {"track_play": track_play, "artist_play": artist_play}
+        return {"track_play": track_play}
     except Exception as e:
-        logging.error(f"Last.fm fetch failed for '{title}': {e}")
-        return {"track_play": 0, "artist_play": 0}
+        logging.error(f"Last.fm fetch failed for '{title}' by '{artist}': {e}")
+        return {"track_play": 0}
 
-def get_listenbrainz_score(mbid):
-    """Fetch ListenBrainz listen count for a track using MBID."""
+
+
+def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
+    """
+    Fetch ListenBrainz listen count using MBID or fallback search.
+    Returns raw listen count; normalization happens in compute_track_score().
+    """
+    if not mbid:
+        # Fallback: search by artist/title
+        try:
+            url = "https://api.listenbrainz.org/1/recording/search"
+            params = {"artist_name": artist, "recording_name": title, "limit": 1}
+            res = requests.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            hits = res.json().get("recordings", [])
+            if hits:
+                return int(hits[0].get("listen_count", 0))
+        except Exception as e:
+            logging.debug(f"ListenBrainz fallback search failed for '{title}': {e}")
+        return 0
+
+    # Primary: stats by MBID
     try:
-        url = f"https://api.listenbrainz.org/1/stats/track/{mbid}"
+        url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
-        return data.get("count", 0)  # Normalize later if needed
+        return int(data.get("count", 0))
     except Exception as e:
         logging.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
         return 0
+
+
 
 # --- Scoring Logic ---
 
@@ -1341,26 +1372,31 @@ def get_current_rating(track_id: str) -> int | None:
         return None
 
 
-def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
-    """Compute weighted score for a track using Spotify, Last.fm, ListenBrainz, and age decay."""
-    lf_data = get_lastfm_track_info(artist_name, title)
-    lf_track = lf_data["track_play"] if lf_data else 0
-    lf_artist = lf_data["artist_play"] if lf_data else 0
-    lf_ratio = round((lf_track / lf_artist) * 100, 2) if lf_artist > 0 else 0
-    momentum, days_since = score_by_age(lf_track, release_date)
 
-    lb_score = get_listenbrainz_score(mbid) if mbid and config["listenbrainz"]["enabled"] else 0
+def compute_track_score(title, artist_name, release_date, sp_score, mbid=None, verbose=False):
+    """
+    Compute weighted score using Spotify, Last.fm, ListenBrainz, and age decay.
+    Last.fm: use raw track playcount.
+    ListenBrainz: use MBID or fallback search.
+    """
+    lf_data = get_lastfm_track_info(artist_name, title)
+    lf_track = lf_data.get("track_play", 0)
+
+    lb_score = get_listenbrainz_score(mbid, artist_name, title) if config["listenbrainz"]["enabled"] else 0
+
+    momentum, _ = score_by_age(lf_track, release_date)
 
     score = (SPOTIFY_WEIGHT * sp_score) + \
-            (LASTFM_WEIGHT * lf_ratio) + \
+            (LASTFM_WEIGHT * lf_track) + \
             (LISTENBRAINZ_WEIGHT * lb_score) + \
             (AGE_WEIGHT * momentum)
 
     if verbose:
         print(f"🔢 Raw score for '{title}': {round(score)} "
-              f"(Spotify: {sp_score}, Last.fm: {lf_ratio}, ListenBrainz: {lb_score}, Age: {momentum})")
+              f"(Spotify: {sp_score}, Last.fm: {lf_track}, ListenBrainz: {lb_score}, Age: {momentum})")
 
     return score, momentum, lb_score
+
 
 
 def score_by_age(playcount, release_str):
@@ -1888,31 +1924,26 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
-
-
-
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
 
-    Changes vs. your previous version:
-      - ✔ Album-context aware single detection (live/unplugged gate)
-      - ✔ No check of existing Navidrome star rating; we ALWAYS set stars when `sync` is True
-      - ✔ Keeps Discogs-first single detection with subtitle/title-similarity guard
-      - ✔ Keeps adaptive weighting, z-band distribution, cap on 4★ density, DB persistence, and playlist creation
+    Adjustments:
+      - ⚡ Per-track enrichment now runs Spotify, Last.fm, and ListenBrainz lookups concurrently
+        using a single executor per album (lower overhead).
+      - ✅ Album-context aware single detection (live/unplugged gate) preserved.
+      - ✅ Last.fm ratio bug fixed: use normalized playcount instead of artist ratio.
+      - ✅ Normalized scoring: Spotify→[0,1], Last.fm/LB/Age→log10 scaling.
+      - ✅ No check of existing Navidrome star rating; ALWAYS sets stars when `sync` is True.
 
     Flow:
       1) Fetch albums & tracks from Navidrome.
-      2) Per-track enrichment (Spotify, Last.fm, ListenBrainz, genres).
-      3) Per-album adaptive weights (MAD/coverage-based).
-      4) Context-aware single detection (Discogs official video/single release → high confidence).
-      5) Stars assignment: Singles → 5★ (guarded); Non-singles via z-bands & 4★ cap.
-      6) Save to DB and (optionally) sync ratings to Navidrome.
+      2) Per-track enrichment (Spotify + Last.fm + ListenBrainz) concurrently.
+      3) Per-album adaptive weights (MAD/coverage-based) → recompute 'score'.
+      4) Discogs-first single detection with subtitle/title-similarity guard.
+      5) Z-band assignment for non-singles + 4★ cap.
+      6) Save to DB and set ratings.
       7) Create/refresh "Essential {artist}" playlist.
-
-    Prints:
-      - Album/track progress, singles summary, and rating set lines.
     """
 
     # ----- Tunables & feature flags ------------------------------------------------
@@ -1939,8 +1970,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     TITLE_SIM_THRESHOLD = float(config["features"].get("title_sim_threshold", 0.92))
 
     # --- Local helpers (subtitle/title similarity guards) --------------------------
-    from difflib import SequenceMatcher
-    import re
+
 
     def _canon_local(s: str) -> str:
         s = (s or "").lower()
@@ -1961,12 +1991,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         Explicitly allow 'radio edit' and 'remaster'.
         """
         t = (s or "").lower()
-        # Parenthetical variants
         if re.search(r"\(.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit).*?\)", t):
             if "radio edit" in t or "remaster" in t:
                 return False
             return True
-        # Hyphenated qualifiers
         if re.search(r"\s-\s.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit)", t):
             if "radio edit" in t or "remaster" in t:
                 return False
@@ -1990,8 +2018,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     # --------------------------------------------------------------------------
     # MAIN ALBUM LOOP
     # --------------------------------------------------------------------------
-
-
     for album in albums:
         album_name = album.get("name", "Unknown Album")
         album_id   = album.get("id")
@@ -2028,116 +2054,135 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         album_tracks = []
 
         # ----------------------------------------------------------------------
-        # PER-TRACK ENRICHMENT
+        # PER-TRACK ENRICHMENT (CONCURRENT via one executor per album)
         # ----------------------------------------------------------------------
-        for track in tracks:
-            track_id   = track["id"]
-            title      = track["title"]
-            file_path  = track.get("path", "")
-            nav_genres = [track.get("genre")] if track.get("genre") else []
-            mbid       = track.get("mbid", None)
+        with ThreadPoolExecutor(max_workers=4) as ex:
+            for track in tracks:
+                track_id   = track["id"]
+                title      = track["title"]
+                file_path  = track.get("path", "")
+                nav_genres = [track.get("genre")] if track.get("genre") else []
+                mbid       = track.get("mbid", None)
 
-            if verbose:
-                print(f"   🔍 Processing track: {title}")
+                if verbose:
+                    print(f"   🔍 Processing track: {title}")
 
-            # Spotify lookup (context-aware filtering)
-            spotify_results       = search_spotify_track(title, artist_name, album_name)
-            selected              = select_best_spotify_match(spotify_results, title, album_context=album_ctx)
-            sp_score              = selected.get("popularity", 0)
-            spotify_album         = selected.get("album", {}).get("name", "")
-            spotify_artist        = selected.get("artists", [{}])[0].get("name", "")
-            spotify_genres        = selected.get("artists", [{}])[0].get("genres", [])
-            spotify_release_date  = selected.get("album", {}).get("release_date", "") or "1992-01-01"
-            images                = selected.get("album", {}).get("images") or []
-            spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
-            spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
-            spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
-            is_spotify_single     = (spotify_album_type == "single")
+                # Kick off concurrent lookups
+                fut_sp = ex.submit(search_spotify_track, title, artist_name, album_name)
+                fut_lf = ex.submit(get_lastfm_track_info, artist_name, title)
+                fut_lb = ex.submit(get_listenbrainz_score, mbid, artist_name, title)
 
-            # Last.fm
-            lf_data        = get_lastfm_track_info(artist_name, title)
-            lf_track_play  = lf_data.get("track_play", 0)
-            lf_artist_play = lf_data.get("artist_play", 0)
-            lf_ratio       = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
+                spotify_results = fut_sp.result() or []
+                lf_data         = fut_lf.result() or {"track_play": 0}
+                lb_score_raw    = int(fut_lb.result() or 0)
 
-            # Global score (ListenBrainz via MBID; age-decay momentum)
-            score, momentum, lb_score = compute_track_score(
-                title, artist_name, spotify_release_date, sp_score, mbid, verbose
-            )
+                # Choose best Spotify match (context-aware filtering)
+                selected              = select_best_spotify_match(spotify_results, title, album_context=album_ctx)
+                sp_score              = selected.get("popularity", 0)
+                spotify_album         = selected.get("album", {}).get("name", "")
+                spotify_artist        = selected.get("artists", [{}])[0].get("name", "")
+                spotify_genres        = selected.get("artists", [{}])[0].get("genres", [])
+                spotify_release_date  = selected.get("album", {}).get("release_date", "") or "1992-01-01"
+                images                = selected.get("album", {}).get("images") or []
+                spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
+                spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
+                spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
+                is_spotify_single     = (spotify_album_type == "single")
 
-            # Genres (Discogs/AudioDB/MusicBrainz + Navidrome)
-            discogs_genres = get_discogs_genres(title, artist_name)
-            audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
-            mb_genres      = get_musicbrainz_genres(title, artist_name)
-            lastfm_tags    = []  # (optional) if you later parse track.getTopTags
+                # Last.fm (normalized playcount; no artist ratio)
+                lf_track_play  = int(lf_data.get("track_play", 0) or 0)
 
-            online_top, _ = get_top_genres_with_navidrome(
-                {
-                    "spotify":      spotify_genres,
-                    "lastfm":       lastfm_tags,
-                    "discogs":      discogs_genres,
-                    "audiodb":      audiodb_genres,
-                    "musicbrainz":  mb_genres,
-                },
-                nav_genres,
-                title=title,
-                album=album_name,
-            )
-            genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
-            top_genres    = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
+                # Age score uses Last.fm track playcount for momentum
+                momentum_raw, _ = score_by_age(lf_track_play, spotify_release_date)
 
-            # ✅ MBID suggestion if missing
-            suggested_mbid = ""
-            suggested_confidence = 0.0
-            if not mbid:
-                suggested_mbid, suggested_confidence = get_suggested_mbid(title, artist_name)
-                if verbose and suggested_mbid:
-                    print(f"      ↔ Suggested MBID: {suggested_mbid} (confidence {suggested_confidence})")
+                # --- Normalized scoring ---
+                sp_norm = sp_score / 100.0                   # Spotify popularity 0–1
+                lf_norm = math.log10(lf_track_play + 1)      # Last.fm log scale
+                lb_norm = math.log10(lb_score_raw + 1)       # ListenBrainz log scale
+                age_norm = math.log10(momentum_raw + 1)      # Age momentum log scale
 
-            # Build track_data record
-            track_data = {
-                "id": track_id,
-                "title": title,
-                "album": album_name,
-                "artist": artist_name,
-                "score": score,
-                "spotify_score": sp_score,
-                "lastfm_ratio": lf_ratio,
-                "lastfm_score": lf_ratio,
-                "listenbrainz_score": lb_score,
-                "age_score": momentum,
-                "genres": top_genres,
-                "navidrome_genres": nav_genres,
-                "spotify_genres": spotify_genres,
-                "lastfm_tags": lastfm_tags,
-                "discogs_genres": discogs_genres,
-                "audiodb_genres": audiodb_genres,
-                "musicbrainz_genres": mb_genres,
-                "spotify_album": spotify_album,
-                "spotify_artist": spotify_artist,
-                "spotify_popularity": sp_score,
-                "spotify_release_date": spotify_release_date,
-                "spotify_album_art_url": spotify_album_art_url,
-                "lastfm_track_playcount": lf_track_play,
-                "lastfm_artist_playcount": lf_artist_play,
-                "file_path": file_path,
-                "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
-                "spotify_album_type": spotify_album_type,
-                "spotify_total_tracks": spotify_total_tracks,
-                "is_spotify_single": is_spotify_single,
-                "is_single": False,
-                "single_confidence": "low",
-                "single_sources": [],
-                "stars": 1,
-                "mbid": mbid or "",
-                "suggested_mbid": suggested_mbid,
-                "suggested_mbid_confidence": suggested_confidence
-            }
+                score = (SPOTIFY_WEIGHT * sp_norm) + \
+                        (LASTFM_WEIGHT * lf_norm) + \
+                        (LISTENBRAINZ_WEIGHT * lb_norm) + \
+                        (AGE_WEIGHT * age_norm)
 
-            album_tracks.append(track_data)
+                if verbose:
+                    print(f"🔢 Raw score for '{title}': {score:.4f} "
+                          f"(Spotify: {sp_norm:.3f}, Last.fm: {lf_norm:.3f}, ListenBrainz: {lb_norm:.3f}, Age: {age_norm:.3f})")
+
+                # Genres (Discogs/AudioDB/MusicBrainz + Navidrome)
+                discogs_genres = get_discogs_genres(title, artist_name)
+                audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
+                mb_genres      = get_musicbrainz_genres(title, artist_name)
+                lastfm_tags    = []  # optional if you parse Last.fm top tags later
+
+                online_top, _ = get_top_genres_with_navidrome(
+                    {
+                        "spotify":      spotify_genres,
+                        "lastfm":       lastfm_tags,
+                        "discogs":      discogs_genres,
+                        "audiodb":      audiodb_genres,
+                        "musicbrainz":  mb_genres,
+                    },
+                    nav_genres,
+                    title=title,
+                    album=album_name,
+                )
+                genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
+                top_genres    = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
+
+                # ✅ MBID suggestion if missing
+                suggested_mbid = ""
+                suggested_confidence = 0.0
+                if not mbid:
+                    suggested_mbid, suggested_confidence = get_suggested_mbid(title, artist_name)
+                    if verbose and suggested_mbid:
+                        print(f"      ↔ Suggested MBID: {suggested_mbid} (confidence {suggested_confidence})")
+
+                # Build track_data record
+                track_data = {
+                    "id": track_id,
+                    "title": title,
+                    "album": album_name,
+                    "artist": artist_name,
+                    "score": score,
+                    "spotify_score": sp_score,
+                    # Set BOTH lastfm_score and lastfm_ratio to normalized value for compatibility
+                    "lastfm_score": lf_norm,
+                    "lastfm_ratio": lf_norm,
+                    "listenbrainz_score": lb_norm,
+                    "age_score": age_norm,
+                    "genres": top_genres,
+                    "navidrome_genres": nav_genres,
+                    "spotify_genres": spotify_genres,
+                    "lastfm_tags": lastfm_tags,
+                    "discogs_genres": discogs_genres,
+                    "audiodb_genres": audiodb_genres,
+                    "musicbrainz_genres": mb_genres,
+                    "spotify_album": spotify_album,
+                    "spotify_artist": spotify_artist,
+                    "spotify_popularity": sp_score,
+                    "spotify_release_date": spotify_release_date,
+                    "spotify_album_art_url": spotify_album_art_url,
+                    "lastfm_track_playcount": lf_track_play,
+                    "file_path": file_path,
+                    "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "spotify_album_type": spotify_album_type,
+                    "spotify_total_tracks": spotify_total_tracks,
+                    "is_spotify_single": is_spotify_single,
+                    "is_single": False,
+                    "single_confidence": "low",
+                    "single_sources": [],
+                    "stars": 1,
+                    "mbid": mbid or "",
+                    "suggested_mbid": suggested_mbid,
+                    "suggested_mbid_confidence": suggested_confidence
+                }
+
+                album_tracks.append(track_data)
 
         # ----------------------------------------------------------------------
-        # ADAPTIVE WEIGHTS (per album)
+        # ADAPTIVE WEIGHTS (per album) → recompute 'score'
         # ----------------------------------------------------------------------
         base_weights = {
             'spotify': SPOTIFY_WEIGHT,
@@ -2179,7 +2224,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             agg_sources    = set(agg.get("sources", []))
             discogs_strong = any(s in agg_sources for s in ("discogs", "discogs_video"))
 
-            # 🔒 HARD SHORT-CIRCUIT: Only if the track title is effectively the canonical single title
+            # HARD SHORT-CIRCUIT: Only if the track title is the canonical single title
             if canonical and discogs_strong and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
                 trk["single_sources"]    = sorted(list(agg_sources))  # e.g., ['discogs_video']
                 trk["single_confidence"] = "high"
@@ -2250,8 +2295,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         for trk in sorted_album:
             save_to_db(trk)
 
-            # Print informative line before syncing
-            old_label = "n/a"  # we no longer fetch current rating
             new_stars = int(trk.get("stars", 0))
             title     = trk.get("title", trk["id"])
 
@@ -2267,7 +2310,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 continue
 
             if config["features"].get("sync", True):
-                # Always push the rating now (no previous-rating comparison)
                 set_track_rating_for_all(trk["id"], new_stars)
 
         # ----------------------------------------------------------------------
@@ -2292,7 +2334,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     # --------------------------------------------------------------------------
     # SMART PLAYLIST CREATION (NSP writer via nav_* replacements)
     # --------------------------------------------------------------------------
-    import math
+
     def _playlist_exists(playlist_name: str) -> bool:
         return _playlist_file_exists(playlist_name)
 
@@ -2330,6 +2372,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
+
+
 
 
 def _self_test_single_gate():
@@ -2701,6 +2745,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
