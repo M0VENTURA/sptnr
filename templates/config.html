@@ -1,0 +1,49 @@
+
+{% extends "base.html" %}
+{% block title %}Config · Sptnr{% endblock %}
+{% block content %}
+
+<h1 class="h3 mb-3">Configuration</h1>
+
+<form action="{{ url_for('config_editor') }}" method="post">
+  <div class="row g-3">
+    {% for key, value in config.items() %}
+      <div class="col-12">
+        <label for="cfg_{{ key }}" class="form-label">{{ key }}</label>
+
+        {% if value is string or value is number or value is boolean or value is none %}
+          <input
+            type="text"
+            class="form-control"
+            id="cfg_{{ key }}"
+            name="{{ key }}"
+            value="{{ value if value is not none else '' }}">
+        {% else %}
+          <!-- For lists/dicts, allow editing as YAML -->
+          <textarea
+            class="form-control monospace"
+            id="cfg_{{ key }}"
+            name="{{ key }}"
+            rows="6">{{ value | tojson(indent=2) }}</textarea>
+          <div class="form-text">
+            Complex value (list/dict) shown as JSON. You may paste YAML; server writes whatever you submit.
+          </div>
+        {% endif %}
+      </div>
+    {% endfor %}
+  </div>
+
+  <div class="d-flex gap-2 mt-4">
+    <button type="submit" class="btn btn-primary">Save</button>
+    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+  </div>
+</form>
+
+{% if not config or config|length == 0 %}
+  <div class="alert alert-warning mt-3">
+    Config appears empty. Submitting will write an empty file to
+    <code class="monospace">{{ CONFIG_PATH if CONFIG_PATH is defined else "/config/config.yaml" }}</code>.
+  </div>
+{% endif %}
+
+{% endblock %}
