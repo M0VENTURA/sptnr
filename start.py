@@ -1425,35 +1425,56 @@ def _safe_fs_name(name: str) -> str:
     s = s.replace("/", "_").replace("\\", "_").replace(":", "-")
     return s
 
+
 def _rules_to_nsp_all(rules: list[dict]) -> list[dict]:
     """
-    Convert your API-style rule list to NSP 'all' clauses.
-    Supported mappings (extend as needed):
+    Convert API-style rules to NSP 'all' clauses (Navidrome 0–5 rating scale).
       - {"field":"artist","operator":"equals","value":"X"} -> {"is":{"artist":"X"}}
-      - {"field":"userRating","operator":"equals","value":"5"} -> {"is":{"rating":10}}
-      - {"field":"rating","operator":"greaterThanOrEquals","value":"9"} -> {"is":{"rating":10}}  # tightened per request
+      - {"field":"userRating","operator":"equals","value":"5"} -> {"is":{"rating":5}}
+      - {"field":"rating","operator":"equals","value":"N"} -> {"is":{"rating":N}}  # N in {0..5}
+      - {"field":"rating","operator":"greaterThanOrEquals","value":"4"} -> {"is":{"rating":5}}  # tighten to top-rated
     """
     nsp_all = []
     for r in rules or []:
         field = (r.get("field") or "").lower()
         op    = (r.get("operator") or "").lower()
         val   = r.get("value")
+
+        # Artist equality
         if field == "artist" and op == "equals":
             nsp_all.append({"is": {"artist": val}})
-        elif field == "userrating" and op == "equals":
-            # Your request: use explicit rating == 10 for 5★
+            continue
+
+        # 5★ user rating -> rating: 5
+        if field == "userrating" and op == "equals":
             if str(val) == "5":
-                nsp_all.append({"is": {"rating": 10}})
-        elif field == "rating" and op in ("greaterthanorequals", "gte"):
-            # Tighten to rating==10 (instead of >=9)
-            nsp_all.append({"is": {"rating": 10}})
-        elif field == "rating" and op == "equals":
+                nsp_all.append({"is": {"rating": 5}})
+            continue
+
+        # Rating >= threshold -> tighten to 5 (top-rated)
+        if field == "rating" and op in ("greaterthanorequals", "gte"):
             try:
-                nsp_all.append({"is": {"rating": int(val)}})
-            except:
-                pass
-        # Add more mappings as needed
+                n = int(val)
+            except (TypeError, ValueError):
+                n = None
+            if n is not None:
+                nsp_all.append({"is": {"rating": 5 if n >= 4 else max(0, n)}})
+            continue
+
+        # Rating equality on 0..5
+        if field == "rating" and op == "equals":
+            try:
+                n = int(val)
+            except (TypeError, ValueError):
+                n = None
+            if n is not None and 0 <= n <= 5:
+                nsp_all.append({"is": {"rating": n}})
+            continue
+
+        # Add more mappings as needed...
+
     return nsp_all
+
 
 def _sort_to_nsp(sort: list[dict]) -> str:
     """
@@ -1528,59 +1549,51 @@ def nav_delete_playlist_by_name(name: str):
     except Exception as e:
         logging.warning(f"Failed to delete NSP playlist '{name}': {e}")
 
+
+import math
+import logging
+
 def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
     """
-    Create/refresh 'Essential {artist}' smart playlist using the same rating-scale tolerant logic:
-      - Case A: if artist has >=10 five-star tracks, build purely 5★ essentials.
-        Primary rule: userRating == 5 (1–5 stars)
-        Fallback rule: rating >= 9 (10-scale servers)
-      - Case B: if total tracks >=100, build top 10% essentials sorted by userRating then rating.
+    Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0–5 rating scale.
+
+    Logic:
+      - Case A: if artist has >= 10 five-star tracks, build a pure 5★ essentials playlist.
+        Rule: userRating == 5  (alternatively, rating == 5 if your source uses 'rating')
+        Sort: random
+      - Case B: if total tracks >= 100, build top 10% essentials sorted by userRating then rating (both 0–5).
+        Sort: userRating desc, rating desc, random
     """
 
     total_tracks = len(tracks)
+    # 'stars' should be 0..5 in your input. Adjust if your field is named differently.
     five_star_tracks = [t for t in tracks if (t.get("stars") or 0) == 5]
     playlist_name = f"Essential {artist}"
 
-    # Helper to verify creation by name (normalized)
-    
     def _playlist_exists():
         return _playlist_file_exists(playlist_name)
-
 
     # CASE A — 10+ five-star tracks → purely 5★ essentials
     if len(five_star_tracks) >= 10:
         nav_delete_playlist_by_name(playlist_name)
-
-        # Prefer 1–5 scale via userRating
-        rules_user = [
+        rules = [
             {"field": "artist", "operator": "equals", "value": artist},
             {"field": "userRating", "operator": "equals", "value": "5"},
         ]
         sort = [{"field": "random", "order": "asc"}]
-        nav_create_smart_playlist(playlist_name, rules_user, sort)
-
-        # Fallback to 10-scale if needed
-        if not _playlist_exists():
-            rules_10 = [
-                {"field": "artist", "operator": "equals", "value": artist},
-                {"field": "rating", "operator": "greaterThanOrEquals", "value": "9"},
-            ]
-            nav_delete_playlist_by_name(playlist_name)
-            nav_create_smart_playlist(playlist_name, rules_10, sort)
+        nav_create_smart_playlist(playlist_name, rules, sort)
         return
 
-    # CASE B — 100+ total tracks → top 10% by rating
+    # CASE B — 100+ total tracks → top 10% by rating (0–5)
     if total_tracks >= 100:
         nav_delete_playlist_by_name(playlist_name)
         limit = max(1, math.ceil(total_tracks * 0.10))
-
-        # Sort preference: userRating (1–5) then rating (0–10), then random
-        sort = [
-            {"field": "userRating", "order": "desc"},
-            {"field": "rating", "order": "desc"},
-            {"field": "random", "order": "asc"},
-        ]
         rules = [{"field": "artist", "operator": "equals", "value": artist}]
+        sort = [
+            {"field": "userRating", "order": "desc"},  # primary: explicit 0–5 stars
+            {"field": "rating", "order": "desc"},      # secondary: numeric 0–5 rating if present
+            {"field": "random", "order": "asc"},       # tie-breaker
+        ]
         nav_create_smart_playlist(playlist_name, rules, sort, limit)
         return
 
@@ -1588,6 +1601,7 @@ def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
         f"No Essential playlist created for '{artist}' "
         f"(total={total_tracks}, five★={len(five_star_tracks)})"
     )
+
 
 def fetch_artist_albums(artist_id):
     url = f"{NAV_BASE_URL}/rest/getArtist.view"
@@ -1740,19 +1754,38 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
-    Rate all tracks for a given artist:
-      - Enrich per-track metadata (Spotify, Last.fm, ListenBrainz, Age, Genres)
-      - Compute adaptive source weights per album (MAD/coverage-based, clamped)
-      - Album-level skip/resume (force=False)
-      - Single detection (Discogs-first short-circuit)
-      - Spread non-singles via robust z-bands
-      - Cap density of 4★ among non-singles
-      - Save to DB; optionally push ratings to Navidrome
-      - Build one smart "Essential {artist}" playlist
-        ▶ Case A: userRating==5 (1–5) → NSP maps to rating==10
-        ▶ Case B: top 10% by rating
+    Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
+
+    Data enrichment per track:
+      - Spotify (popularity, album/artist/meta), Last.fm (plays + ratio), ListenBrainz (count via MBID),
+        age-decay momentum, genre aggregation (Discogs/AudioDB/MusicBrainz/Navidrome).
+    Weighting:
+      - Adaptive source weights per album (MAD/coverage-based, clamped), plus age component.
+
+    Single detection (short-circuit flow):
+      - Discogs Official/Lyric Video → immediate 5★ (high confidence)
+      - Else Discogs single-format → high confidence
+      - Else MusicBrainz / Last.fm signals
+      - Also considers Spotify "single" album type and short releases (≤ 2 tracks) as supporting signals.
+
+    Star assignment:
+      - Singles (canonical and high confidence) → 5★
+      - Non-singles spread via robust z-bands over album scores; cap density of 4★ among non-singles.
+
+    Smart playlist:
+      - Case A: if the artist has ≥ 10 five‑star tracks, create "Essential {artist}" with rules:
+          artist == {name} AND userRating == 5; sort = random.
+      - Case B: if total tracks ≥ 100, create "Essential {artist}" with
+          rules: artist == {name}; limit: top 10% of catalog; sort = -rating,random
+        (we emit 'userRating' desc → maps to '-rating'; random tie-breaker).
+      - Otherwise, no playlist is created.
+
+    Notes:
+      - Entirely uses Navidrome’s 0–5 rating scale; no 10‑point fallbacks remain.
+      - Playlist files are written via the NSP writer (`nav_create_smart_playlist`), not posted to the API.
     """
 
     # ----- Tunables & feature flags ------------------------------------------------
@@ -1857,7 +1890,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
 
-            # Genres
+            # Genres from online sources + Navidrome
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
             mb_genres      = get_musicbrainz_genres(title, artist_name)
@@ -1878,7 +1911,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
             top_genres    = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
 
-            # ✅ MBID logic: if missing, suggest one via MusicBrainz
+            # ✅ MBID suggestion if missing
             suggested_mbid = ""
             suggested_confidence = 0.0
             if not mbid:
@@ -1886,7 +1919,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 if verbose and suggested_mbid:
                     print(f"      ↔ Suggested MBID: {suggested_mbid} (confidence {suggested_confidence})")
 
-            # Build track_data dictionary
+            # Build track_data record
             track_data = {
                 "id": track_id,
                 "title": title,
@@ -1929,7 +1962,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             album_tracks.append(track_data)
 
         # ----------------------------------------------------------------------
-        # ADAPTIVE WEIGHTS
+        # ADAPTIVE WEIGHTS (per album)
         # ----------------------------------------------------------------------
         base_weights = {
             'spotify': SPOTIFY_WEIGHT,
@@ -1943,7 +1976,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
         # ----------------------------------------------------------------------
-        # SINGLE DETECTION (corrected short-circuit for Discogs)
+        # SINGLE DETECTION (Discogs-first hard short-circuit)
         # ----------------------------------------------------------------------
         for trk in album_tracks:
             title     = trk["title"]
@@ -1962,7 +1995,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 min_sources=1,
             )
 
-            # Use only aggregator sources for Discogs short-circuit
             agg_sources    = set(agg.get("sources", []))
             discogs_strong = any(s in agg_sources for s in ("discogs", "discogs_video"))
 
@@ -2023,6 +2055,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     t["stars"] = stars
                     break
 
+        # Cap density of 4★ among non-singles
         top4 = [t for t in non_single_tracks if t.get("stars") == 4]
         max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
         if len(top4) > max_top4:
@@ -2067,7 +2100,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         total_tracks = len(rated_map)
         five_star_tracks = [t for t in rated_map.values() if (t.get("stars") or 0) == 5]
 
-        # CASE A — 10+ five-star tracks: Loved OR rating==10 (via NSP mapping)
+        # CASE A — 10+ five-star tracks: pure 5★ essentials
         if len(five_star_tracks) >= 10:
             nav_delete_playlist_by_name(playlist_name)
             rules_user = [
@@ -2077,22 +2110,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             sort = [{"field": "random", "order": "asc"}]
             nav_create_smart_playlist(playlist_name, rules_user, sort)
 
-            # (Optional) fallback; with NSP mapping tightened to rating==10, this is redundant
-            if not _playlist_exists(playlist_name):
-                rules_10 = [
-                    {"field": "artist", "operator": "equals", "value": artist_name},
-                    {"field": "rating", "operator": "greaterThanOrEquals", "value": "9"}
-                ]
-                nav_delete_playlist_by_name(playlist_name)
-                nav_create_smart_playlist(playlist_name, rules_10, sort)
-
         # CASE B — 100+ total tracks: Top 10% by rating
         elif total_tracks >= 100:
             nav_delete_playlist_by_name(playlist_name)
             limit = max(1, math.ceil(total_tracks * 0.10))
+            # Keep sort minimal to avoid duplicate '-rating' entries in the mapper:
             sort = [
                 {"field": "userRating", "order": "desc"},
-                {"field": "rating", "order": "desc"},
                 {"field": "random", "order": "asc"}
             ]
             rules = [{"field": "artist", "operator": "equals", "value": artist_name}]
@@ -2477,6 +2501,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
