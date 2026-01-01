@@ -582,134 +582,172 @@ def _respect_retry_after(resp):
 # Keyed by normalized (artist, title) -> result dict returned by the function below.
 _DISCOGS_VID_CACHE: dict[tuple[str, str], dict] = {}
 
+def _strip_video_noise(s: str) -> str:
+    """
+    Remove common boilerplate to improve title matching:
+      - 'official music video', 'official video', 'music video', 'hd', '4k', 'uhd', 'remastered'
+      - bracketed content [..], (..), {..}
+      - normalize 'feat.' / 'ft.' to 'feat '
+    Returns a canonicalized string via _canon.
+    """
+    s = (s or "").lower()
+    noise_phrases = [
+        "official music video", "official video", "music video",
+        "hd", "4k", "uhd", "remastered", "lyrics", "lyric video",
+        "audio", "visualizer"
+    ]
+    for p in noise_phrases:
+        s = s.replace(p, " ")
+    # Drop bracketed content
+    s = re.sub(r"\[.*?\]|\(.*?\)|\{.*?\}", " ", s)
+    # Normalize common abbreviations
+    s = s.replace("feat.", "feat ").replace("ft.", "feat ")
+    return _canon(s)
+
+def _has_official(vt_raw: str, vd_raw: str, allow_lyric: bool = True) -> bool:
+    """Require 'official' in title/description; optionally accept 'lyric' as official."""
+    t = (vt_raw or "").lower()
+    d = (vd_raw or "").lower()
+    if ("official" in t) or ("official" in d):
+        return True
+    return allow_lyric and (("lyric" in t) or ("lyric" in d))
+
+def _banned_flavor(vt_raw: str, vd_raw: str) -> bool:
+    """
+    Reject obvious 'live' or 'remix'.
+    Allow 'radio edit' (no 'remix') cases.
+    """
+    t = (vt_raw or "").lower()
+    d = (vd_raw or "").lower()
+    if "live" in t or "live" in d:
+        return True
+    # ‘remix’ anywhere is banned; radio edits are allowed (without 'remix')
+    if "remix" in t or "remix" in d:
+        return True
+    return False
+
 def discogs_official_video_signal(
     title: str,
     artist: str,
     *,
     discogs_token: str,
     timeout: int = 10,
-    per_page: int = 5,
-    min_ratio: float = 0.60,   # relaxed threshold
+    per_page: int = 10,
+    min_ratio: float = 0.55,   # similarity after cleaning
+    allow_lyric_as_official: bool = True
 ) -> dict:
     """
-    Detect ANY official or lyric video for a track on Discogs.
+    Detect an 'official' (or 'lyric' if allowed) video for a track on Discogs.
+
     Rules:
-      ✔ Must contain 'official' or 'lyric'
+      ✔ Must contain 'official' (or 'lyric' if allow_lyric_as_official=True)
       ✔ Must NOT be live
-      ✔ Must NOT be remix (radio edits allowed)
-      ✔ Does NOT require track 1
-      ✔ Does NOT require single-format release
-      ✔ Does NOT require canonical version
+      ✔ Must NOT be remix (radio edits allowed if no 'remix')
+      ✔ Title/description must match the song name after noise stripping and canon
+      ✖ Does NOT require track 1 or single-format release
     """
     if not discogs_token:
         return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
 
-    cache_key = (_canon(artist), _canon(strip_parentheses(title)))
-    if cache_key in _DISCOGS_VID_CACHE:
-        return _DISCOGS_VID_CACHE[cache_key]
-
+    session = _get_discogs_session()
     headers = {
         "Authorization": f"Discogs token={discogs_token}",
         "User-Agent": _DEF_USER_AGENT,
     }
 
-    nav_title = _canon(strip_parentheses(title))
-    session = _get_discogs_session()
+    nav_title_raw = strip_parentheses(title)
+    nav_title_clean = _strip_video_noise(nav_title_raw)
 
-    # 1) Search releases
-    try:
-        _throttle_discogs()
-        s = session.get(
-            "https://api.discogs.com/database/search",
-            headers=headers,
-            params={"q": f"{artist} {title}", "type": "release", "per_page": per_page},
-            timeout=timeout,
-        )
-        if s.status_code == 429:
-            _respect_retry_after(s)
-        s.raise_for_status()
-    except Exception as e:
-        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": f"search_fail:{e}"}
-        _DISCOGS_VID_CACHE[cache_key] = result
-        return result
-
-    candidates = s.json().get("results", []) or []
-    if not candidates:
-        result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_candidates"}
-        _DISCOGS_VID_CACHE[cache_key] = result
-        return result
-
-    best = None
-
-    # 2) Inspect videos
-    for c in candidates:
-        rid = c.get("id")
-        if not rid:
-            continue
-
+    def _search(kind: str) -> list:
         try:
             _throttle_discogs()
-            r = session.get(f"https://api.discogs.com/releases/{rid}", headers=headers, timeout=timeout)
+            s = session.get(
+                "https://api.discogs.com/database/search",
+                headers=headers,
+                params={"q": f"{artist} {title}", "type": kind, "per_page": per_page},
+                timeout=timeout,
+            )
+            if s.status_code == 429:
+                _respect_retry_after(s)
+            s.raise_for_status()
+            return s.json().get("results", []) or []
+        except Exception as e:
+            logging.debug(f"Discogs {kind} search failed for '{title}': {e}")
+            return []
+
+    def _inspect_release(rel_id: int) -> dict | None:
+        try:
+            _throttle_discogs()
+            r = session.get(f"https://api.discogs.com/releases/{rel_id}", headers=headers, timeout=timeout)
             if r.status_code == 429:
                 _respect_retry_after(r)
             r.raise_for_status()
-        except:
-            continue
+            data = r.json()
+        except Exception:
+            return None
 
-        videos = r.json().get("videos") or []
+        videos = data.get("videos") or []
+        best = None
         for v in videos:
             vt_raw = v.get("title", "") or ""
             vd_raw = v.get("description", "") or ""
-            vt = _canon(vt_raw)
-            vd = _canon(vd_raw)
-            uri = v.get("uri")
-
-            # Must be official or lyric
-            if "official" not in vt and "official" not in vd and "lyric" not in vt and "lyric" not in vd:
+            if not _has_official(vt_raw, vd_raw, allow_lyric=allow_lyric_as_official):
+                continue
+            if _banned_flavor(vt_raw, vd_raw):
                 continue
 
-            # Reject live
-            if "live" in vt_raw.lower() or "live" in vd_raw.lower():
-                continue
-
-            # Reject remixes (radio edits allowed)
-            if "remix" in vt_raw.lower() or "remix" in vd_raw.lower():
-                continue
-
-            # Reject alternate mixes unless radio edit
-            if "mix" in vt_raw.lower() or "mix" in vd_raw.lower():
-                if "radio" not in vt_raw.lower() and "radio" not in vd_raw.lower():
-                    continue
-
-            # Reject edits unless radio edit
-            if "edit" in vt_raw.lower() or "edit" in vd_raw.lower():
-                if "radio" not in vt_raw.lower() and "radio" not in vd_raw.lower():
-                    continue
-
-            # Similarity check (relaxed)
+            vt_clean = _strip_video_noise(vt_raw)
+            vd_clean = _strip_video_noise(vd_raw)
             ratio = max(
-                difflib.SequenceMatcher(None, vt, nav_title).ratio(),
-                difflib.SequenceMatcher(None, vd, nav_title).ratio(),
+                difflib.SequenceMatcher(None, vt_clean, nav_title_clean).ratio(),
+                difflib.SequenceMatcher(None, vd_clean, nav_title_clean).ratio(),
             )
-
             if ratio >= min_ratio:
                 current = {
                     "match": True,
-                    "uri": uri,
-                    "release_id": rid,
+                    "uri": v.get("uri"),
+                    "release_id": rel_id,
                     "ratio": round(ratio, 3),
-                    "why": "official_or_lyric_video_detected",
+                    "why": "discogs_official_video",
                 }
                 if best is None or current["ratio"] > best["ratio"]:
                     best = current
-
-    if best:
-        _DISCOGS_VID_CACHE[cache_key] = best
         return best
 
-    result = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
-    _DISCOGS_VID_CACHE[cache_key] = result
-    return result
+    # 1) Try 'release' entries first
+    for c in _search("release"):
+        rid = c.get("id")
+        if not rid:
+            continue
+        hit = _inspect_release(rid)
+        if hit:
+            return hit
+
+    # 2) Optional fallback to 'master' entries (better coverage)
+    for c in _search("master"):
+        mid = c.get("id")
+        if not mid:
+            continue
+        try:
+            _throttle_discogs()
+            m = session.get(f"https://api.discogs.com/masters/{mid}", headers=headers, timeout=timeout)
+            if m.status_code == 429:
+                _respect_retry_after(m)
+            m.raise_for_status()
+            versions = m.json().get("versions", []) or []
+        except Exception:
+            versions = []
+
+        for v in versions[:per_page]:
+            rid = v.get("id")
+            if not rid:
+                continue
+            hit = _inspect_release(rid)
+            if hit:
+                return hit
+
+    return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
+
     
 def is_discogs_single(title: str, artist: str) -> bool:
     """
@@ -1504,9 +1542,10 @@ def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
     playlist_name = f"Essential {artist}"
 
     # Helper to verify creation by name (normalized)
+    
     def _playlist_exists():
-        items = nav_get_all_playlists()
-        return any(_normalize_name(pl.get("name", "")) == _normalize_name(playlist_name) for pl in items)
+        return _playlist_file_exists(playlist_name)
+
 
     # CASE A — 10+ five-star tracks → purely 5★ essentials
     if len(five_star_tracks) >= 10:
@@ -1701,7 +1740,6 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -1712,8 +1750,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
       - Spread non-singles via robust z-bands
       - Cap density of 4★ among non-singles
       - Save to DB; optionally push ratings to Navidrome
-      - Build one smart "Essential {artist}" playlist using Feishin-style API
-        ▶ FIX: Use userRating==5 (1–5 stars) and fallback to rating>=9 (10-scale)
+      - Build one smart "Essential {artist}" playlist
+        ▶ Case A: userRating==5 (1–5) → NSP maps to rating==10
+        ▶ Case B: top 10% by rating
     """
 
     # ----- Tunables & feature flags ------------------------------------------------
@@ -1904,7 +1943,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
         # ----------------------------------------------------------------------
-        # SINGLE DETECTION
+        # SINGLE DETECTION (corrected short-circuit for Discogs)
         # ----------------------------------------------------------------------
         for trk in album_tracks:
             title     = trk["title"]
@@ -1923,31 +1962,35 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 min_sources=1,
             )
 
-            sources = []
-            if spotify_source:       sources.append("spotify")
-            if short_release_source: sources.append("short_release")
-            sources.extend(agg.get("sources", []))
-            sources_set = set(sources)
+            # Use only aggregator sources for Discogs short-circuit
+            agg_sources    = set(agg.get("sources", []))
+            discogs_strong = any(s in agg_sources for s in ("discogs", "discogs_video"))
 
-            discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
+            # 🔒 HARD SHORT-CIRCUIT: Discogs → instant 5★, no source merging
             if canonical and discogs_strong:
-                trk["single_sources"]    = sorted(list(sources_set))
+                trk["single_sources"]    = sorted(list(agg_sources))  # e.g., ['discogs_video']
                 trk["single_confidence"] = "high"
                 trk["is_single"]         = True
                 trk["stars"]             = 5
                 continue
 
-            weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources_set)
+            # Otherwise compose other signals
+            sources = set()
+            if spotify_source:       sources.add("spotify")
+            if short_release_source: sources.add("short_release")
+            sources.update(agg_sources)
+
+            weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources)
             high_combo     = (spotify_source and short_release_source)
 
-            if discogs_strong or high_combo or weighted_count >= 3:
+            if high_combo or weighted_count >= 3:
                 single_conf = "high"
             elif weighted_count >= 2:
                 single_conf = "medium"
             else:
                 single_conf = "low"
 
-            trk["single_sources"]    = sorted(list(sources_set))
+            trk["single_sources"]    = sorted(list(sources))
             trk["single_confidence"] = single_conf
 
             if canonical and single_conf == "high":
@@ -2014,23 +2057,18 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         rated_map.update({t["id"]: t for t in sorted_album})
 
     # --------------------------------------------------------------------------
-    # SMART PLAYLIST CREATION (Feishin-style API) — FIXED
+    # SMART PLAYLIST CREATION (NSP writer via nav_* replacements)
     # --------------------------------------------------------------------------
-    
-    
     def _playlist_exists(playlist_name: str) -> bool:
         return _playlist_file_exists(playlist_name)
-
-    
 
     if artist_name.lower() != "various artists" and sync and not dry_run:
         playlist_name = f"Essential {artist_name}"
         total_tracks = len(rated_map)
         five_star_tracks = [t for t in rated_map.values() if (t.get("stars") or 0) == 5]
 
-        # CASE A — 10+ five-star tracks: build purely 5★ essentials
+        # CASE A — 10+ five-star tracks: Loved OR rating==10 (via NSP mapping)
         if len(five_star_tracks) >= 10:
-            # Prefer userRating==5 (1–5 stars)
             nav_delete_playlist_by_name(playlist_name)
             rules_user = [
                 {"field": "artist", "operator": "equals", "value": artist_name},
@@ -2039,7 +2077,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             sort = [{"field": "random", "order": "asc"}]
             nav_create_smart_playlist(playlist_name, rules_user, sort)
 
-            # Validate; fallback to rating>=9 (10-scale) if needed
+            # (Optional) fallback; with NSP mapping tightened to rating==10, this is redundant
             if not _playlist_exists(playlist_name):
                 rules_10 = [
                     {"field": "artist", "operator": "equals", "value": artist_name},
@@ -2048,11 +2086,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 nav_delete_playlist_by_name(playlist_name)
                 nav_create_smart_playlist(playlist_name, rules_10, sort)
 
-        # CASE B — 100+ total tracks: top 10% by rating
+        # CASE B — 100+ total tracks: Top 10% by rating
         elif total_tracks >= 100:
             nav_delete_playlist_by_name(playlist_name)
             limit = max(1, math.ceil(total_tracks * 0.10))
-            # Sort preference: userRating (1–5) then rating (0–10), then random
             sort = [
                 {"field": "userRating", "order": "desc"},
                 {"field": "rating", "order": "desc"},
@@ -2440,6 +2477,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
