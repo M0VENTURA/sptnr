@@ -823,7 +823,7 @@ def is_discogs_single(title: str, artist: str) -> bool:
 
         # Reject releases with too many tracks (promo compilations)
         tracks = data.get("tracklist", [])
-        if not tracks or len(tracks) > 2:
+        if not tracks or len(tracks) > 7:
             continue
 
         # Track 1 must match the title
@@ -2557,6 +2557,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
