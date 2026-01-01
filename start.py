@@ -781,7 +781,6 @@ def _banned_flavor(vt_raw: str, vd_raw: str, *, allow_live: bool = False) -> boo
 
 
 
-
 def discogs_official_video_signal(
     title: str,
     artist: str,
@@ -797,17 +796,18 @@ def discogs_official_video_signal(
     """
     Detect an 'official' (or 'lyric' if allowed) video for a track on Discogs,
     honoring album context (live/unplugged), with:
-      - Candidate shortlist (title similarity + 'Single' hint),
+      - Candidate shortlist (title similarity + 'Single' OR 'Album' hint),
       - Parallel inspections (bounded executor),
-      - Early bailouts.
+      - Early bailouts and caching.
 
     Returns (on success):
       {"match": True, "uri": <video_url>, "release_id": <id>, "ratio": <float>, "why": "discogs_official_video"}
 
-    Dependencies:
+    Dependencies already present in your codebase:
       - _get_discogs_session, _throttle_discogs, _respect_retry_after
       - _strip_video_noise, _canon, strip_parentheses
-      - CONTEXT_GATE, CONTEXT_FALLBACK_STUDIO, _DEF_USER_AGENT
+      - infer_album_context (for context flags), CONTEXT_GATE, CONTEXT_FALLBACK_STUDIO
+      - _DEF_USER_AGENT
     """
     # ---- Basic token check ---------------------------------------------------
     if not discogs_token:
@@ -836,7 +836,7 @@ def discogs_official_video_signal(
     forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
     allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
 
-    # ---- Helpers -------------------------------------------------------------
+    # ---- Small helpers -------------------------------------------------------
     def _search(kind: str) -> list:
         """Discogs database search (with throttle & retries)."""
         try:
@@ -943,33 +943,39 @@ def discogs_official_video_signal(
 
         return best
 
-    # ---- Release search & shortlist -----------------------------------------
+    # ---- Release search & shortlist (REVISED) --------------------------------
     results = _search("release")
     if not results:
-        # No release candidates at all → early bail (skip masters to save time)
         res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
         _DISCOGS_VID_CACHE[cache_key] = res
         return res
 
-    # Build shortlist: prefer 'Single' formats and titles close to canonical
     cands: list[tuple[int, bool, float]] = []
-    for r in results:
+    for r in results[:15]:  # inspect a few more results; still bounded
         rid = r.get("id")
         if not rid:
             continue
+
         rel_title = _canon(r.get("title", ""))
         title_ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
 
-        # Note: search payload sometimes includes a 'format' hint list
-        formats_hint = r.get("format", [])
-        prefer_single = any("single" in (fmt or "").lower() for fmt in formats_hint)
+        # 'format' hint list may include entries like ['CD', 'Album'] or ['VHS', 'Promo']
+        formats_hint = r.get("format", []) or []
+        fmt_norm = [(fmt or "").lower() for fmt in formats_hint]
 
-        # keep only plausible ones
-        if title_ratio >= 0.70 or prefer_single:
+        prefer_single  = any("single" in f for f in fmt_norm)
+        is_album_like  = any("album" in f for f in fmt_norm)
+
+        # Keep candidate if:
+        #  - it's an obvious SINGLE, OR
+        #  - release title is reasonably similar to the track title, OR
+        #  - it's an ALBUM (many official videos live on the album's Discogs page)
+        keep = prefer_single or (title_ratio >= 0.65) or is_album_like
+        if keep:
             cands.append((rid, prefer_single, title_ratio))
 
-    # Sort by (prefer_single desc, title_ratio desc) and keep top 5
-    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:5]
+    # Prefer singles; otherwise title similarity. Cap to 8 to keep requests sane.
+    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:8]
 
     # ---- Parallel inspections of shortlist ----------------------------------
     best = None
@@ -1006,8 +1012,6 @@ def discogs_official_video_signal(
 
     # ---- Optional permissive fallback (studio allowed if album is live) -----
     if allow_live_ctx and (permissive_fallback or CONTEXT_FALLBACK_STUDIO):
-        # Relax live/studio gate for second pass (few candidates only)
-        # We re-use the same shortlist IDs, but allow all flavors for video titles
         relaxed_best = None
         with ThreadPoolExecutor(max_workers=2) as pool:
             futures = [
@@ -1040,7 +1044,6 @@ def discogs_official_video_signal(
     res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
     _DISCOGS_VID_CACHE[cache_key] = res
     return res
-
 
 # Cache for single detection
 _DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
@@ -3002,6 +3005,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
