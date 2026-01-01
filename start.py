@@ -453,36 +453,152 @@ def compute_adaptive_weights(album_tracks, base_weights, clamp=(0.25, 1.75), use
     adapted = {k: adapted[k] / total for k in adapted}
     return adapted
 
-def get_spotify_token():
-    """Retrieve Spotify API token using client credentials."""
-    auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
-    auth_bytes = auth_str.encode("utf-8")
-    auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
 
+# --- REPLACEMENT: cached token helper ---
+_spotify_token = None
+_spotify_token_exp = 0  # epoch seconds when token expires
+
+def get_spotify_token():
+    """
+    Retrieve and cache Spotify API token using Client Credentials.
+    Refreshes automatically when near expiry.
+    """
+    global _spotify_token, _spotify_token_exp
+
+    # Return cached token if still valid (refresh 60s before expiry)
+    if _spotify_token and time.time() < (_spotify_token_exp - 60):
+        return _spotify_token
+
+    auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
     headers = {
-        "Authorization": f"Basic {auth_base64}",
+        "Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(),
         "Content-Type": "application/x-www-form-urlencoded"
     }
     data = {"grant_type": "client_credentials"}
 
     try:
-        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data, timeout=10)
         res.raise_for_status()
-        return res.json()["access_token"]
+        payload = res.json()
+        _spotify_token = payload["access_token"]
+        _spotify_token_exp = time.time() + int(payload.get("expires_in", 3600))
+        return _spotify_token
     except Exception as e:
         logging.error(f"Spotify Token Error: {e}")
         sys.exit(1)
 
+def _spotify_headers():
+    return {"Authorization": f"Bearer {get_spotify_token()}"}
+
+
+# --- Spotify call hygiene: global session with retries/backoff ---
+_spotify_session = None
+_spotify_lock = threading.Lock()
+
+def _get_spotify_session():
+    """Shared requests.Session with sensible retries/backoff for Spotify APIs."""
+    global _spotify_session
+    with _spotify_lock:
+        if _spotify_session is None:
+            s = requests.Session()
+            retry = Retry(
+                total=5, connect=5, read=5,
+                backoff_factor=1.2,
+                status_forcelist=(429, 500, 502, 503, 504),
+                allowed_methods=frozenset(["GET", "POST"])
+            )
+            s.mount("https://", HTTPAdapter(max_retries=retry))
+            s.mount("http://",  HTTPAdapter(max_retries=retry))
+            _spotify_session = s
+        return _spotify_session
+
+
+# --- Spotify caches for artist lookups & singles ---
+_SPOTIFY_ARTIST_ID_CACHE: dict[str, str] = {}
+_SPOTIFY_ARTIST_SINGLES_CACHE: dict[str, set[str]] = {}
+
+def get_spotify_artist_id(artist_name: str) -> str | None:
+    """Search for the artist and cache ID."""
+    key = (artist_name or "").strip().lower()
+    if key in _SPOTIFY_ARTIST_ID_CACHE:
+        return _SPOTIFY_ARTIST_ID_CACHE[key]
+
+    try:
+        sess = _get_spotify_session()
+        params = {"q": f'artist:"{artist_name}"', "type": "artist", "limit": 1}
+        r = sess.get("https://api.spotify.com/v1/search", headers=_spotify_headers(), params=params, timeout=10)
+        r.raise_for_status()
+        items = r.json().get("artists", {}).get("items", [])
+        if items:
+            aid = items[0].get("id")
+            _SPOTIFY_ARTIST_ID_CACHE[key] = aid
+            return aid
+    except Exception as e:
+        logging.debug(f"Spotify artist search failed for '{artist_name}': {e}")
+    return None
+
+def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
+    """
+    Fetch all track IDs from releases where include_groups=single for the artist.
+    Cached per artist_id for the lifetime of the process.
+    """
+    if not artist_id:
+        return set()
+
+    if artist_id in _SPOTIFY_ARTIST_SINGLES_CACHE:
+        return _SPOTIFY_ARTIST_SINGLES_CACHE[artist_id]
+
+    sess = _get_spotify_session()
+    headers = _spotify_headers()
+    singles_album_ids: list[str] = []
+
+    # Paginate artist albums filtered to singles
+    url = f"https://api.spotify.com/v1/artists/{artist_id}/albums"
+    params = {"include_groups": "single", "limit": 50}
+    try:
+        while True:
+            ra = sess.get(url, headers=headers, params=params, timeout=12)
+            ra.raise_for_status()
+            j = ra.json()
+            singles_album_ids.extend([a.get("id") for a in j.get("items", []) if a.get("id")])
+            next_url = j.get("next")
+            if next_url:
+                url, params = next_url, None  # 'next' already contains the query
+            else:
+                break
+    except Exception as e:
+        logging.debug(f"Spotify artist singles album fetch failed for '{artist_id}': {e}")
+
+    # Fetch tracks for each single album (bounded concurrency)
+    single_track_ids: set[str] = set()
+
+    def _album_tracks(album_id: str) -> list[str]:
+        try:
+            rt = sess.get(f"https://api.spotify.com/v1/albums/{album_id}/tracks",
+                          headers=headers, params={"limit": 50}, timeout=12)
+            rt.raise_for_status()
+            return [t.get("id") for t in (rt.json().get("items") or []) if t.get("id")]
+        except Exception:
+            return []
+
+    from concurrent.futures import ThreadPoolExecutor
+    with ThreadPoolExecutor(max_workers=4) as pool:
+        futures = [pool.submit(_album_tracks, aid) for aid in singles_album_ids[:250]]  # safety cap
+        for f in futures:
+            for tid in (f.result() or []):
+                single_track_ids.add(tid)
+
+    _SPOTIFY_ARTIST_SINGLES_CACHE[artist_id] = single_track_ids
+    return single_track_ids
+
 def search_spotify_track(title, artist, album=None):
-    """Search for a track on Spotify by title, artist, and optional album."""
+    sess = _get_spotify_session()  # your shared Session with retries
     def query(q):
         params = {"q": q, "type": "track", "limit": 10}
-        token = get_spotify_token()
-        headers = {"Authorization": f"Bearer {token}"}
-        res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+        res = sess.get("https://api.spotify.com/v1/search",
+                       headers=_spotify_headers(), params=params, timeout=10)
         res.raise_for_status()
-        return res.json().get("tracks", {}).get("items", [])
-
+        return res.json().get("tracks", {}).get("items", []) or []
     queries = [
         f"{title} artist:{artist} album:{album}" if album else None,
         f"{strip_parentheses(title)} artist:{artist}",
@@ -665,6 +781,7 @@ def _banned_flavor(vt_raw: str, vd_raw: str, *, allow_live: bool = False) -> boo
 
 
 
+
 def discogs_official_video_signal(
     title: str,
     artist: str,
@@ -679,48 +796,49 @@ def discogs_official_video_signal(
 ) -> dict:
     """
     Detect an 'official' (or 'lyric' if allowed) video for a track on Discogs,
-    honoring album context (live/unplugged).
+    honoring album context (live/unplugged), with:
+      - Candidate shortlist (title similarity + 'Single' hint),
+      - Parallel inspections (bounded executor),
+      - Early bailouts.
 
-    Context rules:
-      - If album_context indicates live/unplugged → require live/unplugged signals on the release.
-      - If studio context → prefer releases without live/unplugged signals.
+    Returns (on success):
+      {"match": True, "uri": <video_url>, "release_id": <id>, "ratio": <float>, "why": "discogs_official_video"}
 
-    Fallback:
-      - If permissive_fallback=True (or CONTEXT_FALLBACK_STUDIO=True) and album is live/unplugged
-        but no live/unplugged match was found, accept a studio match as a last resort, still subject
-        to title ratio and 'official' checks.
-
-    Caching:
-      - Results are cached in _DISCOGS_VID_CACHE by normalized (artist, title, context_key).
-        The cache avoids repeated API calls during a batch run; invalidated only by process restart.
+    Dependencies:
+      - _get_discogs_session, _throttle_discogs, _respect_retry_after
+      - _strip_video_noise, _canon, strip_parentheses
+      - CONTEXT_GATE, CONTEXT_FALLBACK_STUDIO, _DEF_USER_AGENT
     """
     # ---- Basic token check ---------------------------------------------------
     if not discogs_token:
         return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
 
-    # ---- Build cache key (include context) -----------------------------------
-    # Context key keeps studio/live decisions stable per album run.
+    # ---- Context gate --------------------------------------------------------
     allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
     context_key = "live" if allow_live_ctx else "studio"
     cache_key = (_canon(artist), _canon(title), context_key)
 
-    # Fast path from cache
+    # Fast cache path
     cached = _DISCOGS_VID_CACHE.get(cache_key)
     if cached is not None:
         return cached
 
     # ---- Setup ---------------------------------------------------------------
     session = _get_discogs_session()
-    headers = {
-        "Authorization": f"Discogs token={discogs_token}",
-        "User-Agent": _DEF_USER_AGENT,
-    }
+    headers = {"Authorization": f"Discogs token={discogs_token}", "User-Agent": _DEF_USER_AGENT}
 
     nav_title_raw = strip_parentheses(title)
     nav_title_clean = _strip_video_noise(nav_title_raw)
+    nav_title = _canon(nav_title_raw)  # canonical for shortlist similarity
 
+    # Context rules
+    require_live = allow_live_ctx and CONTEXT_GATE
+    forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
+    allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
+
+    # ---- Helpers -------------------------------------------------------------
     def _search(kind: str) -> list:
-        """Discogs database search with retries/throttle."""
+        """Discogs database search (with throttle & retries)."""
         try:
             _throttle_discogs()
             resp = session.get(
@@ -740,9 +858,9 @@ def discogs_official_video_signal(
     def _release_context_compatible(rel_json: dict, *, require_live: bool, forbid_live: bool) -> bool:
         """
         Decide if a release is compatible with the album context.
-        Signals for 'live/unplugged' include:
+        Signals for 'live/unplugged':
           - 'Live' in format descriptions,
-          - 'Unplugged' or 'MTV Unplugged' in release title,
+          - 'Unplugged' / 'MTV Unplugged' in title,
           - 'Recorded live' / 'Unplugged' in notes.
         """
         title_l = (rel_json.get("title") or "").lower()
@@ -764,8 +882,8 @@ def discogs_official_video_signal(
     def _inspect_release(rel_id: int, *, require_live: bool, forbid_live: bool, allow_live_for_video: bool) -> dict | None:
         """
         Pull the release, apply context compatibility, then scan videos:
-          - Require 'official' in title/description (or 'lyric' if allowed),
-          - Ban 'remix' always; ban 'live' unless the album context allows it,
+          - Require 'official' (or 'lyric' if allowed),
+          - Ban 'remix' always; ban 'live' unless album context allows it,
           - Title/description similarity >= min_ratio against cleaned nav title.
         """
         try:
@@ -782,16 +900,30 @@ def discogs_official_video_signal(
             return None
 
         best = None
-        videos = data.get("videos") or []
-        for v in videos:
+        for v in (data.get("videos") or []):
             vt_raw = v.get("title", "") or ""
             vd_raw = v.get("description", "") or ""
-            if not _has_official(vt_raw, vd_raw, allow_lyric=allow_lyric_as_official):
-                continue
-            # Allow 'live' in video title only when album context is live/unplugged.
+
+            # official/lyric requirement
+            t_l = vt_raw.lower(); d_l = vd_raw.lower()
+            if ("official" not in t_l and "official" not in d_l):
+                if not allow_lyric_as_official or ("lyric" not in t_l and "lyric" not in d_l):
+                    continue
+
+            # flavor bans (live only allowed for live context; remix always banned)
+            def _banned_flavor(vt_raw: str, vd_raw: str, *, allow_live: bool = False) -> bool:
+                t = (vt_raw or "").lower()
+                d = (vd_raw or "").lower()
+                if (not allow_live) and ("live" in t or "live" in d):
+                    return True
+                if "remix" in t or "remix" in d:
+                    return True
+                return False
+
             if _banned_flavor(vt_raw, vd_raw, allow_live=allow_live_for_video):
                 continue
 
+            # similarity check vs. cleaned nav title
             vt_clean = _strip_video_noise(vt_raw)
             vd_clean = _strip_video_noise(vd_raw)
             ratio = max(
@@ -808,87 +940,107 @@ def discogs_official_video_signal(
                 }
                 if best is None or current["ratio"] > best["ratio"]:
                     best = current
+
         return best
 
-    # ---- Strict context gate first ------------------------------------------
-    require_live = allow_live_ctx and CONTEXT_GATE
-    forbid_live = (not allow_live_ctx) and CONTEXT_GATE
-    allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
+    # ---- Release search & shortlist -----------------------------------------
+    results = _search("release")
+    if not results:
+        # No release candidates at all → early bail (skip masters to save time)
+        res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
+        _DISCOGS_VID_CACHE[cache_key] = res
+        return res
 
-    # 1) Try release entries (strict)
-    for c in _search("release"):
-        rid = c.get("id")
+    # Build shortlist: prefer 'Single' formats and titles close to canonical
+    cands: list[tuple[int, bool, float]] = []
+    for r in results:
+        rid = r.get("id")
         if not rid:
             continue
-        hit = _inspect_release(rid, require_live=require_live, forbid_live=forbid_live, allow_live_for_video=allow_live_for_video)
-        if hit:
-            _DISCOGS_VID_CACHE[cache_key] = hit
-            return hit
+        rel_title = _canon(r.get("title", ""))
+        title_ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
 
-    # 2) Try master entries (strict) and scan their versions
-    for c in _search("master"):
-        mid = c.get("id")
-        if not mid:
-            continue
-        try:
-            _throttle_discogs()
-            m = session.get(f"https://api.discogs.com/masters/{mid}", headers=headers, timeout=timeout)
-            if m.status_code == 429:
-                _respect_retry_after(m)
-            m.raise_for_status()
-            versions = m.json().get("versions", []) or []
-        except Exception:
-            versions = []
+        # Note: search payload sometimes includes a 'format' hint list
+        formats_hint = r.get("format", [])
+        prefer_single = any("single" in (fmt or "").lower() for fmt in formats_hint)
 
-        for v in versions[:per_page]:
-            rid = v.get("id")
-            if not rid:
-                continue
-            hit = _inspect_release(rid, require_live=require_live, forbid_live=forbid_live, allow_live_for_video=allow_live_for_video)
-            if hit:
-                _DISCOGS_VID_CACHE[cache_key] = hit
-                return hit
+        # keep only plausible ones
+        if title_ratio >= 0.70 or prefer_single:
+            cands.append((rid, prefer_single, title_ratio))
+
+    # Sort by (prefer_single desc, title_ratio desc) and keep top 5
+    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:5]
+
+    # ---- Parallel inspections of shortlist ----------------------------------
+    best = None
+    from concurrent.futures import ThreadPoolExecutor
+
+    if cands:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(
+                    _inspect_release,
+                    rid,
+                    require_live=require_live,
+                    forbid_live=forbid_live,
+                    allow_live_for_video=allow_live_for_video,
+                )
+                for rid, _, _ in cands
+            ]
+            for f in futures:
+                hit = f.result()
+                if hit and (best is None or hit["ratio"] > best["ratio"]):
+                    best = hit
+                    # Cancel remaining inspections to save time
+                    for other in futures:
+                        if other is not f:
+                            try:
+                                other.cancel()
+                            except:
+                                pass
+                    break
+
+    if best:
+        _DISCOGS_VID_CACHE[cache_key] = best
+        return best
 
     # ---- Optional permissive fallback (studio allowed if album is live) -----
     if allow_live_ctx and (permissive_fallback or CONTEXT_FALLBACK_STUDIO):
-        # (a) release entries without context ban
-        for c in _search("release"):
-            rid = c.get("id")
-            if not rid:
-                continue
-            hit = _inspect_release(rid, require_live=False, forbid_live=False, allow_live_for_video=False)
-            if hit:
-                _DISCOGS_VID_CACHE[cache_key] = hit
-                return hit
+        # Relax live/studio gate for second pass (few candidates only)
+        # We re-use the same shortlist IDs, but allow all flavors for video titles
+        relaxed_best = None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    _inspect_release,
+                    rid,
+                    require_live=False,
+                    forbid_live=False,
+                    allow_live_for_video=False,
+                )
+                for rid, _, _ in cands
+            ]
+            for f in futures:
+                hit = f.result()
+                if hit and (relaxed_best is None or hit["ratio"] > relaxed_best["ratio"]):
+                    relaxed_best = hit
+                    for other in futures:
+                        if other is not f:
+                            try:
+                                other.cancel()
+                            except:
+                                pass
+                    break
 
-        # (b) master entries without context ban
-        for c in _search("master"):
-            mid = c.get("id")
-            if not mid:
-                continue
-            try:
-                _throttle_discogs()
-                m = session.get(f"https://api.discogs.com/masters/{mid}", headers=headers, timeout=timeout)
-                if m.status_code == 429:
-                    _respect_retry_after(m)
-                m.raise_for_status()
-                versions = m.json().get("versions", []) or []
-            except Exception:
-                versions = []
-
-            for v in versions[:per_page]:
-                rid = v.get("id")
-                if not rid:
-                    continue
-                hit = _inspect_release(rid, require_live=False, forbid_live=False, allow_live_for_video=False)
-                if hit:
-                    _DISCOGS_VID_CACHE[cache_key] = hit
-                    return hit
+        if relaxed_best:
+            _DISCOGS_VID_CACHE[cache_key] = relaxed_best
+            return relaxed_best
 
     # ---- No match -----------------------------------------------------------
     res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
     _DISCOGS_VID_CACHE[cache_key] = res
     return res
+
 
 # Cache for single detection
 _DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
@@ -1096,6 +1248,8 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, fl
         return "", 0.0
 
 
+
+
 def detect_single_status(
     title: str,
     artist: str,
@@ -1107,16 +1261,30 @@ def detect_single_status(
     min_sources: int = 1,
     album_context: dict | None = None,
     permissive_fallback: bool = False,
+    spotify_hint: bool = False,   # <<< NEW: drives short-circuit behavior
 ) -> dict:
     """
     Detect if a track is a single, passing album_context to Discogs checks.
-    """
-    sources = []
 
+    Short-circuit strategy:
+      - If spotify_hint is False AND both Discogs signals fail → return early (no more sources).
+      - If spotify_hint is True → continue with MusicBrainz/Last.fm to raise confidence.
+
+    Returns:
+      {
+        "is_single": bool,
+        "confidence": "high"|"medium"|"low",
+        "sources": [ ... ]  # e.g., ["discogs_video", "musicbrainz"]
+      }
+    """
+    sources: list[str] = []
+
+    # Known list is authoritative
     if known_list and title in known_list:
         return {"is_single": True, "confidence": "high", "sources": ["known_list"]}
 
-    # 1) Discogs Official Video FIRST
+    # 1) Discogs Official Video FIRST (strong signal)
+    discogs_video_hit = False
     if discogs_token:
         try:
             dv = discogs_official_video_signal(
@@ -1126,26 +1294,33 @@ def detect_single_status(
                 permissive_fallback=permissive_fallback or CONTEXT_FALLBACK_STUDIO,
             )
             if dv.get("match"):
+                discogs_video_hit = True
                 return {"is_single": True, "confidence": "high", "sources": ["discogs_video"]}
         except Exception as e:
             logging.debug(f"Discogs video check failed for '{title}': {e}")
 
-    # 2) Discogs Single Release
+    # 2) Discogs Single Release (strong signal)
+    discogs_single_hit = False
     if discogs_token:
         try:
             if is_discogs_single(title, artist, album_context=album_context):
+                discogs_single_hit = True
                 return {"is_single": True, "confidence": "high", "sources": ["discogs"]}
         except Exception as e:
             logging.debug(f"Discogs single check failed for '{title}': {e}")
 
-    # 3) MusicBrainz
+    # --- SHORT-CIRCUIT: If we don't have a Spotify hint and we didn't find Discogs signals, end early.
+    if (not spotify_hint) and (not discogs_video_hit) and (not discogs_single_hit):
+        return {"is_single": False, "confidence": "low", "sources": []}
+
+    # 3) MusicBrainz (confidence booster / corroboration)
     try:
         if is_musicbrainz_single(title, artist):
             sources.append("musicbrainz")
     except Exception as e:
         logging.debug(f"MusicBrainz check failed for '{title}': {e}")
 
-    # 4) Last.fm
+    # 4) Last.fm (optional booster)
     try:
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
@@ -1924,26 +2099,27 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
 
     Adjustments:
-      - ⚡ Per-track enrichment now runs Spotify, Last.fm, and ListenBrainz lookups concurrently
-        using a single executor per album (lower overhead).
+      - ⚡ Prefetch Spotify artist singles concurrently with album/track processing.
+      - ⚡ Per-track enrichment (Spotify, Last.fm, ListenBrainz) continues to run concurrently.
       - ✅ Album-context aware single detection (live/unplugged gate) preserved.
-      - ✅ Last.fm ratio bug fixed: use normalized playcount instead of artist ratio.
-      - ✅ Normalized scoring: Spotify→[0,1], Last.fm/LB/Age→log10 scaling.
+      - ✅ Normalized scoring unchanged.
       - ✅ No check of existing Navidrome star rating; ALWAYS sets stars when `sync` is True.
 
     Flow:
-      1) Fetch albums & tracks from Navidrome.
-      2) Per-track enrichment (Spotify + Last.fm + ListenBrainz) concurrently.
-      3) Per-album adaptive weights (MAD/coverage-based) → recompute 'score'.
-      4) Discogs-first single detection with subtitle/title-similarity guard.
-      5) Z-band assignment for non-singles + 4★ cap.
-      6) Save to DB and set ratings.
-      7) Create/refresh "Essential {artist}" playlist.
+      1) Prefetch Spotify artist singles (runs in parallel).
+      2) Fetch albums & tracks from Navidrome.
+      3) Per-track enrichment (Spotify + Last.fm + ListenBrainz) concurrently.
+      4) Per-album adaptive weights → recompute 'score'.
+      5) Single detection aggregation (Discogs/MusicBrainz + Spotify signals).
+      6) Z-band assignment for non-singles + 4★ cap.
+      7) Save to DB and set ratings.
+      8) Create/refresh "Essential {artist}" playlist.
     """
 
     # ----- Tunables & feature flags ------------------------------------------------
@@ -1970,8 +2146,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     TITLE_SIM_THRESHOLD = float(config["features"].get("title_sim_threshold", 0.92))
 
     # --- Local helpers (subtitle/title similarity guards) --------------------------
-
-
     def _canon_local(s: str) -> str:
         s = (s or "").lower()
         s = re.sub(r"\(.*?\)", " ", s)            # drop parenthetical
@@ -2005,16 +2179,40 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         return SequenceMatcher(None, _canon_local(a), _canon_local(b)).ratio()
 
     # --------------------------------------------------------------------------
+    # NEW: Prefetch Spotify artist singles (runs in parallel with album/track work)
+    # --------------------------------------------------------------------------
+    try:
+        spotify_artist_id = get_spotify_artist_id(artist_name)
+    except Exception as e:
+        logging.debug(f"Spotify artist ID lookup failed for '{artist_name}': {e}")
+        spotify_artist_id = None
+
+    singles_set_future = None
+    singles_set: set[str] = set()
+
+    if spotify_artist_id:
+        # Use a tiny auxiliary pool so the singles prefetch runs concurrently
+        aux_pool = ThreadPoolExecutor(max_workers=1)
+        singles_set_future = aux_pool.submit(get_spotify_artist_single_track_ids, spotify_artist_id)
+    else:
+        aux_pool = None
+
+    # --------------------------------------------------------------------------
     # Fetch albums
     # --------------------------------------------------------------------------
     albums = fetch_artist_albums(artist_id)
     if not albums:
         print(f"⚠️ No albums found for artist '{artist_name}'")
+        # Ensure we clean up the aux pool if created
+        if aux_pool:
+            aux_pool.shutdown(wait=False)
         return {}
 
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
 
+    # If the singles prefetch is still running, let it continue in background.
+    # We'll resolve it lazily before the first track needs it.
     # --------------------------------------------------------------------------
     # MAIN ALBUM LOOP
     # --------------------------------------------------------------------------
@@ -2048,10 +2246,18 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
 
-        # --- NEW: album context (live/unplugged gate) -------------------------
+        # --- Album context (live/unplugged gate) -------------------------------
         album_ctx = infer_album_context(album_name)
 
         album_tracks = []
+
+        # Resolve singles set lazily (if not already resolved)
+        if singles_set_future and not singles_set:
+            try:
+                singles_set = singles_set_future.result(timeout=30) or set()
+            except Exception as e:
+                logging.debug(f"Spotify singles prefetch failed for '{artist_name}': {e}")
+                singles_set = set()
 
         # ----------------------------------------------------------------------
         # PER-TRACK ENRICHMENT (CONCURRENT via one executor per album)
@@ -2078,6 +2284,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
                 # Choose best Spotify match (context-aware filtering)
                 selected              = select_best_spotify_match(spotify_results, title, album_context=album_ctx)
+                selected_id           = selected.get("id")
                 sp_score              = selected.get("popularity", 0)
                 spotify_album         = selected.get("album", {}).get("name", "")
                 spotify_artist        = selected.get("artists", [{}])[0].get("name", "")
@@ -2087,7 +2294,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 spotify_album_art_url = images[0].get("url", "") if images and isinstance(images[0], dict) else ""
                 spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
                 spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
-                is_spotify_single     = (spotify_album_type == "single")
+
+                # >>> NEW: Spotify-native single signal
+                # Mark true if (a) selected track ID is in artist singles set OR (b) album type is 'single'
+                is_spotify_single = bool(
+                    (selected_id and selected_id in singles_set) or (spotify_album_type == "single")
+                )
 
                 # Last.fm (normalized playcount; no artist ratio)
                 lf_track_play  = int(lf_data.get("track_play", 0) or 0)
@@ -2169,7 +2381,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "spotify_album_type": spotify_album_type,
                     "spotify_total_tracks": spotify_total_tracks,
-                    "is_spotify_single": is_spotify_single,
+                    "is_spotify_single": is_spotify_single,   # <<< updated source
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": [],
@@ -2211,6 +2423,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             tot                  = trk.get("spotify_total_tracks")
             short_release_source = (tot is not None and tot > 0 and tot <= 2)
 
+            # Define the hint we’ll pass to detect_single_status:
+            spotify_hint = bool(spotify_source or short_release_source)
+
             agg = detect_single_status(
                 title, artist_name,
                 youtube_api_key=YOUTUBE_API_KEY,
@@ -2219,6 +2434,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 use_lastfm=use_lastfm_single,
                 min_sources=1,
                 album_context=album_ctx,
+                permissive_fallback=False,
+                spotify_hint=spotify_hint,        # <<< NEW: drives short-circuit behavior
             )
 
             agg_sources    = set(agg.get("sources", []))
@@ -2334,7 +2551,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     # --------------------------------------------------------------------------
     # SMART PLAYLIST CREATION (NSP writer via nav_* replacements)
     # --------------------------------------------------------------------------
-
     def _playlist_exists(playlist_name: str) -> bool:
         return _playlist_file_exists(playlist_name)
 
@@ -2369,6 +2585,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 f"No Essential playlist created for '{artist_name}' "
                 f"(total={total_tracks}, five★={len(five_star_tracks)})"
             )
+
+    # Clean up aux pool if we created it
+    if aux_pool:
+        aux_pool.shutdown(wait=False)
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
@@ -2745,6 +2965,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
