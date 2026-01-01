@@ -1,0 +1,61 @@
+
+{% extends "base.html" %}
+{% block title %}{{ artist }} · Sptnr{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">{{ artist }}</h1>
+  <div class="btn-group">
+    <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back</a>
+    <a class="btn btn-warning" href="{{ url_for('scan_artist', artist=artist) }}">Scan This Artist</a>
+  </div>
+</div>
+
+{% if tracks and tracks|length > 0 %}
+  <div class="table-responsive">
+    <table class="table table-bordered table-hover align-middle">
+      <thead class="table-light">
+        <tr>
+          <th scope="col">Title</th>
+          <th scope="col">Album</th>
+          <th scope="col" class="text-center">Stars</th>
+          <th scope="col">MBID</th>
+          <th scope="col">Suggested MBID</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for t in tracks %}
+          {% set title = t[0] %}
+          {% set album = t[1] %}
+          {% set stars = t[2] %}
+          {% set mbid = t[3] %}
+          {% set suggested = t[4] %}
+          <tr>
+            <td>{{ title }}</td>
+            <td>{{ album }}</td>
+            <td class="text-center">
+              {% if stars %}
+                {% for _ in range(stars|int) %}★{% endfor %}
+                {% for _ in range(5 - (stars|int if stars else 0)) %}☆{% endfor %}
+              {% else %}
+                <span class="text-muted">No rating</span>
+              {% endif %}
+            </td>
+            <td class="monospace">
+              {% if mbid %}{{ mbid }}{% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+            <td class="monospace">
+              {% if suggested %}{{ suggested }}{% else %}<span class="text-muted">—</span>{% endif %}
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="alert alert-secondary">
+    No tracks found for <strong>{{ artist }}</strong>.
+  </div>
+{% endif %}
+
+{% endblock %}
