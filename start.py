@@ -1631,8 +1631,6 @@ def fetch_album_tracks(album_id):
         logging.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
         return []
 
-
-
 def build_artist_index():
     url = f"{NAV_BASE_URL}/rest/getArtists.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
@@ -1755,24 +1753,31 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
 
 
 
+
+from difflib import SequenceMatcher
+import re
+from statistics import median
+from datetime import datetime
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
 
-    Data enrichment per track:
+    Enrichment per track:
       - Spotify (popularity, album/artist/meta), Last.fm (plays + ratio), ListenBrainz (count via MBID),
         age-decay momentum, genre aggregation (Discogs/AudioDB/MusicBrainz/Navidrome).
+
     Weighting:
       - Adaptive source weights per album (MAD/coverage-based, clamped), plus age component.
 
     Single detection (short-circuit flow):
-      - Discogs Official/Lyric Video → immediate 5★ (high confidence)
+      - Discogs Official/Lyric Video → may grant 5★ ONLY if the track title is a strong match to the canonical single title
+        (implemented via subtitle-aware similarity guard).
       - Else Discogs single-format → high confidence
-      - Else MusicBrainz / Last.fm signals
-      - Also considers Spotify "single" album type and short releases (≤ 2 tracks) as supporting signals.
+      - Else MusicBrainz / Last.fm signals + Spotify "single" album type + short releases (≤ 2 tracks) as supporting signals.
 
     Star assignment:
-      - Singles (canonical and high confidence) → 5★
+      - Singles (canonical + high confidence + strong title match) → 5★
       - Non-singles spread via robust z-bands over album scores; cap density of 4★ among non-singles.
 
     Smart playlist:
@@ -1809,6 +1814,49 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         "lastfm": 1,
     }
 
+    # --- Subtitle-aware similarity guard (local helpers) ---------------------
+    TITLE_SIM_THRESHOLD = float(config["features"].get("title_sim_threshold", 0.92))
+
+    def _canon(s: str) -> str:
+        s = (s or "").lower()
+        s = re.sub(r"\(.*?\)", " ", s)            # drop parenthetical
+        s = re.sub(r"[^\w\s]", " ", s)            # strip punctuation
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+
+    def _base_title(s: str) -> str:
+        """Remove parentheses and common trailing qualifiers after ' - '."""
+        # Strip parenthetical
+        s1 = re.sub(r"\s*\(.*?\)\s*", " ", s or "")
+        # Remove trailing qualifiers after hyphen (e.g., " - 2020 Remaster")
+        s1 = re.sub(r"\s-\s.*$", "", s1).strip()
+        return s1
+
+    def _has_subtitle_variant(s: str) -> bool:
+        """
+        Detect alternate-version subtitles in parentheses or after hyphen.
+        Explicitly allow 'radio edit' and 'remaster'.
+        """
+        t = (s or "").lower()
+        # Parenthetical variants
+        if re.search(r"\(.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit).*?\)", t):
+            # Whitelist exceptions
+            if "radio edit" in t or "remaster" in t:
+                return False
+            return True
+        # Hyphenated qualifiers
+        if re.search(r"\s-\s.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit)", t):
+            if "radio edit" in t or "remaster" in t:
+                return False
+            return True
+        return False
+
+    def _similar(a: str, b: str) -> float:
+        return SequenceMatcher(None, _canon(a), _canon(b)).ratio()
+
+    # --------------------------------------------------------------------------
+    # Fetch albums
+    # --------------------------------------------------------------------------
     albums = fetch_artist_albums(artist_id)
     if not albums:
         print(f"⚠️ No albums found for artist '{artist_name}'")
@@ -1816,7 +1864,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
-    all_five_star_tracks = []
 
     # --------------------------------------------------------------------------
     # MAIN ALBUM LOOP
@@ -1976,10 +2023,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
         # ----------------------------------------------------------------------
-        # SINGLE DETECTION (Discogs-first hard short-circuit)
+        # SINGLE DETECTION (Discogs-first with similarity guard)
         # ----------------------------------------------------------------------
         for trk in album_tracks:
-            title     = trk["title"]
+            title          = trk["title"]
+            canonical_base = _base_title(title)            # e.g., strip "(16th Century version)"
+            sim_to_base    = _similar(title, canonical_base)
+            has_subtitle   = _has_subtitle_variant(title)
+
             canonical = is_valid_version(title, allow_live_remix=False)
 
             spotify_source       = bool(trk.get("is_spotify_single"))
@@ -1998,8 +2049,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             agg_sources    = set(agg.get("sources", []))
             discogs_strong = any(s in agg_sources for s in ("discogs", "discogs_video"))
 
-            # 🔒 HARD SHORT-CIRCUIT: Discogs → instant 5★, no source merging
-            if canonical and discogs_strong:
+            # 🔒 HARD SHORT-CIRCUIT: Only if the track title is effectively the canonical single title
+            # Guard conditions:
+            #   - canonical (no banned flavors like live/remix)
+            #   - Discogs strong source present (official video or single release)
+            #   - no subtitle variant like "(16th Century version)" unless whitelisted
+            #   - similarity to base (without parentheses) above threshold
+            if canonical and discogs_strong and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
                 trk["single_sources"]    = sorted(list(agg_sources))  # e.g., ['discogs_video']
                 trk["single_confidence"] = "high"
                 trk["is_single"]         = True
@@ -2025,7 +2081,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk["single_sources"]    = sorted(list(sources))
             trk["single_confidence"] = single_conf
 
-            if canonical and single_conf == "high":
+            # For non-Discogs paths, still respect the subtitle guard for 5★
+            if canonical and single_conf == "high" and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
                 trk["is_single"] = True
                 trk["stars"]     = 5
 
@@ -2130,7 +2187,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
-
 
 def _self_test_single_gate():
     """
@@ -2501,6 +2557,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
