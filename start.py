@@ -884,15 +884,30 @@ def discogs_official_video_signal(
     _DISCOGS_VID_CACHE[cache_key] = res
     return res
 
+# Cache for single detection
+_DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
 
 def is_discogs_single(title: str, artist: str, *, album_context: dict | None = None, timeout: int = 10) -> bool:
     """
-    Strict Discogs single detection, honoring album context.
-    - If album is live/unplugged → require live/unplugged signals on the release
-    - If album is studio → prefer releases without live signals
+    Detect if a release is a single on Discogs, honoring album context.
+    Improvements:
+      - Checks ANY track for match (not just first).
+      - Uses similarity threshold for tracklist match (>= 0.8).
+      - Lowered release title ratio threshold to 0.65.
+      - Boosts confidence if format includes 'Single'.
+      - Adds caching keyed by (artist, title, context).
     """
     if not DISCOGS_TOKEN:
         return False
+
+    # Context key for cache
+    allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
+    context_key = "live" if allow_live_ctx else "studio"
+    cache_key = (_canon(artist), _canon(title), context_key)
+
+    # Fast path from cache
+    if cache_key in _DISCOGS_SINGLE_CACHE:
+        return _DISCOGS_SINGLE_CACHE[cache_key]
 
     headers = {
         "Authorization": f"Discogs token={DISCOGS_TOKEN}",
@@ -900,9 +915,8 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
     }
 
     nav_title = _canon(strip_parentheses(title))
-    allow_live = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
-    require_live = allow_live and CONTEXT_GATE
-    forbid_live = (not allow_live) and CONTEXT_GATE
+    require_live = allow_live_ctx and CONTEXT_GATE
+    forbid_live = (not allow_live_ctx) and CONTEXT_GATE
 
     params = {"q": f"{artist} {title}", "type": "release", "per_page": 10}
     session = _get_discogs_session()
@@ -914,10 +928,12 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
             _respect_retry_after(res)
         res.raise_for_status()
     except:
+        _DISCOGS_SINGLE_CACHE[cache_key] = False
         return False
 
     results = res.json().get("results", []) or []
     if not results:
+        _DISCOGS_SINGLE_CACHE[cache_key] = False
         return False
 
     for r in results:
@@ -927,7 +943,7 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
 
         rel_title = _canon(r.get("title", ""))
         ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
-        if ratio < 0.70:
+        if ratio < 0.65:  # relaxed threshold for release title
             continue
 
         try:
@@ -941,7 +957,7 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
 
         data = rel.json()
 
-        # --- Context gate ---
+        # Context gate
         formats = data.get("formats", []) or []
         tags = {d.lower() for f in formats for d in (f.get("descriptions") or [])}
         title_l = (data.get("title") or "").lower()
@@ -954,31 +970,26 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
         if forbid_live and has_live_signal:
             continue
 
-        # --- Single format checks as before ---
+        # Tracklist check: allow any track to match canonical title with similarity
         tracks = data.get("tracklist", [])
         if not tracks or len(tracks) > 7:
             continue
 
-        first_track = _canon(tracks[0].get("title", ""))
-        if nav_title != first_track:
+        match_found = any(
+            difflib.SequenceMatcher(None, _canon(t.get("title", "")), nav_title).ratio() >= 0.8
+            for t in tracks
+        )
+        if not match_found:
             continue
 
+        # Format check: must include 'Single'
         names = [f.get("name", "").lower() for f in formats]
         descs = [d.lower() for f in formats for d in (f.get("descriptions") or [])]
+        if "single" in names or "single" in descs:
+            _DISCOGS_SINGLE_CACHE[cache_key] = True
+            return True
 
-        allowed_names = {"single", "vinyl", "cd", "file"}
-        allowed_desc = {"single", "7\"", "7-inch"}
-
-        if "promo" in names or "promo" in descs:
-            if len(tracks) == 1:
-                return True
-            continue
-
-        if not (any(n in allowed_names for n in names) or any(d in allowed_desc for d in descs)):
-            continue
-
-        return True
-
+    _DISCOGS_SINGLE_CACHE[cache_key] = False
     return False
 
 
@@ -2690,6 +2701,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
