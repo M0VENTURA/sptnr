@@ -1,0 +1,62 @@
+
+{% extends "base.html" %}
+{% block title %}Artists · Sptnr{% endblock %}
+{% block content %}
+
+<div class="d-flex justify-content-between align-items-center mb-3">
+  <h1 class="h3 mb-0">Artists</h1>
+  <a class="btn btn-outline-secondary" href="{{ url_for('config_editor') }}">Edit Config</a>
+</div>
+
+{% if artists and artists|length > 0 %}
+  <div class="table-responsive">
+    <table class="table table-striped table-hover align-middle">
+      <thead class="table-dark">
+        <tr>
+          <th scope="col">Artist</th>
+          <th scope="col" class="text-end">Albums</th>
+          <th scope="col" class="text-end">Tracks</th>
+          <th scope="col">Last Updated</th>
+          <th scope="col" class="text-end">Actions</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for artist in artists %}
+          {% set artist_name = artist[0] %}
+          {% set album_count = artist[1] %}
+          {% set track_count = artist[2] %}
+          {% set last_updated = artist[3] %}
+          <tr>
+            <td>
+              <a href="{{ url_for('artist_detail', name=artist_name)|safe }}">{{ artist_name }}</a>
+            </td>
+            <td class="text-end">{{ album_count }}</td>
+            <td class="text-end">{{ track_count }}</td>
+            <td>
+              {% if last_updated %}
+                <span class="monospace">{{ last_updated }}</span>
+              {% else %}
+                <span class="text-muted">—</span>
+              {% endif %}
+            </td>
+            <td class="text-end">
+              <div class="btn-group btn-group-sm" role="group" aria-label="Actions">
+                <a class="btn btn-primary"
+                   href="{{ url_for('artist_detail', name=artist_name) }}">View</a>
+                <a class="btn btn-outline-warning"
+                   href="{{ url_for('scan_artist', artist=artist_name) }}">Scan</a>
+              </div>
+            </td>
+          </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+{% else %}
+  <div class="alert alert-secondary">
+    No artists found. Try running a scan or check your database connection at
+    <code class="monospace">{{ DB_PATH if DB_PATH is defined else "/database/sptnr.db" }}</code>.
+  </div>
+{% endif %}
+
+{% endblock %}
