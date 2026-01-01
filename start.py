@@ -1344,10 +1344,26 @@ def refresh_all_playlists_from_db():
         create_or_update_playlist_for_artist(name, tracks)
         print(f"✅ Playlist refreshed for '{name}' ({len(tracks)} tracks)")
 
+def _normalize_name(name: str) -> str:
+    # Normalize typographic quotes and trim spaces
+    return (
+        (name or "")
+        .replace("“", '"').replace("”", '"').replace("’", "'")
+        .strip()
+    )
+
+def _log_resp(resp, action, name):
+    try:
+        txt = resp.text[:500]
+    except Exception:
+        txt = "<no text>"
+    logging.info(f"{action} '{name}' → {resp.status_code}: {txt}")
+
 def nav_get_all_playlists():
     url = f"{NAV_BASE_URL}/api/playlist"
     try:
         res = requests.get(url, auth=(USERNAME, PASSWORD))
+        _log_resp(res, "GET /api/playlist", "<list>")
         res.raise_for_status()
         return res.json().get("items", [])
     except Exception as e:
@@ -1355,27 +1371,28 @@ def nav_get_all_playlists():
         return []
 
 def nav_delete_playlist_by_name(name: str):
+    safe_name = _normalize_name(name)
     playlists = nav_get_all_playlists()
     for pl in playlists:
-        if pl.get("name") == name:
+        if _normalize_name(pl.get("name","")) == safe_name:
             pl_id = pl.get("id")
             if pl_id:
                 try:
                     url = f"{NAV_BASE_URL}/api/playlist/{pl_id}"
                     res = requests.delete(url, auth=(USERNAME, PASSWORD))
+                    _log_resp(res, "DELETE /api/playlist/{id}", name)
                     res.raise_for_status()
                     logging.info(f"Deleted playlist '{name}' (id={pl_id})")
                 except Exception as e:
                     logging.warning(f"Failed to delete playlist '{name}': {e}")
 
-
 def nav_create_smart_playlist(name: str, rules: list, sort: list, limit: int | None = None):
     payload = {
-        "name": name,
+        "name": _normalize_name(name),
         "smart": True,
         "rules": rules,
         "sort": sort,
-        "public": True  # <-- make playlist visible to all users
+        "public": True
     }
     if limit:
         payload["limit"] = limit
@@ -1383,49 +1400,71 @@ def nav_create_smart_playlist(name: str, rules: list, sort: list, limit: int | N
     try:
         url = f"{NAV_BASE_URL}/api/playlist"
         res = requests.post(url, json=payload, auth=(USERNAME, PASSWORD))
+        _log_resp(res, "POST /api/playlist", name)
         res.raise_for_status()
-        logging.info(f"Created smart playlist '{name}' (public)")
+        logging.info(f"Created smart playlist '{name}' (public) rules={rules} sort={sort} limit={limit}")
     except Exception as e:
         logging.error(f"Failed to create smart playlist '{name}': {e}")
 
 def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
-    total_tracks = len(tracks)
-    five_star_tracks = [t for t in tracks if t.get("stars") == 5]
+    """
+    Create/refresh 'Essential {artist}' smart playlist using the same rating-scale tolerant logic:
+      - Case A: if artist has >=10 five-star tracks, build purely 5★ essentials.
+        Primary rule: userRating == 5 (1–5 stars)
+        Fallback rule: rating >= 9 (10-scale servers)
+      - Case B: if total tracks >=100, build top 10% essentials sorted by userRating then rating.
+    """
 
+    total_tracks = len(tracks)
+    five_star_tracks = [t for t in tracks if (t.get("stars") or 0) == 5]
     playlist_name = f"Essential {artist}"
 
-    # CASE A — 10+ five-star tracks
+    # Helper to verify creation by name (normalized)
+    def _playlist_exists():
+        items = nav_get_all_playlists()
+        return any(_normalize_name(pl.get("name", "")) == _normalize_name(playlist_name) for pl in items)
+
+    # CASE A — 10+ five-star tracks → purely 5★ essentials
     if len(five_star_tracks) >= 10:
         nav_delete_playlist_by_name(playlist_name)
 
-        rules = [
+        # Prefer 1–5 scale via userRating
+        rules_user = [
             {"field": "artist", "operator": "equals", "value": artist},
-            {"field": "rating", "operator": "equals", "value": "5"}
+            {"field": "userRating", "operator": "equals", "value": "5"},
         ]
         sort = [{"field": "random", "order": "asc"}]
+        nav_create_smart_playlist(playlist_name, rules_user, sort)
 
-        nav_create_smart_playlist(playlist_name, rules, sort)
+        # Fallback to 10-scale if needed
+        if not _playlist_exists():
+            rules_10 = [
+                {"field": "artist", "operator": "equals", "value": artist},
+                {"field": "rating", "operator": "greaterThanOrEquals", "value": "9"},
+            ]
+            nav_delete_playlist_by_name(playlist_name)
+            nav_create_smart_playlist(playlist_name, rules_10, sort)
         return
 
-    # CASE B — 100+ total tracks
+    # CASE B — 100+ total tracks → top 10% by rating
     if total_tracks >= 100:
         nav_delete_playlist_by_name(playlist_name)
-
         limit = max(1, math.ceil(total_tracks * 0.10))
 
-        rules = [
-            {"field": "artist", "operator": "equals", "value": artist}
-        ]
+        # Sort preference: userRating (1–5) then rating (0–10), then random
         sort = [
+            {"field": "userRating", "order": "desc"},
             {"field": "rating", "order": "desc"},
-            {"field": "random", "order": "asc"}
+            {"field": "random", "order": "asc"},
         ]
-
+        rules = [{"field": "artist", "operator": "equals", "value": artist}]
         nav_create_smart_playlist(playlist_name, rules, sort, limit)
         return
 
-    logging.info(f"No Essential playlist created for '{artist}'")
-
+    logging.info(
+        f"No Essential playlist created for '{artist}' "
+        f"(total={total_tracks}, five★={len(five_star_tracks)})"
+    )
 
 def fetch_artist_albums(artist_id):
     url = f"{NAV_BASE_URL}/rest/getArtist.view"
@@ -1578,6 +1617,7 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -1589,6 +1629,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
       - Cap density of 4★ among non-singles
       - Save to DB; optionally push ratings to Navidrome
       - Build one smart "Essential {artist}" playlist using Feishin-style API
+        ▶ FIX: Use userRating==5 (1–5 stars) and fallback to rating>=9 (10-scale)
     """
 
     # ----- Tunables & feature flags ------------------------------------------------
@@ -1641,8 +1682,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     days_since = 9999
 
                 if days_since <= ALBUM_SKIP_DAYS:
-                    print(f"⏩ Skipping album: {album_name} (last scanned {album_last_scanned}, "
-                          f"cached tracks={cached_track_count}, threshold={ALBUM_SKIP_DAYS}d)")
+                    print(
+                        f"⏩ Skipping album: {album_name} (last scanned {album_last_scanned}, "
+                        f"cached tracks={cached_track_count}, threshold={ALBUM_SKIP_DAYS}d)"
+                    )
                     continue
 
         tracks = fetch_album_tracks(album_id)
@@ -1656,17 +1699,16 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         # ----------------------------------------------------------------------
         # PER-TRACK ENRICHMENT
         # ----------------------------------------------------------------------
-        
         for track in tracks:
             track_id   = track["id"]
             title      = track["title"]
             file_path  = track.get("path", "")
             nav_genres = [track.get("genre")] if track.get("genre") else []
             mbid       = track.get("mbid", None)  # Navidrome MBID if available
-        
+
             if verbose:
                 print(f"   🔍 Processing track: {title}")
-        
+
             # Spotify lookup
             spotify_results       = search_spotify_track(title, artist_name, album_name)
             selected              = select_best_spotify_match(spotify_results, title)
@@ -1680,24 +1722,24 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
             spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
             is_spotify_single     = (spotify_album_type == "single")
-        
+
             # Last.fm
             lf_data        = get_lastfm_track_info(artist_name, title)
             lf_track_play  = lf_data.get("track_play", 0)
             lf_artist_play = lf_data.get("artist_play", 0)
             lf_ratio       = round((lf_track_play / lf_artist_play) * 100, 2) if lf_artist_play > 0 else 0
-        
+
             # Global score
             score, momentum, lb_score = compute_track_score(
                 title, artist_name, spotify_release_date or "1992-01-01", sp_score, mbid, verbose
             )
-        
+
             # Genres
             discogs_genres = get_discogs_genres(title, artist_name)
             audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
             mb_genres      = get_musicbrainz_genres(title, artist_name)
             lastfm_tags    = []
-        
+
             online_top, _ = get_top_genres_with_navidrome(
                 {
                     "spotify":      spotify_genres,
@@ -1712,7 +1754,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             )
             genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
             top_genres    = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
-        
+
             # ✅ MBID logic: if missing, suggest one via MusicBrainz
             suggested_mbid = ""
             suggested_confidence = 0.0
@@ -1720,7 +1762,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 suggested_mbid, suggested_confidence = get_suggested_mbid(title, artist_name)
                 if verbose and suggested_mbid:
                     print(f"      ↔ Suggested MBID: {suggested_mbid} (confidence {suggested_confidence})")
-        
+
             # Build track_data dictionary
             track_data = {
                 "id": track_id,
@@ -1760,9 +1802,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 "suggested_mbid": suggested_mbid,
                 "suggested_mbid_confidence": suggested_confidence
             }
-        
+
             album_tracks.append(track_data)
-        
 
         # ----------------------------------------------------------------------
         # ADAPTIVE WEIGHTS
@@ -1864,19 +1905,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         # ----------------------------------------------------------------------
         # SAVE + SYNC
         # ----------------------------------------------------------------------
-        
         for trk in sorted_album:
             save_to_db(trk)
             if sync:
                 sync_rating_and_report(trk)
 
-
         # ----------------------------------------------------------------------
         # ALBUM SUMMARY
         # ----------------------------------------------------------------------
         single_count = sum(1 for trk in sorted_album if trk.get("is_single"))
-        print(f"   ℹ️ Singles detected: {single_count} | Non‑single 4★: {sum(1 for t in non_single_tracks if t['stars']==4)} "
-              f"| Cap: {int(CAP_TOP4_PCT*100)}% | MAD: {mad_val:.2f}")
+        print(
+            f"   ℹ️ Singles detected: {single_count} | Non‑single 4★: "
+            f"{sum(1 for t in non_single_tracks if t['stars']==4)} "
+            f"| Cap: {int(CAP_TOP4_PCT*100)}% | MAD: {mad_val:.2f}"
+        )
 
         if single_count > 0:
             print("   🎯 Singles:")
@@ -1888,10 +1930,60 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         rated_map.update({t["id"]: t for t in sorted_album})
 
     # --------------------------------------------------------------------------
-    # SMART PLAYLIST CREATION (Feishin-style API)
+    # SMART PLAYLIST CREATION (Feishin-style API) — FIXED
     # --------------------------------------------------------------------------
+    
+    def _playlist_exists(playlist_name: str) -> bool:
+        try:
+            items = nav_get_all_playlists()
+            return any(_normalize_name(pl.get("name","")) == _normalize_name(playlist_name) for pl in items)
+        except Exception:
+            return False
+    
+
     if artist_name.lower() != "various artists" and sync and not dry_run:
-        create_or_update_playlist_for_artist(artist_name, list(rated_map.values()))
+        playlist_name = f"Essential {artist_name}"
+        total_tracks = len(rated_map)
+        five_star_tracks = [t for t in rated_map.values() if (t.get("stars") or 0) == 5]
+
+        # CASE A — 10+ five-star tracks: build purely 5★ essentials
+        if len(five_star_tracks) >= 10:
+            # Prefer userRating==5 (1–5 stars)
+            nav_delete_playlist_by_name(playlist_name)
+            rules_user = [
+                {"field": "artist", "operator": "equals", "value": artist_name},
+                {"field": "userRating", "operator": "equals", "value": "5"}
+            ]
+            sort = [{"field": "random", "order": "asc"}]
+            nav_create_smart_playlist(playlist_name, rules_user, sort)
+
+            # Validate; fallback to rating>=9 (10-scale) if needed
+            if not _playlist_exists(playlist_name):
+                rules_10 = [
+                    {"field": "artist", "operator": "equals", "value": artist_name},
+                    {"field": "rating", "operator": "greaterThanOrEquals", "value": "9"}
+                ]
+                nav_delete_playlist_by_name(playlist_name)
+                nav_create_smart_playlist(playlist_name, rules_10, sort)
+
+        # CASE B — 100+ total tracks: top 10% by rating
+        elif total_tracks >= 100:
+            nav_delete_playlist_by_name(playlist_name)
+            limit = max(1, math.ceil(total_tracks * 0.10))
+            # Sort preference: userRating (1–5) then rating (0–10), then random
+            sort = [
+                {"field": "userRating", "order": "desc"},
+                {"field": "rating", "order": "desc"},
+                {"field": "random", "order": "asc"}
+            ]
+            rules = [{"field": "artist", "operator": "equals", "value": artist_name}]
+            nav_create_smart_playlist(playlist_name, rules, sort, limit)
+
+        else:
+            logging.info(
+                f"No Essential playlist created for '{artist_name}' "
+                f"(total={total_tracks}, five★={len(five_star_tracks)})"
+            )
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
@@ -2266,6 +2358,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
