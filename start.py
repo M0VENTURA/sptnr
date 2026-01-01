@@ -292,23 +292,29 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 import json
 import sqlite3
 
+
 def save_to_db(track_data):
     """
     Save or update track metadata in the database.
-    Includes new fields: mbid, suggested_mbid, single_sources, is_spotify_single,
-    spotify_total_tracks, spotify_album_type, lastfm_ratio.
+
+    Aligns with schema in check_db.update_schema():
+    - Adds new fields: mbid, suggested_mbid, suggested_mbid_confidence, single_sources,
+      is_spotify_single, spotify_total_tracks, spotify_album_type, lastfm_ratio.
+    - Persists discogs_genres, audiodb_genres, musicbrainz_genres.
+    - Stores single_sources as JSON string in a TEXT column for fidelity.
     """
+
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
 
-    # Prepare multi-value fields (store as comma-delimited or JSON)
-    genres = ",".join(track_data.get("genres", []))
-    navidrome_genres = ",".join(track_data.get("navidrome_genres", []))
-    spotify_genres = ",".join(track_data.get("spotify_genres", []))
-    lastfm_tags = ",".join(track_data.get("lastfm_tags", []))
-    discogs_genres = ",".join(track_data.get("discogs_genres", [])) if track_data.get("discogs_genres") else ""
-    audiodb_genres = ",".join(track_data.get("audiodb_genres", [])) if track_data.get("audiodb_genres") else ""
-    musicbrainz_genres = ",".join(track_data.get("musicbrainz_genres", [])) if track_data.get("musicbrainz_genres") else ""
+    # Prepare multi-value fields (store as comma-delimited; consistent with existing schema)
+    genres              = ",".join(track_data.get("genres", []))
+    navidrome_genres    = ",".join(track_data.get("navidrome_genres", []))
+    spotify_genres      = ",".join(track_data.get("spotify_genres", []))
+    lastfm_tags         = ",".join(track_data.get("lastfm_tags", []))
+    discogs_genres      = ",".join(track_data.get("discogs_genres", [])) if track_data.get("discogs_genres") else ""
+    audiodb_genres      = ",".join(track_data.get("audiodb_genres", [])) if track_data.get("audiodb_genres") else ""
+    musicbrainz_genres  = ",".join(track_data.get("musicbrainz_genres", [])) if track_data.get("musicbrainz_genres") else ""
 
     # For single_sources, JSON is safer than comma-delimited
     single_sources_json = json.dumps(track_data.get("single_sources", []), ensure_ascii=False)
@@ -322,20 +328,20 @@ def save_to_db(track_data):
         spotify_album, spotify_artist, spotify_popularity, spotify_release_date, spotify_album_art_url,
         lastfm_track_playcount, lastfm_artist_playcount, file_path,
         is_single, single_confidence, last_scanned,
-        mbid, suggested_mbid, single_sources,
+        mbid, suggested_mbid, suggested_mbid_confidence, single_sources,
         is_spotify_single, spotify_total_tracks, spotify_album_type, lastfm_ratio
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     """, (
         track_data["id"],
         track_data.get("artist", ""),
         track_data.get("album", ""),
         track_data.get("title", ""),
-        track_data.get("spotify_score", 0),
-        track_data.get("lastfm_score", 0),
-        track_data.get("listenbrainz_score", 0),
-        track_data.get("age_score", 0),
-        track_data.get("score", 0),
-        track_data.get("stars", 0),
+        float(track_data.get("spotify_score", 0) or 0),
+        float(track_data.get("lastfm_score", 0) or 0),
+        float(track_data.get("listenbrainz_score", 0) or 0),
+        float(track_data.get("age_score", 0) or 0),
+        float(track_data.get("score", 0) or 0),
+        int(track_data.get("stars", 0) or 0),
         genres,
         navidrome_genres,
         spotify_genres,
@@ -345,23 +351,23 @@ def save_to_db(track_data):
         musicbrainz_genres,
         track_data.get("spotify_album", ""),
         track_data.get("spotify_artist", ""),
-        track_data.get("spotify_popularity", 0),
+        int(track_data.get("spotify_popularity", 0) or 0),
         track_data.get("spotify_release_date", ""),
         track_data.get("spotify_album_art_url", ""),
-        track_data.get("lastfm_track_playcount", 0),
-        track_data.get("lastfm_artist_playcount", 0),
+        int(track_data.get("lastfm_track_playcount", 0) or 0),
+        int(track_data.get("lastfm_artist_playcount", 0) or 0),
         track_data.get("file_path", ""),
         int(bool(track_data.get("is_single", False))),
         track_data.get("single_confidence", ""),
         track_data.get("last_scanned", ""),
-        track_data.get("mbid", ""),
-        track_data.get("suggested_mbid", ""),
-        track_data.get("suggested_mbid_confidence", 0.0)
+        track_data.get("mbid", "") or "",
+        track_data.get("suggested_mbid", "") or "",
+        float(track_data.get("suggested_mbid_confidence", 0.0) or 0.0),
         single_sources_json,
         int(bool(track_data.get("is_spotify_single", False))),
-        track_data.get("spotify_total_tracks", 0),
+        int(track_data.get("spotify_total_tracks", 0) or 0),
         track_data.get("spotify_album_type", ""),
-        track_data.get("lastfm_ratio", 0.0)
+        float(track_data.get("lastfm_ratio", 0.0) or 0.0)
     ))
 
     conn.commit()
@@ -2229,6 +2235,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
