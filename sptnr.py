@@ -2,6 +2,7 @@
 import argparse, os, sys, requests, time, random, json, logging, base64, re
 from dotenv import load_dotenv
 from colorama import init, Fore, Style
+from helpers import strip_parentheses, create_retry_session
 
 # 🎨 Colorama setup
 init(autoreset=True)
@@ -161,8 +162,7 @@ for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, CHANNEL_CACHE_FILE, INDEX_FIL
 
 youtube_api_unavailable = False
 
-def strip_parentheses(s):
-    return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
+# `strip_parentheses` moved to `helpers.py` and imported above
 
 def get_listenbrainz_track_info(mbid):
     url = f"https://api.listenbrainz.org/1/stats/recordings?recording_mbid={mbid}"

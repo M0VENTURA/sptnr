@@ -37,9 +37,22 @@ required_columns = {
     "suggested_mbid_confidence": "REAL",
     "single_sources": "TEXT",           # ✅ JSON or comma-delimited
     "is_spotify_single": "INTEGER",
+    "navidrome_rating": "INTEGER",
     "spotify_total_tracks": "INTEGER",
     "spotify_album_type": "TEXT",
-    "lastfm_ratio": "REAL"              # ✅ Added for Last.fm ratio
+    "lastfm_ratio": "REAL",              # ✅ Added for Last.fm ratio
+    # ✅ Audit/Evidence fields for single detection
+    "discogs_single_confirmed": "INTEGER",  # 1 if Discogs API returned explicit single
+    "discogs_video_found": "INTEGER",       # 1 if official video found on Discogs
+    "is_canonical_title": "INTEGER",        # 1 if no remix/live/edit suffix
+    "title_similarity_to_base": "REAL",     # Similarity score (0–1) to canonical form
+    "album_context_live": "INTEGER",        # 1 if album marked as live/unplugged
+    # ✅ Scoring context fields for reproducibility
+    "adaptive_weight_spotify": "REAL",      # Adaptive weight used for this album
+    "adaptive_weight_lastfm": "REAL",       # Adaptive Last.fm weight
+    "adaptive_weight_listenbrainz": "REAL", # Adaptive ListenBrainz weight
+    "album_median_score": "REAL",           # Median score for the album
+    "spotify_release_age_days": "INTEGER"   # Days since release
 }
 
 def update_schema(db_path):

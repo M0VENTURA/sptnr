@@ -1,3 +1,4 @@
+
 navidrome:
   base_url: "http://localhost:4533"
   user: "admin"
@@ -21,10 +22,12 @@ weights:
 
 database:
   path: "/database/sptnr.db"
+  vacuum_on_start: false
 
 logging:
   level: "INFO"
   file: "/config/app.log"
+  console: true
 
 features:
   dry_run: false
@@ -34,4 +37,40 @@ features:
   perpetual: true
   batchrate: false
   artist: []
+  # Single-detection and scoring knobs
+  album_skip_days: 7
+  album_skip_min_tracks: 1
+  clamp_min: 0.75
+  clamp_max: 1.25
+  cap_top4_pct: 0.25
+  title_sim_threshold: 0.92
+  short_release_counts_as_match: false
+  secondary_single_lookup_enabled: true
+  secondary_lookup_metric: "score"
+  secondary_lookup_delta: 0.05
+  secondary_required_strong_sources: 2
+  median_gate_strategy: "hard"
+  use_lastfm_single: true
+  use_audiodb: false
+  refresh_playlists_on_start: false
+  refresh_artist_index_on_start: false
+  discogs_min_interval_sec: 0.35
+  include_user_ratings_on_scan: true
+  scan_worker_threads: 4
+  spotify_prefetch_timeout: 30
+
+# Optional API credentials
+discogs:
+  token: "your_discogs_token"
+
+audiodb:
+  api_key: "your_audiodb_api_key"
+
+google:
+  api_key: "your_google_api_key"
+  cse_id: "your_google_cse_id"
+
+youtube:
+  api_key: "your_youtube_api_key"
+
 
