@@ -1250,6 +1250,7 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, fl
 
 
 
+
 def detect_single_status(
     title: str,
     artist: str,
@@ -1261,14 +1262,18 @@ def detect_single_status(
     min_sources: int = 1,
     album_context: dict | None = None,
     permissive_fallback: bool = False,
-    spotify_hint: bool = False,   # <<< NEW: drives short-circuit behavior
+    spotify_hint: bool = False,   # drives short-circuit behavior
 ) -> dict:
     """
     Detect if a track is a single, passing album_context to Discogs checks.
 
-    Short-circuit strategy:
+    Short-circuit:
       - If spotify_hint is False AND both Discogs signals fail → return early (no more sources).
       - If spotify_hint is True → continue with MusicBrainz/Last.fm to raise confidence.
+
+    Policy:
+      - 'High' confidence requires at least one strong source (Discogs single, Discogs official video, or MusicBrainz single).
+      - Spotify-only paths (even with short-release) cannot be 'high'; they are 'medium' at best.
 
     Returns:
       {
@@ -1309,36 +1314,41 @@ def detect_single_status(
         except Exception as e:
             logging.debug(f"Discogs single check failed for '{title}': {e}")
 
-    # --- SHORT-CIRCUIT: If we don't have a Spotify hint and we didn't find Discogs signals, end early.
+    # --- SHORT-CIRCUIT: No Spotify hint + both Discogs checks failed ----------
     if (not spotify_hint) and (not discogs_video_hit) and (not discogs_single_hit):
+        # End early: clean negative without extra web/API calls.
         return {"is_single": False, "confidence": "low", "sources": []}
 
-    # 3) MusicBrainz (confidence booster / corroboration)
+    # 3) MusicBrainz (confidence booster / corroboration; strong source)
     try:
         if is_musicbrainz_single(title, artist):
             sources.append("musicbrainz")
     except Exception as e:
         logging.debug(f"MusicBrainz check failed for '{title}': {e}")
 
-    # 4) Last.fm (optional booster)
+    # 4) Last.fm (optional booster; not strong on its own)
     try:
         if use_lastfm and is_lastfm_single(title, artist):
             sources.append("lastfm")
     except Exception as e:
         logging.debug(f"Last.fm check failed for '{title}': {e}")
 
+    # Confidence with strong-source policy
+    strong_sources = {"discogs", "discogs_video", "musicbrainz"}
     confidence = (
         "high" if len(sources) >= max(2, min_sources)
         else "medium" if len(sources) == 1
         else "low"
     )
+    if confidence == "high" and not (set(sources) & strong_sources):
+        # No strong corroboration present → downgrade
+        confidence = "medium"
 
     return {
         "is_single": len(sources) >= min_sources,
         "confidence": confidence,
         "sources": sources,
     }
-
 
 
 def get_discogs_genres(title, artist):
@@ -2099,30 +2109,28 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         return 0
 
 
-
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
 
-    Adjustments:
-      - ⚡ Prefetch Spotify artist singles concurrently with album/track processing.
-      - ⚡ Per-track enrichment (Spotify, Last.fm, ListenBrainz) continues to run concurrently.
-      - ✅ Album-context aware single detection (live/unplugged gate) preserved.
-      - ✅ Normalized scoring unchanged.
-      - ✅ No check of existing Navidrome star rating; ALWAYS sets stars when `sync` is True.
+    Policy additions:
+      - Spotify-only (including short-release) is insufficient to confirm a single for 5★.
+      - Spotify-only singles get at most +1★ boost, capped at 4★, applied AFTER z-bands.
+      - 5★ requires at least one strong corroboration: Discogs (single or official video) or MusicBrainz single.
 
     Flow:
       1) Prefetch Spotify artist singles (runs in parallel).
       2) Fetch albums & tracks from Navidrome.
       3) Per-track enrichment (Spotify + Last.fm + ListenBrainz) concurrently.
-      4) Per-album adaptive weights → recompute 'score'.
-      5) Single detection aggregation (Discogs/MusicBrainz + Spotify signals).
-      6) Z-band assignment for non-singles + 4★ cap.
-      7) Save to DB and set ratings.
-      8) Create/refresh "Essential {artist}" playlist.
+      4) Per-album adaptive weights → recompute 'score' (Spotify normalized).
+      5) Single detection aggregation (Discogs/MusicBrainz + Spotify signals) with strict policy.
+      6) Z-band assignment for non-singles + 4★ density cap.
+      7) Apply Spotify-only +1★ boost (cap at 4★).
+      8) Save to DB and set ratings.
+      9) Create/refresh "Essential {artist}" playlist.
     """
 
-    # ----- Tunables & feature flags ------------------------------------------------
+    # ----- Tunables & feature flags ------------------------------------------
     CLAMP_MIN    = float(config["features"].get("clamp_min", 0.75))
     CLAMP_MAX    = float(config["features"].get("clamp_max", 1.25))
     CAP_TOP4_PCT = float(config["features"].get("cap_top4_pct", 0.25))
@@ -2145,7 +2153,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     TITLE_SIM_THRESHOLD = float(config["features"].get("title_sim_threshold", 0.92))
 
-    # --- Local helpers (subtitle/title similarity guards) --------------------------
+    # Spotify-only boost controls
+    STRICT_5STAR = bool(config["features"].get("singles_require_strong_source_for_5_star", True))
+    SPOTIFY_SOLO_MAX_BOOST = int(config["features"].get("spotify_solo_boost", 1))      # +1★ at most
+    SPOTIFY_SOLO_MAX_STARS = int(config["features"].get("spotify_solo_boost_max_stars", 4))  # cap at 4★
+
+    # --- Local helpers (subtitle/title similarity guards) ---------------------
     def _canon_local(s: str) -> str:
         s = (s or "").lower()
         s = re.sub(r"\(.*?\)", " ", s)            # drop parenthetical
@@ -2179,7 +2192,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         return SequenceMatcher(None, _canon_local(a), _canon_local(b)).ratio()
 
     # --------------------------------------------------------------------------
-    # NEW: Prefetch Spotify artist singles (runs in parallel with album/track work)
+    # Prefetch Spotify artist singles (runs in parallel with album/track work)
     # --------------------------------------------------------------------------
     try:
         spotify_artist_id = get_spotify_artist_id(artist_name)
@@ -2191,7 +2204,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     singles_set: set[str] = set()
 
     if spotify_artist_id:
-        # Use a tiny auxiliary pool so the singles prefetch runs concurrently
         aux_pool = ThreadPoolExecutor(max_workers=1)
         singles_set_future = aux_pool.submit(get_spotify_artist_single_track_ids, spotify_artist_id)
     else:
@@ -2203,7 +2215,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     albums = fetch_artist_albums(artist_id)
     if not albums:
         print(f"⚠️ No albums found for artist '{artist_name}'")
-        # Ensure we clean up the aux pool if created
         if aux_pool:
             aux_pool.shutdown(wait=False)
         return {}
@@ -2211,8 +2222,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
 
-    # If the singles prefetch is still running, let it continue in background.
-    # We'll resolve it lazily before the first track needs it.
     # --------------------------------------------------------------------------
     # MAIN ALBUM LOOP
     # --------------------------------------------------------------------------
@@ -2295,8 +2304,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 spotify_album_type    = (selected.get("album", {}).get("album_type", "") or "").lower()
                 spotify_total_tracks  = selected.get("album", {}).get("total_tracks", None)
 
-                # >>> NEW: Spotify-native single signal
-                # Mark true if (a) selected track ID is in artist singles set OR (b) album type is 'single'
+                # Spotify-native single signal
                 is_spotify_single = bool(
                     (selected_id and selected_id in singles_set) or (spotify_album_type == "single")
                 )
@@ -2343,7 +2351,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 genre_context = "metal" if any("metal" in g.lower() for g in online_top) else ""
                 top_genres    = adjust_genres(online_top, artist_is_metal=(genre_context == "metal"))
 
-                # ✅ MBID suggestion if missing
+                # MBID suggestion if missing
                 suggested_mbid = ""
                 suggested_confidence = 0.0
                 if not mbid:
@@ -2359,7 +2367,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "artist": artist_name,
                     "score": score,
                     "spotify_score": sp_score,
-                    # Set BOTH lastfm_score and lastfm_ratio to normalized value for compatibility
                     "lastfm_score": lf_norm,
                     "lastfm_ratio": lf_norm,
                     "listenbrainz_score": lb_norm,
@@ -2381,11 +2388,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
                     "spotify_album_type": spotify_album_type,
                     "spotify_total_tracks": spotify_total_tracks,
-                    "is_spotify_single": is_spotify_single,   # <<< updated source
-                    "is_single": False,
-                    "single_confidence": "low",
-                    "single_sources": [],
-                    "stars": 1,
+                    "is_spotify_single": is_spotify_single,
+                    "is_single": False,                         # set later
+                    "single_confidence": "low",                 # set later
+                    "single_sources": [],                       # set later
+                    "stars": 1,                                  # provisional; z-bands will adjust
                     "mbid": mbid or "",
                     "suggested_mbid": suggested_mbid,
                     "suggested_mbid_confidence": suggested_confidence
@@ -2394,21 +2401,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 album_tracks.append(track_data)
 
         # ----------------------------------------------------------------------
-        # ADAPTIVE WEIGHTS (per album) → recompute 'score'
+        # ADAPTIVE WEIGHTS (per album) → recompute 'score' (Spotify normalized)
         # ----------------------------------------------------------------------
-        base_weights = {
-            'spotify': SPOTIFY_WEIGHT,
-            'lastfm': LASTFM_WEIGHT,
-            'listenbrainz': LISTENBRAINZ_WEIGHT
-        }
+        base_weights = {'spotify': SPOTIFY_WEIGHT, 'lastfm': LASTFM_WEIGHT, 'listenbrainz': LISTENBRAINZ_WEIGHT}
         adaptive = compute_adaptive_weights(album_tracks, base_weights, clamp=(CLAMP_MIN, CLAMP_MAX), use='mad')
 
         for t in album_tracks:
-            sp, lf, lb, age = t['spotify_score'], t['lastfm_ratio'], t['listenbrainz_score'], t['age_score']
-            t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
+            sp  = (t['spotify_score'] or 0) / 100.0  # normalize popularity
+            lf  = t['lastfm_ratio'] or 0.0
+            lb  = t['listenbrainz_score'] or 0.0
+            age = t['age_score'] or 0.0
+            t['score'] = (adaptive['spotify'] * sp) + (adaptive['lastfm'] * lf) + \
+                         (adaptive['listenbrainz'] * lb) + (AGE_WEIGHT * age)
 
         # ----------------------------------------------------------------------
-        # SINGLE DETECTION (Discogs-first with similarity guard & album-context)
+        # SINGLE DETECTION (Discogs-first with similarity guard & policy)
         # ----------------------------------------------------------------------
         for trk in album_tracks:
             title          = trk["title"]
@@ -2435,21 +2442,15 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 min_sources=1,
                 album_context=album_ctx,
                 permissive_fallback=False,
-                spotify_hint=spotify_hint,        # <<< NEW: drives short-circuit behavior
+                spotify_hint=spotify_hint,
             )
 
             agg_sources    = set(agg.get("sources", []))
             discogs_strong = any(s in agg_sources for s in ("discogs", "discogs_video"))
+            mb_strong      = ("musicbrainz" in agg_sources)
+            strong_ok      = (discogs_strong or mb_strong)
 
-            # HARD SHORT-CIRCUIT: Only if the track title is the canonical single title
-            if canonical and discogs_strong and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
-                trk["single_sources"]    = sorted(list(agg_sources))  # e.g., ['discogs_video']
-                trk["single_confidence"] = "high"
-                trk["is_single"]         = True
-                trk["stars"]             = 5
-                continue
-
-            # Otherwise compose other signals
+            # Compose sources for weighting & reporting
             sources = set()
             if spotify_source:       sources.add("spotify")
             if short_release_source: sources.add("short_release")
@@ -2468,10 +2469,20 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk["single_sources"]    = sorted(list(sources))
             trk["single_confidence"] = single_conf
 
-            # For non-Discogs paths, still respect the subtitle guard for 5★
-            if canonical and single_conf == "high" and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
+            # Canonical title guard: only canonical (no subtitle) and high similarity can be single
+            if canonical and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
                 trk["is_single"] = True
-                trk["stars"]     = 5
+                # Star assignment deferred:
+                # - If strong_ok (Discogs/MusicBrainz present) → will become 5★ after guard below.
+                # - If Spotify-only → z-bands first; then +1★ boost (cap at 4★) after z-bands.
+
+                # If STRICT_5STAR and strong corroboration present, set 5★ now
+                if STRICT_5STAR and strong_ok:
+                    trk["stars"] = 5  # hard-approve
+                # Else leave stars for z-band + boost pass later
+            else:
+                # Not canonical or has subtitle → cannot be a 5★ single; leave stars to z-bands
+                pass
 
         # ----------------------------------------------------------------------
         # Z-BANDS FOR NON-SINGLES
@@ -2507,7 +2518,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 t["stars"] = 3
 
         # ----------------------------------------------------------------------
-        # SAVE + SYNC  (NO existing-rating check; always set stars if sync=True)
+        # Spotify-only single BOOST (+1★ at most, cap at 4★), applied AFTER z-bands
+        # ----------------------------------------------------------------------
+        for t in sorted_album:
+            # Skip tracks that already got 5★ via strong sources
+            already_strong = any(s in t.get("single_sources", []) for s in ("discogs", "discogs_video", "musicbrainz"))
+            is_spotify_hint = ("spotify" in t.get("single_sources", [])) or ("short_release" in t.get("single_sources", []))
+
+            if t.get("is_single") and is_spotify_hint and not already_strong:
+                # Apply +1★ boost, capped at 4★
+                t["stars"] = min(SPOTIFY_SOLO_MAX_STARS, (t.get("stars", 0) + SPOTIFY_SOLO_MAX_BOOST))
+
+        # ----------------------------------------------------------------------
+        # SAVE + SYNC
         # ----------------------------------------------------------------------
         for trk in sorted_album:
             save_to_db(trk)
@@ -2549,7 +2572,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         rated_map.update({t["id"]: t for t in sorted_album})
 
     # --------------------------------------------------------------------------
-    # SMART PLAYLIST CREATION (NSP writer via nav_* replacements)
+    # SMART PLAYLIST CREATION (unchanged from your original logic)
     # --------------------------------------------------------------------------
     def _playlist_exists(playlist_name: str) -> bool:
         return _playlist_file_exists(playlist_name)
@@ -2592,7 +2615,6 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
-
 
 
 
@@ -2965,6 +2987,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
