@@ -18,9 +18,9 @@ required_columns = {
     "navidrome_genres": "TEXT",
     "spotify_genres": "TEXT",
     "lastfm_tags": "TEXT",
-    "discogs_genres": "TEXT",        # ✅ NEW
-    "audiodb_genres": "TEXT",        # ✅ NEW
-    "musicbrainz_genres": "TEXT",    # ✅ NEW
+    "discogs_genres": "TEXT",        # ✅ Existing
+    "audiodb_genres": "TEXT",        # ✅ Existing
+    "musicbrainz_genres": "TEXT",    # ✅ Existing
     "spotify_album": "TEXT",
     "spotify_artist": "TEXT",
     "spotify_popularity": "INTEGER",
@@ -31,7 +31,16 @@ required_columns = {
     "file_path": "TEXT",
     "is_single": "BOOLEAN",
     "single_confidence": "TEXT",
-    "last_scanned": "TEXT"
+    "last_scanned": "TEXT",
+    # ✅ New fields for MBID and related metadata
+    "mbid": "TEXT",
+    "suggested_mbid": "TEXT",
+    "suggested_mbid_confidence": "REAL",
+    "single_sources": "TEXT",          # store as comma-delimited or JSON
+    "is_spotify_single": "INTEGER",    # 0/1
+    "spotify_total_tracks": "INTEGER",
+    "spotify_album_type": "TEXT",
+    "lastfm_ratio": "REAL"
 }
 
 
@@ -76,13 +85,10 @@ def update_schema(db_path):
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_album ON tracks(album);")
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_last_scanned ON tracks(last_scanned);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_discogs_genres ON tracks(discogs_genres);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_audiodb_genres ON tracks(audiodb_genres);")
-    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_musicbrainz_genres ON tracks(musicbrainz_genres);")
-
-    # ✅ Add index for single detection
     cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_is_single ON tracks(is_single);")
-    print("✔ Index for is_single column verified.")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_mbid ON tracks(mbid);")
+    cursor.execute("CREATE INDEX IF NOT EXISTS idx_tracks_suggested_mbid ON tracks(suggested_mbid);")
+    print("✔ Indexes verified.")
 
     conn.commit()
     conn.close()
