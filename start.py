@@ -861,55 +861,72 @@ def is_musicbrainz_single(title: str, artist: str) -> bool:
         return False
 
 
+
 def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, float]:
     """
-    Search MusicBrainz for a track by title + artist and return the best MBID candidate
-    with a confidence score (0.0–1.0).
-    Confidence is based on:
-      - Title similarity (SequenceMatcher ratio)
-      - Primary type match (Single preferred)
-    Returns (mbid, confidence) or ("", 0.0) if no good candidate found.
+    Search MusicBrainz recordings and compute (mbid, confidence).
+    Confidence:
+      - Title similarity (SequenceMatcher)
+      - +0.15 bonus if associated release-group primary-type == 'Single'
+    We fetch 'releases' in the recording include, then second-hop to /release/{id}?inc=release-groups
+    to reliably check the release-group primary-type.
     """
     try:
-        query = f'"{title}" AND artist:"{artist}"'
-        url = "https://musicbrainz.org/ws/2/recording/"
-        params = {"query": query, "fmt": "json", "limit": limit}
-        headers = {"User-Agent": "sptnr-cli/2.0 (support@example.com)"}
+        headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
 
-        res = requests.get(url, params=params, headers=headers, timeout=10)
-        res.raise_for_status()
-        recordings = res.json().get("recordings", [])
-
+        # 1) Find recordings (with releases included for second hop)
+        rec_url = "https://musicbrainz.org/ws/2/recording/"
+        rec_params = {
+            "query": f'"{title}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": limit,
+            "inc": "releases+artist-credits",  # releases needed to inspect release-group via second hop
+        }
+        r = requests.get(rec_url, params=rec_params, headers=headers, timeout=10)
+        r.raise_for_status()
+        recordings = r.json().get("recordings", []) or []
         if not recordings:
             return "", 0.0
 
         best_mbid = ""
         best_score = 0.0
-        nav_title = title.lower()
+        nav_title = (title or "").lower()
 
         for rec in recordings:
-            mbid = rec.get("id", "")
+            rec_mbid = rec.get("id", "")
             rec_title = (rec.get("title") or "").lower()
-            score_title = difflib.SequenceMatcher(None, nav_title, rec_title).ratio()
+            title_sim = difflib.SequenceMatcher(None, nav_title, rec_title).ratio()
 
-            # Bonus if release-group primary-type is Single
-            release_groups = rec.get("release-groups", [])
-            is_single = any((rg.get("primary-type") or "").lower() == "single" for rg in release_groups)
-            bonus = 0.15 if is_single else 0.0
+            # Default: no bonus
+            single_bonus = 0.0
 
-            # Combine confidence: title similarity + bonus
-            confidence = min(1.0, score_title + bonus)
+            # 2) If we have at least one release, second hop: /release/{id}?inc=release-groups
+            #    so we can read the primary-type reliably.
+            releases = rec.get("releases") or []
+            if releases:
+                rel_id = releases[0].get("id")
+                if rel_id:
+                    rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
+                    rel_params = {"fmt": "json", "inc": "release-groups"}
+                    rr = requests.get(rel_url, params=rel_params, headers=headers, timeout=10)
+                    if rr.ok:
+                        rel_json = rr.json()
+                        rg = rel_json.get("release-group") or {}
+                        primary_type = (rg.get("primary-type") or "").lower()
+                        if primary_type == "single":
+                            single_bonus = 0.15
+
+            confidence = min(1.0, title_sim + single_bonus)
 
             if confidence > best_score:
                 best_score = confidence
-                best_mbid = mbid
+                best_mbid = rec_mbid
 
         return best_mbid, round(best_score, 3)
 
     except Exception as e:
-        logging.debug(f"MusicBrainz suggested MBID lookup failed for '{title}': {e}")
+        logging.debug(f"MusicBrainz suggested MBID lookup failed for '{title}' by '{artist}': {e}")
         return "", 0.0
-
 
 def detect_single_status(
     title: str,
@@ -1023,22 +1040,56 @@ def get_audiodb_genres(artist):
         logging.warning(f"AudioDB lookup failed for '{artist}': {e}")
         return []
 
-def get_musicbrainz_genres(title, artist):
+
+def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
+    """
+    Fetch tags/genres from MusicBrainz with explicit includes on recordings.
+    Strategy:
+      1) Search recording with inc=tags+artist-credits+releases
+      2) Use recording-level tags if present
+      3) If no recording tags, try tags on the first associated release (via /release/{id}?inc=tags)
+    """
     try:
-        res = requests.get("https://musicbrainz.org/ws/2/recording/", params={
+        # Step 1: search recording with richer includes
+        rec_url = "https://musicbrainz.org/ws/2/recording/"
+        rec_params = {
             "query": f'"{title}" AND artist:"{artist}"',
             "fmt": "json",
-            "limit": 1
-        }, headers={"User-Agent": "sptnr-cli/2.0"}, timeout=10)
-        res.raise_for_status()
-        recordings = res.json().get("recordings", [])
-        if recordings and "tags" in recordings[0]:
-            return [t["name"] for t in recordings[0]["tags"]]
+            "limit": 3,
+            # 'inc' on recording: tags + releases + artist-credits helps locate usable metadata
+            "inc": "tags+artist-credits+releases",
+        }
+        headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
+        r = requests.get(rec_url, params=rec_params, headers=headers, timeout=10)
+        r.raise_for_status()
+        recs = r.json().get("recordings", []) or []
+        if not recs:
+            return []
+
+        # Prefer the top match
+        rec = recs[0]
+        # 2) use recording-level tags if present
+        tags = rec.get("tags") or []
+        tag_names = [t.get("name", "") for t in tags if t.get("name")]
+        if tag_names:
+            return tag_names
+
+        # 3) fallback: pull tags from the first release if any
+        releases = rec.get("releases") or []
+        if releases:
+            rel_id = releases[0].get("id")
+            if rel_id:
+                rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
+                rel_params = {"fmt": "json", "inc": "tags"}
+                rr = requests.get(rel_url, params=rel_params, headers=headers, timeout=10)
+                rr.raise_for_status()
+                rel_tags = rr.json().get("tags", []) or []
+                return [t.get("name", "") for t in rel_tags if t.get("name")]
+
         return []
     except Exception as e:
-        logging.warning(f"MusicBrainz lookup failed for '{title}': {e}")
+        logging.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
         return []
-
 
 def version_requested(track_title):
     """Check if track title suggests a live or remix version."""
@@ -2228,6 +2279,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
