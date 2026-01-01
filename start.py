@@ -1048,39 +1048,111 @@ def discogs_official_video_signal(
 # Cache for single detection
 _DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
 
-def is_discogs_single(title: str, artist: str, *, album_context: dict | None = None, timeout: int = 10) -> bool:
+def is_discogs_single(
+    title: str,
+    artist: str,
+    *,
+    album_context: dict | None = None,
+    timeout: int = 10
+) -> bool:
     """
-    Detect if a release is a single on Discogs, honoring album context.
-    Improvements:
-      - Checks ANY track for match (not just first).
-      - Uses similarity threshold for tracklist match (>= 0.8).
-      - Lowered release title ratio threshold to 0.65.
-      - Boosts confidence if format includes 'Single'.
-      - Adds caching keyed by (artist, title, context).
+    Discogs single detection (best-effort, rate-limit safe).
+
+    Strong paths:
+      - Explicit 'Single' in release formats
+      - EP with first track == A-side AND an official video on the same release
+      - (structural fallback) 1–2 track A/B sides where the matched title is present
+        and not live/remix (medium path; confidence handled upstream)
+
+    Respects live/unplugged album context via CONTEXT_GATE.
+    Uses cache keyed by (artist,title,context).
     """
+
+    # --- Fast exits / cache ---------------------------------------------------
     if not DISCOGS_TOKEN:
         return False
 
-    # Context key for cache
     allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
     context_key = "live" if allow_live_ctx else "studio"
     cache_key = (_canon(artist), _canon(title), context_key)
 
-    # Fast path from cache
     if cache_key in _DISCOGS_SINGLE_CACHE:
         return _DISCOGS_SINGLE_CACHE[cache_key]
 
+    # --- Local helpers (self-contained) --------------------------------------
+    def _release_title_core(rel_title: str, artist_name: str) -> str:
+        """
+        Discogs search 'title' often looks like 'Artist - Title / B-side'.
+        Keep only the 'Title' part for fair similarity vs. track title.
+        """
+        t = (rel_title or "").strip()
+        parts = t.split(" - ", 1)
+        if len(parts) == 2 and _canon(parts[0]) == _canon(artist_name):
+            t = parts[1].strip()
+        return t.split(" / ")[0].strip()
+
+    def _is_variant_of(base: str, candidate: str) -> bool:
+        """
+        Treat instrumental/radio edit/remaster as benign; ban live/remix.
+        """
+        b = _canon(strip_parentheses(base)); c = _canon(candidate)
+        if "live" in c or "remix" in c:
+            return False
+        ok = {"instrumental", "radio edit", "edit", "remaster"}
+        return (b in c) or any(tok in c for tok in ok)
+
+    def _has_official_on_release(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
+        """
+        Inspect release.videos for an 'official' (or 'lyric') match of nav_title.
+        """
+        vids = data.get("videos") or []
+        nav_clean = _strip_video_noise(nav_title)
+        for v in vids:
+            vt_raw = (v.get("title") or "")
+            vd_raw = (v.get("description") or "")
+            if not _has_official(vt_raw, vd_raw, allow_lyric=True):
+                continue
+            if _banned_flavor(vt_raw, vd_raw, allow_live=allow_live):
+                continue
+            vt = _strip_video_noise(vt_raw)
+            vd = _strip_video_noise(vd_raw)
+            r = max(SequenceMatcher(None, vt, nav_clean).ratio(),
+                    SequenceMatcher(None, vd, nav_clean).ratio())
+            if r >= min_ratio:
+                return True
+        return False
+
+    def _release_context_compatible(rel_json: dict, *, require_live: bool, forbid_live: bool) -> bool:
+        """
+        Decide if a release is compatible with album context (live/unplugged).
+        Recognises 'Live' in format descriptions, 'Unplugged'/'MTV Unplugged' in title/notes, etc.
+        """
+        title_l = (rel_json.get("title") or "").lower()
+        notes_l = (rel_json.get("notes") or "").lower()
+        formats = rel_json.get("formats") or []
+        tags = {d.lower() for f in formats for d in (f.get("descriptions") or [])}
+        has_live_signal = (
+            ("live" in tags) or ("unplugged" in title_l) or ("mtv unplugged" in title_l) or
+            ("recorded live" in notes_l) or ("unplugged" in notes_l)
+        )
+        if require_live and not has_live_signal:
+            return False
+        if forbid_live and has_live_signal:
+            return False
+        return True
+
+    # --- Setup & search -------------------------------------------------------
     headers = {
         "Authorization": f"Discogs token={DISCOGS_TOKEN}",
         "User-Agent": _DEF_USER_AGENT,
     }
+    session = _get_discogs_session()
 
     nav_title = _canon(strip_parentheses(title))
     require_live = allow_live_ctx and CONTEXT_GATE
-    forbid_live = (not allow_live_ctx) and CONTEXT_GATE
+    forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
 
-    params = {"q": f"{artist} {title}", "type": "release", "per_page": 10}
-    session = _get_discogs_session()
+    params = {"q": f"{artist} {title}", "type": "release", "per_page": 15}
 
     try:
         _throttle_discogs()
@@ -1088,7 +1160,7 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
         if res.status_code == 429:
             _respect_retry_after(res)
         res.raise_for_status()
-    except:
+    except Exception:
         _DISCOGS_SINGLE_CACHE[cache_key] = False
         return False
 
@@ -1097,59 +1169,98 @@ def is_discogs_single(title: str, artist: str, *, album_context: dict | None = N
         _DISCOGS_SINGLE_CACHE[cache_key] = False
         return False
 
-    for r in results:
-        release_id = r.get("id")
-        if not release_id:
+    # --- Shortlist: prefer 'Single' formats; otherwise core-title similarity ---
+    cands: list[tuple[int, bool, float]] = []
+    for r in results[:15]:
+        rid = r.get("id")
+        if not rid:
             continue
+        rel_title_raw  = r.get("title", "")
+        rel_title_core = _release_title_core(rel_title_raw, artist)
+        rel_title      = _canon(rel_title_core)
+        title_ratio    = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
 
-        rel_title = _canon(r.get("title", ""))
-        ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
-        if ratio < 0.65:  # relaxed threshold for release title
-            continue
+        formats_hint = r.get("format", []) or []
+        fmt_norm     = [(fmt or "").lower() for fmt in formats_hint]
+        prefer_single = any("single" in f for f in fmt_norm)
+        is_album_like = any("album"  in f for f in fmt_norm)
 
+        keep = prefer_single or (title_ratio >= 0.60) or is_album_like
+        if keep:
+            cands.append((rid, prefer_single, title_ratio))
+
+    # Prefer singles; then higher title similarity; cap requests
+    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:10]
+
+    # --- Inspect releases -----------------------------------------------------
+    for rel_id, _, _ in cands:
         try:
             _throttle_discogs()
-            rel = session.get(f"https://api.discogs.com/releases/{release_id}", headers=headers, timeout=timeout)
+            rel = session.get(f"https://api.discogs.com/releases/{rel_id}", headers=headers, timeout=timeout)
             if rel.status_code == 429:
                 _respect_retry_after(rel)
             rel.raise_for_status()
-        except:
+            data = rel.json()
+        except Exception:
             continue
 
-        data = rel.json()
+        # Context gate first
+        if not _release_context_compatible(data, require_live=require_live, forbid_live=forbid_live):
+            continue
 
-        # Context gate
         formats = data.get("formats", []) or []
-        tags = {d.lower() for f in formats for d in (f.get("descriptions") or [])}
-        title_l = (data.get("title") or "").lower()
-        notes_l = (data.get("notes") or "").lower()
-        has_live_signal = ("live" in tags) or ("unplugged" in title_l) or ("mtv unplugged" in title_l) \
-                          or ("recorded live" in notes_l) or ("unplugged" in notes_l)
+        names   = [f.get("name","").lower() for f in formats]
+        descs   = [d.lower() for f in formats for d in (f.get("descriptions") or [])]
 
-        if require_live and not has_live_signal:
-            continue
-        if forbid_live and has_live_signal:
+        # Albums out; EPs allowed (per policy)
+        is_album = ("album" in names) or ("album" in descs)
+        is_ep    = ("ep"    in names) or ("ep"    in descs)
+        if is_album:
             continue
 
-        # Tracklist check: allow any track to match canonical title with similarity
-        tracks = data.get("tracklist", [])
+        tracks = data.get("tracklist", []) or []
         if not tracks or len(tracks) > 7:
             continue
 
-        match_found = any(
-            difflib.SequenceMatcher(None, _canon(t.get("title", "")), nav_title).ratio() >= 0.8
-            for t in tracks
-        )
-        if not match_found:
+        # Robust title match across any track
+        best_idx, best_ratio = -1, 0.0
+        for i, t in enumerate(tracks):
+            r = difflib.SequenceMatcher(None, _canon(t.get("title","")), nav_title).ratio()
+            if r > best_ratio:
+                best_idx, best_ratio = i, r
+        if best_ratio < 0.80:
             continue
 
-        # Format check: must include 'Single'
-        names = [f.get("name", "").lower() for f in formats]
-        descs = [d.lower() for f in formats for d in (f.get("descriptions") or [])]
-        if "single" in names or "single" in descs:
+        mtitle = (tracks[best_idx].get("title","") or "").lower()
+        if (("live" in mtitle) or ("remix" in mtitle)) and not allow_live_ctx:
+            continue
+
+        # --- Strong path 1: explicit Single in formats ------------------------
+        if ("single" in names) or ("single" in descs):
             _DISCOGS_SINGLE_CACHE[cache_key] = True
             return True
 
+        # --- Strong path 2: EP + first track A-side + official video ----------
+        if is_ep and best_idx == 0:
+            if _has_official_on_release(data, title, allow_live=allow_live_ctx, min_ratio=0.50):
+                _DISCOGS_SINGLE_CACHE[cache_key] = True
+                return True
+
+        # --- Structural fallback: classic A/B sides (≤ 2 tracks) --------------
+        if 1 <= len(tracks) <= 2:
+            if best_idx == 0:
+                _DISCOGS_SINGLE_CACHE[cache_key] = True
+                return True
+            else:
+                # If matched is track 2, accept when track 1 is a benign variant
+                t1 = tracks[0].get("title","")
+                if _is_variant_of(title, t1):
+                    _DISCOGS_SINGLE_CACHE[cache_key] = True
+                    return True
+
+        # Otherwise continue inspecting next candidate
+
+    # --- No match -------------------------------------------------------------
     _DISCOGS_SINGLE_CACHE[cache_key] = False
     return False
 
@@ -3130,6 +3241,7 @@ if perpetual:
 else:
     print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
     sys.exit(0)
+
 
 
 
