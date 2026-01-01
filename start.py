@@ -1874,6 +1874,89 @@ def build_artist_index():
         return {}
 
 
+def scan_library_to_db(verbose: bool = False, force: bool = False):
+    """
+    Scan the entire Navidrome library (artists -> albums -> tracks) and persist
+    a lightweight representation of each track into the local DB.
+
+    Behavior:
+      - Uses existing API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
+      - For each track, writes a minimal `track_data` record via `save_to_db()`
+      - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
+    """
+    print("🔎 Scanning Navidrome library into local DB...")
+    artist_map_local = build_artist_index() or {}
+    if not artist_map_local:
+        print("⚠️ No artists available from Navidrome; aborting library scan.")
+        return
+
+    total_written = 0
+    for name, info in artist_map_local.items():
+        artist_id = info.get("id")
+        if not artist_id:
+            continue
+        try:
+            albums = fetch_artist_albums(artist_id)
+        except Exception:
+            albums = []
+        for alb in albums:
+            album_name = alb.get("name") or ""
+            album_id = alb.get("id")
+            if not album_id:
+                continue
+            try:
+                tracks = fetch_album_tracks(album_id)
+            except Exception:
+                tracks = []
+            for t in tracks:
+                track_id = t.get("id")
+                if not track_id:
+                    continue
+                td = {
+                    "id": track_id,
+                    "title": t.get("title", ""),
+                    "album": album_name,
+                    "artist": name,
+                    "score": 0.0,
+                    "spotify_score": 0,
+                    "lastfm_score": 0,
+                    "listenbrainz_score": 0,
+                    "age_score": 0,
+                    "genres": [],
+                    "navidrome_genres": [t.get("genre")] if t.get("genre") else [],
+                    "spotify_genres": [],
+                    "lastfm_tags": [],
+                    "discogs_genres": [],
+                    "audiodb_genres": [],
+                    "musicbrainz_genres": [],
+                    "spotify_album": "",
+                    "spotify_artist": "",
+                    "spotify_popularity": 0,
+                    "spotify_release_date": "",
+                    "spotify_album_art_url": "",
+                    "lastfm_track_playcount": 0,
+                    "file_path": t.get("path", ""),
+                    "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    "spotify_album_type": "",
+                    "spotify_total_tracks": 0,
+                    "spotify_id": None,
+                    "is_spotify_single": False,
+                    "is_single": False,
+                    "single_confidence": "low",
+                    "single_sources": [],
+                    "stars": 0,
+                    "mbid": t.get("mbid", "") or "",
+                    "suggested_mbid": "",
+                    "suggested_mbid_confidence": 0.0,
+                }
+                try:
+                    save_to_db(td)
+                    total_written += 1
+                except Exception as e:
+                    logging.debug(f"Failed to save track {track_id} -> {e}")
+    print(f"✅ Library scan complete. Tracks written/updated: {total_written}")
+
+
 # --- Main Rating Logic ---
 
 def update_artist_stats(artist_id, artist_name):
@@ -2742,6 +2825,41 @@ artist_map = {
 if not artist_map:
     print("⚠️ No artist stats found in DB. Building index from Navidrome...")
     artist_map = build_artist_index()  # This should also insert into artist_stats after fetching
+
+
+# Auto-populate track cache when empty (or when explicitly enabled)
+try:
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(*) FROM tracks")
+    has_tracks = (cursor.fetchone()[0] or 0) > 0
+    conn.close()
+except Exception:
+    has_tracks = False
+
+# If no tracks cached, perform a full library scan into DB so downstream
+# operations (batch rating, playlists) can operate from the local cache
+if not has_tracks:
+    print("⚠️ No cached tracks found in DB. Running full library scan to populate cache...")
+    try:
+        scan_library_to_db(verbose=verbose if 'verbose' in locals() else False)
+        # reload artist_map from DB after scan
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
+        artist_stats = cursor.fetchall()
+        conn.close()
+        artist_map = {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in artist_stats}
+    except Exception as e:
+        logging.warning(f"Library scan failed at startup: {e}")
+else:
+    # Optionally run a scan-on-start to detect new additions when enabled in config
+    if config.get("features", {}).get("scan_on_start", False):
+        print("ℹ️ scan_on_start enabled — checking Navidrome for new/updated tracks...")
+        try:
+            scan_library_to_db(verbose=verbose if 'verbose' in locals() else False)
+        except Exception as e:
+            logging.warning(f"scan_on_start failed: {e}")
 
 
 # ✅ Determine execution mode
