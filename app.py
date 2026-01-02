@@ -1335,28 +1335,36 @@ def slskd_search_results(search_id):
         # Flatten file results from all responses
         results = []
         for resp in responses:
-            for file in resp.files:
-                results.append({
-                    "username": resp.username,
-                    "filename": file.filename,
-                    "size": file.size,
-                    "size_mb": f"{file.size_mb:.2f}",
-                    "bitrate": file.bitrate,
-                    "sample_rate": file.sample_rate,
-                    "length": file.length,
-                    "duration": file.duration_formatted,
-                    "fileId": file.code
-                })
+            if hasattr(resp, 'files'):
+                for file in resp.files:
+                    results.append({
+                        "username": resp.username,
+                        "filename": file.filename,
+                        "size": file.size,
+                        "size_mb": f"{file.size_mb:.2f}",
+                        "bitrate": file.bitrate,
+                        "sample_rate": file.sample_rate,
+                        "length": file.length,
+                        "duration": file.duration_formatted,
+                        "fileId": file.code
+                    })
+        
+        response_count = len(responses) if responses else 0
+        
+        print(f"[SLSKD DEBUG] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
         
         return jsonify({
             "results": results,
             "state": state,
-            "responseCount": len(responses),
+            "responseCount": response_count,
+            "fileCount": len(results),
             "isComplete": is_complete
         })
         
     except Exception as e:
         print(f"[SLSKD] Error getting search results: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return jsonify({"error": str(e)}), 500
 
 
