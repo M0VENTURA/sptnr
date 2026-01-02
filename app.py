@@ -20,6 +20,7 @@ from functools import wraps
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
 from start import create_retry_session
+from api_clients.slskd import SlskdClient
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -1021,23 +1022,11 @@ def slskd_search():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req
-        
-        headers = {"X-API-Key": api_key} if api_key else {}
-        
-        # Start search
-        search_url = f"{web_url}/api/v0/searches"
-        search_data = {"searchText": query}
-        resp = req.post(search_url, json=search_data, headers=headers, timeout=10)
-        
-        if resp.status_code not in [200, 201]:
-            return jsonify({"error": f"Search failed: {resp.status_code}"}), 500
-        
-        search_response = resp.json()
-        search_id = search_response.get("id")
+        client = SlskdClient(web_url, api_key)
+        search_id = client.start_search(query)
         
         if not search_id:
-            return jsonify({"error": "No search ID returned"}), 500
+            return jsonify({"error": "Failed to start search"}), 500
         
         # Return search ID immediately for client-side polling
         return jsonify({
@@ -1062,57 +1051,30 @@ def slskd_search_results(search_id):
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req
-        
-        headers = {"X-API-Key": api_key} if api_key else {}
-        
-        # Get search status/results
-        status_url = f"{web_url}/api/v0/searches/{search_id}"
-        status_resp = req.get(status_url, headers=headers, timeout=10)
-        
-        if status_resp.status_code != 200:
-            return jsonify({"error": f"Failed to get search status: {status_resp.status_code}"}), 500
-        
-        search_data = status_resp.json()
-        
-        # Handle cases where search_data might be None or empty
-        if not search_data:
-            return jsonify({
-                "results": [],
-                "state": "Searching",
-                "responseCount": 0,
-                "isComplete": False
-            })
-        
-        state = search_data.get("state", "Searching")
-        responses = search_data.get("responses", [])
-        
-        # Debug logging
-        print(f"[SLSKD] Search {search_id} - State: {state}, Responses: {len(responses) if responses else 0}")
+        client = SlskdClient(web_url, api_key)
+        responses, state, is_complete = client.get_search_results(search_id)
         
         # Flatten file results from all responses
         results = []
-        if responses and isinstance(responses, list):
-            for response in responses:
-                username = response.get("username", "Unknown")
-                files = response.get("files", [])
-                
-                if files and isinstance(files, list):
-                    for file in files[:100]:  # Limit per user
-                        results.append({
-                            "username": username,
-                            "filename": file.get("filename", ""),
-                            "size": file.get("size", 0),
-                            "bitrate": file.get("bitRate", 0),
-                            "length": file.get("length", 0),
-                            "fileId": file.get("code", "")
-                        })
+        for resp in responses:
+            for file in resp.files:
+                results.append({
+                    "username": resp.username,
+                    "filename": file.filename,
+                    "size": file.size,
+                    "size_mb": f"{file.size_mb:.2f}",
+                    "bitrate": file.bitrate,
+                    "sample_rate": file.sample_rate,
+                    "length": file.length,
+                    "duration": file.duration_formatted,
+                    "fileId": file.code
+                })
         
         return jsonify({
             "results": results,
             "state": state,
-            "responseCount": len(responses) if responses else 0,
-            "isComplete": state in ["Completed", "Cancelled"]
+            "responseCount": len(responses),
+            "isComplete": is_complete
         })
         
     except Exception as e:
@@ -1130,31 +1092,26 @@ def slskd_download():
         return jsonify({"error": "slskd integration not enabled"}), 400
     
     username = request.json.get("username", "")
-    filename = request.json.get("filename", "")
+    file_code = request.json.get("fileId", "")
     
-    if not username or not filename:
-        return jsonify({"error": "Username and filename required"}), 400
+    if not username or not file_code:
+        return jsonify({"error": "Username and fileId required"}), 400
     
     web_url = slskd_config.get("web_url", "http://localhost:5030")
     api_key = slskd_config.get("api_key", "")
     
     try:
-        import requests as req
+        client = SlskdClient(web_url, api_key)
+        success = client.download_file(username, file_code)
         
-        headers = {"X-API-Key": api_key} if api_key else {}
-        
-        # Enqueue download
-        download_url = f"{web_url}/api/v0/transfers/downloads/{username}"
-        download_data = {"filename": filename}
-        
-        resp = req.post(download_url, json=download_data, headers=headers, timeout=10)
-        
-        if resp.status_code in [200, 201]:
+        if success:
             return jsonify({"success": True, "message": "Download added successfully"})
         else:
-            return jsonify({"error": f"Failed to add download: {resp.status_code}"}), 500
+            return jsonify({"error": "Failed to enqueue download"}), 500
             
     except Exception as e:
+        print(f"[SLSKD] Download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
         return jsonify({"error": str(e)}), 500
 
 
