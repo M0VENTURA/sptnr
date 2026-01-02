@@ -16,7 +16,6 @@ class SearchFile:
     bitrate: int
     sample_rate: int
     length: int
-    code: str
     
     def __post_init__(self):
         """Ensure numeric fields are integers."""
@@ -59,7 +58,7 @@ class SearchResponse:
         """Parse raw file dicts into SearchFile objects."""
         if not self.files:
             self.files = []
-        elif isinstance(self.files[0], dict):
+        elif self.files and isinstance(self.files[0], dict):
             self.files = [
                 SearchFile(
                     filename=f.get("filename", ""),
@@ -67,7 +66,6 @@ class SearchResponse:
                     bitrate=f.get("bitRate", 0),
                     sample_rate=f.get("sampleRate", 0),
                     length=f.get("length", 0),
-                    code=f.get("code", ""),
                 )
                 for f in self.files
             ]
@@ -109,17 +107,21 @@ class SlskdClient:
         
         try:
             url = f"{self.base_url}/searches"
-            data = {"searchText": query}
+            # Try both common API field names
+            data = {"searchText": query, "query": query}
             resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
             
             if resp.status_code not in [200, 201]:
-                logger.warning(f"Slskd search start failed: {resp.status_code}")
+                logger.warning(f"Slskd search start failed: {resp.status_code} - {resp.text[:200]}")
                 return None
             
             search_response = resp.json()
-            search_id = search_response.get("id")
+            # Handle both possible response formats
+            search_id = search_response.get("id") or search_response.get("searchId")
             if search_id:
                 logger.debug(f"Slskd search started: {search_id} for query '{query}'")
+            else:
+                logger.warning(f"Slskd search response missing ID: {search_response}")
             return search_id
         except Exception as e:
             logger.error(f"Slskd search failed for query '{query}': {e}")
@@ -147,11 +149,12 @@ class SlskdClient:
             resp = self.session.get(url, headers=self.headers, timeout=timeout)
             
             if resp.status_code != 200:
-                logger.warning(f"Slskd status failed: {resp.status_code}")
+                logger.warning(f"Slskd status failed: {resp.status_code} - {resp.text[:200]}")
                 return [], "Error", True
             
             search_data = resp.json()
             if not search_data:
+                logger.debug(f"Slskd search {search_id}: empty response")
                 return [], "Searching", False
             
             state = search_data.get("state", "Searching")
@@ -161,15 +164,19 @@ class SlskdClient:
             responses = []
             for raw_resp in raw_responses:
                 try:
-                    sr = SearchResponse(
-                        username=raw_resp.get("username", "Unknown"),
-                        files=raw_resp.get("files", [])
-                    )
-                    responses.append(sr)
+                    # Handle both dict and pre-parsed object formats
+                    if isinstance(raw_resp, dict):
+                        sr = SearchResponse(
+                            username=raw_resp.get("username", "Unknown"),
+                            files=raw_resp.get("files", [])
+                        )
+                        responses.append(sr)
+                    else:
+                        responses.append(raw_resp)
                 except Exception as e:
                     logger.debug(f"Failed to parse slskd response: {e}")
             
-            is_complete = state in ["Completed", "Cancelled"]
+            is_complete = state in ["Completed", "Cancelled", "Errored"]
             logger.debug(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
             
             return responses, state, is_complete
@@ -177,13 +184,13 @@ class SlskdClient:
             logger.error(f"Slskd get results failed for search {search_id}: {e}")
             return [], "Error", True
     
-    def download_file(self, username: str, file_code: str, timeout: int = 10) -> bool:
+    def download_file(self, username: str, filename: str, timeout: int = 10) -> bool:
         """
         Enqueue a file for download from a peer.
         
         Args:
             username: Peer username
-            file_code: File code from SearchFile
+            filename: Full file path from search results
             timeout: Request timeout
             
         Returns:
@@ -193,18 +200,19 @@ class SlskdClient:
             return False
         
         try:
+            # slskd API expects POST with files array containing filename objects
             url = f"{self.base_url}/transfers/downloads/{username}"
-            data = {"fileId": file_code}
+            data = {"files": [{"filename": filename}]}
             resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
             
-            if resp.status_code in [200, 201]:
-                logger.info(f"Download enqueued from {username} (file={file_code})")
+            if resp.status_code in [200, 201, 204]:
+                logger.info(f"Download enqueued from {username} (file={filename[:60]}...)")
                 return True
             else:
-                logger.warning(f"Slskd download failed: {resp.status_code}")
+                logger.warning(f"Slskd download failed: {resp.status_code} - {resp.text[:200]}")
                 return False
         except Exception as e:
-            logger.error(f"Slskd download failed: {e}")
+            logger.error(f"Slskd download failed for {username}/{filename[:50]}: {e}")
             return False
     
     def filter_results_by_quality(
@@ -239,7 +247,6 @@ class SlskdClient:
                         "sample_rate": file.sample_rate,
                         "duration": file.duration_formatted,
                         "length_seconds": file.length,
-                        "file_code": file.code,
                     })
         
         # Sort by bitrate (descending), then sample rate (descending)

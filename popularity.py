@@ -89,9 +89,11 @@ def scan_popularity(verbose: bool = False):
             # Get Spotify score
             spotify_score = track['spotify_score'] or 0
             try:
-                result = search_spotify_track(title, artist)
-                if result and result.get('popularity'):
-                    spotify_score = result.get('popularity', 0)
+                results = search_spotify_track(title, artist)
+                if results and isinstance(results, list) and len(results) > 0:
+                    # Select best match (highest popularity)
+                    best_match = max(results, key=lambda r: r.get('popularity', 0))
+                    spotify_score = best_match.get('popularity', 0)
                     if verbose:
                         logging.debug(f"Spotify popularity for {title}: {spotify_score}")
             except Exception as e:
@@ -186,9 +188,11 @@ def popularity_scan(verbose: bool = False):
             try:
                 artist_id = get_spotify_artist_id(artist)
                 if artist_id:
-                    spotify_result = search_spotify_track(title, artist, track.get("album"))
-                    if spotify_result:
-                        spotify_score = spotify_result.get("popularity", 0)
+                    spotify_results = search_spotify_track(title, artist, track.get("album"))
+                    if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
+                        # Select best match (highest popularity)
+                        best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
+                        spotify_score = best_match.get("popularity", 0)
             except Exception as e:
                 if verbose:
                     logging.debug(f"Spotify lookup failed for {artist} - {title}: {e}")

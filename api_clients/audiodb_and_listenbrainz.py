@@ -37,31 +37,26 @@ class ListenBrainzClient:
         if not self.enabled:
             return 0
         
-        if not mbid:
-            # Fallback: search by artist/title
+        # Primary: stats by MBID (if available)
+        if mbid:
             try:
-                url = f"{self.base_url}/recording/search"
-                params = {"artist_name": artist, "recording_name": title, "limit": 1}
-                res = self.session.get(url, params=params, timeout=10)
+                url = f"{self.base_url}/stats/recording/{mbid}"
+                res = self.session.get(url, timeout=10)
                 res.raise_for_status()
-                hits = res.json().get("recordings", [])
-                if hits:
-                    return int(hits[0].get("listen_count", 0))
+                data = res.json()
+                payload = data.get("payload", {})
+                count = int(payload.get("total_listen_count", 0))
+                if count > 0:
+                    logger.debug(f"ListenBrainz count for '{title}' (MBID): {count}")
+                    return count
             except Exception as e:
-                logger.debug(f"ListenBrainz fallback search failed for '{title}': {e}")
-            return 0
+                logger.debug(f"ListenBrainz MBID lookup failed for {mbid}: {e}")
         
-        # Primary: stats by MBID
-        try:
-            url = f"{self.base_url}/stats/recording/{mbid}/listen-count"
-            res = self.session.get(url, timeout=10)
-            res.raise_for_status()
-            data = res.json()
-            payload = data.get("payload", {})
-            return int(payload.get("count", 0))
-        except Exception as e:
-            logger.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
-            return 0
+        # Fallback: Without a reliable search endpoint, return 0
+        # The /1/recording/search endpoint is not available or deprecated
+        # ListenBrainz primarily works with MBIDs, not artist/title search
+        logger.debug(f"ListenBrainz count for {title}: 0 (no MBID available)")
+        return 0
 
 
 class AudioDbClient:

@@ -1375,7 +1375,6 @@ def slskd_search_results(search_id):
                         "sample_rate": file.sample_rate,
                         "length": file.length,
                         "duration": file.duration_formatted,
-                        "fileId": file.code
                     })
         
         response_count = len(responses) if responses else 0
@@ -1407,12 +1406,25 @@ def slskd_download():
         return jsonify({"error": "slskd integration not enabled"}), 400
     
     username = request.json.get("username", "")
-    file_code = request.json.get("fileId", "")
+    filename = request.json.get("filename", "")
     
-    if not username or not file_code:
-        return jsonify({"error": "Username and fileId required"}), 400
+    if not username or not filename:
+        return jsonify({"error": "Username and filename required"}), 400
     
     web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        client = SlskdClient(web_url, api_key, enabled=True)
+        success = client.download_file(username, filename)
+        
+        if success:
+            return jsonify({"status": "success", "message": "Download enqueued"})
+        else:
+            return jsonify({"error": "Failed to enqueue download"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
     api_key = slskd_config.get("api_key", "")
     
     try:
