@@ -115,6 +115,7 @@
         <table class="table table-hover mb-0">
           <thead class="d-none d-md-table-header-group">
             <tr>
+              <th style="width: 120px;">Art</th>
               <th>Album</th>
               <th class="text-center">Tracks</th>
               <th class="text-center">Avg ★</th>
@@ -126,6 +127,13 @@
           <tbody>
             {% for album in albums %}
               <tr class="d-flex flex-column d-md-table-row">
+                <td class="d-flex justify-content-between d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+                  <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
+                       alt="{{ album.album }}" 
+                       class="img-thumbnail"
+                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color);"
+                       onerror="this.style.display='none';">
+                </td>
                 <td class="d-flex justify-content-between d-md-table-cell">
                   <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
                   <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">

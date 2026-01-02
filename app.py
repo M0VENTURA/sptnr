@@ -3,7 +3,7 @@
 Sptnr Web UI - Flask application for managing music ratings and scans
 """
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file
 import sqlite3
 import yaml
 import os
@@ -13,8 +13,10 @@ import time
 from datetime import datetime
 import copy
 import json
+import io
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
+from start import create_retry_session
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -445,13 +447,31 @@ def track_detail(track_id):
     cursor.execute("SELECT * FROM tracks WHERE id = ?", (track_id,))
     track = cursor.fetchone()
     
+    # Get recommended genres from other tracks with similar titles or artists
+    recommended_genres = []
+    if track:
+        artist_name = track['artist']
+        cursor.execute("""
+            SELECT genres FROM tracks 
+            WHERE artist = ? AND genres IS NOT NULL AND genres != ''
+            LIMIT 10
+        """, (artist_name,))
+        genre_rows = cursor.fetchall()
+        genre_set = set()
+        for row in genre_rows:
+            if row['genres']:
+                # Parse comma-separated genres
+                genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
+                genre_set.update(genres)
+        recommended_genres = sorted(list(genre_set))
+    
     conn.close()
     
     if not track:
         flash("Track not found", "error")
         return redirect(url_for("dashboard"))
     
-    return render_template("track.html", track=track)
+    return render_template("track.html", track=track, recommended_genres=recommended_genres)
 
 
 @app.route("/track/<track_id>/edit", methods=["POST"])
@@ -1060,6 +1080,96 @@ def api_metadata():
         metadata = {"error": str(e)}
     
     return jsonify(metadata)
+
+
+@app.route("/api/album-art/<path:artist>/<path:album>")
+def api_album_art(artist, album):
+    """Get album art from Navidrome or MP3 files"""
+    try:
+        # First try to get from Navidrome
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        nav_users = cfg.get("navidrome_users", [])
+        if not nav_users:
+            nav = cfg.get("navidrome", {}) or {}
+            if nav.get("base_url"):
+                nav_users = [nav]
+        
+        if nav_users:
+            nav = nav_users[0]  # Use first Navidrome user
+            base_url = nav.get("base_url", "").rstrip("/")
+            username = nav.get("user", "")
+            password = nav.get("pass", "")
+            
+            if base_url:
+                try:
+                    session = create_retry_session(retries=3, backoff=0.3, status_forcelist=(429, 500, 502, 503, 504))
+                    # Try to get album cover via Navidrome REST API
+                    # Format: /rest/getCoverArt.view?u=user&p=pass&c=client&id=album_id
+                    
+                    # First, search for the album
+                    search_url = f"{base_url}/rest/search3.view"
+                    params = {
+                        'u': username,
+                        'p': password,
+                        'c': 'sptnr',
+                        'album': album,
+                        'v': '1.12.0',
+                        'f': 'json'
+                    }
+                    
+                    resp = session.get(search_url, params=params, timeout=10)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        albums = data.get('subsonic-response', {}).get('searchResult3', {}).get('album', [])
+                        if albums:
+                            album_id = albums[0].get('id')
+                            if album_id:
+                                # Get cover art
+                                cover_url = f"{base_url}/rest/getCoverArt.view"
+                                cover_params = {
+                                    'u': username,
+                                    'p': password,
+                                    'c': 'sptnr',
+                                    'id': album_id,
+                                    'size': '300'
+                                }
+                                cover_resp = session.get(cover_url, params=cover_params, timeout=10)
+                                if cover_resp.status_code == 200:
+                                    return send_file(
+                                        io.BytesIO(cover_resp.content),
+                                        mimetype='image/jpeg'
+                                    )
+                except Exception as e:
+                    pass  # Fall through to MP3 extraction
+        
+        # Try to extract from MP3 files
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+        try:
+            file_path = find_track_file(artist, album, "", music_root, timeout_seconds=3)
+        except:
+            file_path = None
+        
+        if file_path and os.path.exists(file_path):
+            try:
+                from mutagen.id3 import ID3
+                audio = ID3(file_path)
+                # APIC frame contains album art
+                for frame in audio.values():
+                    if frame.FrameID == 'APIC':
+                        return send_file(
+                            io.BytesIO(frame.data),
+                            mimetype=frame.mime
+                        )
+            except:
+                pass
+        
+        # Default placeholder if no art found
+        return send_file(
+            io.BytesIO(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'),
+            mimetype='image/png'
+        )
+    except Exception as e:
+        return {"error": str(e)}, 400
 
 
 if __name__ == "__main__":
