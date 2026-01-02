@@ -109,46 +109,68 @@ def read_mp3_metadata(file_path):
     return metadata
 
 
-def find_track_file(artist, album, title, music_root="/music"):
+def find_track_file(artist, album, title, music_root="/music", timeout_seconds=5):
     """
     Attempt to locate an MP3 file in the music directory.
-    Tries common path patterns.
+    Tries common path patterns with timeout protection.
     
     Args:
         artist: Artist name
         album: Album name
         title: Track title
         music_root: Root music directory
+        timeout_seconds: Maximum time to search
         
     Returns:
         str: Path to MP3 file or None
     """
+    import signal
+    import time
+    
     if not os.path.exists(music_root):
         return None
     
-    # Try common path patterns
-    patterns = [
+    start_time = time.time()
+    
+    # Try exact path first (fastest)
+    exact_patterns = [
         f"{music_root}/{artist}/{album}/{title}.mp3",
-        f"{music_root}/{artist}/{album}/*.mp3",
-        f"{music_root}/{artist}/**/{title}.mp3",
+        f"{music_root}/{artist} - {album}/{title}.mp3",
+        f"{music_root}/{artist}/{album}/{artist} - {title}.mp3",
     ]
     
-    for pattern in patterns:
-        try:
-            path = Path(pattern.replace('/**/', '/**/').replace('*.mp3', '*'))
-            if '**' in pattern:
-                files = list(Path(music_root).rglob('*.mp3'))
-                for f in files:
-                    if title.lower() in f.stem.lower() and artist.lower() in str(f).lower():
-                        return str(f)
-            else:
-                base_path = pattern.replace('*.mp3', '')
-                if os.path.isdir(base_path):
-                    for file in os.listdir(base_path):
-                        if file.endswith('.mp3'):
-                            return os.path.join(base_path, file)
-        except:
-            pass
+    for pattern in exact_patterns:
+        if time.time() - start_time > timeout_seconds:
+            return None
+        if os.path.exists(pattern):
+            return pattern
+    
+    # Try directory-based search (medium speed)
+    try:
+        album_dirs = [
+            f"{music_root}/{artist}/{album}",
+            f"{music_root}/{artist} - {album}",
+            f"{music_root}/{artist}/{album.split(' - ')[-1] if ' - ' in album else album}",
+        ]
+        
+        for album_dir in album_dirs:
+            if time.time() - start_time > timeout_seconds:
+                return None
+            
+            if os.path.isdir(album_dir):
+                # List files in directory (limited)
+                try:
+                    files = os.listdir(album_dir)
+                    for file in files[:100]:  # Limit to first 100 files
+                        if time.time() - start_time > timeout_seconds:
+                            return None
+                        
+                        if file.endswith('.mp3') and title.lower() in file.lower():
+                            return os.path.join(album_dir, file)
+                except:
+                    pass
+    except:
+        pass
     
     return None
 

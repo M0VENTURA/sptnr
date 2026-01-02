@@ -761,12 +761,29 @@ def api_metadata():
                 album = track_info.get("album", "")
                 title = track_info.get("title", "")
                 
-                # Try to find the file in /music directory
+                # Try to find the file in /music directory with timeout
                 music_root = os.environ.get("MUSIC_ROOT", "/music")
-                file_path = find_track_file(artist, album, title, music_root)
+                file_path = None
                 
-                if file_path:
-                    metadata = read_mp3_metadata(file_path)
+                try:
+                    # Use timeout to prevent hanging
+                    file_path = find_track_file(artist, album, title, music_root, timeout_seconds=3)
+                except Exception as e:
+                    # If file search fails, continue without file metadata
+                    pass
+                
+                if file_path and os.path.exists(file_path):
+                    try:
+                        metadata = read_mp3_metadata(file_path)
+                    except Exception as e:
+                        # If MP3 read fails, use database info
+                        metadata = {
+                            "title": title,
+                            "artist": artist,
+                            "album": album,
+                            "track_id": identifier,
+                            "note": f"MP3 read error: {str(e)}"
+                        }
                 else:
                     # Return database info if file not found
                     metadata = {
@@ -776,13 +793,22 @@ def api_metadata():
                         "track_id": identifier,
                         "note": "MP3 file not found in /music; showing database info"
                     }
-                    # Add scoring metadata from DB
-                    if track_info.get("spotify_score"):
-                        metadata["spotify_score"] = track_info.get("spotify_score")
-                    if track_info.get("lastfm_ratio"):
-                        metadata["lastfm_ratio"] = track_info.get("lastfm_ratio")
-                    if track_info.get("listenbrainz_count"):
-                        metadata["listenbrainz_count"] = track_info.get("listenbrainz_count")
+                
+                # Add scoring metadata from DB
+                if track_info.get("spotify_score"):
+                    metadata["spotify_score"] = track_info.get("spotify_score")
+                if track_info.get("lastfm_ratio"):
+                    metadata["lastfm_ratio"] = track_info.get("lastfm_ratio")
+                if track_info.get("listenbrainz_score"):
+                    metadata["listenbrainz_score"] = track_info.get("listenbrainz_score")
+                if track_info.get("final_score"):
+                    metadata["final_score"] = track_info.get("final_score")
+                if track_info.get("stars"):
+                    metadata["stars"] = track_info.get("stars")
+                if track_info.get("is_single"):
+                    metadata["is_single"] = bool(track_info.get("is_single"))
+                if track_info.get("single_confidence"):
+                    metadata["single_confidence"] = track_info.get("single_confidence")
         
         elif lookup_type == "album" and identifier:
             # Album lookup: artist/album format
