@@ -759,34 +759,40 @@ def scan_status():
 @app.route("/login", methods=["GET", "POST"])
 def login():
     """Login page"""
-    # If already logged in, redirect to dashboard
-    if 'username' in session:
-        return redirect(url_for('dashboard'))
-    
-    # If config doesn't exist, redirect to setup
-    if not os.path.exists(CONFIG_PATH):
-        return redirect(url_for('setup'))
-    
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    if _needs_setup(cfg):
-        return redirect(url_for('setup'))
-    
-    if request.method == 'POST':
-        username = request.form.get('username', '').strip()
-        password = request.form.get('password', '').strip()
-        
-        if _authenticate_navidrome(username, password):
-            session.permanent = True
-            session['username'] = username
-            flash(f'Welcome back, {username}!', 'success')
-            
-            # Redirect to next URL or dashboard
-            next_url = request.args.get('next')
-            if next_url:
-                return redirect(next_url)
+    try:
+        # If already logged in, redirect to dashboard
+        if 'username' in session:
             return redirect(url_for('dashboard'))
-        else:
-            flash('Invalid username or password. Please use your Navidrome credentials.', 'danger')
+        
+        # If config doesn't exist, redirect to setup
+        if not os.path.exists(CONFIG_PATH):
+            return redirect(url_for('setup'))
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        if _needs_setup(cfg):
+            return redirect(url_for('setup'))
+        
+        if request.method == 'POST':
+            username = request.form.get('username', '').strip()
+            password = request.form.get('password', '').strip()
+            
+            if _authenticate_navidrome(username, password):
+                session.permanent = True
+                session['username'] = username
+                flash(f'Welcome back, {username}!', 'success')
+                
+                # Redirect to next URL or dashboard
+                next_url = request.args.get('next')
+                if next_url:
+                    return redirect(next_url)
+                return redirect(url_for('dashboard'))
+            else:
+                flash('Invalid username or password. Please use your Navidrome credentials.', 'danger')
+    except Exception as e:
+        logging.error(f"Login error: {e}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Login system error: {str(e)}", "danger")
     
     return render_template('login.html')
 
