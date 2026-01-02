@@ -1,0 +1,111 @@
+{% extends "base.html" %}
+
+{% block title %}{{ track.title }} - Sptnr{% endblock %}
+
+{% block content %}
+<div class="container mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}">{{ track.album }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ track.title }}</li>
+        </ol>
+    </nav>
+    
+    <h1 class="mb-4">{{ track.title }}</h1>
+    
+    <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
+        <div class="row">
+            <div class="col-md-6">
+                <div class="mb-3">
+                    <label for="title" class="form-label">Title</label>
+                    <input type="text" class="form-control" id="title" name="title" value="{{ track.title }}" required>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="artist" class="form-label">Artist</label>
+                    <input type="text" class="form-control" id="artist" name="artist" value="{{ track.artist }}" required>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="album" class="form-label">Album</label>
+                    <input type="text" class="form-control" id="album" name="album" value="{{ track.album }}" required>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="stars" class="form-label">Rating (Stars)</label>
+                    <select class="form-select" id="stars" name="stars">
+                        <option value="0" {% if track.stars == 0 %}selected{% endif %}>0 Stars</option>
+                        <option value="1" {% if track.stars == 1 %}selected{% endif %}>1 Star</option>
+                        <option value="2" {% if track.stars == 2 %}selected{% endif %}>2 Stars</option>
+                        <option value="3" {% if track.stars == 3 %}selected{% endif %}>3 Stars</option>
+                        <option value="4" {% if track.stars == 4 %}selected{% endif %}>4 Stars</option>
+                        <option value="5" {% if track.stars == 5 %}selected{% endif %}>5 Stars</option>
+                    </select>
+                </div>
+                
+                <div class="mb-3 form-check">
+                    <input type="checkbox" class="form-check-input" id="is_single" name="is_single" {% if track.is_single == 1 %}checked{% endif %}>
+                    <label class="form-check-label" for="is_single">
+                        Is Single
+                    </label>
+                </div>
+                
+                <div class="mb-3">
+                    <label for="single_confidence" class="form-label">Single Detection Confidence</label>
+                    <select class="form-select" id="single_confidence" name="single_confidence">
+                        <option value="low" {% if track.single_confidence == 'low' %}selected{% endif %}>Low</option>
+                        <option value="medium" {% if track.single_confidence == 'medium' %}selected{% endif %}>Medium</option>
+                        <option value="high" {% if track.single_confidence == 'high' %}selected{% endif %}>High</option>
+                    </select>
+                </div>
+            </div>
+            
+            <div class="col-md-6">
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">Metadata</h5>
+                    </div>
+                    <div class="card-body">
+                        <table class="table table-sm">
+                            <tr>
+                                <th>Track ID:</th>
+                                <td>{{ track.id }}</td>
+                            </tr>
+                            <tr>
+                                <th>MBID:</th>
+                                <td>{{ track.mbid or '-' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Spotify ID:</th>
+                                <td>{{ track.spotify_id or '-' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Last.fm Listeners:</th>
+                                <td>{{ track.lastfm_listeners or '-' }}</td>
+                            </tr>
+                            <tr>
+                                <th>ListenBrainz Plays:</th>
+                                <td>{{ track.listenbrainz_count or '-' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Updated By:</th>
+                                <td>{{ track.updated_by or '-' }}</td>
+                            </tr>
+                            <tr>
+                                <th>Last Scanned:</th>
+                                <td>{{ track.last_scanned or 'Never' }}</td>
+                            </tr>
+                        </table>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <button type="submit" class="btn btn-primary">Save Changes</button>
+        <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">Cancel</a>
+    </form>
+</div>
+{% endblock %}

@@ -135,8 +135,18 @@ def create_default_config(path):
 
 def load_config():
     if not os.path.exists(CONFIG_PATH):
-        print(f"⚠️ Config file not found at {CONFIG_PATH}. Creating default config...")
-        create_default_config(CONFIG_PATH)
+        print(f"⚠️ Config file not found at {CONFIG_PATH}.")
+        # Try to copy from built-in template in /app/config/config.yaml
+        template_path = "/app/config/config.yaml"
+        if os.path.exists(template_path):
+            print(f"📋 Copying default config from {template_path}...")
+            import shutil
+            os.makedirs(os.path.dirname(CONFIG_PATH), exist_ok=True)
+            shutil.copy2(template_path, CONFIG_PATH)
+            print(f"✅ Default config copied to {CONFIG_PATH}")
+        else:
+            print(f"⚠️ No template found. Creating default config...")
+            create_default_config(CONFIG_PATH)
     with open(CONFIG_PATH, "r") as f:
         return yaml.safe_load(f)
 
@@ -365,8 +375,19 @@ logging.basicConfig(
 )
 
 
+# ✅ Database connection helper with WAL mode and increased timeout
+def get_db_connection():
+    """
+    Create a database connection with WAL mode for better concurrency.
+    WAL mode allows multiple readers and one writer simultaneously.
+    """
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn.execute("PRAGMA journal_mode=WAL")
+    return conn
+
+
 def save_to_db(track_data):
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
 
     # Prepare multi-value fields
@@ -452,7 +473,7 @@ def save_to_db(track_data):
 def get_current_track_rating(track_id: str) -> int:
     """Query the current rating for a track from the database. Returns 0 if not found."""
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT stars FROM tracks WHERE id = ?", (track_id,))
         row = cursor.fetchone()
@@ -1678,7 +1699,7 @@ def set_track_rating_for_all(track_id, stars):
 def refresh_all_playlists_from_db():
     print("🔄 Refreshing smart playlists for all artists from DB cache (no track rescans)...")
     # Pull distinct artists that have cached tracks
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT DISTINCT artist FROM tracks")
     artists = [row[0] for row in cursor.fetchall()]
@@ -1687,7 +1708,7 @@ def refresh_all_playlists_from_db():
         print("⚠️ No cached tracks in DB. Skipping playlist refresh.")
         return
     for name in artists:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT id, artist, album, title, stars FROM tracks WHERE artist = ?", (name,))
         rows = cursor.fetchall()
@@ -1934,7 +1955,7 @@ def build_artist_index(verbose: bool = False):
         res = requests.get(url, params=params)
         res.raise_for_status()
         index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         artist_map = {}
         for group in index:
@@ -1976,23 +1997,53 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
         return
 
     total_written = 0
+    total_artists = len(artist_map_local)
+    artist_count = 0
+    
+    print(f"📊 Starting scan of {total_artists} artists...")
+    
     for name, info in artist_map_local.items():
+        artist_count += 1
         artist_id = info.get("id")
         if not artist_id:
+            print(f"⚠️ [{artist_count}/{total_artists}] Skipping '{name}' (no artist ID)")
             continue
+        
+        print(f"🎨 [{artist_count}/{total_artists}] Processing artist: {name}")
+        logging.info(f"Processing artist {artist_count}/{total_artists}: {name} (ID: {artist_id})")
+        
         try:
             albums = fetch_artist_albums(artist_id)
-        except Exception:
+            if albums:
+                print(f"   📀 Found {len(albums)} albums")
+                logging.info(f"Found {len(albums)} albums for artist '{name}'")
+        except Exception as e:
+            print(f"   ❌ Failed to fetch albums: {e}")
+            logging.error(f"Failed to fetch albums for '{name}': {e}")
             albums = []
+        
+        album_count = 0
         for alb in albums:
+            album_count += 1
             album_name = alb.get("name") or ""
             album_id = alb.get("id")
             if not album_id:
                 continue
+            
+            print(f"   📀 [{album_count}/{len(albums)}] Album: {album_name[:50]}...")
+            logging.info(f"Scanning album {album_count}/{len(albums)}: {album_name}")
+            
             try:
                 tracks = fetch_album_tracks(album_id)
-            except Exception:
+                if tracks:
+                    print(f"      🎵 Found {len(tracks)} tracks")
+                    logging.info(f"Found {len(tracks)} tracks in album '{album_name}'")
+            except Exception as e:
+                print(f"      ❌ Failed to fetch tracks: {e}")
+                logging.error(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
+            
+            tracks_written = 0
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
@@ -2038,9 +2089,19 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 try:
                     save_to_db(td)
                     total_written += 1
+                    tracks_written += 1
                 except Exception as e:
                     logging.debug(f"Failed to save track {track_id} -> {e}")
+            
+            if tracks_written > 0:
+                print(f"      ✅ Saved {tracks_written} tracks to DB")
+                logging.info(f"Saved {tracks_written} tracks from album '{album_name}'")
+        
+        if album_count > 0:
+            print(f"   ✅ Completed {album_count} albums for '{name}'")
+            
     print(f"✅ Library scan complete. Tracks written/updated: {total_written}")
+    logging.info(f"Library scan complete. Total tracks written/updated: {total_written}")
 
 
 # --- Main Rating Logic ---
@@ -2048,7 +2109,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
 def update_artist_stats(artist_id, artist_name):
     album_count = len(fetch_artist_albums(artist_id))
     track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_id))
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
@@ -2059,7 +2120,7 @@ def update_artist_stats(artist_id, artist_name):
 
 
 def load_artist_map():
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
     rows = cursor.fetchall()
@@ -2102,7 +2163,7 @@ def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | N
     for (artist, album). Timestamp is in '%Y-%m-%dT%H:%M:%S' or None if missing.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
@@ -2122,7 +2183,7 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
     Useful to avoid skipping albums that have no cached tracks yet.
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
@@ -3026,7 +3087,7 @@ if __name__ == "__main__":
 
     if refresh_playlists_on_start:
         # Guard: only useful if tracks exist in DB
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT COUNT(*) FROM tracks")
         has_tracks = (cursor.fetchone()[0] or 0) > 0
@@ -3066,7 +3127,7 @@ if __name__ == "__main__":
 
 
 # ✅ Load artist stats from DB instead of JSON
-conn = sqlite3.connect(DB_PATH)
+conn = get_db_connection()
 cursor = conn.cursor()
 cursor.execute("""
     SELECT artist_id, artist_name, album_count, track_count, last_updated
@@ -3096,7 +3157,7 @@ if not artist_map:
 
 # Auto-populate track cache when empty (or when explicitly enabled)
 try:
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(*) FROM tracks")
     has_tracks = (cursor.fetchone()[0] or 0) > 0
@@ -3111,7 +3172,7 @@ if not has_tracks:
     try:
         scan_library_to_db(verbose=verbose if 'verbose' in locals() else False)
         # reload artist_map from DB after scan
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
         artist_stats = cursor.fetchall()
@@ -3146,7 +3207,7 @@ if artist_list:
         # ✅ If force is enabled, clear cached data for this artist
         if force:
             print(f"⚠️ Force enabled: clearing cached data for artist '{name}'...")
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("DELETE FROM tracks WHERE artist = ?", (name,))
             cursor.execute("DELETE FROM artist_stats WHERE artist_name = ?", (name,))
@@ -3160,7 +3221,7 @@ if artist_list:
         # ✅ Update artist_stats after rating
         album_count = len(fetch_artist_albums(artist_info['id']))
         track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
@@ -3173,7 +3234,7 @@ if artist_list:
 # ✅ If force is enabled for batch mode, clear entire cache before scanning
 if force and batchrate:
     print("⚠️ Force enabled: clearing entire cached library...")
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("DELETE FROM tracks")
     cursor.execute("DELETE FROM artist_stats")
@@ -3216,7 +3277,7 @@ if batchrate:
         navidrome_track_count = 0
     
     # Get counts from database
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
     db_artist_count = cursor.fetchone()[0]
@@ -3235,7 +3296,7 @@ if batchrate:
         print("✅ Database is in sync with Navidrome. Refreshing artist index...")
         build_artist_index(verbose=verbose)
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
         SELECT artist_id, artist_name, album_count, track_count, last_updated
@@ -3277,7 +3338,7 @@ if batchrate:
 
             album_count = len(fetch_artist_albums(artist_info['id']))
             track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
                 INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
@@ -3291,7 +3352,7 @@ if batchrate:
 if perpetual:
     print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
     while True:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT artist_id, artist_name FROM artist_stats
@@ -3301,7 +3362,7 @@ if perpetual:
         conn.close()
 
         if not rows:
-            conn = sqlite3.connect(DB_PATH)
+            conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("SELECT COUNT(*) FROM artist_stats")
             total_artists = cursor.fetchone()[0]
@@ -3310,7 +3371,7 @@ if perpetual:
             if total_artists == 0:
                 print("⚠️ No artists found in DB; rebuilding index from Navidrome...")
                 build_artist_index()
-                conn = sqlite3.connect(DB_PATH)
+                conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
                     SELECT artist_id, artist_name FROM artist_stats

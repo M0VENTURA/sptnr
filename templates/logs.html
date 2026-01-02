@@ -1,0 +1,86 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <h1 class="mb-4">Application Logs</h1>
+    
+    <div class="mb-3">
+        <button id="toggleStream" class="btn btn-primary">Start Live Stream</button>
+        <button id="clearLogs" class="btn btn-warning">Clear Display</button>
+        <span class="ms-3 text-muted">Log file: {{ log_path }}</span>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            <pre id="logOutput" class="bg-dark text-light p-3" style="height: 600px; overflow-y: scroll; font-family: monospace; font-size: 12px;"></pre>
+        </div>
+    </div>
+</div>
+
+<script>
+let eventSource = null;
+let isStreaming = false;
+
+document.getElementById('toggleStream').addEventListener('click', function() {
+    if (isStreaming) {
+        stopStream();
+    } else {
+        startStream();
+    }
+});
+
+document.getElementById('clearLogs').addEventListener('click', function() {
+    document.getElementById('logOutput').textContent = '';
+});
+
+function startStream() {
+    // First, load recent logs
+    fetch('/logs/view?lines=100')
+        .then(response => response.json())
+        .then(data => {
+            const logOutput = document.getElementById('logOutput');
+            logOutput.textContent = data.lines.join('');
+            logOutput.scrollTop = logOutput.scrollHeight;
+        });
+    
+    // Then start streaming new logs
+    eventSource = new EventSource('/logs/stream');
+    
+    eventSource.onmessage = function(event) {
+        const logOutput = document.getElementById('logOutput');
+        logOutput.textContent += event.data;
+        logOutput.scrollTop = logOutput.scrollHeight;
+    };
+    
+    eventSource.onerror = function(event) {
+        console.error('EventSource error:', event);
+        stopStream();
+    };
+    
+    isStreaming = true;
+    document.getElementById('toggleStream').textContent = 'Stop Live Stream';
+    document.getElementById('toggleStream').classList.remove('btn-primary');
+    document.getElementById('toggleStream').classList.add('btn-danger');
+}
+
+function stopStream() {
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+    
+    isStreaming = false;
+    document.getElementById('toggleStream').textContent = 'Start Live Stream';
+    document.getElementById('toggleStream').classList.remove('btn-danger');
+    document.getElementById('toggleStream').classList.add('btn-primary');
+}
+
+// Auto-scroll to bottom on page load
+window.addEventListener('load', function() {
+    const logOutput = document.getElementById('logOutput');
+    logOutput.scrollTop = logOutput.scrollHeight;
+});
+</script>
+{% endblock %}
