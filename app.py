@@ -935,33 +935,49 @@ def slskd_search_results(search_id):
             return jsonify({"error": f"Failed to get search status: {status_resp.status_code}"}), 500
         
         search_data = status_resp.json()
+        
+        # Handle cases where search_data might be None or empty
+        if not search_data:
+            return jsonify({
+                "results": [],
+                "state": "Searching",
+                "responseCount": 0,
+                "isComplete": False
+            })
+        
         state = search_data.get("state", "Searching")
         responses = search_data.get("responses", [])
         
+        # Debug logging
+        print(f"[SLSKD] Search {search_id} - State: {state}, Responses: {len(responses) if responses else 0}")
+        
         # Flatten file results from all responses
         results = []
-        for response in responses:
-            username = response.get("username", "Unknown")
-            files = response.get("files", [])
-            
-            for file in files[:100]:  # Increased limit per user
-                results.append({
-                    "username": username,
-                    "filename": file.get("filename", ""),
-                    "size": file.get("size", 0),
-                    "bitrate": file.get("bitRate", 0),
-                    "length": file.get("length", 0),
-                    "fileId": file.get("code", "")
-                })
+        if responses and isinstance(responses, list):
+            for response in responses:
+                username = response.get("username", "Unknown")
+                files = response.get("files", [])
+                
+                if files and isinstance(files, list):
+                    for file in files[:100]:  # Limit per user
+                        results.append({
+                            "username": username,
+                            "filename": file.get("filename", ""),
+                            "size": file.get("size", 0),
+                            "bitrate": file.get("bitRate", 0),
+                            "length": file.get("length", 0),
+                            "fileId": file.get("code", "")
+                        })
         
         return jsonify({
             "results": results,
             "state": state,
-            "responseCount": len(responses),
+            "responseCount": len(responses) if responses else 0,
             "isComplete": state in ["Completed", "Cancelled"]
         })
         
     except Exception as e:
+        print(f"[SLSKD] Error getting search results: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

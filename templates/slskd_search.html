@@ -115,12 +115,14 @@ function startSearch() {
     currentSearchId = data.searchId;
     document.getElementById('searchStatusText').textContent = 'Searching the Soulseek network...';
     
-    // Start polling for results
-    if (pollInterval) clearInterval(pollInterval);
-    pollInterval = setInterval(pollResults, 500);
-    
-    // Also poll immediately
-    pollResults();
+    // Give slskd a moment to start finding results, then start polling
+    setTimeout(() => {
+      if (pollInterval) clearInterval(pollInterval);
+      pollInterval = setInterval(pollResults, 1000);  // Poll every 1 second
+      
+      // Also poll immediately
+      pollResults();
+    }, 500);
   })
   .catch(error => {
     showError('Network error: ' + error.message);
