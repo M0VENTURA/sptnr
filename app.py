@@ -866,7 +866,7 @@ def downloads():
 
 @app.route("/api/slskd/search", methods=["POST"])
 def slskd_search():
-    """Proxy endpoint for slskd search API"""
+    """Proxy endpoint for slskd search API - returns search ID for polling"""
     cfg, _ = _read_yaml(CONFIG_PATH)
     slskd_config = cfg.get("slskd", {})
     
@@ -899,58 +899,66 @@ def slskd_search():
         if not search_id:
             return jsonify({"error": "No search ID returned"}), 500
         
-        # Poll for results (max 45 seconds)
-        import time
-        results = []
-        for _ in range(90):
-            time.sleep(0.5)
-            
-            # Get search status/results
-            status_url = f"{web_url}/api/v0/searches/{search_id}"
-            status_resp = req.get(status_url, headers=headers, timeout=10)
-            
-            if status_resp.status_code == 200:
-                search_data = status_resp.json()
-                
-                # Check if search is complete or has results
-                if search_data.get("state") in ["Completed", "Cancelled"]:
-                    # Get all responses
-                    responses = search_data.get("responses", [])
-                    
-                    # Flatten file results from all responses
-                    for response in responses:
-                        username = response.get("username", "Unknown")
-                        files = response.get("files", [])
-                        
-                        for file in files[:50]:  # Limit per user
-                            results.append({
-                                "username": username,
-                                "filename": file.get("filename", ""),
-                                "size": file.get("size", 0),
-                                "bitrate": file.get("bitRate", 0),
-                                "length": file.get("length", 0),
-                                "fileId": file.get("code", "")
-                            })
-                    
-                    break
-                
-                # If still searching but we have some results, we can return partial
-                if len(search_data.get("responses", [])) > 0:
-                    responses = search_data.get("responses", [])
-                    for response in responses:
-                        username = response.get("username", "Unknown")
-                        files = response.get("files", [])
-                        for file in files[:50]:
-                            results.append({
-                                "username": username,
-                                "filename": file.get("filename", ""),
-                                "size": file.get("size", 0),
-                                "bitrate": file.get("bitRate", 0),
-                                "length": file.get("length", 0),
-                                "fileId": file.get("code", "")
-                            })
+        # Return search ID immediately for client-side polling
+        return jsonify({
+            "searchId": search_id,
+            "status": "searching"
+        })
         
-        return jsonify({"results": results, "searchId": search_id})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/search/<search_id>", methods=["GET"])
+def slskd_search_results(search_id):
+    """Poll for Soulseek search results"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req
+        
+        headers = {"X-API-Key": api_key} if api_key else {}
+        
+        # Get search status/results
+        status_url = f"{web_url}/api/v0/searches/{search_id}"
+        status_resp = req.get(status_url, headers=headers, timeout=10)
+        
+        if status_resp.status_code != 200:
+            return jsonify({"error": f"Failed to get search status: {status_resp.status_code}"}), 500
+        
+        search_data = status_resp.json()
+        state = search_data.get("state", "Searching")
+        responses = search_data.get("responses", [])
+        
+        # Flatten file results from all responses
+        results = []
+        for response in responses:
+            username = response.get("username", "Unknown")
+            files = response.get("files", [])
+            
+            for file in files[:100]:  # Increased limit per user
+                results.append({
+                    "username": username,
+                    "filename": file.get("filename", ""),
+                    "size": file.get("size", 0),
+                    "bitrate": file.get("bitRate", 0),
+                    "length": file.get("length", 0),
+                    "fileId": file.get("code", "")
+                })
+        
+        return jsonify({
+            "results": results,
+            "state": state,
+            "responseCount": len(responses),
+            "isComplete": state in ["Completed", "Cancelled"]
+        })
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -1452,6 +1460,18 @@ def smart_playlists():
     return render_template("smart_playlists.html")
 
 
+@app.route("/slskd-search")
+def slskd_search_page():
+    """Soulseek search UI page"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        flash("Soulseek (slskd) is not enabled. Configure it in settings.", "warning")
+    
+    return render_template("slskd_search.html", slskd_enabled=slskd_config.get("enabled", False))
+
+
 @app.route("/downloads-monitor")
 def downloads_monitor():
     """Downloads monitoring UI page"""
@@ -1549,18 +1569,40 @@ def slskd_status():
         
         downloads = resp.json()
         
-        # Format downloads
+        # Format downloads - handle both dict and list responses
         active_downloads = []
-        for username, files in downloads.items():
-            if isinstance(files, list):
-                for file_data in files:
+        
+        if isinstance(downloads, dict):
+            # Dictionary format: {username: [files]}
+            for username, files in downloads.items():
+                if isinstance(files, list):
+                    for file_data in files:
+                        state = file_data.get("state", "")
+                        bytes_transferred = file_data.get("bytesTransferred", 0)
+                        size = file_data.get("size", 0)
+                        progress = (bytes_transferred / size * 100) if size > 0 else 0
+                        
+                        active_downloads.append({
+                            "username": username,
+                            "filename": file_data.get("filename", ""),
+                            "state": state,
+                            "progress": round(progress, 2),
+                            "bytesTransferred": bytes_transferred,
+                            "size": size,
+                            "averageSpeed": file_data.get("averageSpeed", 0),
+                            "remoteToken": file_data.get("remoteToken", "")
+                        })
+        elif isinstance(downloads, list):
+            # List format: [download objects with username field]
+            for file_data in downloads:
+                if isinstance(file_data, dict):
                     state = file_data.get("state", "")
                     bytes_transferred = file_data.get("bytesTransferred", 0)
                     size = file_data.get("size", 0)
                     progress = (bytes_transferred / size * 100) if size > 0 else 0
                     
                     active_downloads.append({
-                        "username": username,
+                        "username": file_data.get("username", "Unknown"),
                         "filename": file_data.get("filename", ""),
                         "state": state,
                         "progress": round(progress, 2),
