@@ -8,7 +8,7 @@
         <h1 class="h3 mb-1">
             <i class="bi bi-download"></i> Downloads Manager
         </h1>
-        <p class="text-muted mb-0">Automatically organize MP3 files from /downloads and add to your music library</p>
+        <p class="text-muted mb-0">Automatically organize MP3 files from {{ downloads_dir }} and add to your music library</p>
     </div>
 
     <!-- Information Card -->
@@ -24,7 +24,7 @@
                     <div class="text-center">
                         <div style="font-size: 2rem; margin-bottom: 0.5rem;">📂</div>
                         <strong>1. Drop MP3s</strong>
-                        <p class="text-muted small mt-1">Place MP3 files in <code>/downloads</code></p>
+                        <p class="text-muted small mt-1">Place MP3 files in <code>{{ downloads_dir }}</code></p>
                     </div>
                 </div>
                 <div class="col-md-3">
@@ -68,7 +68,7 @@
                     <i class="bi bi-play-fill"></i> Process All Files
                 </button>
                 <button type="button" class="btn btn-outline-secondary" onclick="openDownloadsFolder()">
-                    <i class="bi bi-folder-open"></i> Open /downloads
+                    <i class="bi bi-folder-open"></i> Open {{ downloads_dir }}
                 </button>
             </div>
             <div class="mt-3">
