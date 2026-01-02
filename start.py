@@ -1000,13 +1000,7 @@ def discogs_official_video_signal(
     forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
     allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
 
-    # ---- Small helpers -------------------------------------------------------
-    def _search(kind: str) -> list:
-        return _discogs_search(session, headers, f"{artist} {title}", kind=kind, per_page=per_page, timeout=timeout)
-
-    def _release_context_compatible(rel_json: dict, *, require_live: bool, forbid_live: bool) -> bool:
-        return _release_context_compatible_discogs(rel_json, require_live, forbid_live)
-
+    # ---- Release inspection helper -------------------------------------------
     def _inspect_release(rel_id: int, *, require_live: bool, forbid_live: bool, allow_live_for_video: bool) -> dict | None:
         """
         Pull the release, apply context compatibility, then scan videos:
@@ -1056,7 +1050,7 @@ def discogs_official_video_signal(
 
         return best
     # ---- Release search & shortlist (REVISED) --------------------------------
-    results = _search("release")
+    results = _discogs_search(session, headers, f"{artist} {title}", kind="release", per_page=per_page, timeout=timeout)
     if not results:
         res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
         _DISCOGS_VID_CACHE[cache_key] = res
@@ -1432,88 +1426,7 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, fl
         logging.debug(f"MusicBrainz suggested MBID lookup failed for '{title}' by '{artist}': {e}")
         return "", 0.0
 
-def detect_single_status(
-    title: str,
-    artist: str,
-    *,
-    youtube_api_key: str | None = None,
-    discogs_token: str | None = None,
-    known_list: list[str] | None = None,
-    use_lastfm: bool = False,
-    min_sources: int = 1,
-    album_context: dict | None = None,
-    permissive_fallback: bool = False,
-    spotify_hint: bool = False,   # IMPORTANT: pass True ONLY if Spotify itself matched (not short_release)
-) -> dict:
-    """
-    New decision model:
-      - Hard stop: Discogs Single -> 5★ single (is_single=True, five_star=True).
-      - Hard stop: Discogs Video + Spotify -> 5★ single.
-      - Continue: If Discogs Video or Spotify hit (at least one), keep looking at other sources
-        until we have 2 total matches -> 5★ single.
-      - Otherwise -> not a 5★ single for this pass.
-
-    Returns:
-      {
-        "is_single": bool,         # True only when confirmed by discogs single OR two matches rule
-        "confidence": "high"|"medium"|"low",
-        "sources": [ ... ],        # accumulated sources
-        "five_star": bool          # explicit flag to grant 5★ upstream
-      }
-    """
-    # Known list remains authoritative
-    if known_list and title in known_list:
-        return {"is_single": True, "confidence": "high", "sources": ["known_list"], "five_star": True}
-    sources: set[str] = set()
-    if spotify_hint:
-        sources.add("spotify")
-    discogs_video_hit = False
-    # 1) Discogs Official Video — do NOT return early (unless combined with Spotify)
-    if discogs_token:
-        try:
-            dv = discogs_official_video_signal(
-                title, artist,
-                discogs_token=discogs_token,
-                album_context=album_context,
-                permissive_fallback=permissive_fallback or CONTEXT_FALLBACK_STUDIO,
-            )
-            if dv.get("match"):
-                discogs_video_hit = True
-                sources.add("discogs_video")
-        except Exception as e:
-            logging.debug(f"Discogs video check failed for '{title}': {e}")
-    # 2) Discogs Single — hard stop
-    if discogs_token:
-        try:
-            if is_discogs_single(title, artist, album_context=album_context):
-                sources.add("discogs")
-                return {"is_single": True, "confidence": "high", "sources": sorted(sources), "five_star": True}
-        except Exception as e:
-            logging.debug(f"Discogs single check failed for '{title}': {e}")
-    # 3) Two‑match confirmation: Discogs Video + Spotify — hard stop
-    if discogs_video_hit and ("spotify" in sources):
-        return {"is_single": True, "confidence": "high", "sources": sorted(sources), "five_star": True}
-    # 4) Continue only if at least one of {video, spotify} matched
-    must_continue = discogs_video_hit or ("spotify" in sources)
-    # 5) Accumulate other sources and check for 2 matches total
-    try:
-        if is_musicbrainz_single(title, artist):
-            sources.add("musicbrainz")
-    except Exception as e:
-        logging.debug(f"MusicBrainz check failed for '{title}': {e}")
-    try:
-        if use_lastfm and is_lastfm_single(title, artist):
-            sources.add("lastfm")
-    except Exception as e:
-        logging.debug(f"Last.fm single check failed for '{title}': {e}")
-    # If we had at least one of {video, spotify}, confirm when total matches >= 2
-    eligible_sources = {"spotify", "discogs_video", "musicbrainz", "lastfm"}
-    total_matches = len(sources & eligible_sources)
-    if must_continue and total_matches >= 2:
-        return {"is_single": True, "confidence": "high", "sources": sorted(sources), "five_star": True}
-    # No confirmation -> not a 5★ single for now
-    confidence = "medium" if len(sources) >= 1 else "low"
-    return {"is_single": False, "confidence": confidence, "sources": sorted(sources), "five_star": False}
+# --- Genre Helpers ---
 
 def get_discogs_genres(title, artist):
     """
@@ -1607,11 +1520,6 @@ def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
     except Exception as e:
         logging.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
         return []
-
-def version_requested(track_title):
-    """Check if track title suggests a live or remix version."""
-    keywords = ["live", "remix"]
-    return any(k in track_title.lower() for k in keywords)
 
 def is_valid_version(track_title, allow_live_remix=False):
     """Validate track version against blacklist and whitelist."""
@@ -3044,16 +2952,10 @@ if __name__ == "__main__":
     parser.add_argument("--sync", action="store_true", help="Push ratings to Navidrome after calculation")
     parser.add_argument("--force", action="store_true", help="Force re-scan of all tracks")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
-    parser.add_argument("--selftest", action="store_true", help="Run single-gate self-tests and exit")
     parser.add_argument("--refresh-playlists", action="store_true",
                         help="Recreate smart playlists for all artists without rescanning tracks")
 
     args = parser.parse_args()
-
-    # ✅ Run self-test and exit immediately if requested
-    if args.selftest:
-        _self_test_single_gate()
-        sys.exit(0)
 
     # ✅ Update config.yaml with CLI overrides if provided
     def update_config_with_cli(args, config, config_path=CONFIG_PATH):
@@ -3277,6 +3179,10 @@ if force and batchrate:
 # 🔧 Always run batch rating when requested (even if force just ran)
 if batchrate:
     print("ℹ️ Running full library batch rating based on DB...")
+    
+    # Always rebuild artist index before batch rating to ensure fresh artist IDs
+    print("🔄 Refreshing artist index to ensure valid artist IDs...")
+    build_artist_index()
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
@@ -3297,28 +3203,6 @@ if batchrate:
         }
         for row in artist_stats
     }
-
-
-    if not artist_map:
-        print("⚠️ Artist index is empty; rebuilding once more...")
-        build_artist_index()
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT artist_id, artist_name, album_count, track_count, last_updated
-            FROM artist_stats
-        """)
-        artist_stats = cursor.fetchall()
-        conn.close()
-        artist_map = {
-            row[1]: {
-                "id": row[0],
-                "album_count": row[2],
-                "track_count": row[3],
-                "last_updated": row[4],
-            }
-            for row in artist_stats
-        }
 
     if not artist_map:
         print("❌ No artists found after rebuild. Aborting batch rating.")
