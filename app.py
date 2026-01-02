@@ -632,6 +632,10 @@ def artist_detail(name):
     
     conn.close()
     
+    # Convert Row to dict for template access
+    if artist_stats:
+        artist_stats = dict(artist_stats)
+    
     # Aggregate genres from all tracks by this artist
     genres = aggregate_genres_from_tracks(name, DB_PATH)
     
