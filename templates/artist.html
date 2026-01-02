@@ -1,61 +1,107 @@
 
 {% extends "base.html" %}
-{% block title %}{{ artist }} · Sptnr{% endblock %}
+
+{% block title %}{{ artist_name }} · Sptnr{% endblock %}
+
 {% block content %}
+<div class="container mt-4">
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+      <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
+    </ol>
+  </nav>
 
-<div class="d-flex justify-content-between align-items-center mb-3">
-  <h1 class="h3 mb-0">{{ artist }}</h1>
-  <div class="btn-group">
-    <a class="btn btn-outline-secondary" href="{{ url_for('dashboard') }}">Back</a>
-    <a class="btn btn-warning" href="{{ url_for('scan_artist', artist=artist) }}">Scan This Artist</a>
+  <div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+      <h1 class="h3 mb-1">{{ artist_name }}</h1>
+      <p class="text-muted mb-0">Artist overview</p>
+    </div>
+    <div class="btn-group">
+      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">Back</a>
+      <form class="d-inline" action="{{ url_for('scan_start') }}" method="post">
+        <input type="hidden" name="scan_type" value="artist">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <button type="submit" class="btn btn-warning">Scan This Artist</button>
+      </form>
+    </div>
   </div>
-</div>
 
-{% if tracks and tracks|length > 0 %}
-  <div class="table-responsive">
-    <table class="table table-bordered table-hover align-middle">
-      <thead class="table-light">
-        <tr>
-          <th scope="col">Title</th>
-          <th scope="col">Album</th>
-          <th scope="col" class="text-center">Stars</th>
-          <th scope="col">MBID</th>
-          <th scope="col">Suggested MBID</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for t in tracks %}
-          {% set title = t[0] %}
-          {% set album = t[1] %}
-          {% set stars = t[2] %}
-          {% set mbid = t[3] %}
-          {% set suggested = t[4] %}
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="text-muted">Albums</div>
+          <div class="h4 mb-0">{{ stats.album_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="text-muted">Tracks</div>
+          <div class="h4 mb-0">{{ stats.track_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="text-muted">Avg Rating</div>
+          <div class="h4 mb-0">{{ stats.avg_stars|round(2) if stats.avg_stars else "—" }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card h-100">
+        <div class="card-body">
+          <div class="text-muted">5★ Tracks</div>
+          <div class="h4 mb-0">{{ stats.five_star_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% if albums and albums|length > 0 %}
+    <div class="table-responsive">
+      <table class="table table-striped table-hover align-middle">
+        <thead>
           <tr>
-            <td>{{ title }}</td>
-            <td>{{ album }}</td>
-            <td class="text-center">
-              {% if stars %}
-                {% for _ in range(stars|int) %}★{% endfor %}
-                {% for _ in range(5 - (stars|int if stars else 0)) %}☆{% endfor %}
-              {% else %}
-                <span class="text-muted">No rating</span>
-              {% endif %}
-            </td>
-            <td class="monospace">
-              {% if mbid %}{{ mbid }}{% else %}<span class="text-muted">—</span>{% endif %}
-            </td>
-            <td class="monospace">
-              {% if suggested %}{{ suggested }}{% else %}<span class="text-muted">—</span>{% endif %}
-            </td>
+            <th>Album</th>
+            <th class="text-center">Tracks</th>
+            <th class="text-center">Avg ★</th>
+            <th class="text-center">Singles</th>
+            <th class="text-center">Last Scanned</th>
+            <th class="text-center">Open</th>
           </tr>
-        {% endfor %}
-      </tbody>
-    </table>
-  </div>
-{% else %}
-  <div class="alert alert-secondary">
-    No tracks found for <strong>{{ artist }}</strong>.
-  </div>
-{% endif %}
-
+        </thead>
+        <tbody>
+          {% for album in albums %}
+            <tr>
+              <td>{{ album.album }}</td>
+              <td class="text-center">{{ album.track_count }}</td>
+              <td class="text-center">{{ album.avg_stars|round(2) if album.avg_stars else "—" }}</td>
+              <td class="text-center">{{ album.singles_count }}</td>
+              <td class="text-center">
+                {% if album.last_updated %}
+                  {{ album.last_updated }}
+                {% else %}
+                  <span class="text-muted">Never</span>
+                {% endif %}
+              </td>
+              <td class="text-center">
+                <a class="btn btn-sm btn-outline-primary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">View</a>
+              </td>
+            </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  {% else %}
+    <div class="alert alert-secondary">
+      No albums found for <strong>{{ artist_name }}</strong>.
+    </div>
+  {% endif %}
+</div>
 {% endblock %}
