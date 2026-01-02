@@ -12,6 +12,7 @@ required_columns = {
     "lastfm_score": "REAL",
     "listenbrainz_score": "REAL",
     "age_score": "REAL",
+    "score": "REAL",                    # Composite popularity score
     "final_score": "REAL",              # ✅ Added for weighted score
     "stars": "INTEGER",
     "genres": "TEXT",
