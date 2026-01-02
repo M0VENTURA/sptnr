@@ -45,28 +45,39 @@ def create_default_config(path):
             "user": "admin",
             "pass": "password"
         },
-        "spotify": {
-            "client_id": "your_spotify_client_id",
-            "client_secret": "your_spotify_client_secret"
-        },
-        "lastfm": {
-            "api_key": "your_lastfm_api_key"
-        },
-        "discogs": {
-            "token": "your_discogs_token"
-        },
-        "audiodb": {
-            "api_key": "your_audiodb_api_key"
-        },
-        "google": {
-            "api_key": "your_google_api_key",
-            "cse_id": "your_google_cse_id"
-        },
-        "youtube": {
-            "api_key": "your_youtube_api_key"
-        },
-        "listenbrainz": {
-            "enabled": True
+        "api_integrations": {
+            "spotify": {
+                "enabled": True,
+                "client_id": "your_spotify_client_id",
+                "client_secret": "your_spotify_client_secret"
+            },
+            "lastfm": {
+                "enabled": True,
+                "api_key": "your_lastfm_api_key"
+            },
+            "listenbrainz": {
+                "enabled": True
+            },
+            "discogs": {
+                "enabled": True,
+                "token": "your_discogs_token"
+            },
+            "musicbrainz": {
+                "enabled": True
+            },
+            "audiodb": {
+                "enabled": False,
+                "api_key": ""
+            },
+            "google": {
+                "enabled": False,
+                "api_key": "",
+                "cse_id": ""
+            },
+            "youtube": {
+                "enabled": False,
+                "api_key": ""
+            }
         },
         "weights": {
             "spotify": 0.4,
@@ -75,11 +86,13 @@ def create_default_config(path):
             "age": 0.1
         },
         "database": {
-            "path": "/database/sptnr.db"
+            "path": "/database/sptnr.db",
+            "vacuum_on_start": False
         },
         "logging": {
             "level": "INFO",
-            "file": "/config/app.log"
+            "file": "/config/app.log",
+            "console": True
         },
         "features": {
             "dry_run": False,
@@ -90,7 +103,7 @@ def create_default_config(path):
             "batchrate": False,
             "refresh_playlists_on_start": False,
             "refresh_artist_index_on_start": False,
-            "discogs_min_interval_sec": 0.35,  # keeps throttle consistent when unset
+            "discogs_min_interval_sec": 0.35,
             "album_skip_days": 7,
             "album_skip_min_tracks": 1,
             "clamp_min": 0.75,
@@ -104,7 +117,6 @@ def create_default_config(path):
             "secondary_required_strong_sources": 2,
             "median_gate_strategy": "hard",
             "use_lastfm_single": True,
-            "use_audiodb": False,
             "include_user_ratings_on_scan": True,
             "scan_worker_threads": 4,
             "spotify_prefetch_timeout": 30,
@@ -206,15 +218,35 @@ def validate_config(config):
         if not primary.get("base_url"):
             issues.append("Navidrome base_url is missing.")
 
-    # --- Spotify ---
-    if config["spotify"].get("client_id") in ["your_spotify_client_id", "", None]:
-        issues.append("Spotify Client ID is missing or placeholder.")
-    if config["spotify"].get("client_secret") in ["your_spotify_client_secret", "", None]:
-        issues.append("Spotify Client Secret is missing or placeholder.")
-
-    # --- Last.fm ---
-    if config["lastfm"].get("api_key") in ["your_lastfm_api_key", "", None]:
-        issues.append("Last.fm API key is missing or placeholder.")
+    # --- API Integrations (support both old and new structure) ---
+    api = config.get("api_integrations", {})
+    
+    # Backward compatibility
+    if not api:
+        api = {
+            "spotify": config.get("spotify", {}),
+            "lastfm": config.get("lastfm", {}),
+        }
+    
+    # --- Spotify (required) ---
+    spotify = api.get("spotify", {})
+    if spotify.get("enabled", True):  # Default to enabled if not specified
+        if spotify.get("client_id") in ["your_spotify_client_id", "", None]:
+            issues.append("Spotify Client ID is missing or placeholder (required).")
+        if spotify.get("client_secret") in ["your_spotify_client_secret", "", None]:
+            issues.append("Spotify Client Secret is missing or placeholder (required).")
+    
+    # --- Last.fm (required) ---
+    lastfm = api.get("lastfm", {})
+    if lastfm.get("enabled", True):  # Default to enabled if not specified
+        if lastfm.get("api_key") in ["your_lastfm_api_key", "", None]:
+            issues.append("Last.fm API key is missing or placeholder (required).")
+    
+    # --- Discogs (optional but warn if enabled without token) ---
+    discogs = api.get("discogs", {})
+    if discogs.get("enabled", True):
+        if discogs.get("token") in ["your_discogs_token", "", None]:
+            issues.append("Discogs is enabled but token is missing or placeholder. Single detection may be limited.")
 
     if issues:
         print("\n⚠️ Configuration issues detected:")
@@ -246,25 +278,46 @@ NAV_BASE_URL = _primary_user.get("base_url", "")
 USERNAME     = _primary_user.get("user", "")
 PASSWORD     = _primary_user.get("pass", "")
 
-# Spotify
-SPOTIFY_CLIENT_ID = config["spotify"]["client_id"]
-SPOTIFY_CLIENT_SECRET = config["spotify"]["client_secret"]
+# ✅ API Integrations - Support both old and new structure
+api = config.get("api_integrations", {})
 
-# Last.fm
-LASTFM_API_KEY = config["lastfm"]["api_key"]
+# Backward compatibility: if api_integrations doesn't exist, use old structure
+if not api:
+    api = {
+        "spotify": config.get("spotify", {}),
+        "lastfm": config.get("lastfm", {}),
+        "listenbrainz": config.get("listenbrainz", {"enabled": True}),
+        "discogs": config.get("discogs", {}),
+        "audiodb": config.get("audiodb", {}),
+        "google": config.get("google", {}),
+        "youtube": config.get("youtube", {}),
+        "musicbrainz": {"enabled": True}
+    }
 
-# Discogs
-DISCOGS_TOKEN = config["discogs"]["token"]
+# Extract enabled flags and credentials
+SPOTIFY_ENABLED = api.get("spotify", {}).get("enabled", True)
+SPOTIFY_CLIENT_ID = api.get("spotify", {}).get("client_id", "")
+SPOTIFY_CLIENT_SECRET = api.get("spotify", {}).get("client_secret", "")
 
-# AudioDB
-AUDIODB_API_KEY = config["audiodb"]["api_key"]
+LASTFM_ENABLED = api.get("lastfm", {}).get("enabled", True)
+LASTFM_API_KEY = api.get("lastfm", {}).get("api_key", "")
 
-# Google Custom Search
-GOOGLE_API_KEY = config["google"]["api_key"]
-GOOGLE_CSE_ID = config["google"]["cse_id"]
+LISTENBRAINZ_ENABLED = api.get("listenbrainz", {}).get("enabled", True)
 
-# YouTube
-YOUTUBE_API_KEY = config["youtube"]["api_key"]
+DISCOGS_ENABLED = api.get("discogs", {}).get("enabled", True)
+DISCOGS_TOKEN = api.get("discogs", {}).get("token", "")
+
+MUSICBRAINZ_ENABLED = api.get("musicbrainz", {}).get("enabled", True)
+
+AUDIODB_ENABLED = api.get("audiodb", {}).get("enabled", False)
+AUDIODB_API_KEY = api.get("audiodb", {}).get("api_key", "") if AUDIODB_ENABLED else ""
+
+GOOGLE_ENABLED = api.get("google", {}).get("enabled", False)
+GOOGLE_API_KEY = api.get("google", {}).get("api_key", "") if GOOGLE_ENABLED else ""
+GOOGLE_CSE_ID = api.get("google", {}).get("cse_id", "") if GOOGLE_ENABLED else ""
+
+YOUTUBE_ENABLED = api.get("youtube", {}).get("enabled", False)
+YOUTUBE_API_KEY = api.get("youtube", {}).get("api_key", "") if YOUTUBE_ENABLED else ""
 
 # Weights
 SPOTIFY_WEIGHT = config["weights"]["spotify"]
@@ -1115,7 +1168,7 @@ def is_discogs_single(
     Uses cache keyed by (artist,title,context).
     """
     # --- Fast exits / cache ---------------------------------------------------
-    if not DISCOGS_TOKEN:
+    if not DISCOGS_ENABLED or not DISCOGS_TOKEN:
         return False
     allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
     context_key = "live" if allow_live_ctx else "studio"
@@ -1227,12 +1280,16 @@ def is_discogs_single(
 
 def is_lastfm_single(title: str, artist: str) -> bool:
     """Placeholder; returns False until implemented."""
+    if not LASTFM_ENABLED:
+        return False
     return False
 
 def is_musicbrainz_single(title: str, artist: str) -> bool:
     """
     Query MusicBrainz release-group by title+artist and check primary-type=Single.
     """
+    if not MUSICBRAINZ_ENABLED:
+        return False
     try:
         res = requests.get(
             "https://musicbrainz.org/ws/2/release-group/",
@@ -1463,8 +1520,8 @@ def get_discogs_genres(title, artist):
     Fetch genres and styles from Discogs API.
     Always use token from config.yaml.
     """
-    if not DISCOGS_TOKEN:
-        logging.warning("Discogs token missing in config.yaml. Skipping Discogs genre lookup.")
+    if not DISCOGS_ENABLED or not DISCOGS_TOKEN:
+        logging.debug("Discogs genre lookup skipped (disabled or token missing).")
         return []
 
     headers = {
@@ -1487,7 +1544,7 @@ def get_discogs_genres(title, artist):
         return []
 
 def get_audiodb_genres(artist):
-    if not AUDIODB_API_KEY:
+    if not AUDIODB_ENABLED or not AUDIODB_API_KEY:
         return []
     try:
         res = requests.get(f"https://theaudiodb.com/api/v1/json/{AUDIODB_API_KEY}/search.php?s={artist}", timeout=10)
@@ -1508,6 +1565,8 @@ def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
       2) Use recording-level tags if present
       3) If no recording tags, try tags on the first associated release (via /release/{id}?inc=tags)
     """
+    if not MUSICBRAINZ_ENABLED:
+        return []
     try:
         # Step 1: search recording with richer includes
         rec_url = "https://musicbrainz.org/ws/2/recording/"
@@ -1598,6 +1657,8 @@ def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
     """
     Fetch ListenBrainz listen count using MBID or fallback search.
     """
+    if not LISTENBRAINZ_ENABLED:
+        return 0
     if not mbid:
         # Fallback: search by artist/title
         try:
@@ -1613,11 +1674,12 @@ def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
         return 0
     # Primary: stats by MBID
     try:
-        url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}"
+        url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}/listen-count"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
-        return int(data.get("count", 0))
+        payload = data.get("payload", {})
+        return int(payload.get("count", 0))
     except Exception as e:
         logging.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
         return 0
@@ -2262,6 +2324,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         msg = f"Starting rating for artist: {artist_name} ({len(albums)} albums)"
         print(f"\n🎨 {msg}")
         logging.info(msg)
+    else:
+        print(f"\n🎨 Scanning artist: {artist_name}")
     rated_map = {}
 
     # --------------------------------------------------------------------------
@@ -2298,6 +2362,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             continue
 
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
+        logging.info(f"Scanning album: {album_name} ({len(tracks)} tracks)")
         album_ctx = infer_album_context(album_name)
 
         album_tracks = []
@@ -2322,8 +2387,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 mbid       = track.get("mbid", None)
 
                 if verbose:
-                    logging.info(f"Processing track: {title}")
                     print(f"   🔍 Processing track: {title}")
+                    logging.info(f"Processing track: {title}")
 
                 fut_sp = ex.submit(search_spotify_track, title, artist_name, album_name)
                 fut_lf = ex.submit(get_lastfm_track_info, artist_name, title)
@@ -2368,7 +2433,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     print(f"   🔢 {msg}")
 
                 discogs_genres = get_discogs_genres(title, artist_name)
-                audiodb_genres = get_audiodb_genres(artist_name) if config["features"].get("use_audiodb", False) and AUDIODB_API_KEY else []
+                audiodb_genres = get_audiodb_genres(artist_name) if AUDIODB_ENABLED else []
                 mb_genres      = get_musicbrainz_genres(title, artist_name)
                 lastfm_tags    = []
 
@@ -2491,6 +2556,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         # ----------------------------------------------------------------------
         # SINGLE DETECTION — User's workflow: Discogs=5★, Spotify/Video=+1★, 2-source=5★
         # ----------------------------------------------------------------------
+        if verbose:
+            logging.info(f"Starting single detection for album: {album_name} ({len(album_tracks)} tracks)")
+            print(f"\n   🔍 Single Detection: {album_name}")
+            logging.info(f"🔍 Single Detection: {album_name}")
+        
         low_evidence_bumps = []  # Track songs with +1★ bump from single hints
         
         for trk in album_tracks:
@@ -2498,6 +2568,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             canonical_base = _base_title(title)
             sim_to_base    = _similar(title, canonical_base)
             has_subtitle   = _has_subtitle_variant(title)
+
+            if verbose:
+                print(f"      🎵 Checking: {title}")
+                logging.info(f"🎵 Checking: {title}")
 
             allow_live_remix = bool(album_ctx.get("is_live") or album_ctx.get("is_unplugged"))
             canonical        = is_valid_version(title, allow_live_remix=allow_live_remix)
@@ -2516,18 +2590,37 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 sources.add("spotify")
             if short_release:
                 sources.add("short_release")
+            
+            if verbose:
+                hints = []
+                if spotify_matched:
+                    hints.append("Spotify single")
+                if short_release:
+                    hints.append(f"short release ({tot} tracks)")
+                if hints:
+                    print(f"         💡 Initial hints: {', '.join(hints)}")
+                    logging.info(f"💡 Initial hints: {', '.join(hints)}")
 
             # --- Discogs Single (hard stop) -----------------------------------
             discogs_single_hit = False
             try:
+                if verbose:
+                    print(f"         🔍 Checking Discogs single...")
+                    logging.info("🔍 Checking Discogs single...")
                 logging.debug("Checking Discogs single for '%s' by '%s'", title, artist_name)
-                if DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
+                if DISCOGS_ENABLED and DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
                     sources.add("discogs")
                     discogs_single_hit = True
                     trk['discogs_single_confirmed'] = 1  # ✅ Audit field
                     logging.debug("Discogs single detected for '%s' (sources=%s)", title, sources)
+                    if verbose:
+                        print(f"         ✅ Discogs single FOUND")
+                        logging.info("✅ Discogs single FOUND")
                 else:
                     logging.debug("Discogs single not detected for '%s'", title)
+                    if verbose and DISCOGS_ENABLED:
+                        print(f"         ❌ Discogs single not found")
+                        logging.info("❌ Discogs single not found")
             except Exception as e:
                 logging.exception("is_discogs_single failed for '%s': %s", title, e)
 
@@ -2537,13 +2630,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 trk["single_confidence"] = "high"
                 trk["stars"] = 5
                 logging.info("Single CONFIRMED (Discogs): '%s' → 5★", title)
+                if verbose:
+                    print(f"         ⭐⭐⭐⭐⭐ CONFIRMED via Discogs single (sources: {', '.join(sorted(sources))})")
+                    logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Discogs single (sources: {', '.join(sorted(sources))})")
                 # Hard stop for this track
                 continue
 
             # --- Discogs Official Video (gives +1★ bump if Spotify or Video match) -----
             discogs_video_hit = False
             try:
-                if DISCOGS_TOKEN:
+                if DISCOGS_ENABLED and DISCOGS_TOKEN:
+                    if verbose:
+                        print(f"         🔍 Checking Discogs official video...")
+                        logging.info("🔍 Checking Discogs official video...")
                     logging.debug("Searching Discogs for official video for '%s' by '%s'", title, artist_name)
                     dv = discogs_official_video_signal(
                         title, artist_name,
@@ -2556,6 +2655,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                         sources.add("discogs_video")
                         discogs_video_hit = True
                         trk['discogs_video_found'] = 1  # ✅ Audit field
+                        if verbose:
+                            print(f"         ✅ Discogs official video FOUND")
+                            logging.info("✅ Discogs official video FOUND")
+                    elif verbose:
+                        print(f"         ❌ Discogs official video not found")
+                        logging.info("❌ Discogs official video not found")
             except Exception as e:
                 logging.exception("discogs_official_video_signal failed for '%s': %s", title, e)
 
@@ -2566,6 +2671,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 trk["single_confidence"] = "high"
                 trk["stars"] = 5
                 logging.info("Single CONFIRMED (Spotify + Video): '%s' → 5★", title)
+                if verbose:
+                    print(f"         ⭐⭐⭐⭐⭐ CONFIRMED via Spotify + Discogs video (sources: {', '.join(sorted(sources))})")
+                    logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Spotify + Discogs video (sources: {', '.join(sorted(sources))})")
                 continue
 
             # --- If neither Spotify nor Video match → stop (not a single) ----
@@ -2574,15 +2682,28 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 trk["single_sources"] = sorted(sources)
                 trk["single_confidence"] = "low" if len(sources) == 0 else "medium"
                 logging.debug("No single hint (Spotify/Video) for '%s' → not checking further", title)
+                if verbose:
+                    print(f"         ⏭️  No Spotify/Video hints - skipping further checks")
+                    logging.info("⏭️  No Spotify/Video hints - skipping further checks")
                 # let z-bands assign stars later
                 continue
 
             # Add corroborative sources
+            if verbose:
+                print(f"         🔍 Checking additional sources (MusicBrainz, Last.fm)...")
+                logging.info("🔍 Checking additional sources (MusicBrainz, Last.fm)...")
+            
             try:
                 logging.debug("Checking MusicBrainz single for '%s' by '%s'", title, artist_name)
                 if is_musicbrainz_single(title, artist_name):
                     sources.add("musicbrainz")
                     logging.debug("MusicBrainz reports single for '%s'", title)
+                    if verbose:
+                        print(f"         ✅ MusicBrainz single FOUND")
+                        logging.info("✅ MusicBrainz single FOUND")
+                elif verbose and MUSICBRAINZ_ENABLED:
+                    print(f"         ❌ MusicBrainz single not found")
+                    logging.info("❌ MusicBrainz single not found")
             except Exception as e:
                 logging.exception("MusicBrainz single check failed for '%s': %s", title, e)
 
@@ -2591,6 +2712,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 if use_lastfm_single and is_lastfm_single(title, artist_name):
                     sources.add("lastfm")
                     logging.debug("Last.fm reports single for '%s'", title)
+                    if verbose:
+                        print(f"         ✅ Last.fm single FOUND")
+                        logging.info("✅ Last.fm single FOUND")
+                elif verbose and use_lastfm_single:
+                    print(f"         ❌ Last.fm single not found")
+                    logging.info("❌ Last.fm single not found")
             except Exception as e:
                 logging.exception("Last.fm single check failed for '%s': %s", title, e)
 
@@ -2600,12 +2727,19 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                 match_pool.add("short_release")
             total_matches = len(sources & match_pool)
 
+            if verbose:
+                print(f"         📊 Total sources: {', '.join(sorted(sources))} ({total_matches} matches)")
+                logging.info(f"📊 Total sources: {', '.join(sorted(sources))} ({total_matches} matches)")
+
             if (total_matches >= 2) and canonical and not has_subtitle and sim_to_base >= TITLE_SIM_THRESHOLD:
                 trk["is_single"] = True
                 trk["single_sources"] = sorted(sources)
                 trk["single_confidence"] = "high"
                 trk["stars"] = 5
                 logging.info("Single CONFIRMED (2+ sources): '%s' sources=%s → 5★", title, sorted(sources))
+                if verbose:
+                    print(f"         ⭐⭐⭐⭐⭐ CONFIRMED via 2+ sources: {', '.join(sorted(sources))}")
+                    logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via 2+ sources: {', '.join(sorted(sources))}")
             else:
                 # Got Spotify or Video hit, but only 1 source total → +1★ bump
                 trk["is_single"] = False
@@ -2616,6 +2750,12 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     trk["stars"] = 2  # +1 from default 1
                     low_evidence_bumps.append(title)
                     logging.debug("Low-evidence +1★ bump for '%s' (Spotify/Video hint)", title)
+                    if verbose:
+                        print(f"         ⭐⭐ Low-evidence bump (Spotify/Video hint)")
+                        logging.info("⭐⭐ Low-evidence bump (Spotify/Video hint)")
+                elif verbose:
+                    print(f"         ℹ️  Not enough sources for single confirmation")
+                    logging.info("ℹ️  Not enough sources for single confirmation")
                 logging.debug("Single NOT confirmed for '%s' — sources=%s total_matches=%d", title, sorted(sources), total_matches)
 
             # ------------------------------------------------------------------
@@ -2727,18 +2867,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             title     = trk.get("title", trk["id"])
             rating_changed = (old_stars != new_stars)
             
-            # ✅ Only show output if verbose OR rating actually changed
-            if verbose or rating_changed:
-                # Format output to show old → new rating
-                rating_change = f"{old_stars}★ → {new_stars}★" if rating_changed else f"{new_stars}★ (unchanged)"
-
-                if trk.get("is_single"):
-                    srcs = ", ".join(trk.get("single_sources") or [])
-                    print(f"   🎛️ Rating set (single via {srcs if srcs else 'unknown'}): '{title}' — {rating_change}")
-                    logging.info(f"Rating set (single via {srcs if srcs else 'unknown'}): {track_id} '{title}' -> {old_stars}★ → {new_stars}★")
-                else:
+            # ✅ Always log, only print if verbose OR rating changed
+            if trk.get("is_single"):
+                sources_list = trk.get("single_sources") or []
+                srcs = ", ".join(sources_list) if sources_list else "low confidence"
+                logging.info(f"Rating set (single via {srcs}): {track_id} '{title}' -> {old_stars}★ → {new_stars}★")
+                
+                if verbose or rating_changed:
+                    rating_change = f"{old_stars}★ → {new_stars}★" if rating_changed else f"{new_stars}★ (unchanged)"
+                    print(f"   🎛️ Rating set (single via {srcs}): '{title}' — {rating_change}")
+            else:
+                logging.info(f"Rating set: {track_id} '{title}' -> {old_stars}★ → {new_stars}★")
+                
+                if verbose or rating_changed:
+                    rating_change = f"{old_stars}★ → {new_stars}★" if rating_changed else f"{new_stars}★ (unchanged)"
                     print(f"   🎛️ Rating set: '{title}' — {rating_change}")
-                    logging.info(f"Rating set: {track_id} '{title}' -> {old_stars}★ → {new_stars}★")
 
             if config["features"].get("dry_run", False):
                 continue
@@ -2757,38 +2900,47 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                    f"non-single 4★={sum(1 for t in non_single_tracks if t['stars']==4)}, cap={int(CAP_TOP4_PCT*100)}%, MAD={mad_val:.2f}")
             logging.info(msg)
             print(
-                f"   ℹ️ 5★ singles: {len(five_star_singles)} | Low-evidence +1★ bumps: {len(low_evidence_2stars)} | "
-                f"Non‑single 4★: {sum(1 for t in non_single_tracks if t['stars']==4)} | "
-                f"Cap: {int(CAP_TOP4_PCT*100)}% | MAD: {mad_val:.2f}"
+                f"   ℹ️ Album Stats: 5★={len(five_star_singles)} | Low-evidence +1★={len(low_evidence_2stars)} | "
+                f"Non‑single 4★={sum(1 for t in non_single_tracks if t['stars']==4)} | "
+                f"Cap={int(CAP_TOP4_PCT*100)}% | MAD={mad_val:.2f}"
             )
 
         if len(five_star_singles) > 0:
             if verbose:
                 logging.info(f"5★ Singles found: {len(five_star_singles)}")
-                for t in five_star_singles:
-                    srcs = ", ".join(t.get("single_sources") or [])
-                    logging.info(f"  • {t['title']} (via {srcs if srcs else 'unknown'})")
                 print("   🎯 5★ Singles:")
                 for t in five_star_singles:
-                    srcs = ", ".join(t.get("single_sources") or [])
-                    print(f"      • {t['title']} (via {srcs if srcs else 'unknown'})")
+                    sources_list = t.get("single_sources") or []
+                    srcs = ", ".join(sources_list) if sources_list else "low confidence"
+                    logging.info(f"  • {t['title']} (via {srcs})")
+                    print(f"      • {t['title']} (via {srcs})")
             else:
                 # Non-verbose: show count only if singles found
                 print(f"   🎯 {len(five_star_singles)} 5★ singles detected")
+                logging.info(f"5★ singles detected: {len(five_star_singles)}")
+                for t in five_star_singles:
+                    sources_list = t.get("single_sources") or []
+                    srcs = ", ".join(sources_list) if sources_list else "low confidence"
+                    logging.info(f"  • {t['title']} (via {srcs})")
 
         if len(low_evidence_2stars) > 0:
             if verbose:
                 logging.info(f"Low-evidence +1★ bumps found: {len(low_evidence_2stars)}")
-                for t in low_evidence_2stars:
-                    srcs = ", ".join(t.get("single_sources") or [])
-                    logging.info(f"  ◦ {t['title']} (via {srcs if srcs else 'unknown'})")
                 print("   ⚠️ Low-evidence +1★ bumps (Spotify/Video hint):")
                 for t in low_evidence_2stars:
-                    srcs = ", ".join(t.get("single_sources") or [])
-                    print(f"      ◦ {t['title']} (via {srcs if srcs else 'unknown'})")
+                    sources_list = t.get("single_sources") or []
+                    srcs = ", ".join(sources_list) if sources_list else "low confidence"
+                    logging.info(f"  ◦ {t['title']} (via {srcs})")
+                    print(f"      ◦ {t['title']} (via {srcs})")
             else:
-                # Non-verbose: show count only if bumps found
-                print(f"   ⚠️ {len(low_evidence_2stars)} low-evidence +1★ bumps detected")
+                # Non-verbose: show count and list
+                print(f"   ⚠️ {len(low_evidence_2stars)} low-evidence +1★ bumps")
+                logging.info(f"Low-evidence +1★ bumps: {len(low_evidence_2stars)}")
+                for t in low_evidence_2stars:
+                    sources_list = t.get("single_sources") or []
+                    srcs = ", ".join(sources_list) if sources_list else "low confidence"
+                    logging.info(f"  ◦ {t['title']} (via {srcs})")
+                    print(f"      ◦ {t['title']} (via {srcs})")
 
         if verbose:
             print(f"✔ Completed album: {album_name}")
@@ -2939,9 +3091,10 @@ if __name__ == "__main__":
     perpetual = config["features"]["perpetual"]
     batchrate = config["features"]["batchrate"]
     artist_list = config["features"]["artist"]
-    use_google  = config["features"].get("use_google", False)
-    use_youtube = config["features"].get("use_youtube", False)
-    use_audiodb = config["features"].get("use_audiodb", False)
+    # Legacy feature flags (deprecated - use api_integrations.enabled instead)
+    use_google  = config["features"].get("use_google", GOOGLE_ENABLED)
+    use_youtube = config["features"].get("use_youtube", YOUTUBE_ENABLED)
+    use_audiodb = config["features"].get("use_audiodb", AUDIODB_ENABLED)
     refresh_playlists_on_start = config["features"].get("refresh_playlists_on_start", False)
     refresh_index_on_start     = config["features"].get("refresh_artist_index_on_start", False)
 

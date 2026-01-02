@@ -1,18 +1,53 @@
-
+# Option 1: Single user (current format - works fine for one user)
 navidrome:
   base_url: "http://localhost:4533"
   user: "admin"
   pass: "password"
 
-spotify:
-  client_id: "your_spotify_client_id"
-  client_secret: "your_spotify_client_secret"
+# Option 2: Multiple users (uncomment and configure if you want to set ratings for multiple users)
+# navidrome_users:
+#   - base_url: "http://localhost:4533"
+#     user: "user1"
+#     pass: "password1"
+#   - base_url: "http://localhost:4533"
+#     user: "user2"
+#     pass: "password2"
 
-lastfm:
-  api_key: "your_lastfm_api_key"
-
-listenbrainz:
-  enabled: true
+# API Integrations - Enable/disable external services and provide credentials
+api_integrations:
+  spotify:
+    enabled: true
+    client_id: "your_spotify_client_id"
+    client_secret: "your_spotify_client_secret"
+  
+  lastfm:
+    enabled: true
+    api_key: "your_lastfm_api_key"
+  
+  listenbrainz:
+    enabled: true
+    # No API key needed - public API
+  
+  discogs:
+    enabled: true
+    token: "your_discogs_token"
+  
+  musicbrainz:
+    enabled: true
+    # No API key needed - public API with rate limits
+  
+  audiodb:
+    enabled: false
+    api_key: ""  # Optional - only used if enabled: true
+  
+  google:
+    enabled: false
+    api_key: ""
+    cse_id: ""
+  
+  youtube:
+    enabled: false
+    api_key: ""
 
 weights:
   spotify: 0.4
@@ -51,26 +86,11 @@ features:
   secondary_required_strong_sources: 2
   median_gate_strategy: "hard"
   use_lastfm_single: true
-  use_audiodb: false
   refresh_playlists_on_start: false
   refresh_artist_index_on_start: false
   discogs_min_interval_sec: 0.35
   include_user_ratings_on_scan: true
   scan_worker_threads: 4
   spotify_prefetch_timeout: 30
-
-# Optional API credentials
-discogs:
-  token: "your_discogs_token"
-
-audiodb:
-  api_key: "your_audiodb_api_key"
-
-google:
-  api_key: "your_google_api_key"
-  cse_id: "your_google_cse_id"
-
-youtube:
-  api_key: "your_youtube_api_key"
 
 

@@ -165,14 +165,18 @@ youtube_api_unavailable = False
 # `strip_parentheses` moved to `helpers.py` and imported above
 
 def get_listenbrainz_track_info(mbid):
-    url = f"https://api.listenbrainz.org/1/stats/recordings?recording_mbid={mbid}"
+    """Fetch ListenBrainz listen count using MBID."""
+    if not mbid:
+        return 0
     try:
+        url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}/listen-count"
         res = requests.get(url, timeout=10)
         res.raise_for_status()
-        data = res.json().get("payload", {}).get("recording_stats", {})
-        return data.get("listen_count", 0)
+        data = res.json()
+        payload = data.get("payload", {})
+        return int(payload.get("count", 0))
     except Exception as e:
-        print(f"⚠️ ListenBrainz fetch failed: {e}")
+        print(f"⚠️ ListenBrainz fetch failed for MBID {mbid}: {e}")
         return 0
 
 def get_lastfm_track_info(artist, title):
