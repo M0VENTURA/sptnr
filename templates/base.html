@@ -746,10 +746,18 @@
               <i class="bi bi-people"></i> Artists
             </a>
           </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('downloads') }}">
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="downloadsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-download"></i> Downloads
             </a>
+            <ul class="dropdown-menu" aria-labelledby="downloadsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('downloads') }}">
+                <i class="bi bi-cloud-download"></i> Search & Download
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('downloads_manager') }}">
+                <i class="bi bi-folder-plus"></i> Organize Library
+              </a></li>
+            </ul>
           </li>
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('logs') }}">

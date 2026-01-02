@@ -1172,9 +1172,125 @@ def api_album_art(artist, album):
         return {"error": str(e)}, 400
 
 
+@app.route("/api/downloads/scan")
+def api_downloads_scan():
+    """Scan downloads folder and return pending files"""
+    try:
+        downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
+        
+        if not os.path.exists(downloads_dir):
+            return jsonify({"error": "Downloads folder not found", "files": []})
+        
+        files = []
+        for filename in os.listdir(downloads_dir):
+            if not filename.lower().endswith('.mp3'):
+                continue
+            
+            file_path = os.path.join(downloads_dir, filename)
+            if not os.path.isfile(file_path):
+                continue
+            
+            try:
+                metadata = read_mp3_metadata(file_path)
+                files.append({
+                    'filename': filename,
+                    'path': file_path,
+                    'size': os.path.getsize(file_path),
+                    'artist': metadata.get('artist', 'Unknown'),
+                    'album': metadata.get('album', 'Unknown'),
+                    'title': metadata.get('title', filename),
+                    'year': metadata.get('year', metadata.get('date', '')),
+                    'track': metadata.get('track', ''),
+                    'genre': metadata.get('genre', ''),
+                    'duration': metadata.get('duration', 0)
+                })
+            except Exception as e:
+                files.append({
+                    'filename': filename,
+                    'path': file_path,
+                    'size': os.path.getsize(file_path),
+                    'error': str(e)
+                })
+        
+        return jsonify({
+            "count": len(files),
+            "files": files
+        })
+    except Exception as e:
+        return jsonify({"error": str(e), "files": []}), 400
+
+
+@app.route("/api/downloads/process", methods=["POST"])
+def api_downloads_process():
+    """Process downloads folder - organize and move files to /Music"""
+    try:
+        from downloads_watcher import scan_downloads_folder
+        
+        results = scan_downloads_folder()
+        
+        successful = [r for r in results if r['status'] == 'success']
+        failed = [r for r in results if r['status'] == 'error']
+        
+        return jsonify({
+            "total": len(results),
+            "successful": len(successful),
+            "failed": len(failed),
+            "results": results
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/downloads/process-one", methods=["POST"])
+def api_downloads_process_one():
+    """Process a single file from downloads folder"""
+    try:
+        data = request.get_json()
+        file_path = data.get('path', '')
+        
+        if not file_path or not os.path.exists(file_path):
+            return jsonify({"error": "File not found"}), 400
+        
+        from downloads_watcher import extract_mp3_metadata, organize_file, add_to_database
+        
+        # Extract metadata
+        metadata = extract_mp3_metadata(file_path)
+        
+        # Organize file
+        file_info = organize_file(file_path, metadata)
+        
+        if file_info.get('success'):
+            # Add to database
+            add_to_database(file_info, metadata)
+            return jsonify({
+                "success": True,
+                "artist": file_info.get('artist'),
+                "album": file_info.get('album'),
+                "title": file_info.get('title'),
+                "target_path": file_info.get('target_path')
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": file_info.get('error', 'Unknown error')
+            }), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/downloads-manager")
+def downloads_manager():
+    """Downloads manager UI page"""
+    downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
+    
+    # Get config for online metadata search services
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    
+    return render_template("downloads_manager.html", 
+                         downloads_dir=downloads_dir,
+                         api_services=cfg.get('api_integrations', {}))
+
+
 if __name__ == "__main__":
     app.run(debug=True, host="0.0.0.0", port=5000)
 
-
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
