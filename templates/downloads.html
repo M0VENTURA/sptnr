@@ -434,10 +434,23 @@ function showSlskdError(message) {
 function downloadSlskd(username, filename) {
   if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
   
+  // Find the file object in slskdResponsesData to get the fileId
+  const userData = slskdResponsesData[username];
+  if (!userData) {
+    alert('❌ Error: User data not found');
+    return;
+  }
+  
+  const fileData = userData.files.find(f => f.filename === filename);
+  if (!fileData) {
+    alert('❌ Error: File data not found');
+    return;
+  }
+  
   fetch('/api/slskd/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username, filename: filename })
+    body: JSON.stringify({ username: username, fileId: fileData.fileId })
   })
   .then(response => response.json())
   .then(data => {

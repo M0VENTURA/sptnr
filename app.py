@@ -1325,7 +1325,7 @@ def slskd_search():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key)
+        client = SlskdClient(web_url, api_key, enabled=True)
         search_id = client.start_search(query)
         
         if not search_id:
@@ -1354,7 +1354,7 @@ def slskd_search_results(search_id):
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key)
+        client = SlskdClient(web_url, api_key, enabled=True)
         responses, state, is_complete = client.get_search_results(search_id)
         
         # Flatten file results from all responses
@@ -1412,7 +1412,7 @@ def slskd_download():
     api_key = slskd_config.get("api_key", "")
     
     try:
-        client = SlskdClient(web_url, api_key)
+        client = SlskdClient(web_url, api_key, enabled=True)
         success = client.download_file(username, file_code)
         
         if success:
@@ -1422,7 +1422,6 @@ def slskd_download():
             
     except Exception as e:
         print(f"[SLSKD] Download error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
         return jsonify({"error": str(e)}), 500
 
 
