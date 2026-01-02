@@ -19,7 +19,8 @@ import io
 from functools import wraps
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
-from start import create_retry_session
+from start import create_retry_session, scan_artist_to_db, rate_artist, build_artist_index
+from popularity import scan_popularity
 from api_clients.slskd import SlskdClient
 
 # Configure logging for web UI
@@ -783,6 +784,47 @@ def album_detail(artist, album):
                              album_data=None,
                              album_genres=[],
                              error=f"Error loading album: {str(e)}")
+
+
+@app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
+def album_rescan(artist, album):
+    """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection."""
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    album = unquote(album)
+
+    def _worker(artist_name: str):
+        try:
+            # Look up artist_id from cache; rebuild index if missing
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            row = cursor.fetchone()
+            conn.close()
+            artist_id = row[0] if row else None
+
+            if not artist_id:
+                idx = build_artist_index()
+                artist_id = (idx.get(artist_name, {}) or {}).get("id")
+
+            if not artist_id:
+                logging.error(f"Rescan aborted: no artist_id for {artist_name}")
+                return
+
+            # Step 1: refresh Navidrome cache for this artist
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
+
+            # Step 2: popularity (per-artist)
+            scan_popularity(verbose=True, artist=artist_name)
+
+            # Step 3: single detection & scoring
+            rate_artist(artist_id, artist_name, verbose=True, force=True)
+        except Exception as e:
+            logging.error(f"Album rescan failed for {artist_name}: {e}")
+
+    threading.Thread(target=_worker, args=(artist,), daemon=True).start()
+    flash(f"Rescan started for {artist}", "info")
+    return redirect(url_for("album_detail", artist=artist, album=album))
 
 
 @app.route("/track/<track_id>")
