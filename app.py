@@ -1184,17 +1184,27 @@ def api_metadata():
                 artist = track_info.get("artist", "")
                 album = track_info.get("album", "")
                 title = track_info.get("title", "")
+                stored_file_path = track_info.get("file_path", "")
                 
-                # Try to find the file in /music directory with timeout
+                # Construct full path from stored path
                 music_root = os.environ.get("MUSIC_ROOT", "/music")
                 file_path = None
                 
-                try:
-                    # Use timeout to prevent hanging
-                    file_path = find_track_file(artist, album, title, music_root, timeout_seconds=3)
-                except Exception as e:
-                    # If file search fails, continue without file metadata
-                    pass
+                # First try using stored file path from Navidrome
+                if stored_file_path:
+                    # Navidrome stores paths relative to music root
+                    full_path = os.path.join(music_root, stored_file_path)
+                    if os.path.exists(full_path):
+                        file_path = full_path
+                
+                # Fallback to searching if stored path doesn't work
+                if not file_path:
+                    try:
+                        # Use timeout to prevent hanging
+                        file_path = find_track_file(artist, album, title, music_root, timeout_seconds=3)
+                    except Exception as e:
+                        # If file search fails, continue without file metadata
+                        pass
                 
                 if file_path and os.path.exists(file_path):
                     try:
