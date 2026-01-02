@@ -151,7 +151,7 @@
                     </tr>
                 </thead>
                 <tbody>
-                    {% if album_data.total_discs and album_data.total_discs > 1 %}
+                    {% if album_data and album_data.total_discs and album_data.total_discs > 1 %}
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary">

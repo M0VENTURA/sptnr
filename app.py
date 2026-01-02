@@ -903,16 +903,14 @@ def track_edit(track_id):
     is_single = 1 if request.form.get("is_single") == "on" else 0
     single_confidence = request.form.get("single_confidence", "low")
     mbid = request.form.get("mbid", "").strip() or None
-    suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
-    suggested_mbid_confidence = request.form.get("suggested_mbid_confidence", type=float)
     
     # Update database
     cursor.execute("""
         UPDATE tracks
         SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
-            mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?
+            mbid = ?
         WHERE id = ?
-    """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, suggested_mbid_confidence, track_id))
+    """, (title, artist, album, stars, is_single, single_confidence, mbid, track_id))
     
     conn.commit()
     conn.close()
@@ -1669,6 +1667,10 @@ def qbit_search():
         # Stop search
         stop_url = f"{web_url}/api/v2/search/stop"
         session.post(stop_url, data={"id": search_id})
+        
+        # Sort results by seeds (nbSeeders) in descending order (highest first)
+        if results:
+            results.sort(key=lambda x: x.get("nbSeeders", 0), reverse=True)
         
         return jsonify({"results": results})
         

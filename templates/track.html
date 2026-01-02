@@ -55,16 +55,17 @@
                             <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
                             <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
                             <div class="form-text">Official MusicBrainz recording ID</div>
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="suggested_mbid" class="form-label">Suggested MBID</label>
-                            <div class="input-group">
-                                <input type="text" class="form-control" id="suggested_mbid" name="suggested_mbid" value="{{ track.suggested_mbid or '' }}" readonly>
-                                <input type="number" class="form-control" id="suggested_mbid_confidence" name="suggested_mbid_confidence" 
-                                       value="{{ track.suggested_mbid_confidence or '' }}" placeholder="Confidence" step="0.01" min="0" max="1" style="max-width: 120px;" readonly>
+                            {% if track.suggested_mbid and track.suggested_mbid != track.mbid %}
+                            <div class="mt-2 p-2 bg-info bg-opacity-10 border border-info rounded">
+                                <small class="text-muted d-block mb-1">💡 Suggested MBID (confidence: {{ (track.suggested_mbid_confidence * 100)|round(1) if track.suggested_mbid_confidence else 0 }}%)</small>
+                                <div class="d-flex gap-2 align-items-center">
+                                    <code class="flex-grow-1" style="font-size: 0.85rem;">{{ track.suggested_mbid }}</code>
+                                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="document.getElementById('mbid').value = '{{ track.suggested_mbid }}'; this.disabled=true; this.textContent='Applied';">
+                                        Apply
+                                    </button>
+                                </div>
                             </div>
-                            <div class="form-text">Auto-suggested MBID with confidence score</div>
+                            {% endif %}
                         </div>
                                                 <div class="mb-3">
                             <label for="stars" class="form-label">Rating</label>

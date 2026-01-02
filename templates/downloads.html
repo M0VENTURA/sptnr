@@ -389,6 +389,7 @@ function toggleSlskdUserFiles(username) {
       `;
       
       userData.files.forEach(file => {
+        const fileId = `file-${Math.random().toString(36).substr(2, 9)}`;
         filesHtml += `
           <tr>
             <td>
@@ -400,7 +401,10 @@ function toggleSlskdUserFiles(username) {
             <td class="text-center">${file.bitrate > 0 ? file.bitrate + ' kbps' : '—'}</td>
             <td class="text-center">${file.length > 0 ? formatDuration(file.length) : '—'}</td>
             <td class="text-center">
-              <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}')">
+              <button class="btn btn-sm btn-success slskd-download-btn" 
+                      data-username="${escapeHtml(username)}" 
+                      data-filename="${escapeHtml(file.filename)}"
+                      data-size="${file.size}">
                 <i class="bi bi-download"></i>
               </button>
             </td>
@@ -410,12 +414,44 @@ function toggleSlskdUserFiles(username) {
       
       filesHtml += '</tbody></table></div>';
       filesDiv.innerHTML = filesHtml;
+      
+      // Add event listeners to download buttons
+      filesDiv.querySelectorAll('.slskd-download-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+          e.stopPropagation();
+          const username = this.getAttribute('data-username');
+          const filename = this.getAttribute('data-filename');
+          const size = parseInt(this.getAttribute('data-size')) || 0;
+          downloadSlskdFile(username, filename, size);
+        });
+      });
     }
   } else {
     // Hide files
     filesDiv.style.display = 'none';
     chevron.className = 'bi bi-chevron-down';
   }
+}
+
+function downloadSlskdFile(username, filename, size) {
+  if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
+  
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username, filename: filename, size: size })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Download added to queue!');
+    } else {
+      alert('❌ Error: ' + (data.error || data.message || 'Failed to add download'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
 }
 
 function showSlskdError(message) {
@@ -429,40 +465,6 @@ function showSlskdError(message) {
     clearInterval(slskdPollInterval);
     slskdPollInterval = null;
   }
-}
-
-function downloadSlskd(username, filename) {
-  if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
-  
-  // Find the file object in slskdResponsesData to get size
-  const userData = slskdResponsesData[username];
-  if (!userData) {
-    alert('❌ Error: User data not found');
-    return;
-  }
-  
-  const fileData = userData.files.find(f => f.filename === filename);
-  if (!fileData) {
-    alert('❌ Error: File data not found');
-    return;
-  }
-  
-  fetch('/api/slskd/download', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username, filename: filename, size: fileData.size })
-  })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
-      alert('✅ Download added to queue!');
-    } else {
-      alert('❌ Error: ' + (data.error || data.message || 'Failed to add download'));
-    }
-  })
-  .catch(error => {
-    alert('❌ Network error: ' + error.message);
-  });
 }
 
 // Utility functions
