@@ -7,6 +7,7 @@ Calculates popularity scores and updates database.
 import os
 import sqlite3
 import logging
+import math
 from datetime import datetime
 import sys
 
@@ -30,6 +31,10 @@ from start import (
     get_lastfm_track_info,
     get_listenbrainz_score,
     score_by_age,
+    SPOTIFY_WEIGHT,
+    LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
+    AGE_WEIGHT,
 )
 
 def get_db_connection():
@@ -55,9 +60,9 @@ def scan_popularity(verbose: bool = False):
         # Get all tracks that haven't had popularity data populated yet
         # Priority: tracks with NO popularity scores (zeros), then old ones (older than 7 days)
         cursor.execute("""
-            SELECT DISTINCT artist, album, title, id, 
-                   spotify_score, lastfm_ratio, listenbrainz_score, 
-                   last_scanned, mbid
+            SELECT DISTINCT artist, album, title, id,
+                   spotify_score, lastfm_ratio, listenbrainz_score,
+                   last_scanned, mbid, spotify_release_date
             FROM tracks
             WHERE (spotify_score = 0 AND lastfm_ratio = 0 AND listenbrainz_score = 0) OR
                   (last_scanned IS NOT NULL AND datetime(last_scanned) < datetime('now', '-7 days'))
@@ -99,13 +104,15 @@ def scan_popularity(verbose: bool = False):
             except Exception as e:
                 logging.debug(f"Spotify popularity lookup failed for {title}: {e}")
             
-            # Get Last.fm ratio
+            # Get Last.fm ratio + raw playcount
             lastfm_ratio = track['lastfm_ratio'] or 0
+            lastfm_playcount = 0
             try:
                 info = get_lastfm_track_info(artist, title)
                 if info and info.get('track_play'):
+                    lastfm_playcount = int(info['track_play'])
                     # Convert playcount to ratio (divide by 10 to normalize)
-                    lastfm_ratio = min(100, int(info['track_play']) / 10)
+                    lastfm_ratio = min(100, lastfm_playcount / 10)
                     if verbose:
                         logging.debug(f"Last.fm ratio for {title}: {lastfm_ratio} (playcount: {info['track_play']})")
             except Exception as e:
@@ -121,6 +128,20 @@ def scan_popularity(verbose: bool = False):
                     logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
             except Exception as e:
                 logging.debug(f"ListenBrainz lookup failed for {title}: {e}")
+
+            # Compute composite score (align with start.py scoring)
+            release_date = track['spotify_release_date'] or "1992-01-01"
+            momentum_raw, _ = score_by_age(lastfm_playcount, release_date)
+            sp_norm = spotify_score / 100.0
+            lf_norm = math.log10(lastfm_playcount + 1)
+            lb_norm = math.log10(listenbrainz_count + 1)
+            age_norm = math.log10(momentum_raw + 1)
+            composite_score = (
+                (SPOTIFY_WEIGHT * sp_norm) +
+                (LASTFM_WEIGHT * lf_norm) +
+                (LISTENBRAINZ_WEIGHT * lb_norm) +
+                (AGE_WEIGHT * age_norm)
+            )
             
             # Update database
             try:
@@ -130,15 +151,17 @@ def scan_popularity(verbose: bool = False):
                     UPDATE tracks SET
                         spotify_score = ?,
                         lastfm_ratio = ?,
-                        listenbrainz_score = ?
+                        listenbrainz_score = ?,
+                        score = ?,
+                        popularity_score = ?
                     WHERE id = ?
-                """, (spotify_score, lastfm_ratio, listenbrainz_count, track_id))
+                """, (spotify_score, lastfm_ratio, listenbrainz_count, composite_score, composite_score, track_id))
                 conn.commit()
                 conn.close()
                 updated_count += 1
                 
                 if verbose:
-                    print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}")
+                    print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}, Score={composite_score:.3f}")
             except Exception as e:
                 logging.error(f"Failed to update track {track_id}: {e}")
         
