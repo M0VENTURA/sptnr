@@ -50,8 +50,9 @@ SLEEP_TIME = 1.5  # Default sleep time between artist scans
 # ✅ Create persistent HTTP session with connection pooling & retry strategy
 session = create_retry_session(
     retries=3,
-    backoff=0.3,
-    status_forcelist=(429, 500, 502, 503, 504)
+    backoff_factor=0.3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    session=requests.Session()
 )
 
 from collections import defaultdict
@@ -1031,6 +1032,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
             title = song["title"]
             track_id = song["id"]
             nav_date = song.get("created", "").split("T")[0]
+            file_path = song.get("path", "")  # Get file path from Navidrome
 
             if not force and track_id in track_cache:
                 try:
@@ -1077,7 +1079,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
                 "source_used": "spotify" if sp_score > 20 else "lastfm",
                 "genres": top_genres,
                 "is_single": single_info["is_single"],
-                "single_confidence": single_info["confidence"]
+                "single_confidence": single_info["confidence"],
+                "file_path": file_path  # Add file path
             })
 
         # Assign stars based on median banding
