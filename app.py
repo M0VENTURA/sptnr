@@ -662,7 +662,7 @@ def album_detail(artist, album):
             SELECT *
             FROM tracks
             WHERE artist = ? AND album = ?
-            ORDER BY disc_number, track_number, title COLLATE NOCASE
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
         """, (artist, album))
         tracks_data = cursor.fetchall()
         
@@ -686,7 +686,7 @@ def album_detail(artist, album):
                 spotify_album_type,
                 spotify_album_art_url,
                 MAX(last_scanned) as last_scanned,
-                MAX(disc_number) as total_discs
+                MAX(COALESCE(disc_number, 1)) as total_discs
             FROM tracks
             WHERE artist = ? AND album = ?
         """, (artist, album))
@@ -704,18 +704,33 @@ def album_detail(artist, album):
         genre_rows = cursor.fetchall()
         album_genres = set()
         for row in genre_rows:
-            genre_value = row['genres'] if isinstance(row, dict) else row[0]
-            if genre_value:
-                genres = [g.strip() for g in genre_value.split(',') if g.strip()]
-                album_genres.update(genres)
+            try:
+                genre_value = row['genres'] if isinstance(row, dict) else row[0]
+                if genre_value:
+                    genres = [g.strip() for g in genre_value.split(',') if g.strip()]
+                    album_genres.update(genres)
+            except (KeyError, IndexError, TypeError) as e:
+                logging.debug(f"Error parsing genre row: {e}")
+                continue
         
         # Group tracks by disc number
         tracks_by_disc = {}
         for track in tracks_data:
-            disc_num = track['disc_number'] or 1
-            if disc_num not in tracks_by_disc:
-                tracks_by_disc[disc_num] = []
-            tracks_by_disc[disc_num].append(dict(track) if hasattr(track, 'keys') else track)
+            try:
+                # Handle both dict and Row objects
+                track_dict = dict(track) if hasattr(track, 'keys') else track
+                disc_num = track_dict.get('disc_number') if isinstance(track_dict, dict) else (track['disc_number'] if hasattr(track, '__getitem__') else 1)
+                disc_num = disc_num or 1
+                
+                if disc_num not in tracks_by_disc:
+                    tracks_by_disc[disc_num] = []
+                tracks_by_disc[disc_num].append(track_dict)
+            except Exception as e:
+                logging.debug(f"Error processing track for disc grouping: {e}")
+                # Fallback to disc 1
+                if 1 not in tracks_by_disc:
+                    tracks_by_disc[1] = []
+                tracks_by_disc[1].append(dict(track) if hasattr(track, 'keys') else track)
         
         conn.close()
         
@@ -727,7 +742,9 @@ def album_detail(artist, album):
                              album_data=album_data,
                              album_genres=sorted(list(album_genres)))
     except Exception as e:
+        import traceback
         logging.error(f"Error loading album {artist}/{album}: {e}")
+        logging.error(traceback.format_exc())
         return render_template("album.html",
                              artist_name=artist,
                              album_name=album,

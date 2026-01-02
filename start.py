@@ -405,14 +405,29 @@ def get_db_connection():
     Create a database connection with WAL mode for better concurrency.
     WAL mode allows multiple readers and one writer simultaneously.
     """
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=60.0, isolation_level=None)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout=60000")  # 60 seconds
+    conn.execute("PRAGMA synchronous=NORMAL")
     return conn
 
 
-def save_to_db(track_data):
-    conn = get_db_connection()
-    cursor = conn.cursor()
+def save_to_db(track_data, max_retries=3):
+    """Save track data to database with retry logic for handling locks."""
+    for attempt in range(max_retries):
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            break
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e) and attempt < max_retries - 1:
+                logging.debug(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
+                continue
+            raise
+    else:
+        logging.error("Failed to acquire database connection after retries")
+        return
 
     # Prepare multi-value fields
     genres             = ",".join(track_data.get("genres", []))
@@ -487,11 +502,19 @@ def save_to_db(track_data):
         int(track_data.get("spotify_release_age_days", 0) or 0),
     ]
 
-    placeholders = ", ".join(["?"] * len(columns))
-    sql = f"INSERT OR REPLACE INTO tracks ({', '.join(columns)}) VALUES ({placeholders})"
-    cursor.execute(sql, values)
-    conn.commit()
-    conn.close()
+    try:
+        placeholders = ", ".join(["?"] * len(columns))
+        sql = f"INSERT OR REPLACE INTO tracks ({', '.join(columns)}) VALUES ({placeholders})"
+        cursor.execute(sql, values)
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if "locked" in str(e):
+            logging.warning(f"Database locked during save for track {track_data.get('id')}, will retry on next scan")
+        else:
+            logging.error(f"Database error saving track {track_data.get('id')}: {e}")
+        raise
+    finally:
+        conn.close()
 
 
 def get_current_track_rating(track_id: str) -> int:

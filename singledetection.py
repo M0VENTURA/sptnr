@@ -586,13 +586,22 @@ def single_detection_scan(verbose: bool = False):
                     if verbose:
                         logging.debug(f"Secondary lookup failed: {e}")
             
-            # Update database
-            cursor.execute(
-                """UPDATE tracks 
-                   SET is_single = ?, single_source = ?, single_confidence = ?
-                   WHERE id = ?""",
-                (1 if is_single else 0, single_source or "none", confidence, track_id)
-            )
+            # Update database with retry logic
+            for retry in range(3):
+                try:
+                    cursor.execute(
+                        """UPDATE tracks 
+                           SET is_single = ?, single_source = ?, single_confidence = ?
+                           WHERE id = ?""",
+                        (1 if is_single else 0, single_source or "none", confidence, track_id)
+                    )
+                    break
+                except sqlite3.OperationalError as e:
+                    if "locked" in str(e) and retry < 2:
+                        logging.debug(f"Database locked during update, retrying ({retry + 1}/3)...")
+                        time.sleep(0.5 * (retry + 1))
+                        continue
+                    raise
             scanned_count += 1
         
         conn.commit()
