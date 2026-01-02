@@ -650,62 +650,88 @@ def artist_detail(name):
 @app.route("/album/<path:artist>/<path:album>")
 def album_detail(artist, album):
     """View album details and tracks"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("""
-        SELECT *
-        FROM tracks
-        WHERE artist = ? AND album = ?
-        ORDER BY disc_number, track_number, title COLLATE NOCASE
-    """, (artist, album))
-    tracks_data = cursor.fetchall()
-    
-    # Get album metadata from first track
-    cursor.execute("""
-        SELECT 
-            COUNT(*) as track_count,
-            AVG(stars) as avg_stars,
-            SUM(COALESCE(duration, 0)) as total_duration,
-            spotify_release_date,
-            spotify_album_type,
-            spotify_album_art_url,
-            MAX(last_scanned) as last_scanned,
-            MAX(disc_number) as total_discs
-        FROM tracks
-        WHERE artist = ? AND album = ?
-    """, (artist, album))
-    album_data = cursor.fetchone()
-    
-    # Aggregate genres from tracks in this album
-    cursor.execute("""
-        SELECT DISTINCT genres FROM tracks
-        WHERE artist = ? AND album = ? AND genres IS NOT NULL AND genres != ''
-    """, (artist, album))
-    genre_rows = cursor.fetchall()
-    album_genres = set()
-    for row in genre_rows:
-        if row['genres']:
-            genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
-            album_genres.update(genres)
-    
-    # Group tracks by disc number
-    tracks_by_disc = {}
-    for track in tracks_data:
-        disc_num = track['disc_number'] or 1
-        if disc_num not in tracks_by_disc:
-            tracks_by_disc[disc_num] = []
-        tracks_by_disc[disc_num].append(track)
-    
-    conn.close()
-    
-    return render_template("album.html",
-                         artist_name=artist,
-                         album_name=album,
-                         tracks=tracks_data,
-                         tracks_by_disc=tracks_by_disc,
-                         album_data=album_data,
-                         album_genres=sorted(list(album_genres)))
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT *
+            FROM tracks
+            WHERE artist = ? AND album = ?
+            ORDER BY disc_number, track_number, title COLLATE NOCASE
+        """, (artist, album))
+        tracks_data = cursor.fetchall()
+        
+        if not tracks_data:
+            return render_template("album.html",
+                                 artist_name=artist,
+                                 album_name=album,
+                                 tracks=[],
+                                 tracks_by_disc={},
+                                 album_data=None,
+                                 album_genres=[],
+                                 error="Album not found")
+        
+        # Get album metadata from first track
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                SUM(COALESCE(duration, 0)) as total_duration,
+                spotify_release_date,
+                spotify_album_type,
+                spotify_album_art_url,
+                MAX(last_scanned) as last_scanned,
+                MAX(disc_number) as total_discs
+            FROM tracks
+            WHERE artist = ? AND album = ?
+        """, (artist, album))
+        album_data = cursor.fetchone()
+        
+        # Convert to dict if it's a Row object
+        if album_data:
+            album_data = dict(album_data)
+        
+        # Aggregate genres from tracks in this album
+        cursor.execute("""
+            SELECT DISTINCT genres FROM tracks
+            WHERE artist = ? AND album = ? AND genres IS NOT NULL AND genres != ''
+        """, (artist, album))
+        genre_rows = cursor.fetchall()
+        album_genres = set()
+        for row in genre_rows:
+            genre_value = row['genres'] if isinstance(row, dict) else row[0]
+            if genre_value:
+                genres = [g.strip() for g in genre_value.split(',') if g.strip()]
+                album_genres.update(genres)
+        
+        # Group tracks by disc number
+        tracks_by_disc = {}
+        for track in tracks_data:
+            disc_num = track['disc_number'] or 1
+            if disc_num not in tracks_by_disc:
+                tracks_by_disc[disc_num] = []
+            tracks_by_disc[disc_num].append(dict(track) if hasattr(track, 'keys') else track)
+        
+        conn.close()
+        
+        return render_template("album.html",
+                             artist_name=artist,
+                             album_name=album,
+                             tracks=tracks_data,
+                             tracks_by_disc=tracks_by_disc,
+                             album_data=album_data,
+                             album_genres=sorted(list(album_genres)))
+    except Exception as e:
+        logging.error(f"Error loading album {artist}/{album}: {e}")
+        return render_template("album.html",
+                             artist_name=artist,
+                             album_name=album,
+                             tracks=[],
+                             tracks_by_disc={},
+                             album_data=None,
+                             album_genres=[],
+                             error=f"Error loading album: {str(e)}")
 
 
 @app.route("/track/<track_id>")

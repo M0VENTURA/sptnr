@@ -55,7 +55,7 @@ def scan_popularity(verbose: bool = False):
         # Get all tracks without recent popularity updates
         cursor.execute("""
             SELECT DISTINCT artist, album, title, id, 
-                   spotify_score, lastfm_ratio, listenbrainz_count, 
+                   spotify_score, lastfm_ratio, listenbrainz_score, 
                    last_scanned, mbid
             FROM tracks
             WHERE last_scanned IS NULL OR 
@@ -108,9 +108,10 @@ def scan_popularity(verbose: bool = False):
                 logging.debug(f"Last.fm lookup failed for {title}: {e}")
             
             # Get ListenBrainz score
-            listenbrainz_count = track['listenbrainz_count'] or 0
+            listenbrainz_count = track['listenbrainz_score'] or 0
             try:
-                score = get_listenbrainz_score(track.get('mbid', ''), artist, title)
+                mbid_value = track['mbid'] if 'mbid' in track.keys() else ''
+                score = get_listenbrainz_score(mbid_value, artist, title)
                 listenbrainz_count = score
                 if verbose:
                     logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
@@ -125,7 +126,7 @@ def scan_popularity(verbose: bool = False):
                     UPDATE tracks SET
                         spotify_score = ?,
                         lastfm_ratio = ?,
-                        listenbrainz_count = ?
+                        listenbrainz_score = ?
                     WHERE id = ?
                 """, (spotify_score, lastfm_ratio, listenbrainz_count, track_id))
                 conn.commit()
