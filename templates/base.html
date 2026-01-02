@@ -802,15 +802,18 @@
               </a></li>
             </ul>
           </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('smart_playlists') }}">
-              <i class="bi bi-music-note-list"></i> Smart Playlists
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="playlistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-music-note-list"></i> Playlists
             </a>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('playlist_import') }}">
-              <i class="bi bi-cloud-arrow-down"></i> Import Playlist
-            </a>
+            <ul class="dropdown-menu" aria-labelledby="playlistsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('smart_playlists') }}">
+                <i class="bi bi-sparkles"></i> Smart Playlists
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('playlist_import') }}">
+                <i class="bi bi-cloud-arrow-down"></i> Import Playlist
+              </a></li>
+            </ul>
           </li>
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('logs') }}">

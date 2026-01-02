@@ -583,6 +583,214 @@ def single_detection_scan(verbose: bool = False):
     finally:
         logging.info("=" * 60)
 
+
+def rate_track_single_detection(
+    track: dict,
+    artist_name: str,
+    album_ctx: dict,
+    config: dict,
+    title_sim_threshold: float = 0.92,
+    count_short_release_as_match: bool = False,
+    use_lastfm_single: bool = True,
+    verbose: bool = False
+) -> dict:
+    """
+    Perform single detection on a track and update its fields with single status, sources, and star assignment.
+    
+    This is extracted from rate_artist() to keep single detection logic centralized in singledetection.py.
+    
+    Returns the updated track dict with:
+    - is_single (bool)
+    - single_sources (list)
+    - single_confidence (str): 'high', 'medium', 'low'
+    - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
+    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
+    """
+    from start import (
+        _base_title,
+        _has_subtitle_variant,
+        _similar,
+        is_valid_version,
+        DISCOGS_ENABLED,
+        DISCOGS_TOKEN,
+        MUSICBRAINZ_ENABLED,
+        CONTEXT_FALLBACK_STUDIO,
+    )
+    
+    title = track.get("title", "")
+    canonical_base = _base_title(title)
+    sim_to_base = _similar(title, canonical_base)
+    has_subtitle = _has_subtitle_variant(title)
+    
+    if verbose:
+        logging.info(f"🎵 Checking: {title}")
+    
+    allow_live_remix = bool(album_ctx.get("is_live") or album_ctx.get("is_unplugged"))
+    canonical = is_valid_version(title, allow_live_remix=allow_live_remix)
+    
+    # ✅ Store canonical title audit fields
+    track['is_canonical_title'] = 1 if canonical else 0
+    track['title_similarity_to_base'] = sim_to_base
+    
+    spotify_matched = bool(track.get("is_spotify_single"))
+    tot = track.get("spotify_total_tracks")
+    short_release = (tot is not None and tot > 0 and tot <= 2)
+    
+    # Accumulate sources for visibility
+    sources = set()
+    if spotify_matched:
+        sources.add("spotify")
+    if short_release:
+        sources.add("short_release")
+    
+    if verbose:
+        hints = []
+        if spotify_matched:
+            hints.append("Spotify single")
+        if short_release:
+            hints.append(f"short release ({tot} tracks)")
+        if hints:
+            logging.info(f"💡 Initial hints: {', '.join(hints)}")
+    
+    # --- Discogs Single (hard stop) ---
+    discogs_single_hit = False
+    try:
+        if verbose:
+            logging.info("🔍 Checking Discogs single...")
+        logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
+        if DISCOGS_ENABLED and DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
+            sources.add("discogs")
+            discogs_single_hit = True
+            track['discogs_single_confirmed'] = 1
+            logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
+            if verbose:
+                logging.info("✅ Discogs single FOUND")
+        else:
+            logging.debug(f"Discogs single not detected for '{title}'")
+            if verbose and DISCOGS_ENABLED:
+                logging.info("❌ Discogs single not found")
+    except Exception as e:
+        logging.exception(f"is_discogs_single failed for '{title}': {e}")
+    
+    if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
+        track["is_single"] = True
+        track["single_sources"] = sorted(sources)
+        track["single_confidence"] = "high"
+        track["stars"] = 5
+        logging.info(f"Single CONFIRMED (Discogs): '{title}' → 5★")
+        if verbose:
+            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Discogs single (sources: {', '.join(sorted(sources))})")
+        return track
+    
+    # --- Discogs Official Video ---
+    discogs_video_hit = False
+    try:
+        if DISCOGS_ENABLED and DISCOGS_TOKEN:
+            if verbose:
+                logging.info("🎬 Checking Discogs official video...")
+            logging.debug(f"Searching Discogs for official video for '{title}' by '{artist_name}'")
+            dv = discogs_official_video_signal(
+                title, artist_name,
+                discogs_token=DISCOGS_TOKEN,
+                album_context=album_ctx,
+                permissive_fallback=CONTEXT_FALLBACK_STUDIO,
+            )
+            logging.debug(f"Discogs video check result for '{title}': {dv}")
+            if dv.get("match"):
+                sources.add("discogs_video")
+                discogs_video_hit = True
+                track['discogs_video_found'] = 1
+                if verbose:
+                    logging.info("✅ Discogs official video FOUND")
+            elif verbose:
+                logging.info("❌ Discogs official video not found")
+    except Exception as e:
+        logging.exception(f"discogs_official_video_signal failed for '{title}': {e}")
+    
+    # Paired hard stop: Spotify + Official Video both match → 5★
+    if (discogs_video_hit and spotify_matched) and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
+        track["is_single"] = True
+        track["single_sources"] = sorted(sources)
+        track["single_confidence"] = "high"
+        track["stars"] = 5
+        logging.info(f"Single CONFIRMED (Spotify + Video): '{title}' → 5★")
+        if verbose:
+            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Spotify + Discogs video (sources: {', '.join(sorted(sources))})")
+        return track
+    
+    # --- If neither Spotify nor Video match → not a single ---
+    if not (discogs_video_hit or spotify_matched):
+        track["is_single"] = False
+        track["single_sources"] = sorted(sources)
+        track["single_confidence"] = "low" if len(sources) == 0 else "medium"
+        logging.debug(f"No single hint (Spotify/Video) for '{title}' → not checking further")
+        if verbose:
+            logging.info("⭕ No Spotify/Video hints - skipping further checks")
+        return track
+    
+    # Add corroborative sources
+    if verbose:
+        logging.info("🔍 Checking additional sources (MusicBrainz, Last.fm)...")
+    
+    try:
+        logging.debug(f"Checking MusicBrainz single for '{title}' by '{artist_name}'")
+        if is_musicbrainz_single(title, artist_name):
+            sources.add("musicbrainz")
+            logging.debug(f"MusicBrainz reports single for '{title}'")
+            if verbose:
+                logging.info("✅ MusicBrainz single FOUND")
+        elif verbose and MUSICBRAINZ_ENABLED:
+            logging.info("❌ MusicBrainz single not found")
+    except Exception as e:
+        logging.exception(f"MusicBrainz single check failed for '{title}': {e}")
+    
+    try:
+        logging.debug(f"Checking Last.fm single for '{title}' by '{artist_name}' (enabled={use_lastfm_single})")
+        if use_lastfm_single and is_lastfm_single(title, artist_name):
+            sources.add("lastfm")
+            logging.debug(f"Last.fm reports single for '{title}'")
+            if verbose:
+                logging.info("✅ Last.fm single FOUND")
+        elif verbose and use_lastfm_single:
+            logging.info("❌ Last.fm single not found")
+    except Exception as e:
+        logging.exception(f"Last.fm single check failed for '{title}': {e}")
+    
+    # Count matches toward 5★ confirmation
+    match_pool = {"spotify", "discogs_video", "musicbrainz", "lastfm"}
+    if count_short_release_as_match:
+        match_pool.add("short_release")
+    total_matches = len(sources & match_pool)
+    
+    if verbose:
+        logging.info(f"📊 Total sources: {', '.join(sorted(sources))} ({total_matches} matches)")
+    
+    if (total_matches >= 2) and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
+        track["is_single"] = True
+        track["single_sources"] = sorted(sources)
+        track["single_confidence"] = "high"
+        track["stars"] = 5
+        logging.info(f"Single CONFIRMED (2+ sources): '{title}' sources={sorted(sources)} → 5★")
+        if verbose:
+            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via 2+ sources: {', '.join(sorted(sources))}")
+    else:
+        # Got Spotify or Video hit, but only 1 source total → +1★ bump
+        track["is_single"] = False
+        track["single_sources"] = sorted(sources)
+        track["single_confidence"] = "medium" if total_matches >= 1 else "low"
+        # Apply +1★ bump if we have Spotify or Video signal
+        if (spotify_matched or discogs_video_hit) and canonical and not has_subtitle:
+            track["stars"] = 2  # +1 from default 1
+            logging.debug(f"Low-evidence +1★ bump for '{title}' (Spotify/Video hint)")
+            if verbose:
+                logging.info("⭐⭐ Low-evidence bump (Spotify/Video hint)")
+        elif verbose:
+            logging.info("ℹ️ Not enough sources for single confirmation")
+        logging.debug(f"Single NOT confirmed for '{title}' – sources={sorted(sources)} total_matches={total_matches}")
+    
+    return track
+
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Detect which tracks are singles")

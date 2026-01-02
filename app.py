@@ -112,7 +112,6 @@ def _baseline_config():
             "secondary_required_strong_sources": 2,
             "median_gate_strategy": "hard",
             "use_lastfm_single": True,
-            "refresh_playlists_on_start": False,
             "refresh_artist_index_on_start": False,
             "discogs_min_interval_sec": 0.35,
             "include_user_ratings_on_scan": True,

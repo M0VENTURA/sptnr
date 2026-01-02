@@ -2520,7 +2520,6 @@ if __name__ == "__main__":
     use_google  = config["features"].get("use_google", GOOGLE_ENABLED)
     use_youtube = config["features"].get("use_youtube", YOUTUBE_ENABLED)
     use_audiodb = config["features"].get("use_audiodb", AUDIODB_ENABLED)
-    refresh_playlists_on_start = config["features"].get("refresh_playlists_on_start", False)
     refresh_index_on_start     = config["features"].get("refresh_artist_index_on_start", False)
 
     # If verbose enabled, route debug logs to console as well
@@ -2538,23 +2537,6 @@ if __name__ == "__main__":
     if refresh_index_on_start:
         print("ðŸ“š Building artist index from Navidrome (startup)â€¦")
         build_artist_index()
-
-    if refresh_playlists_on_start:
-        # Guard: only useful if tracks exist in DB
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT COUNT(*) FROM tracks")
-        has_tracks = (cursor.fetchone()[0] or 0) > 0
-        conn.close()
-
-        if not has_tracks:
-            print("âš ï¸ No cached tracks yet; playlist refresh would be ineffective.")
-            # Optional: trigger a small rating pass here if you want to auto-populate.
-
-        print("ðŸš€ Startup flag enabled: refreshing smart playlists from DB cacheâ€¦")
-        refresh_all_playlists_from_db()
-        # Optional: exit after startup-only behavior:
-        # sys.exit(0)
 
     # âœ… Rebuild artist index if requested by CLI
     if args.refresh:
