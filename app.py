@@ -394,53 +394,60 @@ def index():
 @app.route("/dashboard")
 def dashboard():
     """Main dashboard with statistics"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
-    artist_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
-    album_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM tracks")
-    track_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
-    five_star_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
-    singles_count = cursor.fetchone()[0]
-    
-    cursor.execute("""
-        SELECT artist, album, MAX(last_scanned) as last_scan
-        FROM tracks
-        WHERE last_scanned IS NOT NULL
-        GROUP BY artist, album
-        ORDER BY last_scan DESC
-        LIMIT 10
-    """)
-    recent_scans = cursor.fetchall()
-    
-    conn.close()
-    
-    with scan_lock:
-        web_ui_running = scan_process is not None and scan_process.poll() is None
-    
-    # Check if background scan from start.py is running
-    lock_file_path = os.path.join(os.path.dirname(CONFIG_PATH), ".scan_lock")
-    background_running = os.path.exists(lock_file_path)
-    
-    scan_running = web_ui_running or background_running
-    
-    return render_template("dashboard.html",
-                         artist_count=artist_count,
-                         album_count=album_count,
-                         track_count=track_count,
-                         five_star_count=five_star_count,
-                         singles_count=singles_count,
-                         recent_scans=recent_scans,
-                         scan_running=scan_running)
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+        artist_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
+        album_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        track_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
+        five_star_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
+        singles_count = cursor.fetchone()[0]
+        
+        cursor.execute("""
+            SELECT artist, album, MAX(last_scanned) as last_scan
+            FROM tracks
+            WHERE last_scanned IS NOT NULL
+            GROUP BY artist, album
+            ORDER BY last_scan DESC
+            LIMIT 10
+        """)
+        recent_scans = cursor.fetchall()
+        
+        conn.close()
+        
+        with scan_lock:
+            web_ui_running = scan_process is not None and scan_process.poll() is None
+        
+        # Check if background scan from start.py is running
+        lock_file_path = os.path.join(os.path.dirname(CONFIG_PATH), ".scan_lock")
+        background_running = os.path.exists(lock_file_path)
+        
+        scan_running = web_ui_running or background_running
+        
+        return render_template("dashboard.html",
+                             artist_count=artist_count,
+                             album_count=album_count,
+                             track_count=track_count,
+                             five_star_count=five_star_count,
+                             singles_count=singles_count,
+                             recent_scans=recent_scans,
+                             scan_running=scan_running)
+    except Exception as e:
+        logging.error(f"Dashboard error: {e}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Dashboard error: {str(e)}", "danger")
+        return redirect(url_for("login"))
 
 
 @app.route("/artists")
