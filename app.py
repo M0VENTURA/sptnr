@@ -894,7 +894,7 @@ def scan_mp3():
 
 @app.route("/scan/navidrome", methods=["POST"])
 def scan_navidrome():
-    """Run navidromescan to scan Navidrome library"""
+    """Run Navidrome library scan using start.py"""
     global scan_process_navidrome
     
     with scan_lock:
@@ -903,7 +903,7 @@ def scan_navidrome():
             return redirect(url_for("dashboard"))
         
         try:
-            cmd = [sys.executable, "navidromescan.py", "--verbose"]
+            cmd = [sys.executable, "start.py", "--batchrate", "--verbose"]
             scan_process_navidrome = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -914,8 +914,6 @@ def scan_navidrome():
             flash("✅ Navidrome sync scan started", "success")
         except Exception as e:
             flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
-    
-    return redirect(url_for("dashboard"))
     
     return redirect(url_for("dashboard"))
 
@@ -1124,7 +1122,7 @@ def logs():
     log_files = {
         "main": LOG_PATH,
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
     }
@@ -1138,7 +1136,7 @@ def logs_stream():
     log_files = {
         "main": LOG_PATH,
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
     }
@@ -1169,7 +1167,7 @@ def logs_view():
     log_files = {
         "main": LOG_PATH,
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
     }
