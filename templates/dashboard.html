@@ -1,0 +1,418 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>SPTNR Dashboard</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            padding: 20px;
+        }
+
+        .container {
+            max-width: 1200px;
+            margin: 0 auto;
+        }
+
+        .header {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            margin-bottom: 20px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .header h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 2.5em;
+        }
+
+        .header p {
+            color: #666;
+            font-size: 1.1em;
+        }
+
+        .bookmarks-section {
+            background: white;
+            border-radius: 12px;
+            padding: 30px;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
+        }
+
+        .section-title {
+            color: #333;
+            font-size: 1.8em;
+            margin-bottom: 20px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+
+        .bookmark-dropdown {
+            position: relative;
+            margin-bottom: 30px;
+        }
+
+        .dropdown-button {
+            width: 100%;
+            padding: 15px 20px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            border-radius: 8px;
+            font-size: 1.1em;
+            cursor: pointer;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            transition: transform 0.2s;
+        }
+
+        .dropdown-button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .dropdown-content {
+            display: none;
+            position: absolute;
+            background-color: white;
+            min-width: 100%;
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
+            z-index: 1;
+            border-radius: 8px;
+            margin-top: 5px;
+            max-height: 300px;
+            overflow-y: auto;
+        }
+
+        .dropdown-content.show {
+            display: block;
+        }
+
+        .dropdown-content a {
+            color: #333;
+            padding: 15px 20px;
+            text-decoration: none;
+            display: block;
+            transition: background-color 0.2s;
+        }
+
+        .dropdown-content a:hover {
+            background-color: #f0f0f0;
+        }
+
+        .dropdown-content a:first-child {
+            border-radius: 8px 8px 0 0;
+        }
+
+        .dropdown-content a:last-child {
+            border-radius: 0 0 8px 8px;
+        }
+
+        .empty-state {
+            text-align: center;
+            padding: 40px;
+            color: #999;
+        }
+
+        .bookmarks-list {
+            margin-top: 30px;
+        }
+
+        .bookmark-item {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 15px;
+            background: #f8f9fa;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            transition: background-color 0.2s;
+        }
+
+        .bookmark-item:hover {
+            background: #e9ecef;
+        }
+
+        .bookmark-info {
+            flex: 1;
+        }
+
+        .bookmark-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .bookmark-url {
+            color: #666;
+            font-size: 0.9em;
+            word-break: break-all;
+        }
+
+        .bookmark-actions {
+            display: flex;
+            gap: 10px;
+        }
+
+        .btn {
+            padding: 8px 16px;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-size: 0.9em;
+            transition: all 0.2s;
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-danger:hover {
+            background: #c82333;
+        }
+
+        .btn-secondary {
+            background: #6c757d;
+            color: white;
+        }
+
+        .btn-secondary:hover {
+            background: #5a6268;
+        }
+
+        .add-bookmark-form {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        .form-group label {
+            display: block;
+            margin-bottom: 5px;
+            color: #333;
+            font-weight: 500;
+        }
+
+        .form-group input {
+            width: 100%;
+            padding: 10px;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 1em;
+        }
+
+        .form-group input:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .form-actions {
+            display: flex;
+            gap: 10px;
+            margin-top: 20px;
+        }
+
+        .hidden {
+            display: none;
+        }
+
+        .arrow {
+            transition: transform 0.3s;
+        }
+
+        .arrow.rotate {
+            transform: rotate(180deg);
+        }
+
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateY(-10px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        .dropdown-content.show {
+            animation: slideIn 0.3s ease-out;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="header">
+            <h1>🎧 SPTNR Dashboard</h1>
+            <p>Navidrome Rating CLI - Configuration & Bookmarks</p>
+        </div>
+
+        <div class="bookmarks-section">
+            <div class="section-title">
+                <span>📚 Bookmarks</span>
+                <button class="btn btn-primary" onclick="toggleAddForm()">+ Add Bookmark</button>
+            </div>
+
+            <!-- Add Bookmark Form -->
+            <div id="addBookmarkForm" class="add-bookmark-form hidden">
+                <h3 style="margin-bottom: 15px; color: #333;">Add New Bookmark</h3>
+                <form onsubmit="addBookmark(event)">
+                    <div class="form-group">
+                        <label for="bookmarkName">Site Name</label>
+                        <input type="text" id="bookmarkName" name="name" placeholder="e.g., GitHub" required>
+                    </div>
+                    <div class="form-group">
+                        <label for="bookmarkUrl">URL</label>
+                        <input type="url" id="bookmarkUrl" name="url" placeholder="https://github.com" required>
+                    </div>
+                    <div class="form-actions">
+                        <button type="submit" class="btn btn-primary">Save Bookmark</button>
+                        <button type="button" class="btn btn-secondary" onclick="toggleAddForm()">Cancel</button>
+                    </div>
+                </form>
+            </div>
+
+            <!-- Bookmark Dropdown -->
+            <div class="bookmark-dropdown">
+                {% if bookmarks %}
+                    <button class="dropdown-button" onclick="toggleDropdown()">
+                        <span>Select a bookmark to visit</span>
+                        <span class="arrow" id="dropdownArrow">▼</span>
+                    </button>
+                    <div class="dropdown-content" id="dropdownContent">
+                        {% for bookmark in bookmarks %}
+                        <a href="{{ bookmark.url }}" target="_blank">{{ bookmark.name }}</a>
+                        {% endfor %}
+                    </div>
+                {% else %}
+                    <div class="empty-state">
+                        <p>No bookmarks yet. Add your first bookmark to get started!</p>
+                    </div>
+                {% endif %}
+            </div>
+
+            <!-- Bookmarks List -->
+            {% if bookmarks %}
+            <div class="bookmarks-list">
+                <h3 style="margin-bottom: 15px; color: #333;">Manage Bookmarks</h3>
+                {% for bookmark in bookmarks %}
+                <div class="bookmark-item" data-index="{{ loop.index0 }}">
+                    <div class="bookmark-info">
+                        <div class="bookmark-name">{{ bookmark.name }}</div>
+                        <div class="bookmark-url">{{ bookmark.url }}</div>
+                    </div>
+                    <div class="bookmark-actions">
+                        <button class="btn btn-danger" onclick="deleteBookmark({{ loop.index0 }})">Delete</button>
+                    </div>
+                </div>
+                {% endfor %}
+            </div>
+            {% endif %}
+        </div>
+    </div>
+
+    <script>
+        function toggleDropdown() {
+            const dropdown = document.getElementById('dropdownContent');
+            const arrow = document.getElementById('dropdownArrow');
+            dropdown.classList.toggle('show');
+            arrow.classList.toggle('rotate');
+        }
+
+        function toggleAddForm() {
+            const form = document.getElementById('addBookmarkForm');
+            form.classList.toggle('hidden');
+        }
+
+        async function addBookmark(event) {
+            event.preventDefault();
+            
+            const form = event.target;
+            const name = form.name.value;
+            const url = form.url.value;
+
+            try {
+                const response = await fetch('/api/bookmarks', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ name, url }),
+                });
+
+                if (response.ok) {
+                    // Reload the page to show the new bookmark
+                    window.location.reload();
+                } else {
+                    alert('Failed to add bookmark');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to add bookmark');
+            }
+        }
+
+        async function deleteBookmark(index) {
+            if (!confirm('Are you sure you want to delete this bookmark?')) {
+                return;
+            }
+
+            try {
+                const response = await fetch(`/api/bookmarks/${index}`, {
+                    method: 'DELETE',
+                });
+
+                if (response.ok) {
+                    // Reload the page to show the updated list
+                    window.location.reload();
+                } else {
+                    alert('Failed to delete bookmark');
+                }
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to delete bookmark');
+            }
+        }
+
+        // Close dropdown when clicking outside
+        window.onclick = function(event) {
+            if (!event.target.matches('.dropdown-button') && !event.target.closest('.dropdown-button')) {
+                const dropdown = document.getElementById('dropdownContent');
+                const arrow = document.getElementById('dropdownArrow');
+                if (dropdown && dropdown.classList.contains('show')) {
+                    dropdown.classList.remove('show');
+                    arrow.classList.remove('rotate');
+                }
+            }
+        }
+    </script>
+</body>
+</html>

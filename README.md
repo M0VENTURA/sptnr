@@ -26,6 +26,45 @@ SPTNR works by blending multiple sources of listening data:
 * ✅ Print debugging info with scoring breakdowns, sources used, and star distributions
 * ✅ Resume batch scans from the last synced artist
 * ✅ Force re-scan of all tracks, overriding the cache
+* ✅ **Web Dashboard** for managing configuration and bookmarks
+
+---
+
+## 🌐 Web Dashboard
+
+SPTNR now includes a web dashboard for easy configuration and bookmark management!
+
+### Running the Dashboard
+
+    python dashboard.py
+
+The dashboard will be available at `http://localhost:5000` by default.
+
+You can customize the port by setting the `DASHBOARD_PORT` environment variable:
+
+    DASHBOARD_PORT=8080 python dashboard.py
+
+### Dashboard Features
+
+* 📚 **Bookmark Management**: Add, edit, and delete bookmarks to your favorite music-related websites
+* 🔗 **Quick Access**: Use the dropdown menu to quickly navigate to your bookmarked sites
+* ⚙️ **Configuration**: Manage SPTNR settings through the web interface
+* 🎨 **Modern UI**: Clean and responsive design for easy navigation
+
+### Adding Bookmarks
+
+Bookmarks can be added in two ways:
+
+1. **Through the Web Dashboard**: Click "Add Bookmark" and fill in the site name and URL
+2. **Directly in config.yaml**: Add entries under the `bookmarks` section:
+
+```yaml
+bookmarks:
+  - name: "Navidrome"
+    url: "http://localhost:4533"
+  - name: "Spotify"
+    url: "https://spotify.com"
+```
 
 ---
 
