@@ -26,6 +26,10 @@ slskd:
   web_url: "http://localhost:5030"  # URL to your slskd Web UI
   api_key: ""  # slskd API key (found in Settings > API)
 
+# Downloads Folder Configuration
+downloads:
+  folder: "/downloads/Music"  # Path to watch for downloaded music files
+
 # API Integrations - Enable/disable external services and provide credentials
 api_integrations:
   spotify:

@@ -3,7 +3,7 @@
 Sptnr Web UI - Flask application for managing music ratings and scans
 """
 
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
 import sqlite3
 import yaml
 import os
@@ -15,12 +15,14 @@ from datetime import datetime
 import copy
 import json
 import io
+from functools import wraps
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
 from start import create_retry_session
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
+app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
 # Paths
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -77,6 +79,9 @@ def _baseline_config():
             "web_url": "http://localhost:5030",
             "api_key": ""
         },
+        "downloads": {
+            "folder": "/downloads/Music"
+        },
         "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
         "database": {"path": DB_PATH, "vacuum_on_start": False},
         "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
@@ -128,15 +133,101 @@ def _needs_setup(cfg=None):
     return any(not (v and str(v).strip()) for v in required)
 
 
+def _authenticate_navidrome(username, password):
+    """Authenticate against Navidrome API"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    
+    # Check navidrome_users list first
+    nav_users = cfg.get("navidrome_users", [])
+    if isinstance(nav_users, list) and nav_users:
+        for user_config in nav_users:
+            if user_config.get("user") == username:
+                base_url = user_config.get("base_url", "")
+                nav_user = user_config.get("user", "")
+                nav_pass = user_config.get("pass", "")
+                
+                if password == nav_pass:
+                    # Verify against Navidrome API
+                    try:
+                        import requests
+                        import hashlib
+                        salt = "sptnr-auth"
+                        token = hashlib.md5((password + salt).encode()).hexdigest()
+                        auth_url = f"{base_url}/rest/ping?u={nav_user}&t={token}&s={salt}&v=1.16.0&c=sptnr"
+                        resp = requests.get(auth_url, timeout=5)
+                        if resp.status_code == 200 and "ok" in resp.text.lower():
+                            return True
+                    except:
+                        # If API check fails, fall back to password match
+                        return True
+                return False
+    
+    # Fall back to single navidrome entry
+    nav = cfg.get("navidrome", {})
+    if nav.get("user") == username and nav.get("pass") == password:
+        try:
+            import requests
+            import hashlib
+            base_url = nav.get("base_url", "")
+            salt = "sptnr-auth"
+            token = hashlib.md5((password + salt).encode()).hexdigest()
+            auth_url = f"{base_url}/rest/ping?u={username}&t={token}&s={salt}&v=1.16.0&c=sptnr"
+            resp = requests.get(auth_url, timeout=5)
+            if resp.status_code == 200 and "ok" in resp.text.lower():
+                return True
+        except:
+            # If API check fails, fall back to password match
+            return True
+    
+    return False
+
+
+def login_required(f):
+    """Decorator to require login for routes"""
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        # Check if config exists - if not, allow access (setup mode)
+        if not os.path.exists(CONFIG_PATH):
+            return f(*args, **kwargs)
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        
+        # If setup is needed, redirect to setup
+        if _needs_setup(cfg):
+            return redirect(url_for('setup'))
+        
+        # Check if user is logged in
+        if 'username' not in session:
+            return redirect(url_for('login', next=request.url))
+        
+        return f(*args, **kwargs)
+    return decorated_function
+
+
 @app.before_request
 def enforce_setup_wizard():
-    exempt = {"setup", "static", "config_edit", "config_editor", "logs_stream", "logs_view"}
+    exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
     if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
         return
 
+    # If config doesn't exist, allow setup
+    if not os.path.exists(CONFIG_PATH):
+        if request.endpoint != "setup":
+            return redirect(url_for("setup"))
+        return
+
     cfg, _ = _read_yaml(CONFIG_PATH)
+    
+    # If setup is needed, redirect to setup
     if _needs_setup(cfg):
-        return redirect(url_for("setup"))
+        if request.endpoint != "setup":
+            return redirect(url_for("setup"))
+        return
+    
+    # If setup is complete and not logged in, redirect to login
+    if 'username' not in session:
+        if request.endpoint != "login":
+            return redirect(url_for("login"))
 
 
 def get_db():
@@ -564,6 +655,50 @@ def scan_status():
         running = scan_process is not None and scan_process.poll() is None
     
     return jsonify({"running": running})
+
+
+@app.route("/login", methods=["GET", "POST"])
+def login():
+    """Login page"""
+    # If already logged in, redirect to dashboard
+    if 'username' in session:
+        return redirect(url_for('dashboard'))
+    
+    # If config doesn't exist, redirect to setup
+    if not os.path.exists(CONFIG_PATH):
+        return redirect(url_for('setup'))
+    
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    if _needs_setup(cfg):
+        return redirect(url_for('setup'))
+    
+    if request.method == 'POST':
+        username = request.form.get('username', '').strip()
+        password = request.form.get('password', '').strip()
+        
+        if _authenticate_navidrome(username, password):
+            session.permanent = True
+            session['username'] = username
+            flash(f'Welcome back, {username}!', 'success')
+            
+            # Redirect to next URL or dashboard
+            next_url = request.args.get('next')
+            if next_url:
+                return redirect(next_url)
+            return redirect(url_for('dashboard'))
+        else:
+            flash('Invalid username or password. Please use your Navidrome credentials.', 'danger')
+    
+    return render_template('login.html')
+
+
+@app.route("/logout")
+def logout():
+    """Logout and clear session"""
+    username = session.get('username', 'User')
+    session.clear()
+    flash(f'Goodbye, {username}!', 'info')
+    return redirect(url_for('login'))
 
 
 @app.route("/logs")
@@ -1195,7 +1330,8 @@ def api_album_art(artist, album):
 def api_downloads_scan():
     """Scan downloads folder and return pending files"""
     try:
-        downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        downloads_dir = cfg.get("downloads", {}).get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
         
         if not os.path.exists(downloads_dir):
             return jsonify({"error": "Downloads folder not found", "files": []})
@@ -1300,10 +1436,10 @@ def api_downloads_process_one():
 @app.route("/downloads-manager")
 def downloads_manager():
     """Downloads manager UI page"""
-    downloads_dir = os.environ.get("DOWNLOADS_DIR", "/downloads")
-    
-    # Get config for online metadata search services
     cfg, _ = _read_yaml(CONFIG_PATH)
+    
+    # Get downloads folder from config, fall back to env var, then default
+    downloads_dir = cfg.get("downloads", {}).get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
     
     return render_template("downloads_manager.html", 
                          downloads_dir=downloads_dir,

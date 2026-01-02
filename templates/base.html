@@ -812,6 +812,18 @@
               <i class="bi bi-gear"></i> Config
             </a>
           </li>
+          {% if session.get('username') %}
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-person-circle"></i> {{ session.get('username') }}
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('logout') }}">
+                <i class="bi bi-box-arrow-right"></i> Logout
+              </a></li>
+            </ul>
+          </li>
+          {% endif %}
         </ul>
       </div>
     </div>
