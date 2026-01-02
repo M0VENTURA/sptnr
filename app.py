@@ -701,9 +701,9 @@ def album_detail(artist, album):
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
                 SUM(COALESCE(duration, 0)) as total_duration,
-                spotify_release_date,
-                spotify_album_type,
-                spotify_album_art_url,
+                MAX(spotify_release_date) as spotify_release_date,
+                MAX(spotify_album_type) as spotify_album_type,
+                MAX(spotify_album_art_url) as spotify_album_art_url,
                 MAX(last_scanned) as last_scanned,
                 MAX(COALESCE(disc_number, 1)) as total_discs
             FROM tracks
@@ -714,6 +714,17 @@ def album_detail(artist, album):
         # Convert to dict if it's a Row object
         if album_data:
             album_data = dict(album_data)
+        else:
+            album_data = {
+                'track_count': 0,
+                'avg_stars': 0,
+                'total_duration': 0,
+                'spotify_release_date': None,
+                'spotify_album_type': None,
+                'spotify_album_art_url': None,
+                'last_scanned': None,
+                'total_discs': 1
+            }
         
         # Aggregate genres from tracks in this album
         cursor.execute("""
