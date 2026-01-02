@@ -3074,7 +3074,7 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
     global config
     
     # ✅ Reload config on each run
-    config, _ = load_config()
+    config = load_config()
     
     # Get configuration options
     batchrate = scan_type == 'batchrate'
