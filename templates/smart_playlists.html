@@ -759,4 +759,39 @@ document.addEventListener('change', function(e) {
 // Initialize preview
 updateJsonPreview();
 </script>
+
+<style>
+/* Dark theme improvements for smart playlists page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+}
+</style>
+
 {% endblock %}

@@ -764,10 +764,10 @@ def slskd_search():
         if not search_id:
             return jsonify({"error": "No search ID returned"}), 500
         
-        # Poll for results (max 15 seconds)
+        # Poll for results (max 45 seconds)
         import time
         results = []
-        for _ in range(30):
+        for _ in range(90):
             time.sleep(0.5)
             
             # Get search status/results
