@@ -1936,12 +1936,8 @@ def api_create_smart_playlist():
 # ============================================================================
 # SPOTIFY PLAYLIST IMPORT ROUTES
 # ============================================================================
-
-@app.route("/smart_playlists")
-def smart_playlists():
-    """Smart playlists page"""
-    return render_template("smart_playlists.html")
-
+# SPOTIFY PLAYLIST IMPORT ROUTES
+# ============================================================================
 
 @app.route("/playlist/import")
 def playlist_import():
