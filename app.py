@@ -1316,6 +1316,130 @@ def smart_playlists():
     return render_template("smart_playlists.html")
 
 
+@app.route("/downloads-monitor")
+def downloads_monitor():
+    """Downloads monitoring UI page"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+    slskd_config = cfg.get("slskd", {})
+    
+    return render_template("downloads_monitor.html", 
+                         qbit_enabled=qbit_config.get("enabled", False),
+                         slskd_enabled=slskd_config.get("enabled", False))
+
+
+@app.route("/api/qbittorrent/status", methods=["GET"])
+def qbit_status():
+    """Get qBittorrent download status"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+    
+    if not qbit_config.get("enabled"):
+        return jsonify({"error": "qBittorrent integration not enabled"}), 400
+    
+    web_url = qbit_config.get("web_url", "http://localhost:8080")
+    username = qbit_config.get("username", "")
+    password = qbit_config.get("password", "")
+    
+    try:
+        import requests as req
+        
+        # Login
+        session = req.Session()
+        login_url = f"{web_url}/api/v2/auth/login"
+        login_resp = session.post(login_url, data={"username": username, "password": password}, timeout=10)
+        
+        if login_resp.text != "Ok.":
+            return jsonify({"error": "Failed to login to qBittorrent"}), 500
+        
+        # Get torrents info
+        torrents_url = f"{web_url}/api/v2/torrents/info"
+        resp = session.get(torrents_url, timeout=10)
+        
+        if resp.status_code != 200:
+            return jsonify({"error": f"Failed to get torrents: {resp.status_code}"}), 500
+        
+        torrents = resp.json()
+        
+        # Filter and format torrents
+        active_torrents = []
+        for torrent in torrents:
+            active_torrents.append({
+                "hash": torrent.get("hash", ""),
+                "name": torrent.get("name", ""),
+                "state": torrent.get("state", ""),
+                "progress": round(torrent.get("progress", 0) * 100, 2),
+                "dlspeed": torrent.get("dlspeed", 0),
+                "upspeed": torrent.get("upspeed", 0),
+                "downloaded": torrent.get("downloaded", 0),
+                "uploaded": torrent.get("uploaded", 0),
+                "size": torrent.get("size", 0),
+                "eta": torrent.get("eta", 0),
+                "num_seeds": torrent.get("num_seeds", 0),
+                "num_leechs": torrent.get("num_leechs", 0),
+                "category": torrent.get("category", ""),
+                "save_path": torrent.get("save_path", "")
+            })
+        
+        return jsonify({"torrents": active_torrents})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/status", methods=["GET"])
+def slskd_status():
+    """Get slskd download status"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req
+        
+        headers = {"X-API-Key": api_key} if api_key else {}
+        
+        # Get transfers
+        transfers_url = f"{web_url}/api/v0/transfers/downloads"
+        resp = req.get(transfers_url, headers=headers, timeout=10)
+        
+        if resp.status_code != 200:
+            return jsonify({"error": f"Failed to get transfers: {resp.status_code}"}), 500
+        
+        downloads = resp.json()
+        
+        # Format downloads
+        active_downloads = []
+        for username, files in downloads.items():
+            if isinstance(files, list):
+                for file_data in files:
+                    state = file_data.get("state", "")
+                    bytes_transferred = file_data.get("bytesTransferred", 0)
+                    size = file_data.get("size", 0)
+                    progress = (bytes_transferred / size * 100) if size > 0 else 0
+                    
+                    active_downloads.append({
+                        "username": username,
+                        "filename": file_data.get("filename", ""),
+                        "state": state,
+                        "progress": round(progress, 2),
+                        "bytesTransferred": bytes_transferred,
+                        "size": size,
+                        "averageSpeed": file_data.get("averageSpeed", 0),
+                        "remoteToken": file_data.get("remoteToken", "")
+                    })
+        
+        return jsonify({"downloads": active_downloads})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/smartplaylist/create", methods=["POST"])
 def api_create_smart_playlist():
     """Create a new Smart Playlist (.nsp file)"""
