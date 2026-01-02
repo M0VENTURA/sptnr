@@ -44,6 +44,25 @@ LOG_PATH = os.environ.get("LOG_PATH", "/config/app.log")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(APP_DIR, "config", "config.yaml")
 
+# Ensure expected log files exist so the log viewer doesn't 404
+def _ensure_log_file(path: str):
+    try:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        if not os.path.exists(path):
+            with open(path, "a", encoding="utf-8"):
+                pass
+    except Exception as e:
+        # Don't block app start; just log to stderr
+        print(f"Warning: could not ensure log file {path}: {e}")
+
+_ensure_log_file(LOG_PATH)
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
+
 # Global scan process tracker
 scan_process = None  # Main scan process (batchrate, force, artist-specific)
 scan_process_mp3 = None  # MP3 scanner process
