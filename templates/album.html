@@ -152,13 +152,38 @@
     color: var(--text-primary) !important;
 }
 
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
 .table tbody {
     background-color: var(--secondary-bg) !important;
+}
+
+.table tbody tr {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
 }
 
 .table-hover tbody tr:hover {
     background-color: rgba(255, 255, 255, 0.05) !important;
     color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
 }
 </style>
 
