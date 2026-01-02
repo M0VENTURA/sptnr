@@ -16,7 +16,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-people"></i> Artists
                     </div>
                     <div class="h4 mb-0">{{ artist_count }}</div>
@@ -26,7 +26,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-disc"></i> Albums
                     </div>
                     <div class="h4 mb-0">{{ album_count }}</div>
@@ -36,7 +36,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-music-note"></i> Tracks
                     </div>
                     <div class="h4 mb-0">{{ track_count }}</div>
@@ -46,7 +46,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-star-fill"></i> 5★
                     </div>
                     <div class="h4 mb-0">{{ five_star_count }}</div>
@@ -56,7 +56,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-single-music"></i> Singles
                     </div>
                     <div class="h4 mb-0">{{ singles_count }}</div>
@@ -66,7 +66,7 @@
         <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
                 <div class="card-body text-center">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                    <div class="stat-label mb-2">
                         <i class="bi bi-circle-fill"></i> Status
                     </div>
                     <div class="h5 mb-0">
@@ -185,6 +185,20 @@
 </div>
 
 <style>
+    .stat-label {
+        font-size: 0.85rem;
+        color: var(--text-secondary, #b0b0b0);
+        font-weight: 500;
+    }
+
+    .table-responsive {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+    }
+
+    .table {
+        color: var(--text-primary, #fff) !important;
+    }
+
     .btn-force {
         background-color: #ff6b00;
         border-color: #ff6b00;
