@@ -18,7 +18,7 @@
             <div class="d-flex gap-3">
                 <!-- Album Art -->
                 <div class="d-none d-md-block">
-                    <img src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                    <img src="{{ url_for('api_album_art', combo=(artist_name + '|||' + album_name)) }}" 
                          alt="{{ album_name }}" 
                          class="img-thumbnail" 
                          style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color);">

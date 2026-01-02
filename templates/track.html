@@ -9,7 +9,7 @@
             <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
             <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
             <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></li>
-            <li class="breadcrumb-item"><a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}">{{ track.album }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('album_detail', combo=(track.artist + '|||' + track.album)) }}">{{ track.album }}</a></li>
             <li class="breadcrumb-item active" aria-current="page">{{ track.title }}</li>
         </ol>
     </nav>
@@ -316,7 +316,7 @@
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>
-            <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
+            <a href="{{ url_for('album_detail', combo=(track.artist + '|||' + track.album)) }}" class="btn btn-secondary">
                 <i class="bi bi-x-circle"></i> Cancel
             </a>
         </div>
