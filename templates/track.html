@@ -51,8 +51,22 @@
                             <label for="album" class="form-label">Album</label>
                             <input type="text" class="form-control" id="album" name="album" value="{{ track.album }}" required>
                         </div>
+                                                <div class="mb-3">
+                            <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
+                            <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                            <div class="form-text">Official MusicBrainz recording ID</div>
+                        </div>
                         
                         <div class="mb-3">
+                            <label for="suggested_mbid" class="form-label">Suggested MBID</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="suggested_mbid" name="suggested_mbid" value="{{ track.suggested_mbid or '' }}" readonly>
+                                <input type="number" class="form-control" id="suggested_mbid_confidence" name="suggested_mbid_confidence" 
+                                       value="{{ track.suggested_mbid_confidence or '' }}" placeholder="Confidence" step="0.01" min="0" max="1" style="max-width: 120px;" readonly>
+                            </div>
+                            <div class="form-text">Auto-suggested MBID with confidence score</div>
+                        </div>
+                                                <div class="mb-3">
                             <label for="stars" class="form-label">Rating</label>
                             <select class="form-select" id="stars" name="stars">
                                 <option value="0" {% if track.stars == 0 %}selected{% endif %}>☆☆☆☆☆ — 0 Stars</option>
@@ -401,7 +415,7 @@
                                     <h6 class="mb-1">MBID: <code>${result.mbid}</code></h6>
                                     <p class="text-muted mb-0" style="font-size: 0.85rem;">Confidence: ${(result.confidence * 100).toFixed(1)}%</p>
                                 </div>
-                                <button class="btn btn-sm btn-primary" onclick="applyMBID('${result.mbid}')">
+                                <button class="btn btn-sm btn-primary" onclick="applyMBID('${result.mbid}', ${result.confidence || 0})">
                                     <i class="bi bi-check-circle"></i> Apply
                                 </button>
                             </div>
@@ -441,9 +455,22 @@
         resultsDiv.innerHTML = html;
     }
 
-    function applyMBID(mbid) {
-        // In a real implementation, this would update the track record with the MBID
-        alert('Applied MBID: ' + mbid + '\n\nImplement MBID saving in your track update form.');
+    function applyMBID(mbid, confidence) {
+        // Populate the suggested MBID fields
+        document.getElementById('suggested_mbid').value = mbid;
+        document.getElementById('suggested_mbid_confidence').value = (confidence || 0).toFixed(2);
+        
+        // Also populate the main MBID field if it's empty
+        const mbidField = document.getElementById('mbid');
+        if (!mbidField.value || confirm('Replace current MBID with this suggested one?')) {
+            mbidField.value = mbid;
+        }
+        
+        // Close modal and show success
+        const modal = bootstrap.Modal.getInstance(document.getElementById('externalLookupModal'));
+        if (modal) modal.hide();
+        
+        alert('✅ MBID applied! Remember to save the form.');
     }
 
     function applyDiscogsData(title, genres) {

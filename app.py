@@ -902,13 +902,17 @@ def track_edit(track_id):
     stars = request.form.get("stars", type=int)
     is_single = 1 if request.form.get("is_single") == "on" else 0
     single_confidence = request.form.get("single_confidence", "low")
+    mbid = request.form.get("mbid", "").strip() or None
+    suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
+    suggested_mbid_confidence = request.form.get("suggested_mbid_confidence", type=float)
     
     # Update database
     cursor.execute("""
         UPDATE tracks
-        SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?
+        SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
+            mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?
         WHERE id = ?
-    """, (title, artist, album, stars, is_single, single_confidence, track_id))
+    """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, suggested_mbid_confidence, track_id))
     
     conn.commit()
     conn.close()
@@ -2597,10 +2601,12 @@ if __name__ == "__main__":
             
             # Get Discogs token from config
             cfg, _ = _read_yaml(CONFIG_PATH)
-            token = cfg.get("discogs", {}).get("token", "")
+            # Check both api_integrations.discogs and root discogs for backwards compatibility
+            discogs_config = cfg.get("api_integrations", {}).get("discogs", {}) or cfg.get("discogs", {})
+            token = discogs_config.get("token", "")
             
             if not token:
-                return jsonify({"error": "Discogs token not configured"}), 400
+                return jsonify({"error": "Discogs token not configured. Please add your Discogs token in config.yaml under api_integrations.discogs.token"}), 400
             
             # Search Discogs API directly
             headers = {
@@ -2649,7 +2655,7 @@ if __name__ == "__main__":
     def api_album_musicbrainz_lookup():
         """Lookup album on MusicBrainz for better metadata"""
         try:
-            from start import get_suggested_mbid
+            from api_clients.musicbrainz import MusicBrainzClient
             
             data = request.get_json()
             album = data.get("album", "")
@@ -2658,8 +2664,9 @@ if __name__ == "__main__":
             if not album or not artist:
                 return jsonify({"error": "Missing album or artist"}), 400
             
-            # Get suggested MBID for album
-            mbid, confidence = get_suggested_mbid(album, artist, limit=5)
+            # Get suggested MBID using the client
+            mb_client = MusicBrainzClient(enabled=True)
+            mbid, confidence = mb_client.get_suggested_mbid(album, artist, limit=5)
             
             if not mbid:
                 return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
