@@ -68,6 +68,10 @@ _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
 
+# Authentication method constants
+AUTH_METHOD_NAVIDROME = 'navidrome'
+AUTH_METHOD_AUTHENTIK = 'authentik'
+
 # Global scan process tracker
 scan_process = None  # Main scan process (batchrate, force, artist-specific)
 scan_process_mp3 = None  # MP3 scanner process
@@ -98,23 +102,18 @@ def _init_authentik_oauth():
     server_url = authentik_config.get("server_url", "").rstrip("/")
     client_id = authentik_config.get("client_id", "")
     client_secret = authentik_config.get("client_secret", "")
+    app_slug = authentik_config.get("app_slug", "sptnr")  # Configurable app slug
     
     if not all([server_url, client_id, client_secret]):
         logging.warning("Authentik enabled but missing configuration")
         return None
-    
-    # Get redirect URI from config or use default
-    redirect_uri = authentik_config.get("redirect_uri")
-    if not redirect_uri:
-        # Default to the app's base URL + /auth/callback
-        redirect_uri = url_for('authentik_callback', _external=True)
     
     try:
         authentik = oauth.register(
             name='authentik',
             client_id=client_id,
             client_secret=client_secret,
-            server_metadata_url=f"{server_url}/application/o/sptnr/.well-known/openid-configuration",
+            server_metadata_url=f"{server_url}/application/o/{app_slug}/.well-known/openid-configuration",
             client_kwargs={
                 'scope': 'openid email profile'
             }
@@ -141,7 +140,9 @@ def _baseline_config():
             "enabled": False,
             "server_url": "",
             "client_id": "",
-            "client_secret": ""
+            "client_secret": "",
+            "app_slug": "sptnr",
+            "username_field": "preferred_username"
         },
         "api_integrations": {
             "spotify": {"enabled": False, "client_id": "", "client_secret": ""},
@@ -1234,7 +1235,7 @@ def login():
             if _authenticate_navidrome(username, password):
                 session.permanent = True
                 session['username'] = username
-                session['auth_method'] = 'navidrome'
+                session['auth_method'] = AUTH_METHOD_NAVIDROME
                 flash(f'Welcome back, {username}!', 'success')
                 
                 # Redirect to next URL or dashboard
@@ -1290,6 +1291,11 @@ def authentik_login():
 def authentik_callback():
     """OAuth callback from Authentik"""
     try:
+        # Get config for username field preference
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        authentik_config = cfg.get("authentik", {})
+        username_field = authentik_config.get("username_field", "preferred_username")
+        
         # Initialize Authentik OAuth client
         authentik = _init_authentik_oauth()
         if not authentik:
@@ -1303,11 +1309,17 @@ def authentik_callback():
         user_info = authentik.userinfo(token=token)
         
         if user_info:
+            # Get username from configured field with fallbacks
+            username = user_info.get(username_field)
+            if not username:
+                # Fallback order: preferred_username -> email -> sub
+                username = user_info.get('preferred_username') or user_info.get('email') or user_info.get('sub')
+            
             # Store user info in session
             session.permanent = True
-            session['username'] = user_info.get('preferred_username') or user_info.get('email') or user_info.get('sub')
+            session['username'] = username
             session['email'] = user_info.get('email')
-            session['auth_method'] = 'authentik'
+            session['auth_method'] = AUTH_METHOD_AUTHENTIK
             session['user_info'] = {
                 'name': user_info.get('name'),
                 'email': user_info.get('email'),

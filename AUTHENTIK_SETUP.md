@@ -50,9 +50,21 @@ authentik:
   server_url: "https://auth.example.com"  # Your Authentik instance URL
   client_id: "your-client-id-from-step-2"
   client_secret: "your-client-secret-from-step-2"
-  # Optional: specify custom redirect URI if different from default
-  # redirect_uri: "https://your-sptnr-domain.com/auth/callback"
+  app_slug: "sptnr"  # Must match the slug you configured in Authentik (Step 1)
+  username_field: "preferred_username"  # Which field to use for username (preferred_username, email, or sub)
 ```
+
+### Configuration Options Explained:
+
+- **enabled**: Set to `true` to enable Authentik authentication
+- **server_url**: The base URL of your Authentik instance (without trailing slash)
+- **client_id**: The Client ID from your OAuth2 provider (from Step 2)
+- **client_secret**: The Client Secret from your OAuth2 provider (keep this secure!)
+- **app_slug**: The application slug you configured in Authentik (must match exactly)
+- **username_field**: Which user attribute to use as the username in Sptnr:
+  - `preferred_username`: Use the Authentik username (recommended)
+  - `email`: Use the user's email address
+  - `sub`: Use the unique subject identifier (UUID)
 
 3. Save the file and restart Sptnr
 

@@ -19,8 +19,8 @@ authentik:
   server_url: ""  # Your Authentik instance URL (e.g., https://auth.example.com)
   client_id: ""  # OAuth2/OIDC Client ID from Authentik
   client_secret: ""  # OAuth2/OIDC Client Secret from Authentik
-  # Optional: Customize the redirect URI (defaults to http://localhost:5000/auth/callback)
-  # redirect_uri: "http://localhost:5000/auth/callback"
+  app_slug: "sptnr"  # Application slug configured in Authentik (default: sptnr)
+  username_field: "preferred_username"  # Field to use as username (preferred_username, email, or sub)
 
 # qBittorrent Integration - Search for missing releases from artist pages
 qbittorrent:
