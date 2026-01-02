@@ -183,6 +183,39 @@
       font-size: 0.8rem;
     }
 
+    /* List Group Styling */
+    .list-group {
+      background-color: transparent;
+      border: none;
+    }
+
+    .list-group-item {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+      border-radius: 6px;
+    }
+
+    .list-group-item:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+    }
+
+    .list-group-item.active {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+    }
+
+    .list-group-item a {
+      color: var(--spotify-green);
+    }
+
+    .list-group-item a:hover {
+      color: var(--spotify-green-hover);
+    }
+
     /* Alerts */
     .alert {
       background-color: var(--secondary-bg);

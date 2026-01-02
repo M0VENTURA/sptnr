@@ -100,14 +100,14 @@
                 <div class="d-flex flex-column flex-md-row gap-2 gap-md-3">
                     <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
                         <input type="hidden" name="scan_type" value="batchrate">
-                        <button type="submit" class="btn btn-primary w-100">
+                        <button type="submit" class="btn btn-success w-100" style="background-color: #1db954; border-color: #1db954; color: #000; font-weight: 600;">
                             <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Batch</span>
                         </button>
                     </form>
                     
                     <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
                         <input type="hidden" name="scan_type" value="force">
-                        <button type="submit" class="btn btn-warning w-100">
+                        <button type="submit" class="btn btn-force w-100">
                             <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Force</span>
                         </button>
                     </form>
@@ -183,4 +183,26 @@
         </a>
     </div>
 </div>
+
+<style>
+    .btn-force {
+        background-color: #ff6b00;
+        border-color: #ff6b00;
+        color: #fff;
+        font-weight: 600;
+    }
+
+    .btn-force:hover {
+        background-color: #ff8000;
+        border-color: #ff8000;
+        color: #fff;
+    }
+
+    .btn-force:active,
+    .btn-force:focus {
+        background-color: #ff5500;
+        border-color: #ff5500;
+        box-shadow: 0 0 0 0.25rem rgba(255, 107, 0, 0.5);
+    }
+</style>
 {% endblock %}
