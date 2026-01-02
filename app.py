@@ -789,15 +789,32 @@ def logout():
 @app.route("/logs")
 def logs():
     """View logs"""
-    return render_template("logs.html", log_path=LOG_PATH)
+    log_files = {
+        "main": LOG_PATH,
+        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+    }
+    return render_template("logs.html", log_path=LOG_PATH, log_files=log_files)
 
 
 @app.route("/logs/stream")
 def logs_stream():
     """Stream log file in real-time"""
+    log_type = request.args.get("type", "main")
+    log_files = {
+        "main": LOG_PATH,
+        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+    }
+    log_path = log_files.get(log_type, LOG_PATH)
+    
     def generate():
         try:
-            with open(LOG_PATH, "r") as f:
+            with open(log_path, "r") as f:
                 # Seek to end
                 f.seek(0, 2)
                 while True:
@@ -807,7 +824,7 @@ def logs_stream():
                     else:
                         time.sleep(0.5)
         except FileNotFoundError:
-            yield f"data: Log file not found: {LOG_PATH}\n\n"
+            yield f"data: Log file not found: {log_path}\n\n"
     
     return Response(generate(), mimetype="text/event-stream")
 
@@ -815,9 +832,18 @@ def logs_stream():
 @app.route("/logs/view")
 def logs_view():
     """View last N lines of log"""
+    log_type = request.args.get("type", "main")
     lines = request.args.get("lines", 500, type=int)
+    log_files = {
+        "main": LOG_PATH,
+        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "navidromescan.log"),
+        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+    }
+    log_path = log_files.get(log_type, LOG_PATH)
     try:
-        with open(LOG_PATH, "r") as f:
+        with open(log_path, "r") as f:
             all_lines = f.readlines()
             recent_lines = all_lines[-lines:] if len(all_lines) > lines else all_lines
             return jsonify({"lines": recent_lines})
