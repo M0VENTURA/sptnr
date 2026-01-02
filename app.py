@@ -34,7 +34,11 @@ APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(APP_DIR, "config", "config.yaml")
 
 # Global scan process tracker
-scan_process = None
+scan_process = None  # Main scan process (batchrate, force, artist-specific)
+scan_process_mp3 = None  # MP3 scanner process
+scan_process_navidrome = None  # Navidrome sync process
+scan_process_popularity = None  # Popularity scan process
+scan_process_singles = None  # Singles detection process
 scan_lock = threading.Lock()
 
 def _read_yaml(path):
@@ -810,17 +814,25 @@ def scan_start():
 @app.route("/scan/mp3", methods=["POST"])
 def scan_mp3():
     """Run mp3scanner to scan music folder and match files to database"""
-    try:
-        import subprocess
-        cmd = [sys.executable, "mp3scanner.py"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    global scan_process_mp3
+    
+    with scan_lock:
+        if scan_process_mp3 and scan_process_mp3.poll() is None:
+            flash("File path scan is already running", "warning")
+            return redirect(url_for("dashboard"))
         
-        if result.returncode == 0:
-            flash("✅ File scan completed successfully", "success")
-        else:
-            flash(f"❌ File scan failed: {result.stderr}", "danger")
-    except Exception as e:
-        flash(f"❌ Error running file scan: {str(e)}", "danger")
+        try:
+            cmd = [sys.executable, "mp3scanner.py"]
+            scan_process_mp3 = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            flash("✅ File path scan started", "success")
+        except Exception as e:
+            flash(f"❌ Error starting file scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
@@ -828,17 +840,27 @@ def scan_mp3():
 @app.route("/scan/navidrome", methods=["POST"])
 def scan_navidrome():
     """Run navidromescan to scan Navidrome library"""
-    try:
-        import subprocess
-        cmd = [sys.executable, "navidromescan.py", "--verbose"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    global scan_process_navidrome
+    
+    with scan_lock:
+        if scan_process_navidrome and scan_process_navidrome.poll() is None:
+            flash("Navidrome sync scan is already running", "warning")
+            return redirect(url_for("dashboard"))
         
-        if result.returncode == 0:
-            flash("✅ Navidrome scan completed successfully", "success")
-        else:
-            flash(f"❌ Navidrome scan failed: {result.stderr}", "danger")
-    except Exception as e:
-        flash(f"❌ Error running Navidrome scan: {str(e)}", "danger")
+        try:
+            cmd = [sys.executable, "navidromescan.py", "--verbose"]
+            scan_process_navidrome = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            flash("✅ Navidrome sync scan started", "success")
+        except Exception as e:
+            flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
     
     return redirect(url_for("dashboard"))
 
@@ -846,18 +868,18 @@ def scan_navidrome():
 @app.route("/scan/popularity", methods=["POST"])
 def scan_popularity():
     """Run popularity score update from external sources"""
-    global scan_process
+    global scan_process_popularity
     
     with scan_lock:
-        if scan_process and scan_process.poll() is None:
-            flash("A scan is already running", "warning")
+        if scan_process_popularity and scan_process_popularity.poll() is None:
+            flash("Popularity scan is already running", "warning")
             return redirect(url_for("dashboard"))
         
-        # Start popularity scan in background
+        # Start popularity scan in background from popularity.py
         cmd = [sys.executable, "-c", 
-               "from start import scan_popularity; scan_popularity(verbose=True)"]
+               "from popularity import scan_popularity; scan_popularity(verbose=True)"]
         
-        scan_process = subprocess.Popen(
+        scan_process_popularity = subprocess.Popen(
             cmd,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
@@ -873,33 +895,105 @@ def scan_popularity():
 @app.route("/scan/singles", methods=["POST"])
 def scan_singles():
     """Run single detection"""
-    try:
-        import subprocess
-        cmd = [sys.executable, "singledetection.py", "--verbose"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    global scan_process_singles
+    
+    with scan_lock:
+        if scan_process_singles and scan_process_singles.poll() is None:
+            flash("Single detection scan is already running", "warning")
+            return redirect(url_for("dashboard"))
         
-        if result.returncode == 0:
-            flash("✅ Single detection completed successfully", "success")
-        else:
-            flash(f"❌ Single detection failed: {result.stderr}", "danger")
-    except Exception as e:
-        flash(f"❌ Error running single detection: {str(e)}", "danger")
+        try:
+            cmd = [sys.executable, "singledetection.py", "--verbose"]
+            scan_process_singles = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            flash("✅ Single detection scan started", "success")
+        except Exception as e:
+            flash(f"❌ Error starting single detection: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
 
 @app.route("/scan/stop", methods=["POST"])
 def scan_stop():
-    """Stop the running scan"""
+    """Stop the running scan (main scan process)"""
     global scan_process
     
     with scan_lock:
         if scan_process and scan_process.poll() is None:
             scan_process.terminate()
             scan_process.wait(timeout=10)
-            flash("Scan stopped", "info")
+            flash("Main scan stopped", "info")
         else:
-            flash("No scan is currently running", "warning")
+            flash("No main scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/stop-mp3", methods=["POST"])
+def scan_stop_mp3():
+    """Stop the MP3 file scan"""
+    global scan_process_mp3
+    
+    with scan_lock:
+        if scan_process_mp3 and scan_process_mp3.poll() is None:
+            scan_process_mp3.terminate()
+            scan_process_mp3.wait(timeout=10)
+            flash("File path scan stopped", "info")
+        else:
+            flash("No file path scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/stop-navidrome", methods=["POST"])
+def scan_stop_navidrome():
+    """Stop the Navidrome sync scan"""
+    global scan_process_navidrome
+    
+    with scan_lock:
+        if scan_process_navidrome and scan_process_navidrome.poll() is None:
+            scan_process_navidrome.terminate()
+            scan_process_navidrome.wait(timeout=10)
+            flash("Navidrome sync scan stopped", "info")
+        else:
+            flash("No Navidrome sync scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/stop-popularity", methods=["POST"])
+def scan_stop_popularity():
+    """Stop the popularity scan"""
+    global scan_process_popularity
+    
+    with scan_lock:
+        if scan_process_popularity and scan_process_popularity.poll() is None:
+            scan_process_popularity.terminate()
+            scan_process_popularity.wait(timeout=10)
+            flash("Popularity scan stopped", "info")
+        else:
+            flash("No popularity scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/stop-singles", methods=["POST"])
+def scan_stop_singles():
+    """Stop the single detection scan"""
+    global scan_process_singles
+    
+    with scan_lock:
+        if scan_process_singles and scan_process_singles.poll() is None:
+            scan_process_singles.terminate()
+            scan_process_singles.wait(timeout=10)
+            flash("Single detection scan stopped", "info")
+        else:
+            flash("No single detection scan is currently running", "warning")
     
     return redirect(url_for("dashboard"))
 
@@ -1145,6 +1239,36 @@ def api_stats():
         "albums": album_count,
         "tracks": track_count
     })
+
+
+@app.route("/api/scan-status")
+def api_scan_status():
+    """API endpoint to get status of all scan types"""
+    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles
+    
+    with scan_lock:
+        return jsonify({
+            "main_scan": {
+                "name": "Main Rating Scan",
+                "running": scan_process is not None and scan_process.poll() is None
+            },
+            "mp3_scan": {
+                "name": "File Path Scan",
+                "running": scan_process_mp3 is not None and scan_process_mp3.poll() is None
+            },
+            "navidrome_scan": {
+                "name": "Navidrome Sync",
+                "running": scan_process_navidrome is not None and scan_process_navidrome.poll() is None
+            },
+            "popularity_scan": {
+                "name": "Popularity Update",
+                "running": scan_process_popularity is not None and scan_process_popularity.poll() is None
+            },
+            "singles_scan": {
+                "name": "Single Detection",
+                "running": scan_process_singles is not None and scan_process_singles.poll() is None
+            }
+        })
 
 
 @app.route("/downloads")

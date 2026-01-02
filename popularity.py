@@ -39,8 +39,117 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def scan_popularity(verbose: bool = False):
+    """
+    Scan and update popularity scores from all available sources.
+    Updates spotify_score, lastfm_ratio, listenbrainz_count
+    """
+    logging.info("=" * 60)
+    logging.info("Popularity Scanner Started")
+    logging.info("=" * 60)
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get all tracks without recent popularity updates
+        cursor.execute("""
+            SELECT DISTINCT artist, album, title, id, 
+                   spotify_score, lastfm_ratio, listenbrainz_count, 
+                   last_scanned, mbid
+            FROM tracks
+            WHERE last_scanned IS NULL OR 
+                  datetime(last_scanned) < datetime('now', '-7 days')
+            ORDER BY artist, album, title
+            LIMIT 2000
+        """)
+        
+        tracks = cursor.fetchall()
+        conn.close()
+        
+        if not tracks:
+            print("✅ All tracks have recent popularity data")
+            logging.info("All tracks have recent popularity data")
+            return
+        
+        logging.info(f"Scanning popularity for {len(tracks)} tracks")
+        print(f"📊 Scanning popularity for {len(tracks)} tracks...")
+        
+        updated_count = 0
+        for idx, track in enumerate(tracks, 1):
+            if idx % 50 == 0:
+                print(f"Progress: {idx}/{len(tracks)}")
+                logging.info(f"Popularity scan progress: {idx}/{len(tracks)}")
+            
+            artist = track['artist']
+            title = track['title']
+            track_id = track['id']
+            
+            # Get Spotify score
+            spotify_score = track['spotify_score'] or 0
+            try:
+                result = search_spotify_track(title, artist)
+                if result and result.get('popularity'):
+                    spotify_score = result.get('popularity', 0)
+                    if verbose:
+                        logging.debug(f"Spotify popularity for {title}: {spotify_score}")
+            except Exception as e:
+                logging.debug(f"Spotify popularity lookup failed for {title}: {e}")
+            
+            # Get Last.fm ratio
+            lastfm_ratio = track['lastfm_ratio'] or 0
+            try:
+                info = get_lastfm_track_info(artist, title)
+                if info and info.get('playcount'):
+                    lastfm_ratio = min(100, int(info['playcount']) / 10)
+                    if verbose:
+                        logging.debug(f"Last.fm ratio for {title}: {lastfm_ratio}")
+            except Exception as e:
+                logging.debug(f"Last.fm lookup failed for {title}: {e}")
+            
+            # Get ListenBrainz score
+            listenbrainz_count = track['listenbrainz_count'] or 0
+            try:
+                score = get_listenbrainz_score(track.get('mbid', ''), artist, title)
+                listenbrainz_count = score
+                if verbose:
+                    logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
+            except Exception as e:
+                logging.debug(f"ListenBrainz lookup failed for {title}: {e}")
+            
+            # Update database
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE tracks SET
+                        spotify_score = ?,
+                        lastfm_ratio = ?,
+                        listenbrainz_count = ?
+                    WHERE id = ?
+                """, (spotify_score, lastfm_ratio, listenbrainz_count, track_id))
+                conn.commit()
+                conn.close()
+                updated_count += 1
+                
+                if verbose:
+                    print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}")
+            except Exception as e:
+                logging.error(f"Failed to update track {track_id}: {e}")
+        
+        print(f"✅ Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
+        logging.info(f"Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
+    
+    except Exception as e:
+        logging.error(f"Popularity scan failed: {e}")
+        print(f"❌ Popularity scan failed: {e}")
+        raise
+    
+    finally:
+        logging.info("=" * 60)
+
 def popularity_scan(verbose: bool = False):
-    """Detect track popularity from external sources"""
+    """Detect track popularity from external sources (legacy function)"""
     logging.info("=" * 60)
     logging.info("Popularity Scanner Started")
     logging.info("=" * 60)
