@@ -191,12 +191,40 @@
         font-weight: 500;
     }
 
+    /* Table and card dark theme fixes */
+    .card {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .card-header {
+        background-color: var(--primary-bg, #121212) !important;
+        border-bottom-color: var(--border-color, #333) !important;
+    }
+
     .table-responsive {
         background-color: var(--secondary-bg, #1e1e1e) !important;
     }
 
     .table {
         color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+    }
+
+    .table thead th {
+        color: var(--text-primary, #fff) !important;
+        background-color: var(--primary-bg, #121212) !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table tbody td {
+        color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table-hover tbody tr:hover {
+        background-color: var(--primary-bg, #121212) !important;
     }
 
     .btn-force {
