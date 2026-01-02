@@ -395,6 +395,10 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--text-primary) !important;
 }
 
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
 .table {
     color: var(--text-primary) !important;
     background-color: var(--secondary-bg) !important;
@@ -405,8 +409,25 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--text-primary) !important;
 }
 
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
 .table tbody {
     background-color: var(--secondary-bg) !important;
+}
+
+.table tbody tr {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
 }
 
 .table-hover tbody tr:hover {
@@ -414,8 +435,63 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--text-primary) !important;
 }
 
+.table-hover tbody tr:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
 .progress {
     background-color: rgba(255, 255, 255, 0.1) !important;
+    border: none !important;
+}
+
+.progress-bar {
+    background-color: var(--spotify-green) !important;
+}
+
+.progress-bar.bg-primary {
+    background-color: #0d6efd !important;
+}
+
+.progress-bar.bg-success {
+    background-color: var(--spotify-green) !important;
+}
+
+.alert {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.alert-info {
+    background-color: rgba(13, 202, 240, 0.1) !important;
+    border-color: rgba(13, 202, 240, 0.3) !important;
+    color: #0dcaf0 !important;
+}
+
+.alert-danger {
+    background-color: rgba(220, 53, 69, 0.1) !important;
+    border-color: rgba(220, 53, 69, 0.3) !important;
+    color: #f8d7da !important;
+}
+
+.spinner-border {
+    color: var(--spotify-green) !important;
+}
+
+.text-primary {
+    color: #0d6efd !important;
+}
+
+.text-success {
+    color: var(--spotify-green) !important;
+}
+
+.text-muted {
+    color: rgba(224, 224, 224, 0.6) !important;
+}
+
+.badge {
+    color: white !important;
 }
 </style>
 
