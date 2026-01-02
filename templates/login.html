@@ -124,6 +124,48 @@
         .form-floating {
             margin-bottom: 1rem;
         }
+
+        .divider {
+            display: flex;
+            align-items: center;
+            text-align: center;
+            color: var(--text-secondary);
+        }
+
+        .divider::before,
+        .divider::after {
+            content: '';
+            flex: 1;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .divider span {
+            padding: 0 1rem;
+            font-size: 0.875rem;
+            font-weight: 500;
+        }
+
+        .btn-authentik {
+            background: linear-gradient(135deg, #fd4b2d 0%, #ee6723 100%);
+            border: none;
+            color: white;
+            font-weight: 600;
+            padding: 0.875rem;
+            font-size: 1rem;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border-radius: 0.375rem;
+        }
+
+        .btn-authentik:hover {
+            background: linear-gradient(135deg, #ee6723 0%, #fd4b2d 100%);
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(253, 75, 45, 0.4);
+            color: white;
+        }
+
+        .btn-authentik:active {
+            transform: translateY(0);
+        }
     </style>
 </head>
 <body>
@@ -180,8 +222,23 @@
                 </button>
             </form>
 
+            {% if authentik_enabled %}
+            <div class="divider my-3">
+                <span>OR</span>
+            </div>
+
+            <a href="{{ url_for('authentik_login') }}" class="btn btn-authentik w-100">
+                <i class="bi bi-shield-lock"></i> Sign in with Authentik
+            </a>
+            {% endif %}
+
             <div class="login-footer">
-                <i class="bi bi-info-circle"></i> Use your Navidrome credentials to login
+                <i class="bi bi-info-circle"></i> 
+                {% if authentik_enabled %}
+                Use your Navidrome credentials or sign in with Authentik
+                {% else %}
+                Use your Navidrome credentials to login
+                {% endif %}
             </div>
         </div>
     </div>

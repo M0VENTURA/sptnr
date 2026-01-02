@@ -23,6 +23,7 @@ from start import create_retry_session, rate_artist, build_artist_index
 from scan_helpers import scan_artist_to_db
 from popularity import scan_popularity
 from api_clients.slskd import SlskdClient
+from authlib.integrations.flask_client import OAuth
 
 # Configure logging for web UI
 logging.basicConfig(
@@ -37,6 +38,9 @@ logging.basicConfig(
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
+
+# OAuth setup for Authentik
+oauth = OAuth(app)
 
 # Paths
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -83,6 +87,44 @@ def _read_yaml(path):
         return {}, ""
 
 
+def _init_authentik_oauth():
+    """Initialize Authentik OAuth client from config"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    authentik_config = cfg.get("authentik", {})
+    
+    if not authentik_config.get("enabled"):
+        return None
+    
+    server_url = authentik_config.get("server_url", "").rstrip("/")
+    client_id = authentik_config.get("client_id", "")
+    client_secret = authentik_config.get("client_secret", "")
+    
+    if not all([server_url, client_id, client_secret]):
+        logging.warning("Authentik enabled but missing configuration")
+        return None
+    
+    # Get redirect URI from config or use default
+    redirect_uri = authentik_config.get("redirect_uri")
+    if not redirect_uri:
+        # Default to the app's base URL + /auth/callback
+        redirect_uri = url_for('authentik_callback', _external=True)
+    
+    try:
+        authentik = oauth.register(
+            name='authentik',
+            client_id=client_id,
+            client_secret=client_secret,
+            server_metadata_url=f"{server_url}/application/o/sptnr/.well-known/openid-configuration",
+            client_kwargs={
+                'scope': 'openid email profile'
+            }
+        )
+        return authentik
+    except Exception as e:
+        logging.error(f"Failed to initialize Authentik OAuth: {e}")
+        return None
+
+
 def _baseline_config():
     """Return a config structure with sensible defaults for first-run."""
     existing, _ = _read_yaml(CONFIG_PATH)
@@ -95,6 +137,12 @@ def _baseline_config():
 
     return {
         "navidrome": {"base_url": "", "user": "", "pass": ""},
+        "authentik": {
+            "enabled": False,
+            "server_url": "",
+            "client_id": "",
+            "client_secret": ""
+        },
         "api_integrations": {
             "spotify": {"enabled": False, "client_id": "", "client_secret": ""},
             "lastfm": {"enabled": False, "api_key": ""},
@@ -1175,6 +1223,10 @@ def login():
         if _needs_setup(cfg):
             return redirect(url_for('setup'))
         
+        # Check if Authentik is enabled
+        authentik_config = cfg.get("authentik", {})
+        authentik_enabled = authentik_config.get("enabled", False)
+        
         if request.method == 'POST':
             username = request.form.get('username', '').strip()
             password = request.form.get('password', '').strip()
@@ -1182,6 +1234,7 @@ def login():
             if _authenticate_navidrome(username, password):
                 session.permanent = True
                 session['username'] = username
+                session['auth_method'] = 'navidrome'
                 flash(f'Welcome back, {username}!', 'success')
                 
                 # Redirect to next URL or dashboard
@@ -1197,7 +1250,87 @@ def login():
         traceback.print_exc()
         flash(f"Login system error: {str(e)}", "danger")
     
-    return render_template('login.html')
+    return render_template('login.html', authentik_enabled=authentik_enabled)
+
+
+@app.route("/login/authentik")
+def authentik_login():
+    """Initiate Authentik OAuth login"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        authentik_config = cfg.get("authentik", {})
+        
+        if not authentik_config.get("enabled"):
+            flash("Authentik authentication is not enabled", "danger")
+            return redirect(url_for('login'))
+        
+        # Initialize Authentik OAuth client
+        authentik = _init_authentik_oauth()
+        if not authentik:
+            flash("Authentik authentication is not properly configured", "danger")
+            return redirect(url_for('login'))
+        
+        # Store the next URL in session to redirect after OAuth
+        next_url = request.args.get('next')
+        if next_url:
+            session['next_url'] = next_url
+        
+        # Redirect to Authentik for authorization
+        redirect_uri = url_for('authentik_callback', _external=True)
+        return authentik.authorize_redirect(redirect_uri)
+    except Exception as e:
+        logging.error(f"Authentik login error: {e}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Authentik login error: {str(e)}", "danger")
+        return redirect(url_for('login'))
+
+
+@app.route("/auth/callback")
+def authentik_callback():
+    """OAuth callback from Authentik"""
+    try:
+        # Initialize Authentik OAuth client
+        authentik = _init_authentik_oauth()
+        if not authentik:
+            flash("Authentik authentication failed", "danger")
+            return redirect(url_for('login'))
+        
+        # Get the access token
+        token = authentik.authorize_access_token()
+        
+        # Get user info from Authentik
+        user_info = authentik.userinfo(token=token)
+        
+        if user_info:
+            # Store user info in session
+            session.permanent = True
+            session['username'] = user_info.get('preferred_username') or user_info.get('email') or user_info.get('sub')
+            session['email'] = user_info.get('email')
+            session['auth_method'] = 'authentik'
+            session['user_info'] = {
+                'name': user_info.get('name'),
+                'email': user_info.get('email'),
+                'sub': user_info.get('sub')
+            }
+            
+            flash(f"Welcome, {session['username']}!", 'success')
+            
+            # Redirect to stored next URL or dashboard
+            next_url = session.pop('next_url', None)
+            if next_url:
+                return redirect(next_url)
+            return redirect(url_for('dashboard'))
+        else:
+            flash("Failed to get user information from Authentik", "danger")
+            return redirect(url_for('login'))
+            
+    except Exception as e:
+        logging.error(f"Authentik callback error: {e}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Authentik authentication failed: {str(e)}", "danger")
+        return redirect(url_for('login'))
 
 
 @app.route("/logout")

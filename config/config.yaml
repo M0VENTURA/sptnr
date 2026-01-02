@@ -13,6 +13,15 @@ navidrome:
 #     user: "user2"
 #     pass: "password2"
 
+# Authentik SSO/OAuth Integration - Single Sign-On authentication
+authentik:
+  enabled: false
+  server_url: ""  # Your Authentik instance URL (e.g., https://auth.example.com)
+  client_id: ""  # OAuth2/OIDC Client ID from Authentik
+  client_secret: ""  # OAuth2/OIDC Client Secret from Authentik
+  # Optional: Customize the redirect URI (defaults to http://localhost:5000/auth/callback)
+  # redirect_uri: "http://localhost:5000/auth/callback"
+
 # qBittorrent Integration - Search for missing releases from artist pages
 qbittorrent:
   enabled: false
