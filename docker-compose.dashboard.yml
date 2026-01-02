@@ -1,0 +1,18 @@
+version: "3.9"
+
+services:
+  sptnr-dashboard:
+    build: .
+    container_name: sptnr-dashboard
+    image: moventura/sptnr:latest
+    ports:
+      - "${DASHBOARD_PORT:-5000}:5000"
+    volumes:
+      - ./config:/usr/src/app/config
+      - ./data:/usr/src/app/data
+    environment:
+      - DASHBOARD_PORT=5000
+    env_file:
+      - .env
+    entrypoint: ["python", "./dashboard.py"]
+    restart: unless-stopped

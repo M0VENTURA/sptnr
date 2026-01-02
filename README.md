@@ -36,13 +36,29 @@ SPTNR now includes a web dashboard for easy configuration and bookmark managemen
 
 ### Running the Dashboard
 
+**Local Installation:**
+
     python dashboard.py
+
+Or use the convenience script:
+
+    ./start_dashboard.sh
 
 The dashboard will be available at `http://localhost:5000` by default.
 
 You can customize the port by setting the `DASHBOARD_PORT` environment variable:
 
     DASHBOARD_PORT=8080 python dashboard.py
+
+**Docker Installation:**
+
+Run the dashboard using Docker Compose:
+
+    docker compose -f docker-compose.dashboard.yml up
+
+Or build and run with a custom port:
+
+    DASHBOARD_PORT=8080 docker compose -f docker-compose.dashboard.yml up
 
 ### Dashboard Features
 
