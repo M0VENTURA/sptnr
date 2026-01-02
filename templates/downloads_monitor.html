@@ -147,12 +147,8 @@ function startAutoRefresh() {
   }
   
   autoRefreshInterval = setInterval(() => {
-    {% if qbit_enabled %}
-    refreshQbit();
-    {% endif %}
-    {% if slskd_enabled %}
-    refreshSlskd();
-    {% endif %}
+    if (typeof refreshQbit !== 'undefined') refreshQbit();
+    if (typeof refreshSlskd !== 'undefined') refreshSlskd();
   }, 3000);
 }
 
@@ -163,7 +159,38 @@ window.addEventListener('beforeunload', () => {
   }
 });
 
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatETA(seconds) {
+  if (seconds === 8640000 || seconds < 0) return '∞';
+  if (seconds === 0) return '—';
+  
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+</script>
+
 {% if qbit_enabled %}
+<script>
 function refreshQbit() {
   fetch('/api/qbittorrent/status')
     .then(response => response.json())
@@ -252,9 +279,11 @@ function refreshQbit() {
       document.getElementById('qbitError').style.display = 'block';
     });
 }
+</script>
 {% endif %}
 
 {% if slskd_enabled %}
+<script>
 function refreshSlskd() {
   fetch('/api/slskd/status')
     .then(response => response.json())
@@ -349,38 +378,7 @@ function refreshSlskd() {
       document.getElementById('slskdError').style.display = 'block';
     });
 }
-{% endif %}
 
-function formatBytes(bytes) {
-  if (bytes === 0) return '0 B';
-  const k = 1024;
-  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
-  const i = Math.floor(Math.log(bytes) / Math.log(k));
-  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
-}
-
-function formatETA(seconds) {
-  if (seconds === 8640000 || seconds < 0) return '∞';
-  if (seconds === 0) return '—';
-  
-  const days = Math.floor(seconds / 86400);
-  const hours = Math.floor((seconds % 86400) / 3600);
-  const minutes = Math.floor((seconds % 3600) / 60);
-  const secs = seconds % 60;
-  
-  if (days > 0) return `${days}d ${hours}h`;
-  if (hours > 0) return `${hours}h ${minutes}m`;
-  if (minutes > 0) return `${minutes}m ${secs}s`;
-  return `${secs}s`;
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
-}
-
-{% if slskd_enabled %}
 function cancelSlskdDownload(username, filename, token) {
   if (!confirm(`Cancel download of "${filename}" from ${username}?`)) return;
   
@@ -408,16 +406,18 @@ function cancelSlskdDownload(username, filename, token) {
     alert('❌ Network error: ' + error.message);
   });
 }
+</script>
 {% endif %}
 
+<script>
 // Initial load
 document.addEventListener('DOMContentLoaded', function() {
-  {% if qbit_enabled %}
-  refreshQbit();
-  {% endif %}
-  {% if slskd_enabled %}
-  refreshSlskd();
-  {% endif %}
+  if (typeof refreshQbit !== 'undefined') {
+    refreshQbit();
+  }
+  if (typeof refreshSlskd !== 'undefined') {
+    refreshSlskd();
+  }
   
   // Start auto-refresh
   startAutoRefresh();

@@ -139,8 +139,13 @@
   </div>
 </div>
 
+<!-- Store initial user count as data attribute for JavaScript to read -->
+<div id="configData" data-initial-users="{{ nav_users|length if nav_users else 1 }}" style="display:none;"></div>
+
 <script>
-let userIndex = {{ nav_users|length if nav_users else 1 }};
+// Read initial user count from data attribute to avoid Jinja in JS
+const configData = document.getElementById('configData');
+let userIndex = parseInt(configData.getAttribute('data-initial-users')) || 1;
 
 function addNavUser() {
   const container = document.getElementById('navUsersContainer');

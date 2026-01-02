@@ -195,6 +195,30 @@ def infer_album_context(album_title: str, release_types: list[str] | None = None
     }
 
 
+def _has_official_on_release_top(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
+    """
+    Compatibility helper: Check if data contains an official release matching nav_title.
+    Delegate to discogs_official_video_signal if Discogs token available.
+    Returns True if official match found, False otherwise.
+    """
+    if not data:
+        return False
+    
+    # If Discogs token available, use the full video signal detection
+    if DISCOGS_TOKEN:
+        result = discogs_official_video_signal(
+            title=nav_title,
+            artist=data.get("artist", ""),
+            discogs_token=DISCOGS_TOKEN,
+            allow_lyric_as_official=True,
+            album_context={"is_live": allow_live} if allow_live else None,
+            permissive_fallback=True
+        )
+        return result.get("match", False)
+    
+    return False
+
+
 # --- Discogs "Official Video / Official Lyric Video" signal (with cache) ---
 _DISCOGS_VID_CACHE: dict[tuple[str, str, str], dict] = {}
 

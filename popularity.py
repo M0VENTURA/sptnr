@@ -42,7 +42,7 @@ def get_db_connection():
 def scan_popularity(verbose: bool = False):
     """
     Scan and update popularity scores from all available sources.
-    Updates spotify_score, lastfm_ratio, listenbrainz_count
+    Updates spotify_score, lastfm_ratio, listenbrainz_score
     """
     logging.info("=" * 60)
     logging.info("Popularity Scanner Started")
@@ -52,14 +52,15 @@ def scan_popularity(verbose: bool = False):
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Get all tracks without recent popularity updates
+        # Get all tracks that haven't had popularity data populated yet
+        # Priority: tracks with NO popularity scores (zeros), then old ones (older than 7 days)
         cursor.execute("""
             SELECT DISTINCT artist, album, title, id, 
                    spotify_score, lastfm_ratio, listenbrainz_score, 
                    last_scanned, mbid
             FROM tracks
-            WHERE last_scanned IS NULL OR 
-                  datetime(last_scanned) < datetime('now', '-7 days')
+            WHERE (spotify_score = 0 AND lastfm_ratio = 0 AND listenbrainz_score = 0) OR
+                  (last_scanned IS NOT NULL AND datetime(last_scanned) < datetime('now', '-7 days'))
             ORDER BY artist, album, title
             LIMIT 2000
         """)

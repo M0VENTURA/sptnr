@@ -747,6 +747,8 @@ def _is_variant_of(base: str, candidate: str) -> bool:
 
 def _has_official_on_release(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
     """Compatibility alias to the shared inspect helper."""
+    # Import here to avoid circular dependency
+    from singledetection import _has_official_on_release_top
     return _has_official_on_release_top(data, nav_title, allow_live=allow_live, min_ratio=min_ratio)
 
 
@@ -1361,6 +1363,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         because videoâ€‘only cannot set is_single=True under this policy.
     """
 
+    # Import helpers from singledetection module
+    from singledetection import infer_album_context
+    
     # ----- Tunables & feature flags ------------------------------------------
     CLAMP_MIN    = float(config["features"].get("clamp_min", 0.75))
     CLAMP_MAX    = float(config["features"].get("clamp_max", 1.25))
