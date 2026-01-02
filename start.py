@@ -28,6 +28,10 @@ from concurrent.futures import ThreadPoolExecutor
 # ✅ Import modular API clients
 from api_clients.navidrome import NavidromeClient
 from api_clients.spotify import SpotifyClient
+from api_clients.lastfm import LastFmClient
+from api_clients.musicbrainz import MusicBrainzClient
+from api_clients.discogs import DiscogsClient
+from api_clients.audiodb_and_listenbrainz import ListenBrainzClient, AudioDbClient
 
 # 🎨 Colorama setup
 init(autoreset=True)
@@ -360,6 +364,11 @@ update_schema(DB_PATH)
 # ✅ Initialize API clients with credentials
 nav_client = NavidromeClient(NAV_BASE_URL, USERNAME, PASSWORD)
 spotify_client = SpotifyClient(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, worker_threads=WORKER_THREADS)
+lastfm_client = LastFmClient(LASTFM_API_KEY)
+musicbrainz_client = MusicBrainzClient(enabled=MUSICBRAINZ_ENABLED)
+discogs_client = DiscogsClient(DISCOGS_TOKEN, enabled=DISCOGS_ENABLED)
+audiodb_client = AudioDbClient(AUDIODB_API_KEY, enabled=AUDIODB_ENABLED)
+listenbrainz_client = ListenBrainzClient(enabled=LISTENBRAINZ_ENABLED)
 
 # ✅ Compatibility check for OpenSubsonic extensions
 def get_supported_extensions():
@@ -1112,158 +1121,16 @@ def is_discogs_single(
     album_context: dict | None = None,
     timeout: int = 10
 ) -> bool:
-    """
-    Discogs single detection (best-effort, rate-limit safe).
-
-    Strong paths:
-      - Explicit 'Single' in release formats
-      - EP with first track == A-side AND an official video on the same release
-      - (structural fallback) 1–2 track A/B sides where the matched title is present
-        and not live/remix (medium path; confidence handled upstream)
-
-    Respects live/unplugged album context via CONTEXT_GATE.
-    Uses cache keyed by (artist,title,context).
-    """
-    # --- Fast exits / cache ---------------------------------------------------
-    if not DISCOGS_ENABLED or not DISCOGS_TOKEN:
-        return False
-    allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
-    context_key = "live" if allow_live_ctx else "studio"
-    cache_key = (_canon(artist), _canon(title), context_key)
-    if cache_key in _DISCOGS_SINGLE_CACHE:
-        return _DISCOGS_SINGLE_CACHE[cache_key]
-
-    # use top-level Discogs helpers: _release_title_core, _is_variant_of,
-    # _has_official_on_release_top (via wrapper), _release_context_compatible_discogs
-    # --- Setup & search -------------------------------------------------------
-    headers = {
-        "Authorization": f"Discogs token={DISCOGS_TOKEN}",
-        "User-Agent": _DEF_USER_AGENT,
-    }
-    session = _get_discogs_session()
-    nav_title = _canon(strip_parentheses(title))
-    require_live = allow_live_ctx and CONTEXT_GATE
-    forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
-    params = {"q": f"{artist} {title}", "type": "release", "per_page": 15}
-    results = _discogs_search(session, headers, f"{artist} {title}", kind="release", per_page=15, timeout=timeout)
-    if not results:
-        _DISCOGS_SINGLE_CACHE[cache_key] = False
-        return False
-    if not results:
-        _DISCOGS_SINGLE_CACHE[cache_key] = False
-        return False
-    # --- Shortlist: prefer 'Single' formats; otherwise core-title similarity ---
-    cands: list[tuple[int, bool, float]] = []
-    for r in results[:15]:
-        rid = r.get("id")
-        if not rid:
-            continue
-        rel_title_raw  = r.get("title", "")
-        rel_title_core = _release_title_core(rel_title_raw, artist)
-        rel_title      = _canon(rel_title_core)
-        title_ratio    = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
-        formats_hint = r.get("format", []) or []
-        fmt_norm     = [(fmt or "").lower() for fmt in formats_hint]
-        prefer_single = any("single" in f for f in fmt_norm)
-        is_album_like = any("album"  in f for f in fmt_norm)
-        keep = prefer_single or (title_ratio >= 0.60) or is_album_like
-        if keep:
-            cands.append((rid, prefer_single, title_ratio))
-    # Prefer singles; then higher title similarity; cap requests
-    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:10]
-    # --- Inspect releases -----------------------------------------------------
-    for rel_id, _, _ in cands:
-        try:
-            _throttle_discogs()
-            rel = session.get(f"https://api.discogs.com/releases/{rel_id}", headers=headers, timeout=timeout)
-            if rel.status_code == 429:
-                _respect_retry_after(rel)
-            rel.raise_for_status()
-            data = rel.json()
-        except Exception:
-            continue
-
-        # Context gate first
-        if not _release_context_compatible(data, require_live=require_live, forbid_live=forbid_live):
-            continue
-        formats = data.get("formats", []) or []
-        names   = [f.get("name","").lower() for f in formats]
-        descs   = [d.lower() for f in formats for d in (f.get("descriptions") or [])]
-        # Albums out; EPs allowed (per policy)
-        is_album = ("album" in names) or ("album" in descs)
-        is_ep    = ("ep"    in names) or ("ep"    in descs)
-        if is_album:
-            continue
-        tracks = data.get("tracklist", []) or []
-        if not tracks or len(tracks) > 7:
-            continue
-        # Robust title match across any track
-        best_idx, best_ratio = -1, 0.0
-        for i, t in enumerate(tracks):
-            r = difflib.SequenceMatcher(None, _canon(t.get("title","")), nav_title).ratio()
-            if r > best_ratio:
-                best_idx, best_ratio = i, r
-        if best_ratio < 0.80:
-            continue
-        mtitle = (tracks[best_idx].get("title","") or "").lower()
-        if (("live" in mtitle) or ("remix" in mtitle)) and not allow_live_ctx:
-            continue
-        # --- Strong path 1: explicit Single in formats ------------------------
-        if ("single" in names) or ("single" in descs):
-            _DISCOGS_SINGLE_CACHE[cache_key] = True
-            return True
-        # --- Strong path 2: EP + first track A-side + official video ----------
-        if is_ep and best_idx == 0:
-            if _has_official_on_release(data, title, allow_live=allow_live_ctx, min_ratio=0.50):
-                _DISCOGS_SINGLE_CACHE[cache_key] = True
-                return True
-        # --- Structural fallback: classic A/B sides (≤ 2 tracks) --------------
-        if 1 <= len(tracks) <= 2:
-            if best_idx == 0:
-                _DISCOGS_SINGLE_CACHE[cache_key] = True
-                return True
-            else:
-                # If matched is track 2, accept when track 1 is a benign variant
-                t1 = tracks[0].get("title","")
-                if _is_variant_of(title, t1):
-                    _DISCOGS_SINGLE_CACHE[cache_key] = True
-                    return True
-
-        # Otherwise continue inspecting next candidate
-
-    # --- No match -------------------------------------------------------------
-    _DISCOGS_SINGLE_CACHE[cache_key] = False
-    return False
+    """Check if track is a single via Discogs (wrapper using DiscogsClient)."""
+    return discogs_client.is_single(title, artist, album_context, timeout)
 
 def is_lastfm_single(title: str, artist: str) -> bool:
-    """Placeholder; returns False until implemented."""
-    if not LASTFM_ENABLED:
-        return False
+    """Placeholder for Last.fm single detection."""
     return False
 
 def is_musicbrainz_single(title: str, artist: str) -> bool:
-    """
-    Query MusicBrainz release-group by title+artist and check primary-type=Single.
-    """
-    if not MUSICBRAINZ_ENABLED:
-        return False
-    try:
-        res = session.get(
-            "https://musicbrainz.org/ws/2/release-group/",
-            params={
-                "query": f'"{title}" AND artist:"{artist}" AND primarytype:Single',
-                "fmt": "json",
-                "limit": 5
-            },
-            headers={"User-Agent": "sptnr-cli/1.0 (support@example.com)"},
-            timeout=8
-        )
-        res.raise_for_status()
-        rgs = res.json().get("release-groups", [])
-        return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
-    except Exception as e:
-        logging.debug(f"MusicBrainz single check failed for '{title}': {e}")
-        return False
+    """Check if track is a single via MusicBrainz (wrapper using MusicBrainzClient)."""
+    return musicbrainz_client.is_single(title, artist)
 
 
 def secondary_single_lookup(track: dict, artist_name: str, album_ctx: dict | None, *, singles_set: set | None = None, required_strong_sources: int = 2) -> dict:
@@ -1328,161 +1195,22 @@ def secondary_single_lookup(track: dict, artist_name: str, album_ctx: dict | Non
     return {"sources": sorted(sources), "confidence": confidence}
 
 def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, float]:
-    """
-    Search MusicBrainz recordings and compute (mbid, confidence).
-    Confidence:
-      - Title similarity (SequenceMatcher)
-      - +0.15 bonus if associated release-group primary-type == 'Single'
-    We fetch 'releases' in the recording include, then second-hop to /release/{id}?inc=release-groups
-    to reliably check the release-group primary-type.
-    """
-    try:
-        headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
-
-        # 1) Find recordings (with releases included for second hop)
-        rec_url = "https://musicbrainz.org/ws/2/recording/"
-        rec_params = {
-            "query": f'"{title}" AND artist:"{artist}"',
-            "fmt": "json",
-            "limit": limit,
-            "inc": "releases+artist-credits",  # releases needed to inspect release-group via second hop
-        }
-        r = session.get(rec_url, params=rec_params, headers=headers, timeout=10)
-        r.raise_for_status()
-        recordings = r.json().get("recordings", []) or []
-        if not recordings:
-            return "", 0.0
-
-        best_mbid = ""
-        best_score = 0.0
-        nav_title = (title or "").lower()
-
-        for rec in recordings:
-            rec_mbid = rec.get("id", "")
-            rec_title = (rec.get("title") or "").lower()
-            title_sim = difflib.SequenceMatcher(None, nav_title, rec_title).ratio()
-
-            # Default: no bonus
-            single_bonus = 0.0
-
-            # 2) If we have at least one release, second hop: /release/{id}?inc=release-groups
-            #    so we can read the primary-type reliably.
-            releases = rec.get("releases") or []
-            if releases:
-                rel_id = releases[0].get("id")
-                if rel_id:
-                    rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
-                    rel_params = {"fmt": "json", "inc": "release-groups"}
-                    rr = session.get(rel_url, params=rel_params, headers=headers, timeout=10)
-                    if rr.ok:
-                        rel_json = rr.json()
-                        rg = rel_json.get("release-group") or {}
-                        primary_type = (rg.get("primary-type") or "").lower()
-                        if primary_type == "single":
-                            single_bonus = 0.15
-            confidence = min(1.0, title_sim + single_bonus)
-            if confidence > best_score:
-                best_score = confidence
-                best_mbid = rec_mbid
-        return best_mbid, round(best_score, 3)
-    except Exception as e:
-        logging.debug(f"MusicBrainz suggested MBID lookup failed for '{title}' by '{artist}': {e}")
-        return "", 0.0
+    """Get suggested MusicBrainz ID (wrapper using MusicBrainzClient)."""
+    return musicbrainz_client.get_suggested_mbid(title, artist, limit)
 
 # --- Genre Helpers ---
 
 def get_discogs_genres(title, artist):
-    """
-    Fetch genres and styles from Discogs API.
-    Always use token from config.yaml.
-    """
-    if not DISCOGS_ENABLED or not DISCOGS_TOKEN:
-        logging.debug("Discogs genre lookup skipped (disabled or token missing).")
-        return []
-
-    headers = {
-        "Authorization": f"Discogs token={DISCOGS_TOKEN}",
-        "User-Agent": "sptnr-cli/1.0"
-    }
-    params = {"q": f"{artist} {title}", "type": "release", "per_page": 5}
-
-    try:
-        res = session.get("https://api.discogs.com/database/search", headers=headers, params=params)
-        res.raise_for_status()
-        results = res.json().get("results", [])
-        genres = []
-        for r in results:
-            genres.extend(r.get("genre", []))
-            genres.extend(r.get("style", []))
-        return genres
-    except Exception as e:
-        logging.error(f"Discogs lookup failed for '{title}': {e}")
-        return []
+    """Fetch genres from Discogs (wrapper using DiscogsClient)."""
+    return discogs_client.get_genres(title, artist)
 
 def get_audiodb_genres(artist):
-    if not AUDIODB_ENABLED or not AUDIODB_API_KEY:
-        return []
-    try:
-        res = session.get(f"https://theaudiodb.com/api/v1/json/{AUDIODB_API_KEY}/search.php?s={artist}", timeout=10)
-        res.raise_for_status()
-        data = res.json().get("artists", [])
-        if data and data[0].get("strGenre"):
-            return [data[0]["strGenre"]]
-        return []
-    except Exception as e:
-        logging.warning(f"AudioDB lookup failed for '{artist}': {e}")
-        return []
+    """Fetch genres from AudioDB (wrapper using AudioDbClient)."""
+    return audiodb_client.get_artist_genres(artist)
 
 def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
-    """
-    Fetch tags/genres from MusicBrainz with explicit includes on recordings.
-    Strategy:
-      1) Search recording with inc=tags+artist-credits+releases
-      2) Use recording-level tags if present
-      3) If no recording tags, try tags on the first associated release (via /release/{id}?inc=tags)
-    """
-    if not MUSICBRAINZ_ENABLED:
-        return []
-    try:
-        # Step 1: search recording with richer includes
-        rec_url = "https://musicbrainz.org/ws/2/recording/"
-        rec_params = {
-            "query": f'"{title}" AND artist:"{artist}"',
-            "fmt": "json",
-            "limit": 3,
-            # 'inc' on recording: tags + releases + artist-credits helps locate usable metadata
-            "inc": "tags+artist-credits+releases",
-        }
-        headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
-        r = session.get(rec_url, params=rec_params, headers=headers, timeout=10)
-        r.raise_for_status()
-        recs = r.json().get("recordings", []) or []
-        if not recs:
-            return []
-
-        # Prefer the top match
-        rec = recs[0]
-        # 2) use recording-level tags if present
-        tags = rec.get("tags") or []
-        tag_names = [t.get("name", "") for t in tags if t.get("name")]
-        if tag_names:
-            return tag_names
-
-        # 3) fallback: pull tags from the first release if any
-        releases = rec.get("releases") or []
-        if releases:
-            rel_id = releases[0].get("id")
-            if rel_id:
-                rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
-                rel_params = {"fmt": "json", "inc": "tags"}
-                rr = session.get(rel_url, params=rel_params, headers=headers, timeout=10)
-                rr.raise_for_status()
-                rel_tags = rr.json().get("tags", []) or []
-                return [t.get("name", "") for t in rel_tags if t.get("name")]
-        return []
-    except Exception as e:
-        logging.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
-        return []
+    """Fetch genres from MusicBrainz (wrapper using MusicBrainzClient)."""
+    return musicbrainz_client.get_genres(title, artist)
 
 def is_valid_version(track_title, allow_live_remix=False):
     """Validate track version against blacklist and whitelist."""
@@ -1499,72 +1227,17 @@ def is_valid_version(track_title, allow_live_remix=False):
 # --- Last.fm Helpers ---
 
 def get_lastfm_track_info(artist: str, title: str) -> dict:
-    """
-    Fetch Last.fm track playcount.
-    """
-    if not LASTFM_API_KEY:
-        logging.warning("Last.fm API key missing. Skipping lookup.")
-        return {"track_play": 0}
-
-    params = {
-        "method": "track.getInfo",
-        "artist": artist,
-        "track": title,
-        "api_key": LASTFM_API_KEY,
-        "format": "json"
-    }
-
-    try:
-        res = session.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
-        res.raise_for_status()
-        data = res.json().get("track", {})
-        track_play = int(data.get("playcount", 0))
-        return {"track_play": track_play}
-    except Exception as e:
-        logging.error(f"Last.fm fetch failed for '{title}' by '{artist}': {e}")
-        return {"track_play": 0}
+    """Fetch Last.fm track playcount (wrapper using LastFmClient)."""
+    return lastfm_client.get_track_info(artist, title)
 
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
-    """
-    Fetch ListenBrainz listen count using MBID or fallback search.
-    """
-    if not LISTENBRAINZ_ENABLED:
-        return 0
-    if not mbid:
-        # Fallback: search by artist/title
-        try:
-            url = "https://api.listenbrainz.org/1/recording/search"
-            params = {"artist_name": artist, "recording_name": title, "limit": 1}
-            res = session.get(url, params=params, timeout=10)
-            res.raise_for_status()
-            hits = res.json().get("recordings", [])
-            if hits:
-                return int(hits[0].get("listen_count", 0))
-        except Exception as e:
-            logging.debug(f"ListenBrainz fallback search failed for '{title}': {e}")
-        return 0
-    # Primary: stats by MBID
-    try:
-        url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}/listen-count"
-        res = session.get(url, timeout=10)
-        res.raise_for_status()
-        data = res.json()
-        payload = data.get("payload", {})
-        return int(payload.get("count", 0))
-    except Exception as e:
-        logging.warning(f"ListenBrainz fetch failed for MBID {mbid}: {e}")
-        return 0
+    """Fetch ListenBrainz listen count (wrapper using ListenBrainzClient)."""
+    return listenbrainz_client.get_listen_count(mbid, artist, title)
 
 def score_by_age(playcount, release_str):
-    """Apply age decay to score based on release date."""
-    try:
-        release_date = datetime.strptime(release_str, "%Y-%m-%d")
-        days_since = max((datetime.now() - release_date).days, 30)
-        capped_days = min(days_since, 5 * 365)
-        decay = 1 / math.log2(capped_days + 2)
-        return playcount * decay, days_since
-    except:
-        return 0, 9999
+    """Apply age decay to score based on release date (wrapper)."""
+    from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
+    return _score_by_age(playcount, release_str)
 
 # --- Genre Handling ---
 GENRE_WEIGHTS = {
