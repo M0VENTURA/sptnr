@@ -207,28 +207,35 @@ def login_required(f):
 
 @app.before_request
 def enforce_setup_wizard():
-    exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
-    if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
-        return
+    try:
+        exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
+        if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
+            return
 
-    # If config doesn't exist, allow setup
-    if not os.path.exists(CONFIG_PATH):
-        if request.endpoint != "setup":
-            return redirect(url_for("setup"))
-        return
+        # If config doesn't exist, allow setup
+        if not os.path.exists(CONFIG_PATH):
+            if request.endpoint != "setup":
+                return redirect(url_for("setup"))
+            return
 
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    
-    # If setup is needed, redirect to setup
-    if _needs_setup(cfg):
-        if request.endpoint != "setup":
-            return redirect(url_for("setup"))
-        return
-    
-    # If setup is complete and not logged in, redirect to login
-    if 'username' not in session:
-        if request.endpoint != "login":
-            return redirect(url_for("login"))
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        
+        # If setup is needed, redirect to setup
+        if _needs_setup(cfg):
+            if request.endpoint != "setup":
+                return redirect(url_for("setup"))
+            return
+        
+        # If setup is complete and not logged in, redirect to login
+        if 'username' not in session:
+            if request.endpoint != "login":
+                return redirect(url_for("login"))
+    except Exception as e:
+        logging.error(f"Error in enforce_setup_wizard: {e}")
+        import traceback
+        traceback.print_exc()
+        # Don't block the request, let it fail naturally so we can see the real error
+        pass
 
 
 def get_db():
@@ -1645,13 +1652,20 @@ def smart_playlists():
 @app.route("/downloads-monitor")
 def downloads_monitor():
     """Downloads monitoring UI page"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    qbit_config = cfg.get("qbittorrent", {})
-    slskd_config = cfg.get("slskd", {})
-    
-    return render_template("downloads_monitor.html", 
-                         qbit_enabled=qbit_config.get("enabled", False),
-                         slskd_enabled=slskd_config.get("enabled", False))
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        qbit_config = cfg.get("qbittorrent", {})
+        slskd_config = cfg.get("slskd", {})
+        
+        return render_template("downloads_monitor.html", 
+                             qbit_enabled=qbit_config.get("enabled", False),
+                             slskd_enabled=slskd_config.get("enabled", False))
+    except Exception as e:
+        logging.error(f"Downloads monitor error: {e}")
+        import traceback
+        traceback.print_exc()
+        flash(f"Error loading downloads monitor: {str(e)}", "danger")
+        return redirect(url_for("dashboard"))
 
 
 @app.route("/api/qbittorrent/status", methods=["GET"])
