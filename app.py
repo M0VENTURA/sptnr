@@ -615,6 +615,47 @@ def config_edit():
     return redirect(url_for("config_editor"))
 
 
+@app.route("/config/save-json", methods=["POST"])
+def config_save_json():
+    """Save config as JSON - converts to YAML and updates config.yaml"""
+    try:
+        data = request.get_json()
+        
+        # Build YAML structure from JSON
+        config_dict = {
+            'navidrome': data.get('navidrome', {}),
+            'qbittorrent': data.get('qbittorrent', {}),
+            'slskd': data.get('slskd', {}),
+            'api_integrations': data.get('api_integrations', {}),
+            'database': data.get('database', {}),
+            'logging': data.get('logging', {}),
+            'features': {},  # Preserve features section if it exists
+            'weights': {}  # Preserve weights section if it exists
+        }
+        
+        # Read existing config to preserve features and weights
+        existing_config, _ = _read_yaml(CONFIG_PATH)
+        if existing_config:
+            if 'features' in existing_config:
+                config_dict['features'] = existing_config['features']
+            if 'weights' in existing_config:
+                config_dict['weights'] = existing_config['weights']
+        
+        # Convert to YAML
+        yaml_content = yaml.safe_dump(config_dict, sort_keys=False, allow_unicode=False)
+        
+        # Write to file
+        cfg_dir = os.path.dirname(CONFIG_PATH)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            f.write(yaml_content)
+        
+        return jsonify({"success": True, "message": "Configuration saved successfully"})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+
+
 @app.route("/api/stats")
 def api_stats():
     """API endpoint for statistics"""
