@@ -69,6 +69,11 @@ def _baseline_config():
             "username": "",
             "password": ""
         },
+        "slskd": {
+            "enabled": False,
+            "web_url": "http://localhost:5030",
+            "api_key": ""
+        },
         "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
         "database": {"path": DB_PATH, "vacuum_on_start": False},
         "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
@@ -632,6 +637,148 @@ def api_stats():
         "albums": album_count,
         "tracks": track_count
     })
+
+
+@app.route("/downloads")
+def downloads():
+    """Downloads page with qBittorrent and slskd search"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {"enabled": False})
+    slskd_config = cfg.get("slskd", {"enabled": False})
+    
+    return render_template("downloads.html", 
+                         qbit_config=qbit_config,
+                         slskd_config=slskd_config)
+
+
+@app.route("/api/slskd/search", methods=["POST"])
+def slskd_search():
+    """Proxy endpoint for slskd search API"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    query = request.json.get("query", "")
+    if not query:
+        return jsonify({"error": "Query parameter required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req
+        
+        headers = {"X-API-Key": api_key} if api_key else {}
+        
+        # Start search
+        search_url = f"{web_url}/api/v0/searches"
+        search_data = {"searchText": query}
+        resp = req.post(search_url, json=search_data, headers=headers, timeout=10)
+        
+        if resp.status_code != 201:
+            return jsonify({"error": f"Search failed: {resp.status_code}"}), 500
+        
+        search_response = resp.json()
+        search_id = search_response.get("id")
+        
+        if not search_id:
+            return jsonify({"error": "No search ID returned"}), 500
+        
+        # Poll for results (max 15 seconds)
+        import time
+        results = []
+        for _ in range(30):
+            time.sleep(0.5)
+            
+            # Get search status/results
+            status_url = f"{web_url}/api/v0/searches/{search_id}"
+            status_resp = req.get(status_url, headers=headers, timeout=10)
+            
+            if status_resp.status_code == 200:
+                search_data = status_resp.json()
+                
+                # Check if search is complete or has results
+                if search_data.get("state") in ["Completed", "Cancelled"]:
+                    # Get all responses
+                    responses = search_data.get("responses", [])
+                    
+                    # Flatten file results from all responses
+                    for response in responses:
+                        username = response.get("username", "Unknown")
+                        files = response.get("files", [])
+                        
+                        for file in files[:50]:  # Limit per user
+                            results.append({
+                                "username": username,
+                                "filename": file.get("filename", ""),
+                                "size": file.get("size", 0),
+                                "bitrate": file.get("bitRate", 0),
+                                "length": file.get("length", 0),
+                                "fileId": file.get("code", "")
+                            })
+                    
+                    break
+                
+                # If still searching but we have some results, we can return partial
+                if len(search_data.get("responses", [])) > 0:
+                    responses = search_data.get("responses", [])
+                    for response in responses:
+                        username = response.get("username", "Unknown")
+                        files = response.get("files", [])
+                        for file in files[:50]:
+                            results.append({
+                                "username": username,
+                                "filename": file.get("filename", ""),
+                                "size": file.get("size", 0),
+                                "bitrate": file.get("bitRate", 0),
+                                "length": file.get("length", 0),
+                                "fileId": file.get("code", "")
+                            })
+        
+        return jsonify({"results": results, "searchId": search_id})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/download", methods=["POST"])
+def slskd_download():
+    """Proxy endpoint to download from slskd"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    username = request.json.get("username", "")
+    filename = request.json.get("filename", "")
+    
+    if not username or not filename:
+        return jsonify({"error": "Username and filename required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req
+        
+        headers = {"X-API-Key": api_key} if api_key else {}
+        
+        # Enqueue download
+        download_url = f"{web_url}/api/v0/transfers/downloads/{username}"
+        download_data = {"filename": filename}
+        
+        resp = req.post(download_url, json=download_data, headers=headers, timeout=10)
+        
+        if resp.status_code in [200, 201]:
+            return jsonify({"success": True, "message": "Download added successfully"})
+        else:
+            return jsonify({"error": f"Failed to add download: {resp.status_code}"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/qbittorrent/search", methods=["POST"])

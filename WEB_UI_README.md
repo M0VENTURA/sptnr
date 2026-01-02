@@ -19,6 +19,13 @@ The Sptnr Web UI provides a comprehensive web-based interface for managing your 
 - **Album Detail**: View all tracks in an album with ratings and metadata
 - **Track Detail**: View and edit individual track metadata
 
+### 📥 Downloads Page
+- **Unified search interface** for music downloads
+- **qBittorrent search**: Search torrents across all enabled search plugins
+- **Soulseek search**: Search P2P network for high-quality music files
+- **Real-time results** with file details (size, bitrate, seeds/peers)
+- **One-click downloads** directly to your download clients
+
 ### ✏️ Track Editing
 Edit track metadata including:
 - Title, Artist, Album
@@ -123,6 +130,76 @@ Once enabled, a **qBittorrent** button appears on every artist page:
 - Verify `web_url` is correct and accessible
 - Check firewall rules allowing access to qBittorrent port
 - Test Web UI access in browser first
+
+## Soulseek (slskd) Integration
+
+Search and download music from the Soulseek P2P network using the **slskd** daemon.
+
+### Setup
+
+1. Install and configure slskd (https://github.com/slskd/slskd)
+   - Run slskd daemon: `slskd --http-port 5030`
+   - Access Web UI and configure your Soulseek credentials
+   - Generate an API key in Settings > API
+
+2. Enable slskd in your `config.yaml`:
+
+```yaml
+slskd:
+  enabled: true
+  web_url: "http://localhost:5030"  # Your slskd Web UI URL
+  api_key: "your-api-key-here"      # From slskd Settings > API
+```
+
+3. Save configuration and visit the Downloads page
+
+### Usage
+
+The **Downloads** page provides unified search:
+
+1. Navigate to **Downloads** in the navigation bar
+2. Use **Soulseek Search** panel on the right
+3. Enter artist/album name and click Search
+4. Browse results showing:
+   - File name and owner
+   - File size
+   - Bitrate (audio quality)
+   - Track length
+5. Click **Download** to add to slskd download queue
+6. Files download to your configured slskd directory
+
+### Features
+
+- **P2P network access**: Direct connection to Soulseek users
+- **High quality files**: Often lossless (FLAC) or high-bitrate MP3
+- **Metadata display**: Bitrate, length, file size
+- **Queue management**: Downloads appear in slskd interface
+- **Side-by-side search**: Compare qBittorrent and Soulseek results
+
+### Requirements
+
+- slskd daemon running and accessible
+- Valid Soulseek account credentials configured in slskd
+- API key from slskd settings
+- Network access from Sptnr to slskd Web UI
+
+### Troubleshooting
+
+**No results:**
+- Ensure slskd is running and connected to Soulseek network
+- Check slskd logs for connection issues
+- Try broader search terms
+- Verify API key is correct
+
+**Authentication errors:**
+- Regenerate API key in slskd Settings > API
+- Update config.yaml with new key
+- Restart Sptnr
+
+**Download fails:**
+- Check slskd download directory permissions
+- Verify user is online and sharing the file
+- Check slskd transfer limits and queue settings
 
 ## Running the Web UI
 

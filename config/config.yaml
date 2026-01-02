@@ -20,6 +20,12 @@ qbittorrent:
   username: ""  # qBittorrent username (required for API access)
   password: ""  # qBittorrent password (required for API access)
 
+# Soulseek (slskd) Integration - P2P music file sharing
+slskd:
+  enabled: false
+  web_url: "http://localhost:5030"  # URL to your slskd Web UI
+  api_key: ""  # slskd API key (found in Settings > API)
+
 # API Integrations - Enable/disable external services and provide credentials
 api_integrations:
   spotify:

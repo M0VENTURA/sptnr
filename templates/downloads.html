@@ -1,0 +1,352 @@
+{% extends "base.html" %}
+
+{% block title %}Downloads · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-download"></i> Music Downloads
+    </h1>
+    <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
+  </div>
+
+  <div class="row g-4">
+    <!-- qBittorrent Search -->
+    {% if qbit_config.enabled %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="input-group">
+              <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search torrents...">
+              <button class="btn btn-primary" onclick="performQbitSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+          
+          <div id="qbitLoading" class="text-center py-4" style="display: none;">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Searching...</span>
+            </div>
+            <p class="mt-2">Searching qBittorrent...</p>
+          </div>
+          
+          <div id="qbitResults" style="max-height: 600px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Soulseek (slskd) Search -->
+    {% if slskd_config.enabled %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-list"></i> Soulseek Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="input-group">
+              <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search Soulseek...">
+              <button class="btn btn-success" onclick="performSlskdSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+          
+          <div id="slskdLoading" class="text-center py-4" style="display: none;">
+            <div class="spinner-border text-success" role="status">
+              <span class="visually-hidden">Searching...</span>
+            </div>
+            <p class="mt-2">Searching Soulseek...</p>
+          </div>
+          
+          <div id="slskdResults" style="max-height: 600px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-list"></i> Soulseek Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+// qBittorrent Search
+function performQbitSearch() {
+  const query = document.getElementById('qbitSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('qbitLoading').style.display = 'block';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  fetch('/api/qbittorrent/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found.
+        </div>
+      `;
+      return;
+    }
+    
+    let html = '<div class="list-group">';
+    
+    results.forEach((result) => {
+      const size = formatBytes(result.fileSize || 0);
+      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
+      
+      html += `
+        <div class="list-group-item list-group-item-action">
+          <div class="d-flex w-100 justify-content-between align-items-start">
+            <div class="flex-grow-1 me-2">
+              <h6 class="mb-1" style="font-size: 0.9rem;">${escapeHtml(result.fileName || 'Unknown')}</h6>
+              <small class="text-muted">${escapeHtml(result.siteUrl || '')}</small>
+            </div>
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')"
+              ${!result.fileUrl ? 'disabled' : ''}>
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </div>
+          <div class="d-flex gap-3 mt-2">
+            <small><i class="bi bi-hdd"></i> ${size}</small>
+            <small class="${seedClass}"><i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}</small>
+            <small><i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}</small>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += '</div>';
+    document.getElementById('qbitResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    document.getElementById('qbitResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> ${error.message}
+      </div>
+    `;
+  });
+}
+
+function addTorrent(url) {
+  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
+  
+  fetch('/api/qbittorrent/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Torrent added successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+// Soulseek Search
+function performSlskdSearch() {
+  const query = document.getElementById('slskdSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('slskdLoading').style.display = 'block';
+  document.getElementById('slskdResults').innerHTML = '';
+  
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('slskdLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found. Search may still be running...
+        </div>
+      `;
+      return;
+    }
+    
+    let html = '<div class="list-group">';
+    
+    results.forEach((result) => {
+      const size = formatBytes(result.size || 0);
+      const bitrate = result.bitrate ? `${result.bitrate} kbps` : 'Unknown';
+      const length = formatDuration(result.length || 0);
+      
+      html += `
+        <div class="list-group-item list-group-item-action">
+          <div class="d-flex w-100 justify-content-between align-items-start">
+            <div class="flex-grow-1 me-2">
+              <h6 class="mb-1" style="font-size: 0.9rem;">${escapeHtml(result.filename || 'Unknown')}</h6>
+              <small class="text-muted">
+                <i class="bi bi-person"></i> ${escapeHtml(result.username || 'Unknown')}
+              </small>
+            </div>
+            <button class="btn btn-sm btn-success" onclick="downloadSlskd('${escapeHtml(result.username)}', '${escapeHtml(result.filename)}')">
+              <i class="bi bi-download"></i> Download
+            </button>
+          </div>
+          <div class="d-flex gap-3 mt-2">
+            <small><i class="bi bi-hdd"></i> ${size}</small>
+            <small><i class="bi bi-soundwave"></i> ${bitrate}</small>
+            <small><i class="bi bi-clock"></i> ${length}</small>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += '</div>';
+    html += `<div class="text-muted small mt-2">Found ${results.length} results</div>`;
+    document.getElementById('slskdResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('slskdLoading').style.display = 'none';
+    document.getElementById('slskdResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> ${error.message}
+      </div>
+    `;
+  });
+}
+
+function downloadSlskd(username, filename) {
+  if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
+  
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username, filename: filename })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Download added to queue!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add download'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+// Utility functions
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return 'Unknown';
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Allow Enter key to trigger search
+document.addEventListener('DOMContentLoaded', function() {
+  const qbitInput = document.getElementById('qbitSearchInput');
+  if (qbitInput) {
+    qbitInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') performQbitSearch();
+    });
+  }
+  
+  const slskdInput = document.getElementById('slskdSearchInput');
+  if (slskdInput) {
+    slskdInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') performSlskdSearch();
+    });
+  }
+});
+</script>
+{% endblock %}
