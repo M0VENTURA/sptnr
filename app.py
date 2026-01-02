@@ -652,7 +652,13 @@ def scan_stop():
 def scan_status():
     """Get scan status (JSON)"""
     with scan_lock:
-        running = scan_process is not None and scan_process.poll() is None
+        web_ui_running = scan_process is not None and scan_process.poll() is None
+    
+    # Check if background scan from start.py is running
+    lock_file_path = "/config/.scan_lock"
+    background_running = os.path.exists(lock_file_path)
+    
+    running = web_ui_running or background_running
     
     return jsonify({"running": running})
 
@@ -1522,18 +1528,6 @@ def downloads_manager():
 def smart_playlists():
     """Smart Playlist creation UI page"""
     return render_template("smart_playlists.html")
-
-
-@app.route("/slskd-search")
-def slskd_search_page():
-    """Soulseek search UI page"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    slskd_config = cfg.get("slskd", {})
-    
-    if not slskd_config.get("enabled"):
-        flash("Soulseek (slskd) is not enabled. Configure it in settings.", "warning")
-    
-    return render_template("slskd_search.html", slskd_enabled=slskd_config.get("enabled", False))
 
 
 @app.route("/downloads-monitor")

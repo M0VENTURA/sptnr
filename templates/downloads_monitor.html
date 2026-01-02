@@ -451,12 +451,27 @@ document.addEventListener('DOMContentLoaded', function() {
     background-color: transparent !important;
 }
 
+.table thead {
+    background-color: var(--primary-bg) !important;
+}
+
 .table thead th {
+    background-color: var(--primary-bg) !important;
     color: var(--text-primary) !important;
     border-color: var(--border-color) !important;
 }
 
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
 .table tbody td {
+    background-color: transparent !important;
     color: var(--text-primary) !important;
     border-color: var(--border-color) !important;
 }
@@ -464,6 +479,10 @@ document.addEventListener('DOMContentLoaded', function() {
 .table-hover tbody tr:hover {
     background-color: rgba(255, 255, 255, 0.05) !important;
     color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
 }
 
 .progress {

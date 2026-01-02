@@ -3073,6 +3073,15 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
     """
     global config
     
+    
+    # Create scan lock file to indicate scanning is in progress
+    scan_lock_path = "/config/.scan_lock"
+    try:
+        with open(scan_lock_path, 'w') as f:
+            f.write(str(os.getpid()))
+    except Exception as e:
+        logging.warning(f"Could not create scan lock file: {e}")
+    
     # ✅ Reload config on each run
     config = load_config()
     
@@ -3346,6 +3355,13 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
 
             print("🕒 Scan complete. Sleeping for 12 hours...")
             time.sleep(12 * 60 * 60)
+    
+    # Remove scan lock file when scan completes (or if perpetual mode exits)
+    try:
+        if os.path.exists(scan_lock_path):
+            os.remove(scan_lock_path)
+    except Exception as e:
+        logging.warning(f"Could not remove scan lock file: {e}")
 
 
 # --- CLI Handling ---
