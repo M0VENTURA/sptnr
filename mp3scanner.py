@@ -80,6 +80,7 @@ def scan_music_folder():
         return {}
     
     audio_files = {}
+    file_count = 0
     
     # Walk through music folder
     for root, dirs, files in os.walk(MUSIC_ROOT):
@@ -87,18 +88,26 @@ def scan_music_folder():
             file_path = os.path.join(root, file)
             
             if file.lower().endswith(".mp3"):
+                file_count += 1
+                if file_count % 100 == 0:
+                    logging.info(f"Scanned {file_count} files so far...")
                 metadata = extract_mp3_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
                     audio_files[key] = metadata
+                    logging.debug(f"Found MP3: {metadata['artist']} - {metadata['title']}")
                     
             elif file.lower().endswith(".flac"):
+                file_count += 1
+                if file_count % 100 == 0:
+                    logging.info(f"Scanned {file_count} files so far...")
                 metadata = extract_flac_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
                     audio_files[key] = metadata
+                    logging.debug(f"Found FLAC: {metadata['artist']} - {metadata['title']}")
     
-    logging.info(f"Found {len(audio_files)} audio files with extractable metadata")
+    logging.info(f"Scan complete: Found {len(audio_files)} audio files with extractable metadata from {file_count} total files")
     return audio_files
 
 def match_to_database(audio_files):
@@ -118,13 +127,17 @@ def match_to_database(audio_files):
     logging.info(f"Found {len(db_tracks)} tracks in database without file paths")
     
     matched_count = 0
-    updated_count = 0
+    processed_count = 0
     
     for track in db_tracks:
         track_id = track["id"]
         artist = track["artist"]
         album = track["album"]
         title = track["title"]
+        
+        processed_count += 1
+        if processed_count % 50 == 0:
+            logging.info(f"Processing track {processed_count}/{len(db_tracks)} - {matched_count} matches so far")
         
         # Create search key
         db_key = f"{normalize_title(artist)}|{normalize_title(album)}|{normalize_title(title)}"
@@ -137,7 +150,7 @@ def match_to_database(audio_files):
                 (file_path, track_id)
             )
             matched_count += 1
-            logging.debug(f"Exact match: {artist} - {title} -> {file_path}")
+            logging.info(f"Exact match: {artist} - {title} -> {file_path}")
             continue
         
         # Try fuzzy matching if exact match fails
@@ -178,7 +191,7 @@ def match_to_database(audio_files):
     conn.commit()
     conn.close()
     
-    logging.info(f"Matched {matched_count} tracks to files")
+    logging.info(f"Matching complete: {matched_count} tracks matched out of {len(db_tracks)} total")
     return matched_count
 
 def scan_all_tracks():

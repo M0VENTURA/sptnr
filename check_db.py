@@ -52,7 +52,9 @@ required_columns = {
     "adaptive_weight_lastfm": "REAL",       # Adaptive Last.fm weight
     "adaptive_weight_listenbrainz": "REAL", # Adaptive ListenBrainz weight
     "album_median_score": "REAL",           # Median score for the album
-    "spotify_release_age_days": "INTEGER"   # Days since release
+    "spotify_release_age_days": "INTEGER",   # Days since release
+    "popularity_score": "REAL",             # Calculated popularity from external sources
+    "single_source": "TEXT"                 # Source that confirmed single status
 }
 
 def update_schema(db_path):
