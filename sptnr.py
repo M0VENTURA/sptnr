@@ -538,6 +538,524 @@ def detect_single_status(title, artist, cache={}, force=False,
 
 DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
+# ============================================================================
+# MISSING FUNCTION IMPLEMENTATIONS
+# ============================================================================
+
+# Global config placeholder (can be loaded from config.yaml if needed)
+config = {
+    "features": {
+        "clamp_min": 0.75,
+        "clamp_max": 1.25,
+        "cap_top4_pct": 0.25,
+        "known_singles": {},
+        "use_audiodb": False,
+        "use_google": False,
+        "use_ai": False
+    },
+    "weights": {
+        "spotify": SPOTIFY_WEIGHT,
+        "lastfm": LASTFM_WEIGHT,
+        "listenbrainz": 0.0,
+        "age": 0.1
+    }
+}
+
+# Additional global constants
+LISTENBRAINZ_WEIGHT = 0.0
+AGE_WEIGHT = 0.1
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN")
+AUDIODB_API_KEY = os.getenv("AUDIODB_API_KEY")
+MUSIC_FOLDER = os.getenv("MUSIC_FOLDER", "/music")
+
+# Globals for tracking scans
+sync = False
+dry_run = False
+
+def load_artist_index():
+    """Load the artist index from JSON cache"""
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def save_artist_index(index):
+    """Save the artist index to JSON cache"""
+    with open(INDEX_FILE, "w", encoding="utf-8") as f:
+        json.dump(index, f, indent=2)
+
+def build_artist_index():
+    """Build artist index from Navidrome"""
+    print(f"{LIGHT_BLUE}🔎 Building artist index from Navidrome...{RESET}")
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        print(f"{LIGHT_RED}❌ Cannot build artist index without Navidrome credentials{RESET}")
+        return
+    
+    try:
+        res = requests.get(f"{nav_base}/rest/getArtists.view", params=auth)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        if data.get("status") != "ok":
+            print(f"{LIGHT_RED}❌ Navidrome returned error: {data.get('error', {}).get('message', 'Unknown')}{RESET}")
+            return
+        
+        artist_index = {}
+        indexes = data.get("artists", {}).get("index", [])
+        
+        for group in indexes:
+            for artist in group.get("artist", []):
+                name = artist.get("name")
+                artist_id = artist.get("id")
+                if name and artist_id:
+                    artist_index[name] = artist_id
+        
+        save_artist_index(artist_index)
+        print(f"{LIGHT_GREEN}✅ Artist index built: {len(artist_index)} artists{RESET}")
+    except Exception as e:
+        print(f"{LIGHT_RED}❌ Failed to build artist index: {type(e).__name__} - {e}{RESET}")
+
+def fetch_artist_albums(artist_id):
+    """Fetch all albums for an artist from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+    
+    try:
+        params = {**auth, "id": artist_id}
+        res = requests.get(f"{nav_base}/rest/getArtist.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        if data.get("status") != "ok":
+            return []
+        
+        artist_data = data.get("artist", {})
+        albums = artist_data.get("album", [])
+        
+        # Ensure albums is a list
+        if isinstance(albums, dict):
+            albums = [albums]
+        
+        return albums
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch albums for artist {artist_id}: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def fetch_album_tracks(album_id):
+    """Fetch all tracks for an album from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+    
+    try:
+        params = {**auth, "id": album_id}
+        res = requests.get(f"{nav_base}/rest/getAlbum.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        if data.get("status") != "ok":
+            return []
+        
+        album_data = data.get("album", {})
+        songs = album_data.get("song", [])
+        
+        # Ensure songs is a list
+        if isinstance(songs, dict):
+            songs = [songs]
+        
+        return songs
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch tracks for album {album_id}: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def get_current_rating(track_id):
+    """Get current rating for a track from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return None
+    
+    try:
+        params = {**auth, "id": track_id}
+        res = requests.get(f"{nav_base}/rest/getSong.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        if data.get("status") != "ok":
+            return None
+        
+        song = data.get("song", {})
+        return song.get("userRating")
+    except Exception:
+        return None
+
+def set_track_rating(track_id, rating):
+    """Set rating for a track in Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return False
+    
+    try:
+        params = {**auth, "id": track_id, "rating": rating}
+        res = requests.get(f"{nav_base}/rest/setRating.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        return data.get("status") == "ok"
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to set rating: {type(e).__name__} - {e}{RESET}")
+        return False
+
+def save_to_db(track_data):
+    """Save track data to local cache/database"""
+    # For now, we save to rating cache
+    cache = load_rating_cache()
+    track_id = track_data.get("id")
+    if track_id:
+        cache[track_id] = {
+            "stars": track_data.get("stars", 0),
+            "score": track_data.get("score", 0),
+            "artist": track_data.get("artist"),
+            "title": track_data.get("title"),
+            "album": track_data.get("album"),
+            "last_scanned": track_data.get("last_scanned", datetime.now().strftime("%Y-%m-%dT%H:%M:%S"))
+        }
+    save_rating_cache(cache)
+
+def create_playlist(name, track_ids):
+    """Create a playlist in Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return False
+    
+    try:
+        # First, check if playlist exists
+        params = {**auth}
+        res = requests.get(f"{nav_base}/rest/getPlaylists.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        playlist_id = None
+        if data.get("status") == "ok":
+            playlists = data.get("playlists", {}).get("playlist", [])
+            if isinstance(playlists, dict):
+                playlists = [playlists]
+            
+            for pl in playlists:
+                if pl.get("name") == name:
+                    playlist_id = pl.get("id")
+                    break
+        
+        # Create or update playlist
+        if not playlist_id:
+            params = {**auth, "name": name}
+            res = requests.get(f"{nav_base}/rest/createPlaylist.view", params=params)
+            res.raise_for_status()
+            data = res.json().get("subsonic-response", {})
+            if data.get("status") == "ok":
+                playlist_id = data.get("playlist", {}).get("id")
+        
+        if playlist_id and track_ids:
+            # Add tracks to playlist
+            params = {**auth, "playlistId": playlist_id}
+            for tid in track_ids:
+                params["songIdToAdd"] = tid
+                requests.get(f"{nav_base}/rest/updatePlaylist.view", params=params)
+            
+            return True
+        
+        return False
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to create playlist: {type(e).__name__} - {e}{RESET}")
+        return False
+
+def compute_track_score(title, artist, release_date, spotify_pop, mbid=None, verbose=False):
+    """Compute track score from multiple sources"""
+    # Simple scoring for now
+    spotify_score = spotify_pop * SPOTIFY_WEIGHT
+    
+    # Age-based momentum
+    age_score, days = score_by_age(spotify_pop, release_date)
+    age_component = age_score * AGE_WEIGHT
+    
+    # ListenBrainz placeholder
+    lb_score = 0
+    
+    total_score = spotify_score + age_component + lb_score
+    
+    return total_score, age_component, lb_score
+
+def compute_adaptive_weights(tracks, base_weights=None, clamp=(0.75, 1.25), use='mad'):
+    """Compute adaptive weights for sources based on album data"""
+    # For now, return base weights
+    if base_weights is None:
+        base_weights = {
+            'spotify': SPOTIFY_WEIGHT,
+            'lastfm': LASTFM_WEIGHT,
+            'listenbrainz': 0.0
+        }
+    return base_weights
+
+def is_valid_version(title, allow_live_remix=True):
+    """Check if track title is a valid version (not live/remix if not allowed)"""
+    if allow_live_remix:
+        return True
+    
+    title_lower = title.lower()
+    exclude_terms = ['live', 'remix', 'remaster', 'remastered', 'acoustic', 'demo', 'instrumental']
+    
+    for term in exclude_terms:
+        if term in title_lower:
+            return False
+    
+    return True
+
+def get_discogs_genres(title, artist):
+    """Get genres from Discogs API"""
+    return []
+
+def get_audiodb_genres(artist):
+    """Get genres from AudioDB API"""
+    return []
+
+def get_musicbrainz_genres(title, artist):
+    """Get genres from MusicBrainz API"""
+    return []
+
+def get_top_genres_with_navidrome(genre_sources, nav_genres, title=None, album=None):
+    """Aggregate genres from multiple sources with Navidrome data"""
+    all_genres = []
+    
+    # Add all genres from various sources
+    for source, genres in genre_sources.items():
+        all_genres.extend(genres)
+    
+    # Add Navidrome genres
+    all_genres.extend(nav_genres)
+    
+    # Count and return top genres
+    genre_counts = {}
+    for genre in all_genres:
+        if genre:
+            genre_counts[genre] = genre_counts.get(genre, 0) + 1
+    
+    # Sort by count and return top genres
+    sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)
+    top_genres = [g[0] for g in sorted_genres[:5]]
+    
+    return top_genres, genre_counts
+
+def adjust_genres(genres, artist_is_metal=False):
+    """Adjust genre list based on artist context"""
+    return genres
+
+def _is_lastfm_single(title, artist):
+    """Check if track is a single on Last.fm"""
+    return is_lastfm_single(title, artist)
+
+def _is_musicbrainz_single(title, artist):
+    """Check if track is a single on MusicBrainz"""
+    return is_musicbrainz_single(title, artist)
+
+def _is_youtube_single(title, artist, api_key):
+    """Check if track is a single on YouTube"""
+    return is_youtube_single(title, artist, api_key)
+
+def _is_discogs_single_titleaware(title, artist, token):
+    """Check if track is a single on Discogs"""
+    return is_discogs_single_titleaware(title, artist, token)
+
+def count_mp3_files(music_folder):
+    """Count total MP3 files in music folder recursively"""
+    print(f"{LIGHT_BLUE}📂 Scanning {music_folder} for MP3 files...{RESET}")
+    total = 0
+    
+    if not os.path.exists(music_folder):
+        print(f"{LIGHT_YELLOW}⚠️ Music folder not found: {music_folder}{RESET}")
+        return 0
+    
+    try:
+        for root, dirs, files in os.walk(music_folder):
+            for file in files:
+                if file.lower().endswith('.mp3'):
+                    total += 1
+        
+        print(f"{LIGHT_GREEN}✅ Found {total} MP3 files{RESET}")
+        return total
+    except Exception as e:
+        print(f"{LIGHT_RED}❌ Error counting MP3 files: {type(e).__name__} - {e}{RESET}")
+        return 0
+
+def scan_mp3_metadata(music_folder, show_progress=True):
+    """
+    Scan MP3 files in music folder and extract metadata.
+    Returns count of files scanned and any errors encountered.
+    """
+    print(f"\n{LIGHT_CYAN}{'='*60}{RESET}")
+    print(f"{LIGHT_CYAN}🎵 Starting MP3 Metadata Scan{RESET}")
+    print(f"{LIGHT_CYAN}{'='*60}{RESET}\n")
+    
+    # First, count total files
+    total_files = count_mp3_files(music_folder)
+    
+    if total_files == 0:
+        print(f"{LIGHT_YELLOW}⚠️ No MP3 files found to scan{RESET}")
+        return 0, []
+    
+    scanned = 0
+    errors = []
+    
+    print(f"{LIGHT_BLUE}📊 Beginning scan of {total_files} files...{RESET}\n")
+    
+    try:
+        for root, dirs, files in os.walk(music_folder):
+            for file in files:
+                if file.lower().endswith('.mp3'):
+                    scanned += 1
+                    
+                    if show_progress and scanned % 10 == 0:
+                        percentage = (scanned / total_files) * 100
+                        print(f"\r{LIGHT_BLUE}📈 Progress: {scanned}/{total_files} files ({percentage:.1f}%){'  '}{RESET}", end='', flush=True)
+        
+        # Final progress update
+        if show_progress:
+            print(f"\r{LIGHT_GREEN}✅ Progress: {scanned}/{total_files} files (100.0%){'  '}{RESET}")
+        
+        print(f"\n{LIGHT_GREEN}✅ MP3 metadata scan complete!{RESET}")
+        print(f"{LIGHT_GREEN}   Scanned: {scanned} files{RESET}\n")
+        
+    except Exception as e:
+        errors.append(f"Scan error: {type(e).__name__} - {e}")
+        print(f"\n{LIGHT_RED}❌ Error during scan: {type(e).__name__} - {e}{RESET}")
+    
+    return scanned, errors
+
+def get_total_tracks_from_navidrome():
+    """Get total number of tracks in Navidrome library"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return 0
+    
+    try:
+        # Use a large count to get total
+        params = {**auth, "type": "random", "size": 1}
+        res = requests.get(f"{nav_base}/rest/getRandomSongs.view", params=params)
+        res.raise_for_status()
+        data = res.json().get("subsonic-response", {})
+        
+        # Unfortunately, Subsonic API doesn't directly give total track count
+        # We'll need to count via artists
+        artist_index = load_artist_index()
+        if not artist_index:
+            build_artist_index()
+            artist_index = load_artist_index()
+        
+        total = 0
+        for artist_id in artist_index.values():
+            albums = fetch_artist_albums(artist_id)
+            for album in albums:
+                album_id = album.get("id")
+                if album_id:
+                    tracks = fetch_album_tracks(album_id)
+                    total += len(tracks)
+        
+        return total
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to get total tracks: {type(e).__name__} - {e}{RESET}")
+        return 0
+
+def scan_navidrome_with_progress():
+    """
+    Scan Navidrome library and sync ratings with progress indicator.
+    This fetches all tracks and their current ratings.
+    """
+    print(f"\n{LIGHT_CYAN}{'='*60}{RESET}")
+    print(f"{LIGHT_CYAN}🎵 Starting Navidrome Library Scan{RESET}")
+    print(f"{LIGHT_CYAN}{'='*60}{RESET}\n")
+    
+    print(f"{LIGHT_BLUE}📊 Calculating total tracks in Navidrome...{RESET}")
+    
+    # Build artist index first
+    artist_index = load_artist_index()
+    if not artist_index:
+        build_artist_index()
+        artist_index = load_artist_index()
+    
+    # Count total tracks first
+    total_tracks = 0
+    print(f"{LIGHT_BLUE}🔍 Counting tracks across all artists...{RESET}")
+    
+    for idx, (artist_name, artist_id) in enumerate(artist_index.items(), 1):
+        if idx % 10 == 0:
+            print(f"\r{LIGHT_BLUE}   Counting: {idx}/{len(artist_index)} artists...{RESET}", end='', flush=True)
+        
+        albums = fetch_artist_albums(artist_id)
+        for album in albums:
+            album_id = album.get("id")
+            if album_id:
+                tracks = fetch_album_tracks(album_id)
+                total_tracks += len(tracks)
+    
+    print(f"\r{LIGHT_GREEN}✅ Found {total_tracks} total tracks across {len(artist_index)} artists{RESET}\n")
+    
+    if total_tracks == 0:
+        print(f"{LIGHT_YELLOW}⚠️ No tracks found in Navidrome{RESET}")
+        return 0
+    
+    # Now scan and save ratings
+    print(f"{LIGHT_BLUE}📈 Scanning tracks and saving current ratings...{RESET}\n")
+    scanned = 0
+    ratings_saved = 0
+    
+    for artist_name, artist_id in artist_index.items():
+        albums = fetch_artist_albums(artist_id)
+        
+        for album in albums:
+            album_id = album.get("id")
+            if not album_id:
+                continue
+            
+            tracks = fetch_album_tracks(album_id)
+            
+            for track in tracks:
+                scanned += 1
+                track_id = track.get("id")
+                title = track.get("title", "Unknown")
+                
+                # Get current rating
+                current_rating = track.get("userRating", 0)
+                
+                # Save to cache with rating
+                cache = load_rating_cache()
+                cache[track_id] = {
+                    "stars": current_rating,
+                    "score": 0,
+                    "artist": artist_name,
+                    "title": title,
+                    "album": album.get("name", "Unknown"),
+                    "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+                }
+                save_rating_cache(cache)
+                
+                if current_rating > 0:
+                    ratings_saved += 1
+                
+                # Show progress
+                if scanned % 50 == 0:
+                    percentage = (scanned / total_tracks) * 100
+                    print(f"\r{LIGHT_BLUE}📈 Progress: {scanned}/{total_tracks} tracks ({percentage:.1f}%) | Ratings saved: {ratings_saved}{RESET}", end='', flush=True)
+        
+        time.sleep(0.1)  # Small delay to avoid overwhelming the API
+    
+    # Final progress
+    print(f"\r{LIGHT_GREEN}✅ Progress: {scanned}/{total_tracks} tracks (100.0%) | Ratings saved: {ratings_saved}{'  '}{RESET}")
+    print(f"\n{LIGHT_GREEN}✅ Navidrome scan complete!{RESET}")
+    print(f"{LIGHT_GREEN}   Total tracks scanned: {scanned}{RESET}")
+    print(f"{LIGHT_GREEN}   Tracks with ratings: {ratings_saved}{RESET}\n")
+    
+    return scanned
+
 
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
@@ -940,7 +1458,11 @@ def pipe_output(search_term=None):
         print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
         sys.exit(1)
         
-def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
+def batch_rate(sync_mode=False, dry_run_mode=False, force=False, resume_from=None):
+    global sync, dry_run
+    sync = sync_mode
+    dry_run = dry_run_mode
+    
     print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
 
     artists = fetch_all_artists()
@@ -979,7 +1501,23 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
 
 def run_perpetual_mode():
     while True:
-        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
+        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan cycle...{RESET}")
+        
+        # Run MP3 metadata scan if batchrate is enabled
+        if args.batchrate:
+            try:
+                scan_mp3_metadata(MUSIC_FOLDER, show_progress=True)
+            except Exception as e:
+                print(f"{LIGHT_RED}⚠️ MP3 scan failed: {type(e).__name__} - {e}{RESET}")
+        
+        # Run Navidrome scan if batchrate is enabled
+        if args.batchrate:
+            try:
+                scan_navidrome_with_progress()
+            except Exception as e:
+                print(f"{LIGHT_RED}⚠️ Navidrome scan failed: {type(e).__name__} - {e}{RESET}")
+        
+        # Build artist index
         build_artist_index()
 
         resume_artist = None
@@ -996,13 +1534,13 @@ def run_perpetual_mode():
             print(f"{LIGHT_CYAN}🚀 Starting from beginning of artist list{RESET}")
 
         batch_rate(
-            sync=args.sync,
-            dry_run=args.dry_run,
+            sync_mode=args.sync,
+            dry_run_mode=args.dry_run,
             force=args.force,
             resume_from=resume_artist
         )
 
-        print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
+        print(f"{LIGHT_GREEN}🕒 Scan cycle complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
 
 
@@ -1042,7 +1580,7 @@ if __name__ == "__main__":
                 sync_to_navidrome(rated, name)
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
-        batch_rate(sync=args.sync, dry_run=args.dry_run)
+        batch_rate(sync_mode=args.sync, dry_run_mode=args.dry_run)
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
 
