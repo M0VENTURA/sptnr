@@ -1,4 +1,4 @@
-﻿#!/usr/bin/env python3
+#!/usr/bin/env python3
 # ðŸŽ§ SPTNR â€“ Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
 
 import argparse
@@ -1139,7 +1139,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             if not album_id:
                 continue
             
-            print(f"   ðŸ“€ [{album_count}/{len(albums)}] Album: {album_name[:50]}...")
+            print(f"   ðŸ“€ [{album_count}/{len(albums)}] Album: {album_name}")
             logging.info(f"Scanning album {album_count}/{len(albums)}: {album_name}")
             
             try:
