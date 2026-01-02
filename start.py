@@ -2131,6 +2131,14 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
                     "navidrome_rating": int(t.get("userRating", 0) or 0),
+                    # Enhanced metadata from Navidrome for better matching
+                    "duration": t.get("duration"),  # Track duration in seconds
+                    "track_number": t.get("track"),  # Track number
+                    "disc_number": t.get("discNumber"),  # Disc number
+                    "year": t.get("year"),  # Release year
+                    "album_artist": t.get("albumArtist", ""),  # Album artist
+                    "bitrate": t.get("bitRate"),  # Bitrate in kbps
+                    "sample_rate": t.get("samplingRate"),  # Sample rate in Hz
                 }
                 try:
                     save_to_db(td)

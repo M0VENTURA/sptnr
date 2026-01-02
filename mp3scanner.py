@@ -221,7 +221,7 @@ def match_to_database(audio_files):
     
     # Get all tracks from database
     cursor.execute("""
-        SELECT id, artist, album, title, file_path, isrc
+        SELECT id, artist, album, title, file_path, isrc, duration
         FROM tracks
         WHERE file_path IS NULL OR file_path = ''
         ORDER BY artist, album, title
@@ -242,6 +242,7 @@ def match_to_database(audio_files):
         album = track["album"]
         title = track["title"]
         db_isrc = track["isrc"]
+        db_duration = track["duration"]
         
         processed_count += 1
         if processed_count % 50 == 0:
@@ -279,8 +280,16 @@ def match_to_database(audio_files):
                 album_score = similarity(album, file_album)
                 title_score = similarity(title, file_title)
                 
-                # Average score
+                # Base score is average of text matches
                 avg_score = (artist_score + album_score + title_score) / 3.0
+                
+                # Bonus: If we have duration data, penalize if durations don't match (within 2 seconds)
+                if db_duration and metadata.get("duration"):
+                    duration_diff = abs(db_duration - metadata["duration"])
+                    if duration_diff <= 2:
+                        avg_score += 0.05  # Small bonus for matching duration
+                    elif duration_diff > 10:
+                        avg_score -= 0.1  # Penalty for very different durations
                 
                 # Update best match if this is better
                 if avg_score > best_score:
