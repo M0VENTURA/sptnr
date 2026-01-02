@@ -1883,6 +1883,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         logging.info(msg)
     else:
         print(f"\n🎨 Scanning artist: {artist_name}")
+    
+    # Aggressively collect genres for this artist from all sources
+    print(f"🏷️ Enriching genres for {artist_name}...")
+    genres_found = enrich_genres_aggressively(artist_name, verbose=verbose)
+    if genres_found:
+        print(f"  ✓ Found {len(genres_found)} genres")
+    
     rated_map = {}
 
     # --------------------------------------------------------------------------
@@ -3034,4 +3041,166 @@ if __name__ == "__main__":
     else:
         print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
+
+
+def scan_popularity(verbose: bool = False, force: bool = False):
+    """
+    Scan and update popularity scores from all available sources.
+    Updates spotify_popularity, lastfm_track_playcount, listenbrainz_count
+    """
+    global config
+    config = load_config()
+    
+    logging.info("Starting popularity scan...")
+    print("📊 Starting popularity score scan...")
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get all tracks without recent popularity updates
+        cursor.execute("""
+            SELECT DISTINCT artist, album, title, id, 
+                   spotify_score, lastfm_ratio, listenbrainz_count, 
+                   last_scanned
+            FROM tracks
+            WHERE last_scanned IS NULL OR 
+                  datetime(last_scanned) < datetime('now', '-7 days')
+            ORDER BY artist, album, title
+            LIMIT 1000
+        """)
+        
+        tracks = cursor.fetchall()
+        conn.close()
+        
+        if not tracks:
+            print("✅ All tracks have recent popularity data")
+            return
+        
+        updated_count = 0
+        for idx, track in enumerate(tracks, 1):
+            if idx % 50 == 0:
+                print(f"Progress: {idx}/{len(tracks)}")
+                logging.info(f"Popularity scan progress: {idx}/{len(tracks)}")
+            
+            artist = track['artist']
+            title = track['title']
+            track_id = track['id']
+            
+            # Get Spotify score
+            spotify_score = 0
+            try:
+                result = search_spotify_track(title, artist)
+                if result and result.get('popularity'):
+                    spotify_score = result.get('popularity', 0)
+            except Exception as e:
+                logging.debug(f"Spotify popularity lookup failed for {title}: {e}")
+            
+            # Get Last.fm info
+            lastfm_ratio = 0
+            try:
+                info = get_lastfm_track_info(artist, title)
+                if info and info.get('playcount'):
+                    lastfm_ratio = min(100, int(info['playcount']) / 10)
+            except Exception as e:
+                logging.debug(f"Last.fm lookup failed for {title}: {e}")
+            
+            # Get ListenBrainz score
+            listenbrainz_count = 0
+            try:
+                score = get_listenbrainz_score(track.get('mbid', ''), artist, title)
+                listenbrainz_count = score
+            except Exception as e:
+                logging.debug(f"ListenBrainz lookup failed for {title}: {e}")
+            
+            # Update database
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE tracks SET
+                        spotify_score = ?,
+                        lastfm_ratio = ?,
+                        listenbrainz_count = ?
+                    WHERE id = ?
+                """, (spotify_score, lastfm_ratio, listenbrainz_count, track_id))
+                conn.commit()
+                conn.close()
+                updated_count += 1
+                
+                if verbose:
+                    print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}")
+            except Exception as e:
+                logging.error(f"Failed to update track {track_id}: {e}")
+        
+        print(f"✅ Popularity scan complete: Updated {updated_count} tracks")
+        logging.info(f"Popularity scan complete: Updated {updated_count} tracks")
+    
+    except Exception as e:
+        logging.error(f"Popularity scan failed: {e}")
+        print(f"❌ Popularity scan failed: {e}")
+
+
+def enrich_genres_aggressively(artist_name: str, verbose: bool = False):
+    """
+    Aggressively collect genres from all available sources for an artist.
+    Called during rate_artist() to cache comprehensive genre data.
+    """
+    genres_collected = set()
+    
+    try:
+        # Get from Discogs
+        try:
+            discogs_genres = get_discogs_genres(artist_name, "")
+            if discogs_genres:
+                genres_collected.update([g.lower() for g in discogs_genres])
+                if verbose:
+                    logging.info(f"Discogs genres for {artist_name}: {discogs_genres}")
+        except Exception as e:
+            logging.debug(f"Discogs genre lookup failed for {artist_name}: {e}")
+        
+        # Get from AudioDB
+        try:
+            audiodb_genres = get_audiodb_genres(artist_name)
+            if audiodb_genres:
+                genres_collected.update([g.lower() for g in audiodb_genres])
+                if verbose:
+                    logging.info(f"AudioDB genres for {artist_name}: {audiodb_genres}")
+        except Exception as e:
+            logging.debug(f"AudioDB genre lookup failed for {artist_name}: {e}")
+        
+        # Get from MusicBrainz
+        try:
+            mb_genres = get_musicbrainz_genres(artist_name, "")
+            if mb_genres:
+                genres_collected.update([g.lower() for g in mb_genres])
+                if verbose:
+                    logging.info(f"MusicBrainz genres for {artist_name}: {mb_genres}")
+        except Exception as e:
+            logging.debug(f"MusicBrainz genre lookup failed for {artist_name}: {e}")
+        
+        # Store in cache for later use
+        if genres_collected:
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Update all tracks for this artist with collected genres
+                genres_str = ", ".join(sorted(genres_collected))
+                cursor.execute("""
+                    UPDATE tracks SET genres = ?
+                    WHERE artist = ? AND (genres IS NULL OR genres = '')
+                """, (genres_str, artist_name))
+                conn.commit()
+                conn.close()
+                
+                if verbose:
+                    logging.info(f"Updated {cursor.rowcount} tracks for {artist_name} with {len(genres_collected)} genres")
+            except Exception as e:
+                logging.debug(f"Failed to update genres for {artist_name}: {e}")
+    
+    except Exception as e:
+        logging.debug(f"Genre enrichment failed for {artist_name}: {e}")
+    
+    return genres_collected
 

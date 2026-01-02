@@ -313,6 +313,17 @@ def match_to_database(audio_files):
         if matched_metadata:
             file_path = matched_metadata["file_path"]
             
+            # Attempt to enrich with MusicBrainz data if no MBID
+            if not track.get("mbid") and matched_metadata.get("isrc"):
+                try:
+                    from start import get_suggested_mbid
+                    mbid, confidence = get_suggested_mbid(title, artist, limit=1)
+                    if mbid and confidence > 0.8:
+                        logging.info(f"MusicBrainz enrichment: {title} -> MBID {mbid} (confidence: {confidence:.2f})")
+                        matched_metadata["mbid"] = mbid
+                except Exception as e:
+                    logging.debug(f"MusicBrainz lookup failed for {title}: {e}")
+            
             # Update with all metadata fields
             cursor.execute("""
                 UPDATE tracks SET 
@@ -328,7 +339,8 @@ def match_to_database(audio_files):
                     isrc = ?,
                     composer = ?,
                     comment = ?,
-                    lyrics = ?
+                    lyrics = ?,
+                    mbid = ?
                 WHERE id = ?
             """, (
                 file_path,
@@ -344,6 +356,7 @@ def match_to_database(audio_files):
                 matched_metadata.get("composer"),
                 matched_metadata.get("comment"),
                 matched_metadata.get("lyrics"),
+                matched_metadata.get("mbid"),
                 track_id
             ))
             matched_count += 1

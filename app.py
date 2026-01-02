@@ -845,18 +845,27 @@ def scan_navidrome():
 
 @app.route("/scan/popularity", methods=["POST"])
 def scan_popularity():
-    """Run popularity detection"""
-    try:
-        import subprocess
-        cmd = [sys.executable, "popularity.py", "--verbose"]
-        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+    """Run popularity score update from external sources"""
+    global scan_process
+    
+    with scan_lock:
+        if scan_process and scan_process.poll() is None:
+            flash("A scan is already running", "warning")
+            return redirect(url_for("dashboard"))
         
-        if result.returncode == 0:
-            flash("✅ Popularity detection completed successfully", "success")
-        else:
-            flash(f"❌ Popularity detection failed: {result.stderr}", "danger")
-    except Exception as e:
-        flash(f"❌ Error running popularity detection: {str(e)}", "danger")
+        # Start popularity scan in background
+        cmd = [sys.executable, "-c", 
+               "from start import scan_popularity; scan_popularity(verbose=True)"]
+        
+        scan_process = subprocess.Popen(
+            cmd,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            bufsize=1
+        )
+        
+        flash("Popularity score scan started", "success")
     
     return redirect(url_for("dashboard"))
 
