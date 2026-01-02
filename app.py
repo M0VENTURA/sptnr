@@ -453,8 +453,16 @@ def dashboard():
         logging.error(f"Dashboard error: {e}")
         import traceback
         traceback.print_exc()
-        flash(f"Dashboard error: {str(e)}", "danger")
-        return redirect(url_for("login"))
+        # Render a minimal dashboard with error message instead of redirecting
+        return render_template("dashboard.html",
+                             artist_count=0,
+                             album_count=0,
+                             track_count=0,
+                             five_star_count=0,
+                             singles_count=0,
+                             recent_scans=[],
+                             scan_running=False,
+                             error=str(e))
 
 
 @app.route("/artists")

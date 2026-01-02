@@ -11,6 +11,14 @@
         <p class="text-muted mb-0">Music library overview and scan controls</p>
     </div>
     
+    {% if error %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <strong>Dashboard Error:</strong> {{ error }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    {% endif %}
+    
     <!-- Statistics Cards -->
     <div class="row g-2 g-md-3 mb-4">
         <div class="col-6 col-sm-4 col-lg-2">
