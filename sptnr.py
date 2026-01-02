@@ -940,50 +940,17 @@ def scan_mp3_metadata(music_folder, show_progress=True):
     
     return scanned, errors
 
-def get_total_tracks_from_navidrome():
-    """Get total number of tracks in Navidrome library"""
-    nav_base, auth = get_auth_params()
-    if not nav_base or not auth:
-        return 0
-    
-    try:
-        # Use a large count to get total
-        params = {**auth, "type": "random", "size": 1}
-        res = requests.get(f"{nav_base}/rest/getRandomSongs.view", params=params)
-        res.raise_for_status()
-        data = res.json().get("subsonic-response", {})
-        
-        # Unfortunately, Subsonic API doesn't directly give total track count
-        # We'll need to count via artists
-        artist_index = load_artist_index()
-        if not artist_index:
-            build_artist_index()
-            artist_index = load_artist_index()
-        
-        total = 0
-        for artist_id in artist_index.values():
-            albums = fetch_artist_albums(artist_id)
-            for album in albums:
-                album_id = album.get("id")
-                if album_id:
-                    tracks = fetch_album_tracks(album_id)
-                    total += len(tracks)
-        
-        return total
-    except Exception as e:
-        print(f"{LIGHT_RED}⚠️ Failed to get total tracks: {type(e).__name__} - {e}{RESET}")
-        return 0
-
 def scan_navidrome_with_progress():
     """
     Scan Navidrome library and sync ratings with progress indicator.
     This fetches all tracks and their current ratings.
+    Optimized to avoid duplicate API calls - counts and scans in single pass.
     """
     print(f"\n{LIGHT_CYAN}{'='*60}{RESET}")
     print(f"{LIGHT_CYAN}🎵 Starting Navidrome Library Scan{RESET}")
     print(f"{LIGHT_CYAN}{'='*60}{RESET}\n")
     
-    print(f"{LIGHT_BLUE}📊 Calculating total tracks in Navidrome...{RESET}")
+    print(f"{LIGHT_BLUE}📊 Scanning Navidrome library...{RESET}")
     
     # Build artist index first
     artist_index = load_artist_index()
@@ -991,33 +958,18 @@ def scan_navidrome_with_progress():
         build_artist_index()
         artist_index = load_artist_index()
     
-    # Count total tracks first
-    total_tracks = 0
-    print(f"{LIGHT_BLUE}🔍 Counting tracks across all artists...{RESET}")
+    # Load rating cache once at the start
+    cache = load_rating_cache()
     
-    for idx, (artist_name, artist_id) in enumerate(artist_index.items(), 1):
-        if idx % 10 == 0:
-            print(f"\r{LIGHT_BLUE}   Counting: {idx}/{len(artist_index)} artists...{RESET}", end='', flush=True)
-        
-        albums = fetch_artist_albums(artist_id)
-        for album in albums:
-            album_id = album.get("id")
-            if album_id:
-                tracks = fetch_album_tracks(album_id)
-                total_tracks += len(tracks)
+    # Single-pass scan: count and process simultaneously
+    print(f"{LIGHT_BLUE}🔍 Processing {len(artist_index)} artists...{RESET}\n")
     
-    print(f"\r{LIGHT_GREEN}✅ Found {total_tracks} total tracks across {len(artist_index)} artists{RESET}\n")
-    
-    if total_tracks == 0:
-        print(f"{LIGHT_YELLOW}⚠️ No tracks found in Navidrome{RESET}")
-        return 0
-    
-    # Now scan and save ratings
-    print(f"{LIGHT_BLUE}📈 Scanning tracks and saving current ratings...{RESET}\n")
     scanned = 0
     ratings_saved = 0
+    artist_count = 0
     
     for artist_name, artist_id in artist_index.items():
+        artist_count += 1
         albums = fetch_artist_albums(artist_id)
         
         for album in albums:
@@ -1035,8 +987,7 @@ def scan_navidrome_with_progress():
                 # Get current rating
                 current_rating = track.get("userRating", 0)
                 
-                # Save to cache with rating
-                cache = load_rating_cache()
+                # Update cache in memory
                 cache[track_id] = {
                     "stars": current_rating,
                     "score": 0,
@@ -1045,20 +996,21 @@ def scan_navidrome_with_progress():
                     "album": album.get("name", "Unknown"),
                     "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
                 }
-                save_rating_cache(cache)
                 
                 if current_rating > 0:
                     ratings_saved += 1
                 
                 # Show progress
                 if scanned % PROGRESS_UPDATE_INTERVAL == 0:
-                    percentage = (scanned / total_tracks) * 100
-                    print(f"\r{LIGHT_BLUE}📈 Progress: {scanned}/{total_tracks} tracks ({percentage:.1f}%) | Ratings saved: {ratings_saved}{RESET}", end='', flush=True)
+                    print(f"\r{LIGHT_BLUE}📈 Progress: {scanned} tracks scanned | {artist_count}/{len(artist_index)} artists | Ratings: {ratings_saved}{RESET}", end='', flush=True)
         
         time.sleep(API_RATE_LIMIT_DELAY)  # Small delay to avoid overwhelming the API
     
+    # Save cache once at the end
+    save_rating_cache(cache)
+    
     # Final progress
-    print(f"\r{LIGHT_GREEN}✅ Progress: {scanned}/{total_tracks} tracks (100.0%) | Ratings saved: {ratings_saved}{'  '}{RESET}")
+    print(f"\r{LIGHT_GREEN}✅ Progress: {scanned} tracks scanned | {artist_count}/{len(artist_index)} artists | Ratings: {ratings_saved}{'  '}{RESET}")
     print(f"\n{LIGHT_GREEN}✅ Navidrome scan complete!{RESET}")
     print(f"{LIGHT_GREEN}   Total tracks scanned: {scanned}{RESET}")
     print(f"{LIGHT_GREEN}   Tracks with ratings: {ratings_saved}{RESET}\n")
