@@ -684,7 +684,7 @@ def scan_navidrome():
     """Run navidromescan to scan Navidrome library"""
     try:
         import subprocess
-        cmd = [sys.executable, "navidromescan.py"]
+        cmd = [sys.executable, "navidromescan.py", "--verbose"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode == 0:
@@ -702,7 +702,7 @@ def scan_popularity():
     """Run popularity detection"""
     try:
         import subprocess
-        cmd = [sys.executable, "popularity.py"]
+        cmd = [sys.executable, "popularity.py", "--verbose"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode == 0:
@@ -720,7 +720,7 @@ def scan_singles():
     """Run single detection"""
     try:
         import subprocess
-        cmd = [sys.executable, "singledetection.py"]
+        cmd = [sys.executable, "singledetection.py", "--verbose"]
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
         
         if result.returncode == 0:

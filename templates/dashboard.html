@@ -139,28 +139,45 @@
             <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
             <div class="d-grid gap-2 gap-md-3" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
                 <form method="POST" action="{{ url_for('scan_navidrome') }}" class="d-inline">
-                    <button type="submit" class="btn btn-outline-primary w-100">
+                    <button type="submit" class="btn btn-outline-primary w-100 position-relative">
                         <i class="bi bi-cloud"></i> <span class="d-sm-inline">Navidrome</span>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary" style="font-size: 0.6rem;">
+                            <i class="bi bi-info-circle"></i>
+                        </span>
                     </button>
                 </form>
                 
                 <form method="POST" action="{{ url_for('scan_popularity') }}" class="d-inline">
-                    <button type="submit" class="btn btn-outline-primary w-100">
+                    <button type="submit" class="btn btn-outline-primary w-100 position-relative">
                         <i class="bi bi-graph-up"></i> <span class="d-sm-inline">Popularity</span>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary" style="font-size: 0.6rem;">
+                            <i class="bi bi-info-circle"></i>
+                        </span>
                     </button>
                 </form>
                 
                 <form method="POST" action="{{ url_for('scan_singles') }}" class="d-inline">
-                    <button type="submit" class="btn btn-outline-primary w-100">
+                    <button type="submit" class="btn btn-outline-primary w-100 position-relative">
                         <i class="bi bi-music-note"></i> <span class="d-sm-inline">Singles</span>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary" style="font-size: 0.6rem;">
+                            <i class="bi bi-info-circle"></i>
+                        </span>
                     </button>
                 </form>
                 
                 <form method="POST" action="{{ url_for('scan_mp3') }}" class="d-inline">
-                    <button type="submit" class="btn btn-outline-info w-100">
+                    <button type="submit" class="btn btn-outline-info w-100 position-relative">
                         <i class="bi bi-disc"></i> <span class="d-sm-inline">File Paths</span>
+                        <span class="position-absolute top-0 start-100 translate-middle badge rounded-pill bg-secondary" style="font-size: 0.6rem;">
+                            <i class="bi bi-info-circle"></i>
+                        </span>
                     </button>
                 </form>
+            </div>
+            <div class="mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-lightbulb"></i> <strong>Tip:</strong> Check the <a href="{{ url_for('logs') }}">Logs page</a> to view detailed progress for each scan type.
+                </small>
             </div>
         </div>
     </div>
