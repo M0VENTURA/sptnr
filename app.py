@@ -1405,7 +1405,9 @@ def slskd_search_results(search_id):
         
         response_count = len(responses) if responses else 0
         
-        print(f"[SLSKD DEBUG] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
+        logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
+        if response_count > 0:
+            logging.debug(f"[SLSKD] First response files: {len(responses[0].files) if responses else 0}")
         
         return jsonify({
             "results": results,

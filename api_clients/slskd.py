@@ -166,6 +166,12 @@ class SlskdClient:
             
             raw_responses = resp.json() or []
             
+            # Debug: log response structure
+            if raw_responses:
+                logger.debug(f"Slskd response structure: {type(raw_responses)}, first item type: {type(raw_responses[0]) if raw_responses else 'empty'}")
+                if isinstance(raw_responses, list) and raw_responses and isinstance(raw_responses[0], dict):
+                    logger.debug(f"First response keys: {raw_responses[0].keys()}")
+            
             # Parse responses into SearchResponse objects
             responses = []
             for raw_resp in raw_responses:
@@ -177,6 +183,7 @@ class SlskdClient:
                             files=raw_resp.get("files", [])
                         )
                         responses.append(sr)
+                        logger.debug(f"Parsed response for {sr.username}: {len(sr.files)} files")
                     else:
                         responses.append(raw_resp)
                 except Exception as e:
