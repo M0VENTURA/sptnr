@@ -1927,7 +1927,7 @@ def fetch_album_tracks(album_id):
         logging.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
         return []
 
-def build_artist_index():
+def build_artist_index(verbose: bool = False):
     url = f"{NAV_BASE_URL}/rest/getArtists.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
     try:
@@ -1946,9 +1946,13 @@ def build_artist_index():
                     VALUES (?, ?, ?, ?, ?)
                 """, (artist_id, artist_name, 0, 0, None))
                 artist_map[artist_name] = {"id": artist_id, "album_count": 0, "track_count": 0, "last_updated": None}
+                if verbose:
+                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
+                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
         conn.commit()
         conn.close()
         logging.info(f"✅ Cached {len(artist_map)} artists in DB")
+        print(f"✅ Cached {len(artist_map)} artists in DB")
         return artist_map
     except Exception as e:
         logging.error(f"❌ Failed to build artist index: {e}")
@@ -2271,6 +2275,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         print(f"\n🎧 Scanning album: {album_name} ({len(tracks)} tracks)")
         logging.info(f"Scanning album: {album_name} ({len(tracks)} tracks)")
+        if verbose:
+            print(f"   💾 Processing album for database: {album_name}")
         album_ctx = infer_album_context(album_name)
 
         album_tracks = []
@@ -2770,6 +2776,8 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             track_id = trk["id"]
             old_stars = get_current_track_rating(track_id)  # ✅ Fetch current rating before update
             save_to_db(trk)
+            if verbose:
+                logging.debug(f"Saved track to DB: {trk['title']} (ID: {track_id})")
 
             new_stars = int(trk.get("stars", 0))
             title     = trk.get("title", trk["id"])
@@ -3180,9 +3188,52 @@ if force and batchrate:
 if batchrate:
     print("ℹ️ Running full library batch rating based on DB...")
     
-    # Always rebuild artist index before batch rating to ensure fresh artist IDs
-    print("🔄 Refreshing artist index to ensure valid artist IDs...")
-    build_artist_index()
+    # Get total track count from Navidrome (more accurate than artist count)
+    try:
+        url = f"{NAV_BASE_URL}/rest/getArtists.view"
+        params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
+        res = requests.get(url, params=params)
+        res.raise_for_status()
+        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
+        navidrome_artist_count = sum(len(group.get("artist", [])) for group in index)
+        
+        # Count total albums and tracks in Navidrome
+        navidrome_album_count = 0
+        navidrome_track_count = 0
+        for group in index:
+            for artist in group.get("artist", []):
+                artist_id = artist.get("id")
+                if artist_id:
+                    albums = fetch_artist_albums(artist_id)
+                    navidrome_album_count += len(albums)
+                    for album in albums:
+                        tracks = fetch_album_tracks(album.get("id"))
+                        navidrome_track_count += len(tracks)
+        
+        print(f"📊 Navidrome: {navidrome_artist_count} artists, {navidrome_album_count} albums, {navidrome_track_count} tracks")
+    except Exception as e:
+        print(f"⚠️ Failed to get counts from Navidrome: {e}")
+        navidrome_track_count = 0
+    
+    # Get counts from database
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+    db_artist_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
+    db_album_count = cursor.fetchone()[0]
+    cursor.execute("SELECT COUNT(*) FROM tracks")
+    db_track_count = cursor.fetchone()[0]
+    conn.close()
+    
+    print(f"💾 Database: {db_artist_count} artists, {db_album_count} albums, {db_track_count} tracks")
+    
+    if navidrome_track_count != db_track_count or db_track_count == 0:
+        print("🔄 Track counts don't match. Running full library scan to sync database...")
+        scan_library_to_db(verbose=verbose, force=force)
+    else:
+        print("✅ Database is in sync with Navidrome. Refreshing artist index...")
+        build_artist_index(verbose=verbose)
 
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
