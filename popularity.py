@@ -103,10 +103,11 @@ def scan_popularity(verbose: bool = False):
             lastfm_ratio = track['lastfm_ratio'] or 0
             try:
                 info = get_lastfm_track_info(artist, title)
-                if info and info.get('playcount'):
-                    lastfm_ratio = min(100, int(info['playcount']) / 10)
+                if info and info.get('track_play'):
+                    # Convert playcount to ratio (divide by 10 to normalize)
+                    lastfm_ratio = min(100, int(info['track_play']) / 10)
                     if verbose:
-                        logging.debug(f"Last.fm ratio for {title}: {lastfm_ratio}")
+                        logging.debug(f"Last.fm ratio for {title}: {lastfm_ratio} (playcount: {info['track_play']})")
             except Exception as e:
                 logging.debug(f"Last.fm lookup failed for {title}: {e}")
             
@@ -201,8 +202,8 @@ def popularity_scan(verbose: bool = False):
             lastfm_score = 0
             try:
                 lastfm_info = get_lastfm_track_info(artist, title)
-                if lastfm_info and lastfm_info.get("playcount"):
-                    lastfm_score = min(100, int(lastfm_info["playcount"]) // 100)
+                if lastfm_info and lastfm_info.get("track_play"):
+                    lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
             except Exception as e:
                 if verbose:
                     logging.debug(f"Last.fm lookup failed for {artist} - {title}: {e}")
