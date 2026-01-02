@@ -226,7 +226,7 @@
                   {% endif %}
                 </td>
                 <td class="d-flex justify-content-end gap-1 d-md-table-cell">
-                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')">
+                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}|||{{ album.album }}')">
                     <i class="bi bi-search"></i>
                   </button>
                   <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', combo=(artist_name + '|||' + album.album)) }}">

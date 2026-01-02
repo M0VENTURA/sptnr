@@ -1847,11 +1847,24 @@ def api_metadata():
                     metadata["single_confidence"] = track_info.get("single_confidence")
         
         elif lookup_type == "album" and identifier:
-            # Album lookup: artist/album format
-            parts = identifier.split("/")
-            if len(parts) >= 2:
-                artist = parts[0]
-                album = "/".join(parts[1:])
+            # Album lookup: artist|||album format (using ||| to avoid ambiguity with slashes in names)
+            # Also support legacy artist/album format for backward compatibility
+            if '|||' in identifier:
+                parts = identifier.split('|||', 1)
+                if len(parts) == 2:
+                    artist, album = parts
+                else:
+                    metadata = {"error": "Invalid album identifier format"}
+                    return jsonify(metadata)
+            else:
+                # Legacy format: try rsplit to handle albums with slashes
+                parts = identifier.rsplit('/', 1)
+                if len(parts) >= 2:
+                    artist = parts[0]
+                    album = parts[1]
+                else:
+                    metadata = {"error": "Invalid album identifier format"}
+                    return jsonify(metadata)
                 
                 conn = get_db()
                 cursor = conn.cursor()
