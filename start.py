@@ -1996,7 +1996,20 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
         print("⚠️ No artists available from Navidrome; aborting library scan.")
         return
 
+    # Cache existing track IDs to avoid re-writing cached rows unless force=True
+    existing_track_ids: set[str] = set()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks")
+        existing_track_ids = {row[0] for row in cursor.fetchall()}
+        conn.close()
+    except Exception as e:
+        logging.debug(f"Prefetch existing track IDs failed: {e}")
+
     total_written = 0
+    total_skipped = 0
+    total_albums_skipped = 0
     total_artists = len(artist_map_local)
     artist_count = 0
     
@@ -2011,6 +2024,20 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
         
         print(f"🎨 [{artist_count}/{total_artists}] Processing artist: {name}")
         logging.info(f"Processing artist {artist_count}/{total_artists}: {name} (ID: {artist_id})")
+
+        # Prefetch cached tracks for this artist to enable per-artist skip decisions
+        existing_album_tracks: dict[str, set[str]] = {}
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT album, id FROM tracks WHERE artist = ?", (name,))
+            for alb_name, tid in cursor.fetchall():
+                if alb_name not in existing_album_tracks:
+                    existing_album_tracks[alb_name] = set()
+                existing_album_tracks[alb_name].add(tid)
+            conn.close()
+        except Exception as e:
+            logging.debug(f"Prefetch existing tracks for artist '{name}' failed: {e}")
         
         try:
             albums = fetch_artist_albums(artist_id)
@@ -2042,11 +2069,23 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 print(f"      ❌ Failed to fetch tracks: {e}")
                 logging.error(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
+
+            # Album-level skip if counts already match cached tracks (unless force=True)
+            cached_ids_for_album = existing_album_tracks.get(album_name, set())
+            if not force and tracks and len(cached_ids_for_album) >= len(tracks):
+                total_albums_skipped += 1
+                print(f"      ⏩ Skipping album (already cached): {album_name}")
+                logging.info(f"Skipping album '{album_name}' — cached {len(cached_ids_for_album)} tracks matches API {len(tracks)}")
+                continue
             
             tracks_written = 0
+            tracks_skipped = 0
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
+                    continue
+                if not force and (track_id in existing_track_ids or track_id in cached_ids_for_album):
+                    tracks_skipped += 1
                     continue
                 td = {
                     "id": track_id,
@@ -2090,18 +2129,24 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     save_to_db(td)
                     total_written += 1
                     tracks_written += 1
+                    existing_track_ids.add(track_id)
+                    cached_ids_for_album.add(track_id)
                 except Exception as e:
                     logging.debug(f"Failed to save track {track_id} -> {e}")
             
             if tracks_written > 0:
                 print(f"      ✅ Saved {tracks_written} tracks to DB")
                 logging.info(f"Saved {tracks_written} tracks from album '{album_name}'")
+            if tracks_skipped > 0:
+                total_skipped += tracks_skipped
+                print(f"      ⏩ Skipped {tracks_skipped} cached tracks")
+                logging.info(f"Skipped {tracks_skipped} cached tracks for album '{album_name}'")
         
         if album_count > 0:
             print(f"   ✅ Completed {album_count} albums for '{name}'")
             
-    print(f"✅ Library scan complete. Tracks written/updated: {total_written}")
-    logging.info(f"Library scan complete. Total tracks written/updated: {total_written}")
+    print(f"✅ Library scan complete. Tracks written/updated: {total_written}; skipped cached: {total_skipped}")
+    logging.info(f"Library scan complete. Written/updated: {total_written}; skipped cached: {total_skipped}; albums skipped: {total_albums_skipped}")
 
 
 # --- Main Rating Logic ---
