@@ -25,6 +25,10 @@ from statistics import median
 from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 
+# ✅ Import modular API clients
+from api_clients.navidrome import NavidromeClient
+from api_clients.spotify import SpotifyClient
+
 # 🎨 Colorama setup
 init(autoreset=True)
 LIGHT_RED = Fore.RED + Style.BRIGHT
@@ -353,6 +357,10 @@ os.makedirs(os.path.dirname(DB_PATH), exist_ok=True)
 from check_db import update_schema
 update_schema(DB_PATH)
 
+# ✅ Initialize API clients with credentials
+nav_client = NavidromeClient(NAV_BASE_URL, USERNAME, PASSWORD)
+spotify_client = SpotifyClient(SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, worker_threads=WORKER_THREADS)
+
 # ✅ Compatibility check for OpenSubsonic extensions
 def get_supported_extensions():
     url = f"{NAV_BASE_URL}/rest/getOpenSubsonicExtensions.view"
@@ -634,95 +642,21 @@ def _get_spotify_session():
 _SPOTIFY_ARTIST_ID_CACHE: dict[str, str] = {}
 _SPOTIFY_ARTIST_SINGLES_CACHE: dict[str, set[str]] = {}
 
+# --- Spotify API wrappers (now using SpotifyClient) ---
+
 def get_spotify_artist_id(artist_name: str) -> str | None:
-    """Search for the artist and cache ID."""
-    key = (artist_name or "").strip().lower()
-    if key in _SPOTIFY_ARTIST_ID_CACHE:
-        return _SPOTIFY_ARTIST_ID_CACHE[key]
-    try:
-        sess = _get_spotify_session()
-        params = {"q": f'artist:"{artist_name}"', "type": "artist", "limit": 1}
-        r = sess.get("https://api.spotify.com/v1/search", headers=_spotify_headers(), params=params, timeout=10)
-        r.raise_for_status()
-        items = r.json().get("artists", {}).get("items", [])
-        if items:
-            aid = items[0].get("id")
-            _SPOTIFY_ARTIST_ID_CACHE[key] = aid
-            return aid
-    except Exception as e:
-        logging.debug(f"Spotify artist search failed for '{artist_name}': {e}")
-    return None
+    """Search for the artist and cache ID (wrapper using SpotifyClient)."""
+    return spotify_client.get_artist_id(artist_name)
 
 def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
     """
-    Fetch all track IDs from releases where include_groups=single for the artist.
-    Cached per artist_id for the lifetime of the process.
+    Fetch all track IDs from single releases for an artist (wrapper using SpotifyClient).
     """
-    if not artist_id:
-        return set()
-    if artist_id in _SPOTIFY_ARTIST_SINGLES_CACHE:
-        return _SPOTIFY_ARTIST_SINGLES_CACHE[artist_id]
-    sess = _get_spotify_session()
-    headers = _spotify_headers()
-    singles_album_ids: list[str] = []
-    # Paginate artist albums filtered to singles
-    url = f"https://api.spotify.com/v1/artists/{artist_id}/albums"
-    params = {"include_groups": "single", "limit": 50}
-    try:
-        while True:
-            ra = sess.get(url, headers=headers, params=params, timeout=12)
-            ra.raise_for_status()
-            j = ra.json()
-            singles_album_ids.extend([a.get("id") for a in j.get("items", []) if a.get("id")])
-            next_url = j.get("next")
-            if next_url:
-                url, params = next_url, None  # 'next' already contains the query
-            else:
-                break
-    except Exception as e:
-        logging.debug(f"Spotify artist singles album fetch failed for '{artist_id}': {e}")
-    # Fetch tracks for each single album (bounded concurrency)
-    single_track_ids: set[str] = set()
-
-    def _album_tracks(album_id: str) -> list[str]:
-        try:
-            rt = sess.get(f"https://api.spotify.com/v1/albums/{album_id}/tracks",
-                          headers=headers, params={"limit": 50}, timeout=12)
-            rt.raise_for_status()
-            return [t.get("id") for t in (rt.json().get("items") or []) if t.get("id")]
-        except Exception:
-            return []
-    from concurrent.futures import ThreadPoolExecutor
-    with ThreadPoolExecutor(max_workers=WORKER_THREADS) as pool:
-        futures = [pool.submit(_album_tracks, aid) for aid in singles_album_ids[:250]]  # safety cap
-        for f in futures:
-            for tid in (f.result() or []):
-                single_track_ids.add(tid)
-    _SPOTIFY_ARTIST_SINGLES_CACHE[artist_id] = single_track_ids
-    return single_track_ids
+    return spotify_client.get_artist_singles(artist_id)
 
 def search_spotify_track(title, artist, album=None):
-    sess = _get_spotify_session()  # your shared Session with retries
-    def query(q):
-        params = {"q": q, "type": "track", "limit": 10}
-        res = sess.get("https://api.spotify.com/v1/search",
-                       headers=_spotify_headers(), params=params, timeout=10)
-        res.raise_for_status()
-        return res.json().get("tracks", {}).get("items", []) or []
-    queries = [
-        f"{title} artist:{artist} album:{album}" if album else None,
-        f"{strip_parentheses(title)} artist:{artist}",
-        f"{title.replace('Part', 'Pt.')} artist:{artist}"
-    ]
-    all_results = []
-    for q in filter(None, queries):
-        try:
-            results = query(q)
-            if results:
-                all_results.extend(results)
-        except:
-            continue
-    return all_results
+    """Search for a track on Spotify with fallback queries (wrapper using SpotifyClient)."""
+    return spotify_client.search_track(title, artist, album)
 
 def select_best_spotify_match(results, track_title, album_context: dict | None = None):
     """
@@ -738,6 +672,7 @@ def select_best_spotify_match(results, track_title, album_context: dict | None =
     if singles:
         return max(singles, key=lambda r: r.get("popularity", 0))
     return max(filtered, key=lambda r: r.get("popularity", 0))
+
 try:
     from bs4 import BeautifulSoup
     HAVE_BS4 = True
@@ -1927,64 +1862,42 @@ def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
     )
 
 
-def fetch_artist_albums(artist_id):
-    url = f"{NAV_BASE_URL}/rest/getArtist.view"
-    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": artist_id, "f": "json"}
-    try:
-        res = session.get(url, params=params)
-        res.raise_for_status()
-        return res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
-    except Exception as e:
-        logging.error(f"❌ Failed to fetch albums for artist {artist_id}: {e}")
-        return []
+# --- Navidrome API wrappers (now using NavidromeClient) ---
 
+def fetch_artist_albums(artist_id):
+    """Fetch albums for an artist (wrapper using NavidromeClient)."""
+    return nav_client.fetch_artist_albums(artist_id)
 
 def fetch_album_tracks(album_id):
     """
-    Fetch all tracks for an album using Subsonic API.
+    Fetch all tracks for an album using Subsonic API (wrapper using NavidromeClient).
     :param album_id: Album ID in Navidrome
     :return: List of track objects
     """
-    url = f"{NAV_BASE_URL}/rest/getAlbum.view"
-    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": album_id, "f": "json"}
-    try:
-        res = session.get(url, params=params)
-        res.raise_for_status()
-        return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
-    except Exception as e:
-        logging.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
-        return []
+    return nav_client.fetch_album_tracks(album_id)
 
 def build_artist_index(verbose: bool = False):
-    url = f"{NAV_BASE_URL}/rest/getArtists.view"
-    params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
-    try:
-        res = session.get(url, params=params)
-        res.raise_for_status()
-        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        artist_map = {}
-        for group in index:
-            for a in group.get("artist", []):
-                artist_id = a["id"]
-                artist_name = a["name"]
-                cursor.execute("""
-                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (artist_id, artist_name, 0, 0, None))
-                artist_map[artist_name] = {"id": artist_id, "album_count": 0, "track_count": 0, "last_updated": None}
-                if verbose:
-                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
-                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
-        conn.commit()
-        conn.close()
-        logging.info(f"✅ Cached {len(artist_map)} artists in DB")
-        print(f"✅ Cached {len(artist_map)} artists in DB")
-        return artist_map
-    except Exception as e:
-        logging.error(f"❌ Failed to build artist index: {e}")
-        return {}
+    """Build artist index from Navidrome (wrapper using NavidromeClient)."""
+    artist_map_from_api = nav_client.build_artist_index()
+    
+    # Persist to database
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    for artist_name, info in artist_map_from_api.items():
+        artist_id = info.get("id")
+        cursor.execute("""
+            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+            VALUES (?, ?, ?, ?, ?)
+        """, (artist_id, artist_name, 0, 0, None))
+        if verbose:
+            print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
+            logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
+    conn.commit()
+    conn.close()
+    
+    logging.info(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    print(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    return artist_map_from_api
 
 
 def scan_library_to_db(verbose: bool = False, force: bool = False):
@@ -1993,12 +1906,12 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     a lightweight representation of each track into the local DB.
 
     Behavior:
-      - Uses existing API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
+      - Uses NavidromeClient API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
       - For each track, writes a minimal `track_data` record via `save_to_db()`
       - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
     """
     print("🔎 Scanning Navidrome library into local DB...")
-    artist_map_local = build_artist_index() or {}
+    artist_map_local = build_artist_index(verbose=verbose) or {}
     if not artist_map_local:
         print("⚠️ No artists available from Navidrome; aborting library scan.")
         return
