@@ -634,7 +634,7 @@ def api_search():
 @app.route("/artist/<name>")
 def artist_detail(name):
     """View artist details and albums"""
-    # Flask automatically URL-decodes parameters
+    # Flask automatically URL-decodes parameters (removed path: converter to avoid routing ambiguity)
     
     conn = get_db()
     cursor = conn.cursor()
@@ -694,8 +694,7 @@ def artist_detail(name):
 def album_detail(artist, album):
     """View album details and tracks"""
     try:
-        # Flask automatically URL-decodes parameters
-        # No need to manually unquote
+        # Removed path: converter to fix routing ambiguity with special characters (e.g., slashes in "AC/DC")
         
         conn = get_db()
         cursor = conn.cursor()
@@ -811,7 +810,7 @@ def album_detail(artist, album):
 @app.route("/album/<artist>/<album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection."""
-    # Flask automatically URL-decodes parameters
+    # Removed path: converter to fix routing ambiguity with special characters
 
     def _worker(artist_name: str):
         try:
@@ -1854,7 +1853,7 @@ def api_metadata():
 def api_album_art(artist, album):
     """Get album art from Navidrome or MP3 files"""
     try:
-        # Flask automatically URL-decodes parameters
+        # Removed path: converter to fix routing ambiguity with special characters
         # First try to get from Navidrome
         cfg, _ = _read_yaml(CONFIG_PATH)
         nav_users = cfg.get("navidrome_users", [])
