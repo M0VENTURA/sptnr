@@ -657,6 +657,60 @@ def scan_mp3():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/navidrome", methods=["POST"])
+def scan_navidrome():
+    """Run navidromescan to scan Navidrome library"""
+    try:
+        import subprocess
+        cmd = [sys.executable, "navidromescan.py"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            flash("✅ Navidrome scan completed successfully", "success")
+        else:
+            flash(f"❌ Navidrome scan failed: {result.stderr}", "danger")
+    except Exception as e:
+        flash(f"❌ Error running Navidrome scan: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/popularity", methods=["POST"])
+def scan_popularity():
+    """Run popularity detection"""
+    try:
+        import subprocess
+        cmd = [sys.executable, "popularity.py"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            flash("✅ Popularity detection completed successfully", "success")
+        else:
+            flash(f"❌ Popularity detection failed: {result.stderr}", "danger")
+    except Exception as e:
+        flash(f"❌ Error running popularity detection: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/singles", methods=["POST"])
+def scan_singles():
+    """Run single detection"""
+    try:
+        import subprocess
+        cmd = [sys.executable, "singledetection.py"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+        
+        if result.returncode == 0:
+            flash("✅ Single detection completed successfully", "success")
+        else:
+            flash(f"❌ Single detection failed: {result.stderr}", "danger")
+    except Exception as e:
+        flash(f"❌ Error running single detection: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/stop", methods=["POST"])
 def scan_stop():
     """Stop the running scan"""

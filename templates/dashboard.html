@@ -101,7 +101,7 @@
                     <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
                         <input type="hidden" name="scan_type" value="batchrate">
                         <button type="submit" class="btn btn-success w-100" style="background-color: #1db954; border-color: #1db954; color: #000; font-weight: 600;">
-                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Batch</span>
+                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Batch Rate</span>
                         </button>
                     </form>
                     
@@ -115,29 +115,44 @@
                     <a href="{{ url_for('logs') }}" class="btn btn-outline-secondary w-100 flex-grow-1">
                         <i class="bi bi-file-text"></i> <span class="d-none d-sm-inline">Logs</span>
                     </a>
-                    
-                    <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
-                        <button type="submit" class="btn btn-info w-100">
-                            <i class="bi bi-disc"></i> <span class="d-none d-sm-inline">Scan Files</span>
-                        </button>
-                    </form>
                 </div>
             {% endif %}
         </div>
     </div>
     
-    <!-- File Scanning Info -->
-    <div class="card mb-4" style="background-color: rgba(13, 110, 253, 0.1); border-color: rgba(13, 110, 253, 0.3);">
+    <!-- Detailed Scan Controls -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-sliders"></i> Detailed Scans
+            </h5>
+        </div>
         <div class="card-body">
-            <div class="d-flex align-items-start">
-                <i class="bi bi-info-circle-fill text-info me-3 mt-1"></i>
-                <div>
-                    <h6 class="mb-1">File Scanning</h6>
-                    <p class="mb-0 small text-muted">
-                        Use the <strong>Scan Files</strong> button to scan your music folder for MP3/FLAC files and match them to your Navidrome library.
-                        This updates file paths in the database so the system knows where each song is located.
-                    </p>
-                </div>
+            <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
+            <div class="d-grid gap-2 gap-md-3" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+                <form method="POST" action="{{ url_for('scan_navidrome') }}" class="d-inline">
+                    <button type="submit" class="btn btn-outline-primary w-100">
+                        <i class="bi bi-cloud"></i> <span class="d-sm-inline">Navidrome</span>
+                    </button>
+                </form>
+                
+                <form method="POST" action="{{ url_for('scan_popularity') }}" class="d-inline">
+                    <button type="submit" class="btn btn-outline-primary w-100">
+                        <i class="bi bi-graph-up"></i> <span class="d-sm-inline">Popularity</span>
+                    </button>
+                </form>
+                
+                <form method="POST" action="{{ url_for('scan_singles') }}" class="d-inline">
+                    <button type="submit" class="btn btn-outline-primary w-100">
+                        <i class="bi bi-music-note"></i> <span class="d-sm-inline">Singles</span>
+                    </button>
+                </form>
+                
+                <form method="POST" action="{{ url_for('scan_mp3') }}" class="d-inline">
+                    <button type="submit" class="btn btn-outline-info w-100">
+                        <i class="bi bi-disc"></i> <span class="d-sm-inline">File Paths</span>
+                    </button>
+                </form>
             </div>
         </div>
     </div>
