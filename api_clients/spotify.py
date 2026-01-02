@@ -201,6 +201,51 @@ class SpotifyClient:
         logger.info(f"✅ Fetched {len(single_track_ids)} single track IDs for artist {artist_id}")
         return single_track_ids
     
+    def get_playlist_tracks(self, playlist_id: str) -> list[dict]:
+        """
+        Fetch all tracks from a Spotify playlist.
+        
+        Args:
+            playlist_id: Spotify playlist ID
+            
+        Returns:
+            List of track dictionaries with title, artist, album, spotify_uri, spotify_id
+        """
+        headers = self._headers()
+        tracks = []
+        
+        try:
+            url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+            params = {"limit": 100}
+            
+            while url:
+                res = self.session.get(url, headers=headers, params=params, timeout=15)
+                res.raise_for_status()
+                payload = res.json()
+                
+                for item in payload.get("items", []):
+                    track = item.get("track", {})
+                    if track and track.get("id"):
+                        artist = ", ".join([a.get("name", "") for a in track.get("artists", [])])
+                        tracks.append({
+                            "title": track.get("name", ""),
+                            "artist": artist,
+                            "album": track.get("album", {}).get("name", ""),
+                            "spotify_uri": track.get("uri", ""),
+                            "spotify_id": track.get("id", "")
+                        })
+                
+                # Get next page
+                url = payload.get("next")
+                params = None  # next URL already has query params
+            
+            logger.info(f"✅ Fetched {len(tracks)} tracks from playlist {playlist_id}")
+            return tracks
+            
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch playlist {playlist_id}: {e}")
+            raise
+    
     def search_track(self, title: str, artist: str, album: str = None) -> list:
         """
         Search for a track on Spotify with fallback queries.

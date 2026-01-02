@@ -197,13 +197,14 @@ class SlskdClient:
             logger.error(f"Slskd get results failed for search {search_id}: {e}")
             return [], "Error", True
     
-    def download_file(self, username: str, filename: str, timeout: int = 10) -> bool:
+    def download_file(self, username: str, filename: str, size: int = 0, timeout: int = 10) -> bool:
         """
         Enqueue a file for download from a peer.
         
         Args:
             username: Peer username
             filename: Full file path from search results
+            size: File size in bytes
             timeout: Request timeout
             
         Returns:
@@ -213,9 +214,9 @@ class SlskdClient:
             return False
         
         try:
-            # slskd API expects POST with files array containing filename objects
+            # slskd API expects POST with files array containing filename and size
             url = f"{self.base_url}/transfers/downloads/{username}"
-            data = {"files": [{"filename": filename}]}
+            data = [{"filename": filename, "size": size}]
             resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
             
             if resp.status_code in [200, 201, 204]:

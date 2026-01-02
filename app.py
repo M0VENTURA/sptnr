@@ -1528,6 +1528,7 @@ def slskd_download():
     
     username = request.json.get("username", "")
     filename = request.json.get("filename", "")
+    size = request.json.get("size", 0)
     
     if not username or not filename:
         return jsonify({"error": "Username and filename required"}), 400
@@ -1537,10 +1538,10 @@ def slskd_download():
     
     try:
         client = SlskdClient(web_url, api_key, enabled=True)
-        success = client.download_file(username, filename)
+        success = client.download_file(username, filename, size)
         
         if success:
-            return jsonify({"status": "success", "message": "Download enqueued"})
+            return jsonify({"success": True, "message": "Download enqueued"})
         else:
             return jsonify({"error": "Failed to enqueue download"}), 500
             
@@ -2496,36 +2497,8 @@ def get_spotify_playlist_tracks(playlist_id):
         if not spotify_client:
             raise Exception("Spotify client not configured")
         
-        # Use Spotify API to get playlist
-        sp = spotify_client.sp
-        if not sp:
-            raise Exception("Spotify not authenticated")
-        
-        results = sp.playlist_tracks(playlist_id, limit=50)
-        
-        tracks = []
-        while results:
-            for item in results.get('items', []):
-                track = item.get('track', {})
-                if track:
-                    artist = ", ".join([a.get('name', '') for a in track.get('artists', [])])
-                    tracks.append({
-                        "title": track.get('name', ''),
-                        "artist": artist,
-                        "album": track.get('album', {}).get('name', ''),
-                        "spotify_uri": track.get('uri', ''),
-                        "spotify_id": track.get('id', '')
-                    })
-            
-            # Get next page if available
-            if results.get('next'):
-                try:
-                    results = sp.next(results)
-                except:
-                    break
-            else:
-                break
-        
+        # Use SpotifyClient's get_playlist_tracks method
+        tracks = spotify_client.get_playlist_tracks(playlist_id)
         return tracks
     
     except Exception as e:
@@ -2578,7 +2551,7 @@ if __name__ == "__main__":
     def api_track_musicbrainz_lookup():
         """Lookup track on MusicBrainz for better metadata"""
         try:
-            from start import get_suggested_mbid
+            from api_clients.musicbrainz import MusicBrainzClient
             
             data = request.get_json()
             title = data.get("title", "")
@@ -2587,8 +2560,9 @@ if __name__ == "__main__":
             if not title or not artist:
                 return jsonify({"error": "Missing title or artist"}), 400
             
-            # Get suggested MBID
-            mbid, confidence = get_suggested_mbid(title, artist, limit=5)
+            # Get suggested MBID using the client
+            mb_client = MusicBrainzClient(enabled=True)
+            mbid, confidence = mb_client.get_suggested_mbid(title, artist, limit=5)
             
             if not mbid:
                 return jsonify({"results": [], "message": "No MusicBrainz matches found"}), 200
@@ -2610,7 +2584,8 @@ if __name__ == "__main__":
     def api_track_discogs_lookup():
         """Lookup track on Discogs for better metadata and genres"""
         try:
-            from start import _discogs_search, _get_discogs_session
+            from api_clients.discogs import DiscogsClient
+            import requests
             
             data = request.get_json()
             title = data.get("title", "")
@@ -2620,24 +2595,44 @@ if __name__ == "__main__":
             if not title or not artist:
                 return jsonify({"error": "Missing title or artist"}), 400
             
-            # Search Discogs
-            session = _get_discogs_session()
-            headers = {"User-Agent": "Sptnr/1.0"}
+            # Get Discogs token from config
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            token = cfg.get("discogs", {}).get("token", "")
+            
+            if not token:
+                return jsonify({"error": "Discogs token not configured"}), 400
+            
+            # Search Discogs API directly
+            headers = {
+                "Authorization": f"Discogs token={token}",
+                "User-Agent": "Sptnr/1.0"
+            }
             query = f"{artist} {album or title}"
             
-            results = _discogs_search(session, headers, query, kind="release", per_page=5)
+            response = requests.get(
+                "https://api.discogs.com/database/search",
+                params={"q": query, "type": "release", "per_page": 5},
+                headers=headers,
+                timeout=10
+            )
             
-            if not results:
+            if not response.ok:
+                return jsonify({"error": f"Discogs API error: {response.status_code}"}), 500
+            
+            results_data = response.json().get("results", [])
+            
+            if not results_data:
                 return jsonify({"results": [], "message": "No Discogs matches found"}), 200
             
             # Format results
             formatted_results = []
-            for result in results[:5]:
+            for result in results_data[:5]:
                 formatted_results.append({
                     "title": result.get("title", "Unknown"),
                     "year": result.get("year", ""),
                     "genre": result.get("genre", []),
                     "style": result.get("style", []),
+                    "format": result.get("format", []),
                     "url": result.get("resource_url", ""),
                     "source": "discogs"
                 })
@@ -2645,6 +2640,8 @@ if __name__ == "__main__":
             return jsonify({"results": formatted_results}), 200
         except Exception as e:
             logger = logging.getLogger('sptnr')
+            logger.error(f"Discogs lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
             logger.error(f"Discogs lookup error: {e}")
             return jsonify({"error": str(e)}), 500
 
