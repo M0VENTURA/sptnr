@@ -11,6 +11,10 @@ import subprocess
 import threading
 import time
 from datetime import datetime
+import copy
+import json
+from check_db import update_schema
+from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -19,18 +23,206 @@ app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-producti
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 LOG_PATH = os.environ.get("LOG_PATH", "/config/app.log")
+APP_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_CONFIG_PATH = os.path.join(APP_DIR, "config", "config.yaml")
 
 # Global scan process tracker
 scan_process = None
 scan_lock = threading.Lock()
 
+def _read_yaml(path):
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            content = f.read()
+            return yaml.safe_load(content) or {}, content
+    except FileNotFoundError:
+        return {}, ""
+    except yaml.YAMLError:
+        return {}, ""
+
+
+def _baseline_config():
+    """Return a config structure with sensible defaults for first-run."""
+    existing, _ = _read_yaml(CONFIG_PATH)
+    if existing:
+        return existing
+
+    sample, _ = _read_yaml(DEFAULT_CONFIG_PATH)
+    if sample:
+        return sample
+
+    return {
+        "navidrome": {"base_url": "", "user": "", "pass": ""},
+        "api_integrations": {
+            "spotify": {"enabled": False, "client_id": "", "client_secret": ""},
+            "lastfm": {"enabled": False, "api_key": ""},
+            "listenbrainz": {"enabled": True},
+            "discogs": {"enabled": False, "token": ""},
+            "musicbrainz": {"enabled": True},
+            "audiodb": {"enabled": False, "api_key": ""},
+            "google": {"enabled": False, "api_key": "", "cse_id": ""},
+            "youtube": {"enabled": False, "api_key": ""},
+        },
+        "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
+        "database": {"path": DB_PATH, "vacuum_on_start": False},
+        "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
+        "features": {
+            "dry_run": False,
+            "sync": True,
+            "force": False,
+            "verbose": False,
+            "perpetual": True,
+            "batchrate": False,
+            "artist": [],
+            "album_skip_days": 7,
+            "album_skip_min_tracks": 1,
+            "clamp_min": 0.75,
+            "clamp_max": 1.25,
+            "cap_top4_pct": 0.25,
+            "title_sim_threshold": 0.92,
+            "short_release_counts_as_match": False,
+            "secondary_single_lookup_enabled": True,
+            "secondary_lookup_metric": "score",
+            "secondary_lookup_delta": 0.05,
+            "secondary_required_strong_sources": 2,
+            "median_gate_strategy": "hard",
+            "use_lastfm_single": True,
+            "refresh_playlists_on_start": False,
+            "refresh_artist_index_on_start": False,
+            "discogs_min_interval_sec": 0.35,
+            "include_user_ratings_on_scan": True,
+            "scan_worker_threads": 4,
+            "spotify_prefetch_timeout": 30,
+        },
+    }
+
+
+def _needs_setup(cfg=None):
+    cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
+    nav = cfg.get("navidrome", {}) or {}
+    required = [nav.get("base_url"), nav.get("user"), nav.get("pass")]
+    return any(not (v and str(v).strip()) for v in required)
+
+
+@app.before_request
+def enforce_setup_wizard():
+    exempt = {"setup", "static", "config_edit", "config_editor", "logs_stream", "logs_view"}
+    if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
+        return
+
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    if _needs_setup(cfg):
+        return redirect(url_for("setup"))
+
 
 def get_db():
     """Get database connection with WAL mode for better concurrency"""
+    db_dir = os.path.dirname(DB_PATH)
+    if db_dir:
+        os.makedirs(db_dir, exist_ok=True)
+    
+    # Ensure schema is up-to-date
+    try:
+        update_schema(DB_PATH)
+    except Exception as e:
+        print(f"⚠️ Database schema update warning: {e}")
+    
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    baseline = copy.deepcopy(_baseline_config())
+
+    if request.method == "POST":
+        nav_base = request.form.get("nav_base_url", "").strip()
+        nav_user = request.form.get("nav_user", "").strip()
+        nav_pass = request.form.get("nav_pass", "").strip()
+        spotify_client_id = request.form.get("spotify_client_id", "").strip()
+        spotify_client_secret = request.form.get("spotify_client_secret", "").strip()
+        discogs_token = request.form.get("discogs_token", "").strip()
+        lastfm_api_key = request.form.get("lastfm_api_key", "").strip()
+
+        errors = []
+        if not nav_base:
+            errors.append("Navidrome URL is required")
+        if not nav_user:
+            errors.append("Navidrome username is required")
+        if not nav_pass:
+            errors.append("Navidrome password is required")
+
+        if errors:
+            for err in errors:
+                flash(err, "danger")
+            return render_template(
+                "setup.html",
+                nav_base_url=nav_base,
+                nav_user=nav_user,
+                nav_pass=nav_pass,
+                spotify_client_id=spotify_client_id,
+                spotify_client_secret=spotify_client_secret,
+                discogs_token=discogs_token,
+                lastfm_api_key=lastfm_api_key,
+            )
+
+        new_cfg = copy.deepcopy(baseline)
+        new_cfg.setdefault("navidrome", {})
+        new_cfg["navidrome"].update({"base_url": nav_base, "user": nav_user, "pass": nav_pass})
+
+        api = new_cfg.setdefault("api_integrations", {})
+
+        spotify_cfg = api.setdefault("spotify", {"enabled": False, "client_id": "", "client_secret": ""})
+        if spotify_client_id and spotify_client_secret:
+            spotify_cfg.update({
+                "enabled": True,
+                "client_id": spotify_client_id,
+                "client_secret": spotify_client_secret,
+            })
+        elif not (spotify_cfg.get("client_id") and spotify_cfg.get("client_secret")):
+            spotify_cfg["enabled"] = False
+
+        discogs_cfg = api.setdefault("discogs", {"enabled": False, "token": ""})
+        if discogs_token:
+            discogs_cfg.update({"enabled": True, "token": discogs_token})
+        elif not discogs_cfg.get("token"):
+            discogs_cfg["enabled"] = False
+
+        lastfm_cfg = api.setdefault("lastfm", {"enabled": False, "api_key": ""})
+        if lastfm_api_key:
+            lastfm_cfg.update({"enabled": True, "api_key": lastfm_api_key})
+        elif not lastfm_cfg.get("api_key"):
+            lastfm_cfg["enabled"] = False
+
+        new_cfg.setdefault("database", {}).setdefault("path", DB_PATH)
+        new_cfg.setdefault("logging", {}).setdefault("file", LOG_PATH)
+
+        cfg_dir = os.path.dirname(CONFIG_PATH)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
+
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+            yaml.safe_dump(new_cfg, f, sort_keys=False, allow_unicode=False)
+
+        flash("Configuration saved. You are ready to start your first scan.", "success")
+        return redirect(url_for("dashboard"))
+
+    nav_defaults = cfg.get("navidrome", {}) if cfg else baseline.get("navidrome", {})
+    api_defaults = cfg.get("api_integrations", {}) if cfg else baseline.get("api_integrations", {})
+
+    return render_template(
+        "setup.html",
+        nav_base_url=nav_defaults.get("base_url", ""),
+        nav_user=nav_defaults.get("user", ""),
+        nav_pass=nav_defaults.get("pass", ""),
+        spotify_client_id=api_defaults.get("spotify", {}).get("client_id", ""),
+        spotify_client_secret=api_defaults.get("spotify", {}).get("client_secret", ""),
+        discogs_token=api_defaults.get("discogs", {}).get("token", ""),
+        lastfm_api_key=api_defaults.get("lastfm", {}).get("api_key", ""),
+    )
 
 
 @app.route("/")
@@ -45,7 +237,6 @@ def dashboard():
     conn = get_db()
     cursor = conn.cursor()
     
-    # Get statistics
     cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
     artist_count = cursor.fetchone()[0]
     
@@ -61,7 +252,6 @@ def dashboard():
     cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
     singles_count = cursor.fetchone()[0]
     
-    # Get recent scans
     cursor.execute("""
         SELECT artist, album, MAX(last_scanned) as last_scan
         FROM tracks
@@ -74,7 +264,6 @@ def dashboard():
     
     conn.close()
     
-    # Check if scan is running
     with scan_lock:
         scan_running = scan_process is not None and scan_process.poll() is None
     
@@ -145,10 +334,14 @@ def artist_detail(name):
     
     conn.close()
     
+    # Aggregate genres from all tracks by this artist
+    genres = aggregate_genres_from_tracks(name, DB_PATH)
+    
     return render_template("artist.html", 
                          artist_name=name,
                          albums=albums_data,
-                         stats=artist_stats)
+                         stats=artist_stats,
+                         genres=genres)
 
 
 @app.route("/album/<path:artist>/<path:album>")
@@ -312,7 +505,6 @@ def logs_stream():
 def logs_view():
     """View last N lines of log"""
     lines = request.args.get("lines", 500, type=int)
-    
     try:
         with open(LOG_PATH, "r") as f:
             all_lines = f.readlines()
@@ -325,36 +517,31 @@ def logs_view():
 @app.route("/config")
 def config_editor():
     """View/edit config.yaml"""
-    try:
-        with open(CONFIG_PATH) as f:
-            config_content = f.read()
-            config = yaml.safe_load(config_content) or {}
-    except FileNotFoundError:
-        config_content = "# Config file not found"
-        config = {}
+    config, raw = _read_yaml(CONFIG_PATH)
+    if not raw:
+        raw = yaml.safe_dump(config, sort_keys=False, allow_unicode=False) if config else ""
     
-    return render_template("config.html", config=config, config_raw=config_content)
+    return render_template("config.html", config=config, config_raw=raw, CONFIG_PATH=CONFIG_PATH)
 
 
 @app.route("/config/edit", methods=["POST"])
 def config_edit():
     """Save config.yaml"""
-    config_content = request.form.get("config_content")
-    
+    config_content = request.form.get("config_content", "")
+
     try:
-        # Validate YAML
         yaml.safe_load(config_content)
-        
-        # Save to file
-        with open(CONFIG_PATH, "w") as f:
+        cfg_dir = os.path.dirname(CONFIG_PATH)
+        if cfg_dir:
+            os.makedirs(cfg_dir, exist_ok=True)
+        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             f.write(config_content)
-        
         flash("Configuration saved successfully", "success")
     except yaml.YAMLError as e:
-        flash(f"Invalid YAML: {e}", "error")
+        flash(f"Invalid YAML: {e}", "danger")
     except Exception as e:
-        flash(f"Error saving config: {e}", "error")
-    
+        flash(f"Error saving config: {e}", "danger")
+
     return redirect(url_for("config_editor"))
 
 
@@ -380,6 +567,116 @@ def api_stats():
         "albums": album_count,
         "tracks": track_count
     })
+
+
+@app.route("/api/metadata")
+def api_metadata():
+    """API endpoint for MP3 metadata lookup"""
+    lookup_type = request.args.get("type", "track")
+    identifier = request.args.get("id", "")
+    
+    metadata = {}
+    
+    try:
+        if lookup_type == "track" and identifier:
+            # Get track info from database
+            track_info = get_track_metadata_from_db(identifier, DB_PATH)
+            
+            if track_info:
+                # Try to find the file and read MP3 metadata
+                artist = track_info.get("artist", "")
+                album = track_info.get("album", "")
+                title = track_info.get("title", "")
+                
+                # Try to find the file in /music directory
+                music_root = os.environ.get("MUSIC_ROOT", "/music")
+                file_path = find_track_file(artist, album, title, music_root)
+                
+                if file_path:
+                    metadata = read_mp3_metadata(file_path)
+                else:
+                    # Return database info if file not found
+                    metadata = {
+                        "title": title,
+                        "artist": artist,
+                        "album": album,
+                        "track_id": identifier,
+                        "note": "MP3 file not found in /music; showing database info"
+                    }
+                    # Add scoring metadata from DB
+                    if track_info.get("spotify_score"):
+                        metadata["spotify_score"] = track_info.get("spotify_score")
+                    if track_info.get("lastfm_ratio"):
+                        metadata["lastfm_ratio"] = track_info.get("lastfm_ratio")
+                    if track_info.get("listenbrainz_count"):
+                        metadata["listenbrainz_count"] = track_info.get("listenbrainz_count")
+        
+        elif lookup_type == "album" and identifier:
+            # Album lookup: artist/album format
+            parts = identifier.split("/")
+            if len(parts) >= 2:
+                artist = parts[0]
+                album = "/".join(parts[1:])
+                
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    SELECT 
+                        AVG(stars) as avg_stars,
+                        COUNT(*) as track_count,
+                        SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                        MAX(last_scanned) as last_scanned
+                    FROM tracks
+                    WHERE artist = ? AND album = ?
+                """, (artist, album))
+                result = cursor.fetchone()
+                conn.close()
+                
+                if result:
+                    metadata = {
+                        "album": album,
+                        "artist": artist,
+                        "tracks": result[1] or 0,
+                        "average_rating": round(result[0], 2) if result[0] else 0,
+                        "singles_detected": result[2] or 0,
+                        "last_scanned": result[3] or "Never"
+                    }
+        
+        elif lookup_type == "artist" and identifier:
+            # Artist metadata
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT 
+                    COUNT(DISTINCT album) as album_count,
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count
+                FROM tracks
+                WHERE artist = ?
+            """, (identifier,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                genres = aggregate_genres_from_tracks(identifier, DB_PATH)
+                metadata = {
+                    "artist": identifier,
+                    "albums": result[0] or 0,
+                    "tracks": result[1] or 0,
+                    "average_rating": round(result[2], 2) if result[2] else 0,
+                    "five_star_tracks": result[3] or 0,
+                    "genres": ", ".join(genres) if genres else "Not detected"
+                }
+    
+    except Exception as e:
+        metadata = {"error": str(e)}
+    
+    return jsonify(metadata)
+
+
+if __name__ == "__main__":
+    app.run(debug=True, host="0.0.0.0", port=5000)
 
 
 if __name__ == "__main__":

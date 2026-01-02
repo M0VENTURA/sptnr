@@ -1,4 +1,5 @@
 
+
 import sqlite3
 from contextlib import closing
 from datetime import datetime
@@ -15,24 +16,21 @@ def init_db():
             name TEXT NOT NULL
         )
         """)
-        # Tracks table with detailed fields
+        # Tracks table (basic structure; columns added dynamically by check_db.py)
         cursor.execute("""
         CREATE TABLE IF NOT EXISTS tracks (
-            id TEXT PRIMARY KEY,
-            artist_id TEXT NOT NULL,
-            album TEXT,
-            title TEXT,
-            genres TEXT,
-            spotify_score REAL,
-            lastfm_score REAL,
-            listenbrainz_score REAL,
-            age_score REAL,
-            final_score REAL,
-            stars INTEGER,
-            is_single BOOLEAN,
-            single_confidence TEXT,
-            last_scanned TEXT,
-            FOREIGN KEY (artist_id) REFERENCES artists(id)
+            id TEXT PRIMARY KEY
+        )
+        """)
+        
+        # Artist stats table
+        cursor.execute("""
+        CREATE TABLE IF NOT EXISTS artist_stats (
+            artist_id TEXT PRIMARY KEY,
+            artist_name TEXT NOT NULL,
+            album_count INTEGER,
+            track_count INTEGER,
+            last_updated TEXT
         )
         """)
         conn.commit()

@@ -1,0 +1,91 @@
+{% extends "base.html" %}
+{% block title %}Setup Wizard · Sptnr{% endblock %}
+{% block content %}
+<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
+  <div class="container">
+    <div class="row g-4 align-items-stretch">
+      <div class="col-lg-4">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
+              <div>
+                <h1 class="h4 mb-1">First-Run Setup</h1>
+                <p class="mb-0 text-secondary">Connect to Navidrome and drop in API keys.</p>
+              </div>
+            </div>
+            <ol class="ps-3 small text-secondary mb-0">
+              <li class="mb-2">Add Navidrome URL and credentials (required).</li>
+              <li class="mb-2">Paste API keys to unlock Spotify, Discogs, and Last.fm (optional).</li>
+              <li>Save and start your first scan from the dashboard.</li>
+            </ol>
+            <div class="mt-auto pt-3 small text-secondary">
+              Need to start over later? Re-open this wizard anytime from Config.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-8">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-primary text-white d-flex align-items-center">
+            <i class="bi bi-plug me-2"></i>
+            <div>
+              <div class="fw-semibold">Connection & API Keys</div>
+              <small class="text-light">We only need Navidrome to start. APIs are optional but recommended.</small>
+            </div>
+          </div>
+          <form method="post" action="{{ url_for('setup') }}">
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-12">
+                  <label for="nav_base_url" class="form-label">Navidrome URL *</label>
+                  <input type="text" class="form-control" id="nav_base_url" name="nav_base_url" placeholder="http://localhost:4533" value="{{ nav_base_url }}" required>
+                  <div class="form-text">Use the base URL of your Navidrome instance (no trailing slash).</div>
+                </div>
+                <div class="col-md-6">
+                  <label for="nav_user" class="form-label">Navidrome Username *</label>
+                  <input type="text" class="form-control" id="nav_user" name="nav_user" value="{{ nav_user }}" required>
+                </div>
+                <div class="col-md-6">
+                  <label for="nav_pass" class="form-label">Navidrome Password *</label>
+                  <input type="password" class="form-control" id="nav_pass" name="nav_pass" value="{{ nav_pass }}" required>
+                </div>
+
+                <div class="col-12 mt-2">
+                  <div class="d-flex align-items-center text-muted small mb-1">
+                    <i class="bi bi-lightning-charge me-2"></i>
+                    <span>Optional integrations (recommended for best scoring)</span>
+                  </div>
+                </div>
+
+                <div class="col-md-6">
+                  <label for="spotify_client_id" class="form-label">Spotify Client ID</label>
+                  <input type="text" class="form-control" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}" placeholder="xx123...">
+                </div>
+                <div class="col-md-6">
+                  <label for="spotify_client_secret" class="form-label">Spotify Client Secret</label>
+                  <input type="password" class="form-control" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}" placeholder="xx123...">
+                </div>
+
+                <div class="col-md-6">
+                  <label for="discogs_token" class="form-label">Discogs Token</label>
+                  <input type="text" class="form-control" id="discogs_token" name="discogs_token" value="{{ discogs_token }}" placeholder="Discogs personal token">
+                </div>
+                <div class="col-md-6">
+                  <label for="lastfm_api_key" class="form-label">Last.fm API Key</label>
+                  <input type="text" class="form-control" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}" placeholder="abcd1234">
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex justify-content-end gap-2">
+              <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Skip for now</a>
+              <button type="submit" class="btn btn-primary">Save & Continue</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endblock %}

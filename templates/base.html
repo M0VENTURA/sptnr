@@ -8,13 +8,384 @@
   <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
   <style>
-    body { padding-top: 4rem; }
-    .table td, .table th { vertical-align: middle; }
-    .monospace { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+    :root {
+      --primary-bg: #121212;
+      --secondary-bg: #1e1e1e;
+      --tertiary-bg: #282828;
+      --spotify-green: #1db954;
+      --spotify-green-hover: #1ed760;
+      --text-primary: #ffffff;
+      --text-secondary: #b3b3b3;
+      --text-tertiary: #7f7f7f;
+      --border-color: #282828;
+    }
+
+    * {
+      color-scheme: dark;
+    }
+
+    body {
+      background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
+      color: var(--text-primary);
+      padding-top: 4rem;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+    }
+
+    /* Navbar Styling */
+    .navbar {
+      background-color: var(--primary-bg) !important;
+      border-bottom: 1px solid var(--border-color);
+      backdrop-filter: blur(10px);
+      background: rgba(18, 18, 18, 0.95) !important;
+    }
+
+    .navbar-brand {
+      font-weight: 700;
+      font-size: 1.5rem;
+      color: var(--spotify-green) !important;
+      letter-spacing: -0.5px;
+    }
+
+    .navbar-brand i {
+      margin-right: 0.5rem;
+    }
+
+    .nav-link {
+      color: var(--text-secondary) !important;
+      transition: all 0.3s ease;
+      position: relative;
+      padding-bottom: 0.5rem !important;
+    }
+
+    .nav-link:hover {
+      color: var(--spotify-green) !important;
+    }
+
+    .nav-link.active {
+      color: var(--spotify-green) !important;
+      border-bottom: 2px solid var(--spotify-green);
+    }
+
+    /* Cards */
+    .card {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      transition: all 0.3s ease;
+    }
+
+    .card:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(29, 185, 84, 0.2);
+    }
+
+    .card-header {
+      background-color: var(--tertiary-bg);
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    /* Tables */
+    .table {
+      color: var(--text-primary);
+      border-color: var(--border-color);
+    }
+
+    .table thead th {
+      border-bottom: 2px solid var(--border-color);
+      color: var(--text-secondary);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.5px;
+    }
+
+    .table tbody tr {
+      border-color: var(--border-color);
+      transition: background-color 0.2s ease;
+    }
+
+    .table tbody tr:hover {
+      background-color: var(--tertiary-bg);
+    }
+
+    .table td {
+      vertical-align: middle;
+      color: var(--text-primary);
+    }
+
+    .table-striped tbody tr:nth-of-type(odd) {
+      background-color: transparent;
+    }
+
+    /* Buttons */
+    .btn-primary {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      background-color: var(--spotify-green-hover);
+      border-color: var(--spotify-green-hover);
+    }
+
+    .btn-outline-primary {
+      color: var(--spotify-green);
+      border-color: var(--spotify-green);
+    }
+
+    .btn-outline-primary:hover {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+    }
+
+    .btn-secondary {
+      background-color: var(--tertiary-bg);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background-color: var(--border-color);
+      border-color: var(--text-secondary);
+      color: var(--text-primary);
+    }
+
+    .btn-outline-secondary {
+      color: var(--text-secondary);
+      border-color: var(--border-color);
+    }
+
+    .btn-outline-secondary:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--spotify-green);
+    }
+
+    .btn-warning {
+      background-color: #ff6b00;
+      border-color: #ff6b00;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .btn-warning:hover {
+      background-color: #ff8000;
+      border-color: #ff8000;
+    }
+
+    .btn-sm {
+      font-size: 0.8rem;
+    }
+
+    /* Alerts */
+    .alert {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .alert-info {
+      border-left: 4px solid var(--spotify-green);
+    }
+
+    .alert-warning {
+      border-left: 4px solid #ff6b00;
+    }
+
+    .alert-danger {
+      border-left: 4px solid #e74c3c;
+    }
+
+    .alert-success {
+      border-left: 4px solid #1db954;
+    }
+
+    /* Forms */
+    .form-control,
+    .form-select,
+    textarea {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      transition: border-color 0.2s ease;
+    }
+
+    .form-control:focus,
+    .form-select:focus,
+    textarea:focus {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--text-primary);
+      box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
+    }
+
+    .form-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Breadcrumb */
+    .breadcrumb {
+      background-color: transparent;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .breadcrumb-item {
+      color: var(--text-secondary);
+    }
+
+    .breadcrumb-item.active {
+      color: var(--text-primary);
+    }
+
+    .breadcrumb a {
+      color: var(--spotify-green);
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    .breadcrumb a:hover {
+      color: var(--spotify-green-hover);
+      text-decoration: underline;
+    }
+
+    /* Badge */
+    .badge {
+      background-color: var(--tertiary-bg);
+      color: var(--text-secondary);
+      padding: 0.35em 0.65em;
+      border-radius: 12px;
+      font-weight: 500;
+    }
+
+    .badge-success {
+      background-color: rgba(29, 185, 84, 0.2);
+      color: var(--spotify-green);
+    }
+
+    /* Typography */
+    h1, h2, h3, h4, h5, h6 {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .text-muted {
+      color: var(--text-secondary);
+    }
+
+    .text-secondary {
+      color: var(--text-tertiary);
+    }
+
+    a {
+      color: var(--spotify-green);
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    a:hover {
+      color: var(--spotify-green-hover);
+      text-decoration: underline;
+    }
+
+    /* Modal */
+    .modal-content {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+    }
+
+    .modal-header {
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .modal-title {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .btn-close {
+      filter: invert(1);
+    }
+
+    /* Utilities */
+    .bg-dark {
+      background-color: var(--primary-bg) !important;
+    }
+
+    .bg-light {
+      background-color: var(--secondary-bg) !important;
+    }
+
+    .border {
+      border-color: var(--border-color) !important;
+    }
+
+    .monospace {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      color: var(--text-secondary);
+    }
+
+    /* Rating Stars */
+    .star-rating {
+      font-size: 1.5rem;
+      color: #ffc107;
+      margin: 0 0.25rem;
+    }
+
+    /* Main content area */
+    main.container-fluid {
+      padding: 2rem 3rem;
+    }
+
+    @media (max-width: 768px) {
+      main.container-fluid {
+        padding: 1rem 1rem;
+      }
+    }
+
+    /* Metadata modal styling */
+    .metadata-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .metadata-row:last-child {
+      border-bottom: none;
+    }
+
+    .metadata-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+      flex: 0 0 35%;
+    }
+
+    .metadata-value {
+      color: var(--text-primary);
+      flex: 1;
+      text-align: right;
+      word-break: break-word;
+    }
+
+    /* Loading state */
+    .loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
   </style>
 </head>
 <body>
-  <nav class="navbar navbar-expand-lg navbar-dark bg-dark fixed-top">
+  <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
     <div class="container-fluid">
       <a class="navbar-brand" href="{{ url_for('dashboard') }}">
         <i class="bi bi-music-note-beamed"></i> Sptnr
@@ -23,7 +394,7 @@
         <span class="navbar-toggler-icon"></span>
       </button>
       <div class="collapse navbar-collapse" id="navbarNav">
-        <ul class="navbar-nav">
+        <ul class="navbar-nav ms-auto">
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('dashboard') }}">
               <i class="bi bi-speedometer2"></i> Dashboard
@@ -64,6 +435,58 @@
     {% block content %}{% endblock %}
   </main>
 
+  <!-- Metadata Modal -->
+  <div class="modal fade" id="metadataModal" tabindex="-1" aria-labelledby="metadataModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="metadataModalLabel">
+            <i class="bi bi-info-circle"></i> Metadata Information
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="metadataModalBody">
+          <div class="spinner-border" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Metadata lookup function
+    async function lookupMetadata(type, identifier) {
+      const modal = document.getElementById('metadataModal');
+      const body = document.getElementById('metadataModalBody');
+      const bsModal = new bootstrap.Modal(modal);
+      
+      body.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+      bsModal.show();
+      
+      try {
+        const response = await fetch(`/api/metadata?type=${type}&id=${encodeURIComponent(identifier)}`);
+        if (!response.ok) throw new Error('Metadata lookup failed');
+        const data = await response.json();
+        
+        let html = '<div class="metadata-row">';
+        for (const [key, value] of Object.entries(data)) {
+          const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+          const displayValue = Array.isArray(value) ? value.join(', ') : (value || '—');
+          html += `
+            <div class="metadata-row">
+              <div class="metadata-label">${displayKey}</div>
+              <div class="metadata-value">${displayValue}</div>
+            </div>
+          `;
+        }
+        html += '</div>';
+        body.innerHTML = html;
+      } catch (error) {
+        body.innerHTML = `<div class="alert alert-danger">Error loading metadata: ${error.message}</div>`;
+      }
+    }
+  </script>
 </body>
 </html>

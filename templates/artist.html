@@ -1,4 +1,3 @@
-
 {% extends "base.html" %}
 
 {% block title %}{{ artist_name }} · Sptnr{% endblock %}
@@ -13,26 +12,56 @@
     </ol>
   </nav>
 
-  <div class="d-flex justify-content-between align-items-center mb-3">
+  <div class="d-flex justify-content-between align-items-start mb-4">
     <div>
-      <h1 class="h3 mb-1">{{ artist_name }}</h1>
+      <h1 class="h2 mb-2">
+        <i class="bi bi-person-music"></i> {{ artist_name }}
+      </h1>
       <p class="text-muted mb-0">Artist overview</p>
     </div>
-    <div class="btn-group">
-      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">Back</a>
+    <div class="btn-group flex-wrap">
+      <button class="btn btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist_name }}')">
+        <i class="bi bi-search"></i> Metadata
+      </button>
+      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
+        <i class="bi bi-arrow-left"></i> Back
+      </a>
       <form class="d-inline" action="{{ url_for('scan_start') }}" method="post">
         <input type="hidden" name="scan_type" value="artist">
         <input type="hidden" name="artist" value="{{ artist_name }}">
-        <button type="submit" class="btn btn-warning">Scan This Artist</button>
+        <button type="submit" class="btn btn-warning">
+          <i class="bi bi-play-circle"></i> Scan This Artist
+        </button>
       </form>
     </div>
   </div>
 
+  <!-- Genre Display -->
+  {% if genres %}
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title mb-3">
+          <i class="bi bi-collection"></i> Genres
+        </h5>
+        <div class="d-flex flex-wrap gap-2">
+          {% for genre in genres %}
+          <span class="badge badge-success">{{ genre }}</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Statistics Cards -->
   <div class="row g-3 mb-4">
     <div class="col-md-3">
       <div class="card h-100">
         <div class="card-body">
-          <div class="text-muted">Albums</div>
+          <div class="text-muted mb-2">
+            <i class="bi bi-disc"></i> Albums
+          </div>
           <div class="h4 mb-0">{{ stats.album_count or 0 }}</div>
         </div>
       </div>
@@ -40,7 +69,9 @@
     <div class="col-md-3">
       <div class="card h-100">
         <div class="card-body">
-          <div class="text-muted">Tracks</div>
+          <div class="text-muted mb-2">
+            <i class="bi bi-music-note"></i> Tracks
+          </div>
           <div class="h4 mb-0">{{ stats.track_count or 0 }}</div>
         </div>
       </div>
@@ -48,7 +79,9 @@
     <div class="col-md-3">
       <div class="card h-100">
         <div class="card-body">
-          <div class="text-muted">Avg Rating</div>
+          <div class="text-muted mb-2">
+            <i class="bi bi-star-fill"></i> Avg Rating
+          </div>
           <div class="h4 mb-0">{{ stats.avg_stars|round(2) if stats.avg_stars else "—" }}</div>
         </div>
       </div>
@@ -56,51 +89,82 @@
     <div class="col-md-3">
       <div class="card h-100">
         <div class="card-body">
-          <div class="text-muted">5★ Tracks</div>
+          <div class="text-muted mb-2">
+            <i class="bi bi-star-fill"></i> 5★ Tracks
+          </div>
           <div class="h4 mb-0">{{ stats.five_star_count or 0 }}</div>
         </div>
       </div>
     </div>
   </div>
 
+  <!-- Albums Table -->
   {% if albums and albums|length > 0 %}
-    <div class="table-responsive">
-      <table class="table table-striped table-hover align-middle">
-        <thead>
-          <tr>
-            <th>Album</th>
-            <th class="text-center">Tracks</th>
-            <th class="text-center">Avg ★</th>
-            <th class="text-center">Singles</th>
-            <th class="text-center">Last Scanned</th>
-            <th class="text-center">Open</th>
-          </tr>
-        </thead>
-        <tbody>
-          {% for album in albums %}
+    <div class="card">
+      <div class="card-header">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection-play"></i> Albums
+        </h5>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead>
             <tr>
-              <td>{{ album.album }}</td>
-              <td class="text-center">{{ album.track_count }}</td>
-              <td class="text-center">{{ album.avg_stars|round(2) if album.avg_stars else "—" }}</td>
-              <td class="text-center">{{ album.singles_count }}</td>
-              <td class="text-center">
-                {% if album.last_updated %}
-                  {{ album.last_updated }}
-                {% else %}
-                  <span class="text-muted">Never</span>
-                {% endif %}
-              </td>
-              <td class="text-center">
-                <a class="btn btn-sm btn-outline-primary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">View</a>
-              </td>
+              <th>Album</th>
+              <th class="text-center">Tracks</th>
+              <th class="text-center">Avg ★</th>
+              <th class="text-center">Singles</th>
+              <th class="text-center">Last Scanned</th>
+              <th class="text-center">Actions</th>
             </tr>
-          {% endfor %}
-        </tbody>
-      </table>
+          </thead>
+          <tbody>
+            {% for album in albums %}
+              <tr>
+                <td>
+                  <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    {{ album.album }}
+                  </a>
+                </td>
+                <td class="text-center">{{ album.track_count }}</td>
+                <td class="text-center">
+                  {% if album.avg_stars %}
+                    <span class="badge badge-success">{{ album.avg_stars|round(2) }}★</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  {% if album.singles_count > 0 %}
+                    <span class="badge bg-info">{{ album.singles_count }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="text-center text-muted" style="font-size: 0.85rem;">
+                  {% if album.last_updated %}
+                    {{ album.last_updated }}
+                  {% else %}
+                    <span>Never</span>
+                  {% endif %}
+                </td>
+                <td class="text-center">
+                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')">
+                    <i class="bi bi-search"></i>
+                  </button>
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    <i class="bi bi-arrow-right"></i>
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
     </div>
   {% else %}
     <div class="alert alert-secondary">
-      No albums found for <strong>{{ artist_name }}</strong>.
+      <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>.
     </div>
   {% endif %}
 </div>

@@ -1,49 +1,35 @@
-
 {% extends "base.html" %}
 {% block title %}Config · Sptnr{% endblock %}
 {% block content %}
+<div class="container py-4">
+  <div class="d-flex align-items-center justify-content-between mb-3">
+    <div>
+      <h1 class="h3 mb-1">Configuration</h1>
+      <p class="text-muted mb-0">Edit config.yaml directly or use the setup wizard to re-run guided setup.</p>
+    </div>
+    <a href="{{ url_for('setup') }}" class="btn btn-outline-primary">
+      <i class="bi bi-stars"></i> Open Setup Wizard
+    </a>
+  </div>
 
-<h1 class="h3 mb-3">Configuration</h1>
-
-<form action="{{ url_for('config_editor') }}" method="post">
-  <div class="row g-3">
-    {% for key, value in config.items() %}
-      <div class="col-12">
-        <label for="cfg_{{ key }}" class="form-label">{{ key }}</label>
-
-        {% if value is string or value is number or value is boolean or value is none %}
-          <input
-            type="text"
-            class="form-control"
-            id="cfg_{{ key }}"
-            name="{{ key }}"
-            value="{{ value if value is not none else '' }}">
-        {% else %}
-          <!-- For lists/dicts, allow editing as YAML -->
-          <textarea
-            class="form-control monospace"
-            id="cfg_{{ key }}"
-            name="{{ key }}"
-            rows="6">{{ value | tojson(indent=2) }}</textarea>
-          <div class="form-text">
-            Complex value (list/dict) shown as JSON. You may paste YAML; server writes whatever you submit.
-          </div>
-        {% endif %}
+  <form action="{{ url_for('config_edit') }}" method="post">
+    <div class="card shadow-sm">
+      <div class="card-header bg-dark text-white">
+        <div class="d-flex justify-content-between align-items-center">
+          <span><i class="bi bi-gear"></i> config.yaml</span>
+          <small class="text-light">{{ CONFIG_PATH if CONFIG_PATH is defined else "/config/config.yaml" }}</small>
+        </div>
       </div>
-    {% endfor %}
-  </div>
-
-  <div class="d-flex gap-2 mt-4">
-    <button type="submit" class="btn btn-primary">Save</button>
-    <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
-  </div>
-</form>
-
-{% if not config or config|length == 0 %}
-  <div class="alert alert-warning mt-3">
-    Config appears empty. Submitting will write an empty file to
-    <code class="monospace">{{ CONFIG_PATH if CONFIG_PATH is defined else "/config/config.yaml" }}</code>.
-  </div>
-{% endif %}
-
+      <div class="card-body">
+        <label for="config_content" class="form-label">Raw YAML</label>
+        <textarea class="form-control monospace" id="config_content" name="config_content" rows="18">{{ config_raw }}</textarea>
+        <div class="form-text">Changes are written as-is. Confirm indentation before saving.</div>
+      </div>
+      <div class="card-footer d-flex gap-2 justify-content-end">
+        <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Cancel</a>
+        <button type="submit" class="btn btn-primary">Save</button>
+      </div>
+    </div>
+  </form>
+</div>
 {% endblock %}

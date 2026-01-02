@@ -4,43 +4,69 @@
 
 {% block content %}
 <div class="container mt-4">
-    <h1 class="mb-4">Artists</h1>
-    
-    <div class="alert alert-info">
-        <strong>Database:</strong> {{ DB_PATH }}
+    <div class="d-flex justify-content-between align-items-center mb-4">
+        <h1 class="h2 mb-0">
+            <i class="bi bi-people"></i> Artists
+        </h1>
+        <span class="badge badge-success" style="font-size: 0.9rem;">
+            {{ artists|length }} artists
+        </span>
     </div>
-    
-    <div class="table-responsive">
-        <table class="table table-striped table-hover">
-            <thead>
-                <tr>
-                    <th>Artist</th>
-                    <th>Albums</th>
-                    <th>Tracks</th>
-                    <th>Last Updated</th>
-                </tr>
-            </thead>
-            <tbody>
-                {% for artist in artists %}
-                <tr>
-                    <td>
-                        <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
-                            {{ artist.artist }}
-                        </a>
-                    </td>
-                    <td>{{ artist.album_count }}</td>
-                    <td>{{ artist.track_count }}</td>
-                    <td>
-                        {% if artist.last_updated %}
-                            {{ artist.last_updated }}
-                        {% else %}
-                            <span class="text-muted">Never</span>
-                        {% endif %}
-                    </td>
-                </tr>
-                {% endfor %}
-            </tbody>
-        </table>
-    </div>
+
+    {% if artists|length == 0 %}
+        <div class="alert alert-secondary">
+            <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
+        </div>
+    {% else %}
+        <div class="card">
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>
+                                <i class="bi bi-person"></i> Artist
+                            </th>
+                            <th class="text-center">
+                                <i class="bi bi-disc"></i> Albums
+                            </th>
+                            <th class="text-center">
+                                <i class="bi bi-music-note"></i> Tracks
+                            </th>
+                            <th class="text-center">Last Updated</th>
+                            <th class="text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for artist in artists %}
+                        <tr>
+                            <td>
+                                <a href="{{ url_for('artist_detail', name=artist.artist) }}">
+                                    {{ artist.artist }}
+                                </a>
+                            </td>
+                            <td class="text-center">{{ artist.album_count or 0 }}</td>
+                            <td class="text-center">{{ artist.track_count or 0 }}</td>
+                            <td class="text-center text-muted" style="font-size: 0.85rem;">
+                                {% if artist.last_updated %}
+                                    {{ artist.last_updated }}
+                                {% else %}
+                                    <span>Never</span>
+                                {% endif %}
+                            </td>
+                            <td class="text-center">
+                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist.artist }}')">
+                                    <i class="bi bi-search"></i> Info
+                                </button>
+                                <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="btn btn-sm btn-outline-secondary">
+                                    <i class="bi bi-arrow-right"></i> View
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    {% endif %}
 </div>
 {% endblock %}
