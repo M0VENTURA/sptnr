@@ -631,12 +631,10 @@ def api_search():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/artist/<path:name>")
+@app.route("/artist/<name>")
 def artist_detail(name):
     """View artist details and albums"""
-    # URL decode the artist name
-    from urllib.parse import unquote
-    name = unquote(name)
+    # Flask automatically URL-decodes parameters
     
     conn = get_db()
     cursor = conn.cursor()
@@ -692,14 +690,12 @@ def artist_detail(name):
                          qbit_config=qbit_config)
 
 
-@app.route("/album/<path:artist>/<path:album>")
+@app.route("/album/<artist>/<album>")
 def album_detail(artist, album):
     """View album details and tracks"""
     try:
-        # URL decode the artist and album names
-        from urllib.parse import unquote
-        artist = unquote(artist)
-        album = unquote(album)
+        # Flask automatically URL-decodes parameters
+        # No need to manually unquote
         
         conn = get_db()
         cursor = conn.cursor()
@@ -812,12 +808,10 @@ def album_detail(artist, album):
                              error=f"Error loading album: {str(e)}")
 
 
-@app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
+@app.route("/album/<artist>/<album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection."""
-    from urllib.parse import unquote
-    artist = unquote(artist)
-    album = unquote(album)
+    # Flask automatically URL-decodes parameters
 
     def _worker(artist_name: str):
         try:
@@ -1856,10 +1850,11 @@ def api_metadata():
     return jsonify(metadata)
 
 
-@app.route("/api/album-art/<path:artist>/<path:album>")
+@app.route("/api/album-art/<artist>/<album>")
 def api_album_art(artist, album):
     """Get album art from Navidrome or MP3 files"""
     try:
+        # Flask automatically URL-decodes parameters
         # First try to get from Navidrome
         cfg, _ = _read_yaml(CONFIG_PATH)
         nav_users = cfg.get("navidrome_users", [])
