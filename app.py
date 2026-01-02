@@ -734,7 +734,7 @@ def scan_status():
         web_ui_running = scan_process is not None and scan_process.poll() is None
     
     # Check if background scan from start.py is running
-    lock_file_path = "/config/.scan_lock"
+    lock_file_path = os.path.join(os.path.dirname(CONFIG_PATH), ".scan_lock")
     background_running = os.path.exists(lock_file_path)
     
     running = web_ui_running or background_running
