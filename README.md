@@ -26,6 +26,8 @@ SPTNR works by blending multiple sources of listening data:
 * ✅ Print debugging info with scoring breakdowns, sources used, and star distributions
 * ✅ Resume batch scans from the last synced artist
 * ✅ Force re-scan of all tracks, overriding the cache
+* ✅ Auto-scan MP3 files in music folder with progress indicators
+* ✅ Auto-scan Navidrome library with progress indicators and save current ratings
 
 ---
 
@@ -67,6 +69,7 @@ Create a `.env` file in the root directory with your API keys and Navidrome acce
     NAV_BASE_URL=http://localhost:4533
     NAV_USER=admin
     NAV_PASS=yourpassword
+    MUSIC_FOLDER=/music
 
 ### 🐳 Docker Installation
 
@@ -157,6 +160,10 @@ Create your `.env` file and run:
 #### Run auto rating every 12 hours
 
     python sptnr.py --perpetual
+
+#### Run auto rating every 12 hours with MP3 and Navidrome scans
+
+    python sptnr.py --perpetual --batchrate --sync
 
 ---
 

@@ -24,9 +24,8 @@ load_dotenv()
 client_id = os.getenv("SPOTIFY_CLIENT_ID")
 client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
-if not client_id or not client_secret:
-    logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
-    sys.exit(1)
+# Don't fail on missing credentials at load time - allow --help to work
+# We'll check for credentials when they're actually needed
 
 # ⚙️ Global constants
 try:
@@ -418,6 +417,10 @@ def save_rating_cache(cache):
         json.dump(cache, f, indent=2)
 
 def get_spotify_token():
+    if not client_id or not client_secret:
+        print(f"{LIGHT_RED}Missing Spotify credentials. Please set SPOTIFY_CLIENT_ID and SPOTIFY_CLIENT_SECRET in .env{RESET}")
+        sys.exit(1)
+    
     auth_str = f"{client_id}:{client_secret}"
     auth_bytes = auth_str.encode("utf-8")
     auth_base64 = base64.b64encode(auth_bytes).decode("utf-8")
