@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 # ðŸŽ§ SPTNR â€“ Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
 
 import argparse
@@ -1042,20 +1042,32 @@ def build_artist_index(verbose: bool = False):
     """Build artist index from Navidrome (wrapper using NavidromeClient)."""
     artist_map_from_api = nav_client.build_artist_index()
     
-    # Persist to database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    for artist_name, info in artist_map_from_api.items():
-        artist_id = info.get("id")
-        cursor.execute("""
-            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-        """, (artist_id, artist_name, 0, 0, None))
-        if verbose:
-            print(f"   ðŸ“ Added artist to index: {artist_name} (ID: {artist_id})")
-            logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
-    conn.commit()
-    conn.close()
+    # Persist to database with retry logic
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            for artist_name, info in artist_map_from_api.items():
+                artist_id = info.get("id")
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (artist_id, artist_name, 0, 0, None))
+                if verbose:
+                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
+                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
+            conn.commit()
+            conn.close()
+            break  # Success, exit retry loop
+        except sqlite3.OperationalError as e:
+            if "locked" in str(e) and attempt < max_retries - 1:
+                logging.debug(f"Database locked during artist index build, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(1.0 * (attempt + 1))  # Exponential backoff
+                continue
+            else:
+                logging.error(f"Failed to build artist index after {max_retries} attempts: {e}")
+                raise
     
     logging.info(f"âœ… Cached {len(artist_map_from_api)} artists in DB")
     print(f"âœ… Cached {len(artist_map_from_api)} artists in DB")
