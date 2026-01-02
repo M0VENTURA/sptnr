@@ -597,6 +597,10 @@ def api_search():
 @app.route("/artist/<path:name>")
 def artist_detail(name):
     """View artist details and albums"""
+    # URL decode the artist name
+    from urllib.parse import unquote
+    name = unquote(name)
+    
     conn = get_db()
     cursor = conn.cursor()
     
@@ -655,6 +659,11 @@ def artist_detail(name):
 def album_detail(artist, album):
     """View album details and tracks"""
     try:
+        # URL decode the artist and album names
+        from urllib.parse import unquote
+        artist = unquote(artist)
+        album = unquote(album)
+        
         conn = get_db()
         cursor = conn.cursor()
         
