@@ -9,6 +9,11 @@ import sqlite3
 import logging
 from datetime import datetime
 import sys
+import re
+import time
+import threading
+import difflib
+from concurrent.futures import ThreadPoolExecutor
 
 # Setup logging
 logging.basicConfig(
@@ -25,11 +30,15 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 # Import from start.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from start import (
-    is_discogs_single,
-    is_lastfm_single,
-    is_musicbrainz_single,
-    secondary_single_lookup,
-    infer_album_context,
+    config,
+    discogs_client,
+    musicbrainz_client,
+    DISCOGS_TOKEN,
+    CONTEXT_GATE,
+    CONTEXT_FALLBACK_STUDIO,
+    _DEF_USER_AGENT,
+    strip_parentheses,
+    create_retry_session,
 )
 
 def get_db_connection():
@@ -38,6 +47,431 @@ def get_db_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# ============ DISCOGS SESSION & THROTTLING ============
+
+_discogs_session = None
+_discogs_lock = threading.Lock()
+
+def _get_discogs_session():
+    """Return a shared requests.Session with sensible retries and backoff."""
+    global _discogs_session
+    with _discogs_lock:
+        if _discogs_session is None:
+            _discogs_session = create_retry_session(user_agent=_DEF_USER_AGENT, retries=5, backoff=1.2)
+        return _discogs_session
+
+# --- Simple RPM throttle (authenticated limit is generous, but be safe) ---
+_last_call_ts = 0.0
+_min_interval_sec = float(config.get("features", {}).get("discogs_min_interval_sec", 0.35))
+# 0.35s ~ 171 req/min theoretical max; adjust to 1.0s if you still see 429s
+_discogs_throttle_lock = threading.Lock()
+
+def _throttle_discogs():
+    """Sleep briefly between Discogs calls to avoid 429s (thread-safe)."""
+    global _last_call_ts
+    now = time.time()
+    with _discogs_throttle_lock:
+        wait = _min_interval_sec - (now - _last_call_ts)
+        if wait > 0:
+            time.sleep(wait)
+        _last_call_ts = time.time()
+
+def _respect_retry_after(resp):
+    """If Discogs returns Retry-After, sleep that amount."""
+    ra = resp.headers.get("Retry-After")
+    if ra:
+        try:
+            delay = float(ra)
+            time.sleep(min(delay, 10.0))  # cap at 10s per call
+        except Exception:
+            pass
+
+
+# ============ DISCOGS HELPERS ============
+
+def _discogs_search(session, headers, q, kind: str = "release", per_page: int = 10, timeout: int = 10) -> list:
+    """Perform a Discogs database search with throttle and Retry-After handling."""
+    try:
+        _throttle_discogs()
+        resp = session.get(
+            "https://api.discogs.com/database/search",
+            headers=headers,
+            params={"q": q, "type": kind, "per_page": per_page},
+            timeout=timeout,
+        )
+        if resp.status_code == 429:
+            _respect_retry_after(resp)
+        resp.raise_for_status()
+        return resp.json().get("results", []) or []
+    except Exception as e:
+        logging.debug(f"Discogs {kind} search failed for '{q}': {e}")
+        return []
+
+
+def _canon(s: str) -> str:
+    """Canonicalize string: lowercase, strip, collapse whitespace."""
+    return " ".join((s or "").lower().split())
+
+
+def _strip_video_noise(s: str) -> str:
+    """
+    Remove common boilerplate to improve title matching:
+      - 'official music video', 'official video', 'music video', 'hd', '4k', 'uhd', 'remastered'
+      - bracketed content [..], (..), {..}
+      - normalize 'feat.' / 'ft.' to 'feat '
+    Returns a canonicalized string via _canon.
+    """
+    s = (s or "").lower()
+    noise_phrases = [
+        "official music video", "official video", "music video",
+        "hd", "4k", "uhd", "remastered", "lyrics", "lyric video",
+        "audio", "visualizer"
+    ]
+    for p in noise_phrases:
+        s = s.replace(p, " ")
+    # Drop bracketed content
+    s = re.sub(r"\[.*?\]|\(.*?\)|\{.*?\}", " ", s)
+    # Normalize common abbreviations
+    s = s.replace("feat.", "feat ").replace("ft.", "feat ")
+    return _canon(s)
+
+
+def _release_context_compatible_discogs(rel_json: dict, require_live: bool, forbid_live: bool) -> bool:
+    """Decide if a Discogs release is compatible with album context (live/unplugged)."""
+    title_l = (rel_json.get("title") or "").lower()
+    notes_l = (rel_json.get("notes") or "").lower()
+    formats = rel_json.get("formats") or []
+    tags = {d.lower() for f in formats for d in (f.get("descriptions") or [])}
+
+    has_live_signal = (
+        ("live" in tags) or ("unplugged" in title_l) or ("mtv unplugged" in title_l) or
+        ("recorded live" in notes_l) or ("unplugged" in notes_l)
+    )
+
+    if require_live and not has_live_signal:
+        return False
+    if forbid_live and has_live_signal:
+        return False
+    return True
+
+
+def _banned_flavor(vt_raw: str, vd_raw: str, *, allow_live: bool = False) -> bool:
+    """
+    Reject 'live' and 'remix' unless allow_live=True.
+    Radio edits are allowed (without 'remix').
+    """
+    t = (vt_raw or "").lower()
+    d = (vd_raw or "").lower()
+
+    # Live only banned when album context doesn't allow it
+    if (not allow_live) and ("live" in t or "live" in d):
+        return True
+
+    # 'remix' anywhere is banned; radio edits allowed if no 'remix'
+    if "remix" in t or "remix" in d:
+        return True
+
+    return False
+
+
+# ============ ALBUM CONTEXT & SINGLE DETECTION ============
+
+def infer_album_context(album_title: str, release_types: list[str] | None = None) -> dict:
+    """
+    Infer album context flags (live/unplugged) from album title and optional release_types.
+    - release_types can be Discogs-like list: ["Album", "Live"]
+    """
+    t = (album_title or "").lower()
+    types_norm = [(rt or "").lower() for rt in (release_types or [])]
+    is_unplugged = ("unplugged" in t) or ("mtv unplugged" in t)
+    is_live = is_unplugged or ("live" in t) or ("live" in types_norm)
+    return {
+        "is_live": is_live,
+        "is_unplugged": is_unplugged,
+        "title": album_title,
+        "raw_types": types_norm,
+    }
+
+
+# --- Discogs "Official Video / Official Lyric Video" signal (with cache) ---
+_DISCOGS_VID_CACHE: dict[tuple[str, str, str], dict] = {}
+
+def _has_official(vt_raw: str, vd_raw: str, allow_lyric: bool = True) -> bool:
+    """Require 'official' in title/description; optionally accept 'lyric' as official."""
+    t = (vt_raw or "").lower()
+    d = (vd_raw or "").lower()
+    if ("official" in t) or ("official" in d):
+        return True
+    return allow_lyric and (("lyric" in t) or ("lyric" in d))
+
+
+def discogs_official_video_signal(
+    title: str,
+    artist: str,
+    *,
+    discogs_token: str,
+    timeout: int = 10,
+    per_page: int = 10,
+    min_ratio: float = 0.55,
+    allow_lyric_as_official: bool = True,
+    album_context: dict | None = None,
+    permissive_fallback: bool = False,
+) -> dict:
+    """
+    Detect an 'official' (or 'lyric' if allowed) video for a track on Discogs,
+    honoring album context (live/unplugged), with:
+      - Candidate shortlist (title similarity + 'Single' OR 'Album' hint),
+      - Parallel inspections (bounded executor),
+      - Early bailouts and caching.
+    Returns (on success):
+      {"match": True, "uri": <video_url>, "release_id": <id>, "ratio": <float>, "why": "discogs_official_video"}
+    """
+    # ---- Basic token check ---------------------------------------------------
+    if not discogs_token:
+        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
+    # ---- Context gate --------------------------------------------------------
+    allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
+    context_key = "live" if allow_live_ctx else "studio"
+    cache_key = (_canon(artist), _canon(title), context_key)
+    # Fast cache path
+    cached = _DISCOGS_VID_CACHE.get(cache_key)
+    if cached is not None:
+        return cached
+    # ---- Setup ---------------------------------------------------------------
+    session = _get_discogs_session()
+    headers = {"Authorization": f"Discogs token={discogs_token}", "User-Agent": _DEF_USER_AGENT}
+    nav_title_raw = strip_parentheses(title)
+    nav_title_clean = _strip_video_noise(nav_title_raw)
+    nav_title = _canon(nav_title_raw)  # canonical for shortlist similarity
+    # Context rules
+    require_live = allow_live_ctx and CONTEXT_GATE
+    forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
+    allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
+
+    # ---- Release inspection helper -------------------------------------------
+    def _inspect_release(rel_id: int, *, require_live: bool, forbid_live: bool, allow_live_for_video: bool) -> dict | None:
+        """
+        Pull the release, apply context compatibility, then scan videos:
+          - Require 'official' (or 'lyric' if allowed),
+          - Ban 'remix' always; ban 'live' unless album context allows it,
+          - Title/description similarity >= min_ratio against cleaned nav title.
+        """
+        try:
+            _throttle_discogs()
+            r = session.get(f"https://api.discogs.com/releases/{rel_id}", headers=headers, timeout=timeout)
+            if r.status_code == 429:
+                _respect_retry_after(r)
+            r.raise_for_status()
+            data = r.json()
+        except Exception:
+            return None
+        if not _release_context_compatible_discogs(data, require_live, forbid_live):
+            return None
+        best = None
+        for v in (data.get("videos") or []):
+            vt_raw = v.get("title", "") or ""
+            vd_raw = v.get("description", "") or ""
+
+            # official/lyric requirement and similarity check
+            t_l = vt_raw.lower(); d_l = vd_raw.lower()
+            if ("official" not in t_l and "official" not in d_l):
+                if not allow_lyric_as_official or ("lyric" not in t_l and "lyric" not in d_l):
+                    continue
+            if _banned_flavor(vt_raw, vd_raw, allow_live=allow_live_for_video):
+                continue
+            vt_clean = _strip_video_noise(vt_raw)
+            vd_clean = _strip_video_noise(vd_raw)
+            ratio = max(
+                difflib.SequenceMatcher(None, vt_clean, nav_title_clean).ratio(),
+                difflib.SequenceMatcher(None, vd_clean, nav_title_clean).ratio(),
+            )
+            if ratio >= min_ratio:
+                current = {
+                    "match": True,
+                    "uri": v.get("uri"),
+                    "release_id": rel_id,
+                    "ratio": round(ratio, 3),
+                    "why": "discogs_official_video",
+                }
+                if best is None or current["ratio"] > best["ratio"]:
+                    best = current
+
+        return best
+    # ---- Release search & shortlist --------------------------------
+    results = _discogs_search(session, headers, f"{artist} {title}", kind="release", per_page=per_page, timeout=timeout)
+    if not results:
+        res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
+        _DISCOGS_VID_CACHE[cache_key] = res
+        return res
+    cands: list[tuple[int, bool, float]] = []
+    for r in results[:15]:  # inspect a few more results; still bounded
+        rid = r.get("id")
+        if not rid:
+            continue
+        rel_title = _canon(r.get("title", ""))
+        title_ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
+        # 'format' hint list may include entries like ['CD', 'Album'] or ['VHS', 'Promo']
+        formats_hint = r.get("format", []) or []
+        fmt_norm = [(fmt or "").lower() for fmt in formats_hint]
+        prefer_single  = any("single" in f for f in fmt_norm)
+        is_album_like  = any("album" in f for f in fmt_norm)
+        # Keep candidate if:
+        #  - it's an obvious SINGLE, OR
+        #  - release title is reasonably similar to the track title, OR
+        #  - it's an ALBUM (many official videos live on the album's Discogs page)
+        keep = prefer_single or (title_ratio >= 0.65) or is_album_like
+        if keep:
+            cands.append((rid, prefer_single, title_ratio))
+    # Prefer singles; otherwise title similarity. Cap to 8 to keep requests sane.
+    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:8]
+    # ---- Parallel inspections of shortlist ----------------------------------
+    best = None
+    if cands:
+        with ThreadPoolExecutor(max_workers=3) as pool:
+            futures = [
+                pool.submit(
+                    _inspect_release,
+                    rid,
+                    require_live=require_live,
+                    forbid_live=forbid_live,
+                    allow_live_for_video=allow_live_for_video,
+                )
+                for rid, _, _ in cands
+            ]
+            for f in futures:
+                hit = f.result()
+                if hit and (best is None or hit["ratio"] > best["ratio"]):
+                    best = hit
+                    # Cancel remaining inspections to save time
+                    for other in futures:
+                        if other is not f:
+                            try:
+                                other.cancel()
+                            except:
+                                pass
+                    break
+    if best:
+        _DISCOGS_VID_CACHE[cache_key] = best
+        return best
+    # ---- Optional permissive fallback (studio allowed if album is live) -----
+    if allow_live_ctx and (permissive_fallback or CONTEXT_FALLBACK_STUDIO):
+        relaxed_best = None
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            futures = [
+                pool.submit(
+                    _inspect_release,
+                    rid,
+                    require_live=False,
+                    forbid_live=False,
+                    allow_live_for_video=False,
+                )
+                for rid, _, _ in cands
+            ]
+            for f in futures:
+                hit = f.result()
+                if hit and (relaxed_best is None or hit["ratio"] > relaxed_best["ratio"]):
+                    relaxed_best = hit
+                    for other in futures:
+                        if other is not f:
+                            try:
+                                other.cancel()
+                            except:
+                                pass
+                    break
+        if relaxed_best:
+            _DISCOGS_VID_CACHE[cache_key] = relaxed_best
+            return relaxed_best
+    # ---- No match -----------------------------------------------------------
+    res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
+    _DISCOGS_VID_CACHE[cache_key] = res
+    return res
+
+
+# Cache for single detection
+_DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
+
+def is_discogs_single(
+    title: str,
+    artist: str,
+    *,
+    album_context: dict | None = None,
+    timeout: int = 10
+) -> bool:
+    """Check if track is a single via Discogs (wrapper using DiscogsClient)."""
+    return discogs_client.is_single(title, artist, album_context, timeout)
+
+def is_lastfm_single(title: str, artist: str) -> bool:
+    """Placeholder for Last.fm single detection."""
+    return False
+
+def is_musicbrainz_single(title: str, artist: str) -> bool:
+    """Check if track is a single via MusicBrainz (wrapper using MusicBrainzClient)."""
+    return musicbrainz_client.is_single(title, artist)
+
+
+def secondary_single_lookup(track: dict, artist_name: str, album_ctx: dict | None, *, singles_set: set | None = None, required_strong_sources: int = 2) -> dict:
+    """Perform a lightweight secondary check for single evidence.
+
+    Returns a dict: {"sources": [...], "confidence": "low|medium|high"}.
+    This aggregates Discogs single/video, MusicBrainz, Last.fm, and Spotify prefetch signals.
+    """
+    sources = set()
+    title = track.get("title", "")
+    try:
+        # Discogs single
+        try:
+            if DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
+                sources.add("discogs")
+        except Exception:
+            pass
+
+        # Discogs official video
+        try:
+            if DISCOGS_TOKEN:
+                dv = discogs_official_video_signal(title, artist_name, discogs_token=DISCOGS_TOKEN, album_context=album_ctx, permissive_fallback=CONTEXT_FALLBACK_STUDIO)
+                if dv.get("match"):
+                    sources.add("discogs_video")
+        except Exception:
+            pass
+
+        # MusicBrainz
+        try:
+            if is_musicbrainz_single(title, artist_name):
+                sources.add("musicbrainz")
+        except Exception:
+            pass
+
+        # Last.fm (configurable)
+        try:
+            if config.get("features", {}).get("use_lastfm_single", True) and is_lastfm_single(title, artist_name):
+                sources.add("lastfm")
+        except Exception:
+            pass
+
+        # Spotify prefetch
+        try:
+            spid = track.get("spotify_id")
+            if singles_set and spid and spid in singles_set:
+                sources.add("spotify")
+        except Exception:
+            pass
+
+    except Exception:
+        return {"sources": [], "confidence": "low"}
+
+    strong_sources = {"discogs", "discogs_video", "musicbrainz"}
+    strong_count = len(sources & strong_sources)
+    if strong_count >= required_strong_sources:
+        confidence = "high"
+    elif len(sources) >= 2:
+        confidence = "medium"
+    else:
+        confidence = "low"
+
+    return {"sources": sorted(sources), "confidence": confidence}
+
 
 def single_detection_scan(verbose: bool = False):
     """Detect which tracks are singles"""
