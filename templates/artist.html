@@ -103,6 +103,64 @@
     </div>
   </div>
 
+  <!-- Additional Stats: Duration and Year Range -->
+  <div class="row g-2 g-md-3 mb-4">
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-hourglass"></i> Total Duration
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.total_duration %}
+              {% set hours = (stats.total_duration / 3600)|int %}
+              {% set minutes = ((stats.total_duration % 3600) / 60)|int %}
+              {% if hours > 0 %}
+                {{ hours }}h {{ minutes }}m
+              {% else %}
+                {{ minutes }}m
+              {% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar-range"></i> Year Range
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.earliest_year and stats.latest_year %}
+              {{ stats.earliest_year }} – {{ stats.latest_year }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar"></i> Avg Score
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.avg_stars %}
+              <span class="badge badge-info">{{ (stats.avg_stars * 20)|round(0)|int }}%</span>
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Albums Table -->
   {% if albums and albums|length > 0 %}
     <div class="card">

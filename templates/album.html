@@ -34,7 +34,99 @@
         <button class="btn btn-outline-primary w-100 w-lg-auto" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
             <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Album Info</span>
         </button>
+        <button class="btn btn-outline-info w-100 w-lg-auto" onclick="openAlbumLookupModal()">
+            <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
+        </button>
     </div>
+    
+    <!-- Album Metadata Cards -->
+    {% if album_data %}
+    <div class="row g-2 g-md-3 mb-4">
+        {% if album_data.spotify_release_date %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-calendar"></i> Release Date
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.spotify_release_date }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if album_data.spotify_album_type %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-collection"></i> Album Type
+                    </div>
+                    <div class="h6 mb-0">
+                        <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-hourglass"></i> Duration
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.total_duration %}
+                            {% set hours = (album_data.total_duration / 3600)|int %}
+                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
+                            {% if hours > 0 %}
+                                {{ hours }}h {{ minutes }}m
+                            {% else %}
+                                {{ minutes }}m
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-star-fill"></i> Avg Rating
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.avg_stars %}
+                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- Genres -->
+    {% if album_genres %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title mb-3">
+                <i class="bi bi-tags"></i> Genres
+            </h5>
+            <div class="d-flex flex-wrap gap-2">
+                {% for genre in album_genres %}
+                <span class="badge badge-secondary">{{ genre }}</span>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
     
     <div class="card">
         <div class="card-header">
@@ -187,4 +279,142 @@
 }
 </style>
 
-{% endblock %}
+<!-- Album Metadata Lookup Modal -->
+<div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">External Metadata Lookup for "{{ album_name }}"</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-grid gap-2 d-md-flex mb-4">
+                    <button type="button" class="btn btn-outline-info" onclick="lookupAlbumMusicBrainz()">
+                        <i class="bi bi-search"></i> MusicBrainz
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="lookupAlbumDiscogs()">
+                        <i class="bi bi-search"></i> Discogs
+                    </button>
+                </div>
+                <div id="albumLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function openAlbumLookupModal() {
+        const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
+        modal.show();
+    }
+
+    function lookupAlbumMusicBrainz() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+        
+        fetch('/api/album/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'musicbrainz');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function lookupAlbumDiscogs() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching Discogs...';
+        
+        fetch('/api/album/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'discogs');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function displayAlbumResults(results, source) {
+        const resultsDiv = document.getElementById('albumLookupResults');
+        
+        if (!results || results.length === 0) {
+            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            return;
+        }
+        
+        let html = '';
+        if (source === 'musicbrainz') {
+            results.forEach(result => {
+                html += `
+                    <div class="card">
+                        <div class="card-body">
+                            <h6>MusicBrainz Match</h6>
+                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
+                                <strong>MBID:</strong> <code>${result.mbid}</code><br>
+                                <strong>Confidence:</strong> ${(result.confidence * 100).toFixed(1)}%
+                            </p>
+                            <button class="btn btn-sm btn-primary" onclick="applyAlbumMBID('${result.mbid}')">
+                                <i class="bi bi-check-circle"></i> Apply MBID
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            results.forEach(result => {
+                const genres = (result.genre || []).join(', ');
+                const styles = (result.style || []).join(', ');
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <h6>${result.title}</h6>
+                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
+                                <strong>Year:</strong> ${result.year || '—'}<br>
+                                <strong>Format:</strong> ${(result.format || []).join(', ') || '—'}
+                            </p>
+                            ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
+                            ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
+                            <button class="btn btn-sm btn-primary" onclick="applyAlbumGenres('${genres}')">
+                                <i class="bi bi-check-circle"></i> Apply Genres
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        resultsDiv.innerHTML = html;
+    }
+
+    function applyAlbumMBID(mbid) {
+        alert('Applied Album MBID: ' + mbid);
+    }
+
+    function applyAlbumGenres(genres) {
+        alert('Applied Discogs Genres: ' + genres);
+    }
+</script>

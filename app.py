@@ -612,13 +612,16 @@ def artist_detail(name):
     """, (name,))
     albums_data = cursor.fetchall()
     
-    # Get artist stats
+    # Get artist stats with additional metrics
     cursor.execute("""
         SELECT 
             COUNT(*) as track_count,
             COUNT(DISTINCT album) as album_count,
             AVG(stars) as avg_stars,
-            SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count
+            SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+            SUM(COALESCE(duration, 0)) as total_duration,
+            MIN(year) as earliest_year,
+            MAX(year) as latest_year
         FROM tracks
         WHERE artist = ?
     """, (name,))
@@ -651,16 +654,45 @@ def album_detail(artist, album):
         SELECT *
         FROM tracks
         WHERE artist = ? AND album = ?
-        ORDER BY title COLLATE NOCASE
+        ORDER BY track_number, title COLLATE NOCASE
     """, (artist, album))
     tracks_data = cursor.fetchall()
+    
+    # Get album metadata from first track
+    cursor.execute("""
+        SELECT 
+            COUNT(*) as track_count,
+            AVG(stars) as avg_stars,
+            SUM(COALESCE(duration, 0)) as total_duration,
+            spotify_release_date,
+            spotify_album_type,
+            spotify_album_art_url,
+            MAX(last_scanned) as last_scanned
+        FROM tracks
+        WHERE artist = ? AND album = ?
+    """, (artist, album))
+    album_data = cursor.fetchone()
+    
+    # Aggregate genres from tracks in this album
+    cursor.execute("""
+        SELECT DISTINCT genres FROM tracks
+        WHERE artist = ? AND album = ? AND genres IS NOT NULL AND genres != ''
+    """, (artist, album))
+    genre_rows = cursor.fetchall()
+    album_genres = set()
+    for row in genre_rows:
+        if row['genres']:
+            genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
+            album_genres.update(genres)
     
     conn.close()
     
     return render_template("album.html",
                          artist_name=artist,
                          album_name=album,
-                         tracks=tracks_data)
+                         tracks=tracks_data,
+                         album_data=album_data,
+                         album_genres=sorted(list(album_genres)))
 
 
 @app.route("/track/<track_id>")
@@ -696,7 +728,7 @@ def track_detail(track_id):
         flash("Track not found", "error")
         return redirect(url_for("dashboard"))
     
-    return render_template("track.html", track=track, recommended_genres=recommended_genres)
+    return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id)
 
 
 @app.route("/track/<track_id>/edit", methods=["POST"])
@@ -2228,5 +2260,153 @@ if __name__ == "__main__":
         import traceback
         print(f"Error in auto-start configuration: {e}")
         print(traceback.format_exc())
+    
+    # API endpoints for metadata lookups
+    @app.route("/api/track/musicbrainz", methods=["POST"])
+    def api_track_musicbrainz_lookup():
+        """Lookup track on MusicBrainz for better metadata"""
+        try:
+            from start import get_suggested_mbid
+            
+            data = request.get_json()
+            title = data.get("title", "")
+            artist = data.get("artist", "")
+            
+            if not title or not artist:
+                return jsonify({"error": "Missing title or artist"}), 400
+            
+            # Get suggested MBID
+            mbid, confidence = get_suggested_mbid(title, artist, limit=5)
+            
+            if not mbid:
+                return jsonify({"results": [], "message": "No MusicBrainz matches found"}), 200
+            
+            # Return MBID and confidence
+            return jsonify({
+                "results": [{
+                    "mbid": mbid,
+                    "confidence": confidence,
+                    "source": "musicbrainz"
+                }]
+            }), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"MusicBrainz lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/track/discogs", methods=["POST"])
+    def api_track_discogs_lookup():
+        """Lookup track on Discogs for better metadata and genres"""
+        try:
+            from start import _discogs_search, _get_discogs_session
+            
+            data = request.get_json()
+            title = data.get("title", "")
+            artist = data.get("artist", "")
+            album = data.get("album", "")
+            
+            if not title or not artist:
+                return jsonify({"error": "Missing title or artist"}), 400
+            
+            # Search Discogs
+            session = _get_discogs_session()
+            headers = {"User-Agent": "Sptnr/1.0"}
+            query = f"{artist} {album or title}"
+            
+            results = _discogs_search(session, headers, query, kind="release", per_page=5)
+            
+            if not results:
+                return jsonify({"results": [], "message": "No Discogs matches found"}), 200
+            
+            # Format results
+            formatted_results = []
+            for result in results[:5]:
+                formatted_results.append({
+                    "title": result.get("title", "Unknown"),
+                    "year": result.get("year", ""),
+                    "genre": result.get("genre", []),
+                    "style": result.get("style", []),
+                    "url": result.get("resource_url", ""),
+                    "source": "discogs"
+                })
+            
+            return jsonify({"results": formatted_results}), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"Discogs lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/album/musicbrainz", methods=["POST"])
+    def api_album_musicbrainz_lookup():
+        """Lookup album on MusicBrainz for better metadata"""
+        try:
+            from start import get_suggested_mbid
+            
+            data = request.get_json()
+            album = data.get("album", "")
+            artist = data.get("artist", "")
+            
+            if not album or not artist:
+                return jsonify({"error": "Missing album or artist"}), 400
+            
+            # Get suggested MBID for album
+            mbid, confidence = get_suggested_mbid(album, artist, limit=5)
+            
+            if not mbid:
+                return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
+            
+            return jsonify({
+                "results": [{
+                    "mbid": mbid,
+                    "confidence": confidence,
+                    "source": "musicbrainz"
+                }]
+            }), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"MusicBrainz album lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/album/discogs", methods=["POST"])
+    def api_album_discogs_lookup():
+        """Lookup album on Discogs for better metadata and genres"""
+        try:
+            from start import _discogs_search, _get_discogs_session
+            
+            data = request.get_json()
+            album = data.get("album", "")
+            artist = data.get("artist", "")
+            
+            if not album or not artist:
+                return jsonify({"error": "Missing album or artist"}), 400
+            
+            # Search Discogs
+            session = _get_discogs_session()
+            headers = {"User-Agent": "Sptnr/1.0"}
+            query = f"{artist} {album}"
+            
+            results = _discogs_search(session, headers, query, kind="release", per_page=5)
+            
+            if not results:
+                return jsonify({"results": [], "message": "No Discogs album matches found"}), 200
+            
+            # Format results
+            formatted_results = []
+            for result in results[:5]:
+                formatted_results.append({
+                    "title": result.get("title", "Unknown"),
+                    "year": result.get("year", ""),
+                    "genre": result.get("genre", []),
+                    "style": result.get("style", []),
+                    "format": result.get("format", []),
+                    "url": result.get("resource_url", ""),
+                    "source": "discogs"
+                })
+            
+            return jsonify({"results": formatted_results}), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"Discogs album lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
     
     app.run(debug=False, host="0.0.0.0", port=5000)

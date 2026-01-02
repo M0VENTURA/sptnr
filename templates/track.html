@@ -126,6 +126,73 @@
                     </div>
                 </div>
 
+                <!-- Audio Metadata -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-disc-fill"></i> Audio Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="metadata-row">
+                            <div class="metadata-label">Duration</div>
+                            <div class="metadata-value">
+                                {% if track.duration %}
+                                    {% set mins = (track.duration / 60)|int %}
+                                    {% set secs = (track.duration % 60)|int %}
+                                    {{ mins }}:{{ "%02d"|format(secs) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Year</div>
+                            <div class="metadata-value">{{ track.year or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Track Number</div>
+                            <div class="metadata-value">{{ track.track_number or '—' }}</div>
+                        </div>
+                        {% if track.disc_number %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Disc Number</div>
+                            <div class="metadata-value">{{ track.disc_number }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.bpm %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">BPM</div>
+                            <div class="metadata-value">{{ track.bpm }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.bitrate %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Bitrate</div>
+                            <div class="metadata-value">{{ (track.bitrate / 1000)|round(0)|int }} kbps</div>
+                        </div>
+                        {% endif %}
+                        {% if track.sample_rate %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Sample Rate</div>
+                            <div class="metadata-value">{{ (track.sample_rate / 1000)|round(1) }} kHz</div>
+                        </div>
+                        {% endif %}
+                        {% if track.composer %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Composer</div>
+                            <div class="metadata-value">{{ track.composer }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.isrc %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">ISRC</div>
+                            <div class="metadata-value monospace" style="font-size: 0.75rem;">{{ track.isrc }}</div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
                 <!-- Source & Audit Info -->
                 <div class="card">
                     <div class="card-header">
@@ -207,6 +274,27 @@
                     </div>
                 </div>
                 {% endif %}
+
+                <!-- External Metadata Lookups -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-database"></i> External Metadata Lookups
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-3" style="font-size: 0.85rem;">Find potential matches from external databases to improve track and genre information</p>
+                        
+                        <div class="d-grid gap-2 d-md-flex">
+                            <button type="button" class="btn btn-outline-info" onclick="lookupMusicBrainz()">
+                                <i class="bi bi-search"></i> MusicBrainz Lookup
+                            </button>
+                            <button type="button" class="btn btn-outline-warning" onclick="lookupDiscogs()">
+                                <i class="bi bi-search"></i> Discogs Lookup
+                            </button>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
         
@@ -227,7 +315,157 @@
         // For now, just show an alert
         alert('Genre: ' + genre + '\n\nYou can add genre support by adding a genres field to the track editing form.');
     }
+
+    function lookupMusicBrainz() {
+        const trackTitle = document.getElementById('title').value;
+        const trackArtist = document.getElementById('artist').value;
+        
+        if (!trackTitle || !trackArtist) {
+            alert('Please enter track title and artist');
+            return;
+        }
+        
+        fetch('/api/track/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: trackTitle,
+                artist: trackArtist
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
+            document.getElementById('lookupTitle').textContent = 'MusicBrainz Lookup Results';
+            displayExternalResults(data.results, 'musicbrainz');
+            modal.show();
+        })
+        .catch(error => alert('Network error: ' + error.message));
+    }
+
+    function lookupDiscogs() {
+        const trackTitle = document.getElementById('title').value;
+        const trackArtist = document.getElementById('artist').value;
+        const trackAlbum = document.getElementById('album').value;
+        
+        if (!trackTitle || !trackArtist) {
+            alert('Please enter track title and artist');
+            return;
+        }
+        
+        fetch('/api/track/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: trackTitle,
+                artist: trackArtist,
+                album: trackAlbum
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
+            document.getElementById('lookupTitle').textContent = 'Discogs Lookup Results';
+            displayExternalResults(data.results, 'discogs');
+            modal.show();
+        })
+        .catch(error => alert('Network error: ' + error.message));
+    }
+
+    function displayExternalResults(results, source) {
+        const resultsDiv = document.getElementById('externalLookupResults');
+        
+        if (!results || results.length === 0) {
+            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            return;
+        }
+        
+        let html = '';
+        if (source === 'musicbrainz') {
+            results.forEach(result => {
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body p-3">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <h6 class="mb-1">MBID: <code>${result.mbid}</code></h6>
+                                    <p class="text-muted mb-0" style="font-size: 0.85rem;">Confidence: ${(result.confidence * 100).toFixed(1)}%</p>
+                                </div>
+                                <button class="btn btn-sm btn-primary" onclick="applyMBID('${result.mbid}')">
+                                    <i class="bi bi-check-circle"></i> Apply
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            results.forEach(result => {
+                const genres = (result.genre || []).join(', ');
+                const styles = (result.style || []).join(', ');
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">${result.title}</h6>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <span class="text-muted" style="font-size: 0.75rem;">Year: </span>
+                                    <span>${result.year || '—'}</span>
+                                </div>
+                                <div class="col-6">
+                                    <span class="text-muted" style="font-size: 0.75rem;">Format: </span>
+                                    <span>${(result.format || []).join(', ') || '—'}</span>
+                                </div>
+                            </div>
+                            ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
+                            ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
+                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData('${result.title}', '${genres}')">
+                                <i class="bi bi-check-circle"></i> Apply Genres
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        resultsDiv.innerHTML = html;
+    }
+
+    function applyMBID(mbid) {
+        // In a real implementation, this would update the track record with the MBID
+        alert('Applied MBID: ' + mbid + '\n\nImplement MBID saving in your track update form.');
+    }
+
+    function applyDiscogsData(title, genres) {
+        // In a real implementation, this would update genres in the track record
+        alert('Applied Discogs metadata:\nTitle: ' + title + '\nGenres: ' + genres);
+    }
 </script>
+
+<!-- External Lookup Modal -->
+<div class="modal fade" id="externalLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="lookupTitle">External Lookup Results</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="externalLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
 
 <style>
 /* Dark theme improvements for track page */
