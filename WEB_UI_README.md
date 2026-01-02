@@ -51,7 +51,7 @@ View metadata:
 
 ## qBittorrent Integration
 
-Search for missing artist releases directly from artist pages.
+Search for missing artist releases directly from artist pages with an **embedded inline search window**.
 
 ### Setup
 
@@ -61,8 +61,8 @@ Search for missing artist releases directly from artist pages.
 qbittorrent:
   enabled: true
   web_url: "http://localhost:8080"  # Your qBittorrent Web UI URL
-  username: ""  # Optional: for future API features
-  password: ""  # Optional: for future API features
+  username: "admin"  # Optional: qBittorrent username (required for API access)
+  password: "adminpass"  # Optional: qBittorrent password (required for API access)
 ```
 
 2. Adjust the `web_url` to match your qBittorrent Web UI address
@@ -70,20 +70,59 @@ qbittorrent:
    - Remote: `http://your-server-ip:8080`
    - Reverse proxy: `https://qbit.yourdomain.com`
 
-3. Save the configuration and refresh the artist page
+3. Configure authentication if your qBittorrent requires login
+   - Username and password are needed for API access
+   - Leave blank if running without authentication (not recommended)
+
+4. Save the configuration and refresh the artist page
 
 ### Usage
 
 Once enabled, a **qBittorrent** button appears on every artist page:
-- Click to open qBittorrent's search page with the artist name pre-filled
-- Search for discographies, missing albums, or specific releases
-- Add torrents directly from qBittorrent's web interface
 
-### Notes
+1. Click the button to open an **inline search modal**
+2. The search auto-populates with "{Artist} discography"
+3. Edit the search query and press Enter or click Search
+4. Browse results showing:
+   - Torrent name and source
+   - File size
+   - Seeds (green/yellow/red indicator)
+   - Peers
+5. Click **Add** to send the torrent directly to qBittorrent
+6. Torrent begins downloading immediately
 
-- Opens in a new tab/window
-- Works with any qBittorrent Web UI version that supports the `/#/search/` URL pattern
-- No authentication required (uses your existing qBittorrent session)
+### Features
+
+- **Inline search**: No need to leave the page
+- **Real-time results**: Direct integration with qBittorrent's search API
+- **One-click download**: Add torrents without leaving Sptnr
+- **Seeders indicator**: Color-coded to show torrent health
+- **Size formatting**: Human-readable file sizes
+- **Multiple search engines**: Uses all enabled search plugins in qBittorrent
+
+### Requirements
+
+- qBittorrent with Web UI enabled
+- qBittorrent search plugins installed and enabled
+- Network access from Sptnr to qBittorrent Web UI
+- Authentication credentials (if required by your qBittorrent setup)
+
+### Troubleshooting
+
+**No results found:**
+- Ensure qBittorrent search plugins are installed
+- Check that search plugins are enabled in qBittorrent settings
+- Try a different search query
+
+**Authentication errors:**
+- Verify username and password in config.yaml
+- Check qBittorrent Web UI settings for authentication requirements
+- Ensure Web UI is not using HTTPS with self-signed certificates
+
+**Connection errors:**
+- Verify `web_url` is correct and accessible
+- Check firewall rules allowing access to qBittorrent port
+- Test Web UI access in browser first
 
 ## Running the Web UI
 

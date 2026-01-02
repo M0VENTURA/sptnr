@@ -17,8 +17,8 @@ navidrome:
 qbittorrent:
   enabled: false
   web_url: "http://localhost:8080"  # URL to your qBittorrent Web UI
-  username: ""  # Optional: for future API integration
-  password: ""  # Optional: for future API integration
+  username: ""  # qBittorrent username (required for API access)
+  password: ""  # qBittorrent password (required for API access)
 
 # API Integrations - Enable/disable external services and provide credentials
 api_integrations:

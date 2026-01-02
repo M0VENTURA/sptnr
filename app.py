@@ -634,6 +634,114 @@ def api_stats():
     })
 
 
+@app.route("/api/qbittorrent/search", methods=["POST"])
+def qbit_search():
+    """Proxy endpoint for qBittorrent search API"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+    
+    if not qbit_config.get("enabled"):
+        return jsonify({"error": "qBittorrent integration not enabled"}), 400
+    
+    query = request.json.get("query", "")
+    if not query:
+        return jsonify({"error": "Query parameter required"}), 400
+    
+    web_url = qbit_config.get("web_url", "http://localhost:8080")
+    username = qbit_config.get("username", "")
+    password = qbit_config.get("password", "")
+    
+    try:
+        import requests as req
+        
+        # Login if credentials provided
+        session = req.Session()
+        if username and password:
+            login_url = f"{web_url}/api/v2/auth/login"
+            session.post(login_url, data={"username": username, "password": password})
+        
+        # Start search
+        search_url = f"{web_url}/api/v2/search/start"
+        resp = session.post(search_url, data={"pattern": query, "plugins": "enabled", "category": "all"})
+        
+        if resp.status_code != 200:
+            return jsonify({"error": f"Search failed: {resp.status_code}"}), 500
+        
+        search_data = resp.json()
+        search_id = search_data.get("id")
+        
+        if not search_id:
+            return jsonify({"error": "No search ID returned"}), 500
+        
+        # Poll for results (max 10 seconds)
+        import time
+        results = []
+        for _ in range(20):
+            time.sleep(0.5)
+            status_url = f"{web_url}/api/v2/search/status"
+            status_resp = session.get(status_url, params={"id": search_id})
+            
+            if status_resp.status_code == 200:
+                status_data = status_resp.json()
+                if status_data and len(status_data) > 0:
+                    search_status = status_data[0]
+                    if search_status.get("status") == "Stopped":
+                        # Get results
+                        results_url = f"{web_url}/api/v2/search/results"
+                        results_resp = session.get(results_url, params={"id": search_id, "limit": 50})
+                        if results_resp.status_code == 200:
+                            data = results_resp.json()
+                            results = data.get("results", [])
+                        break
+        
+        # Stop search
+        stop_url = f"{web_url}/api/v2/search/stop"
+        session.post(stop_url, data={"id": search_id})
+        
+        return jsonify({"results": results})
+        
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/qbittorrent/add", methods=["POST"])
+def qbit_add_torrent():
+    """Proxy endpoint to add torrent to qBittorrent"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+    
+    if not qbit_config.get("enabled"):
+        return jsonify({"error": "qBittorrent integration not enabled"}), 400
+    
+    torrent_url = request.json.get("url", "")
+    if not torrent_url:
+        return jsonify({"error": "URL parameter required"}), 400
+    
+    web_url = qbit_config.get("web_url", "http://localhost:8080")
+    username = qbit_config.get("username", "")
+    password = qbit_config.get("password", "")
+    
+    try:
+        import requests as req
+        
+        session = req.Session()
+        if username and password:
+            login_url = f"{web_url}/api/v2/auth/login"
+            session.post(login_url, data={"username": username, "password": password})
+        
+        # Add torrent
+        add_url = f"{web_url}/api/v2/torrents/add"
+        resp = session.post(add_url, data={"urls": torrent_url})
+        
+        if resp.status_code == 200:
+            return jsonify({"success": True, "message": "Torrent added successfully"})
+        else:
+            return jsonify({"error": f"Failed to add torrent: {resp.status_code}"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/metadata")
 def api_metadata():
     """API endpoint for MP3 metadata lookup"""

@@ -24,9 +24,9 @@
         <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Metadata</span>
       </button>
       {% if qbit_config.enabled and qbit_config.web_url %}
-      <a class="btn btn-outline-info" href="{{ qbit_config.web_url }}/#/search/{{ artist_name|urlencode }}" target="_blank" rel="noopener noreferrer" title="Search for {{ artist_name }} releases in qBittorrent">
+      <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>
-      </a>
+      </button>
       {% endif %}
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
@@ -179,4 +179,209 @@
     </div>
   {% endif %}
 </div>
+
+<!-- qBittorrent Search Modal -->
+{% if qbit_config.enabled %}
+<div class="modal fade" id="qbitModal" tabindex="-1" aria-labelledby="qbitModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="qbitModalLabel">
+          <i class="bi bi-download"></i> Search qBittorrent for <span id="qbitArtistName"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="input-group">
+            <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search query...">
+            <button class="btn btn-primary" onclick="performQbitSearch()">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+          <div class="form-text">Search for albums, discographies, or specific releases</div>
+        </div>
+        
+        <div id="qbitLoading" class="text-center py-4" style="display: none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <p class="mt-2">Searching qBittorrent...</p>
+        </div>
+        
+        <div id="qbitResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openQbitSearch(artistName) {
+  document.getElementById('qbitArtistName').textContent = artistName;
+  document.getElementById('qbitSearchInput').value = artistName + ' discography';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  const modal = new bootstrap.Modal(document.getElementById('qbitModal'));
+  modal.show();
+  
+  // Auto-search on open
+  setTimeout(() => performQbitSearch(), 300);
+}
+
+function performQbitSearch() {
+  const query = document.getElementById('qbitSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('qbitLoading').style.display = 'block';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  fetch('/api/qbittorrent/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found. Try a different search query.
+        </div>
+      `;
+      return;
+    }
+    
+    let html = `
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="text-center">Size</th>
+              <th class="text-center">Seeds</th>
+              <th class="text-center">Peers</th>
+              <th class="text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    
+    results.forEach((result, idx) => {
+      const size = formatBytes(result.fileSize || 0);
+      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
+      
+      html += `
+        <tr>
+          <td>
+            <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
+              ${escapeHtml(result.fileName || 'Unknown')}
+            </div>
+            <div class="text-muted" style="font-size: 0.75rem;">
+              ${escapeHtml(result.siteUrl || '')}
+            </div>
+          </td>
+          <td class="text-center">${size}</td>
+          <td class="text-center ${seedClass}">
+            <i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}
+          </td>
+          <td class="text-center">
+            <i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}
+          </td>
+          <td class="text-center">
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')"
+              ${!result.fileUrl ? 'disabled' : ''}>
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+    
+    html += `
+          </tbody>
+        </table>
+      </div>
+      <div class="text-muted small mt-2">
+        Found ${results.length} results
+      </div>
+    `;
+    
+    document.getElementById('qbitResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    document.getElementById('qbitResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Network error: ${error.message}
+      </div>
+    `;
+  });
+}
+
+function addTorrent(url) {
+  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
+  
+  fetch('/api/qbittorrent/add', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ url: url })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Torrent added successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Allow Enter key to trigger search
+document.addEventListener('DOMContentLoaded', function() {
+  const searchInput = document.getElementById('qbitSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        performQbitSearch();
+      }
+    });
+  }
+});
+</script>
+{% endif %}
+
 {% endblock %}
