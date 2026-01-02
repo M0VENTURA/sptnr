@@ -38,16 +38,6 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
-# Add custom template filter for album URLs
-@app.template_filter('album_url_combo')
-def album_url_combo_filter(artist, album):
-    """Generate URL combo for album routes using ||| separator.
-    
-    This avoids routing ambiguity when artist/album names contain slashes.
-    Example: AC/DC + Back in Black -> AC/DC|||Back in Black
-    """
-    return f"{artist}|||{album}"
-
 # Paths
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
@@ -914,7 +904,7 @@ def album_rescan(combo):
 
     threading.Thread(target=_worker, args=(artist,), daemon=True).start()
     flash(f"Rescan started for {artist}", "info")
-    return redirect(url_for("album_detail", artist=artist, album=album))
+    return redirect(url_for("album_detail", combo=f'{artist}|||{album}'))
 
 
 @app.route("/track/<track_id>")
