@@ -60,9 +60,10 @@ def scan_popularity(verbose: bool = False):
         # Get all tracks that haven't had popularity data populated yet
         # Priority: tracks with NO popularity scores (zeros), then old ones (older than 7 days)
         cursor.execute("""
-            SELECT DISTINCT artist, album, title, id,
-                   spotify_score, lastfm_ratio, listenbrainz_score,
-                   last_scanned, mbid, spotify_release_date
+                 SELECT DISTINCT artist, album, title, id,
+                     spotify_score, lastfm_ratio, listenbrainz_score,
+                     stars,
+                     last_scanned, mbid, spotify_release_date
             FROM tracks
             WHERE (spotify_score = 0 AND lastfm_ratio = 0 AND listenbrainz_score = 0) OR
                   (last_scanned IS NOT NULL AND datetime(last_scanned) < datetime('now', '-7 days'))
@@ -142,6 +143,17 @@ def scan_popularity(verbose: bool = False):
                 (LISTENBRAINZ_WEIGHT * lb_norm) +
                 (AGE_WEIGHT * age_norm)
             )
+
+            # Initial star assignment (will be refined later by single detection)
+            # Simple global thresholds to avoid waiting for album-level z-bands
+            if composite_score >= 4.0:
+                base_stars = 4
+            elif composite_score >= 2.5:
+                base_stars = 3
+            elif composite_score >= 1.0:
+                base_stars = 2
+            else:
+                base_stars = 1
             
             # Update database
             try:
@@ -153,9 +165,10 @@ def scan_popularity(verbose: bool = False):
                         lastfm_ratio = ?,
                         listenbrainz_score = ?,
                         score = ?,
-                        popularity_score = ?
+                        popularity_score = ?,
+                        stars = CASE WHEN (stars IS NULL OR stars = 0) THEN ? ELSE stars END
                     WHERE id = ?
-                """, (spotify_score, lastfm_ratio, listenbrainz_count, composite_score, composite_score, track_id))
+                """, (spotify_score, lastfm_ratio, listenbrainz_count, composite_score, composite_score, base_stars, track_id))
                 conn.commit()
                 conn.close()
                 updated_count += 1
