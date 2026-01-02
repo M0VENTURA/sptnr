@@ -75,6 +75,23 @@
     </div>
   </div>
 
+  <!-- Downloads Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-folder-down"></i> Downloads</h5>
+      <small class="text-muted">Download folder configuration</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Downloads Folder Path</label>
+          <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
+          <div class="form-text">Path where downloaded files are stored. Used for monitoring downloads and building the library.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Soulseek (slskd) Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -432,6 +449,9 @@ function buildConfigObject() {
         enabled: document.getElementById('youtube_enabled').checked,
         api_key: document.getElementById('youtube_api_key').value
       }
+    },
+    downloads: {
+      folder: document.getElementById('downloads_folder').value
     },
     database: {
       path: document.getElementById('db_path').value,

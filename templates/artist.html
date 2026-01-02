@@ -410,9 +410,13 @@ document.addEventListener('DOMContentLoaded', function() {
     color: var(--text-primary) !important;
 }
 
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
 .table {
     color: var(--text-primary) !important;
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
 }
 
 .table thead {
@@ -427,31 +431,27 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .table tbody {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
 }
 
 .table tbody tr {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
     border-color: var(--border-color) !important;
 }
 
 .table tbody td {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
     color: var(--text-primary) !important;
     border-color: var(--border-color) !important;
 }
 
 .table-hover tbody tr:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
+    background-color: var(--primary-bg) !important;
     color: var(--text-primary) !important;
 }
 
 .table-hover tbody tr:hover td {
-    background-color: rgba(255, 255, 255, 0.05) !important;
-}
-
-.table-responsive {
-    background-color: var(--secondary-bg) !important;
+    background-color: var(--primary-bg) !important;
 }
 
 .modal-content {
@@ -488,7 +488,7 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .modal-body .table {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
 }
 
 .modal-body .table thead {
@@ -496,24 +496,24 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 
 .modal-body .table tbody {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
 }
 
 .modal-body .table tbody tr {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
 }
 
 .modal-body .table tbody td {
-    background-color: var(--secondary-bg) !important;
+    background-color: transparent !important;
     color: var(--text-primary) !important;
 }
 
 .modal-body .table-hover tbody tr:hover {
-    background-color: rgba(255, 255, 255, 0.05) !important;
+    background-color: var(--primary-bg) !important;
 }
 
 .modal-body .table-hover tbody tr:hover td {
-    background-color: rgba(255, 255, 255, 0.05) !important;
+    background-color: var(--primary-bg) !important;
 }
 </style>
 

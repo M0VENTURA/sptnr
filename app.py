@@ -786,6 +786,7 @@ def config_save_json():
             'navidrome': data.get('navidrome', {}),
             'qbittorrent': data.get('qbittorrent', {}),
             'slskd': data.get('slskd', {}),
+            'downloads': data.get('downloads', {}),
             'api_integrations': data.get('api_integrations', {}),
             'database': data.get('database', {}),
             'logging': data.get('logging', {}),
@@ -1099,12 +1100,12 @@ def qbit_add_torrent():
             login_url = f"{web_url}/api/v2/auth/login"
             session.post(login_url, data={"username": username, "password": password})
         
-        # Add torrent with music category
+        # Add torrent with Music category
         add_url = f"{web_url}/api/v2/torrents/add"
-        resp = session.post(add_url, data={"urls": torrent_url, "category": "music"})
+        resp = session.post(add_url, data={"urls": torrent_url, "category": "Music"})
         
         if resp.status_code == 200:
-            return jsonify({"success": True, "message": "Torrent added successfully to music category"})
+            return jsonify({"success": True, "message": "Torrent added successfully to Music category"})
         else:
             return jsonify({"error": f"Failed to add torrent: {resp.status_code}"}), 500
             
@@ -1517,25 +1518,31 @@ def qbit_status():
         
         torrents = resp.json()
         
-        # Filter and format torrents
+        # Filter and format torrents - only show Music category
         active_torrents = []
         for torrent in torrents:
-            active_torrents.append({
-                "hash": torrent.get("hash", ""),
-                "name": torrent.get("name", ""),
-                "state": torrent.get("state", ""),
-                "progress": round(torrent.get("progress", 0) * 100, 2),
-                "dlspeed": torrent.get("dlspeed", 0),
-                "upspeed": torrent.get("upspeed", 0),
-                "downloaded": torrent.get("downloaded", 0),
-                "uploaded": torrent.get("uploaded", 0),
-                "size": torrent.get("size", 0),
-                "eta": torrent.get("eta", 0),
-                "num_seeds": torrent.get("num_seeds", 0),
-                "num_leechs": torrent.get("num_leechs", 0),
-                "category": torrent.get("category", ""),
-                "save_path": torrent.get("save_path", "")
-            })
+            # Only include torrents in Music category
+            if torrent.get("category", "") == "Music":
+                active_torrents.append({
+                    "hash": torrent.get("hash", ""),
+                    "name": torrent.get("name", ""),
+                    "state": torrent.get("state", ""),
+                    "progress": round(torrent.get("progress", 0) * 100, 2),
+                    "dlspeed": torrent.get("dlspeed", 0),
+                    "upspeed": torrent.get("upspeed", 0),
+                    "downloaded": torrent.get("downloaded", 0),
+                    "uploaded": torrent.get("uploaded", 0),
+                    "size": torrent.get("size", 0),
+                    "eta": torrent.get("eta", 0),
+                    "num_seeds": torrent.get("num_seeds", 0),
+                    "num_leechs": torrent.get("num_leechs", 0),
+                    "category": torrent.get("category", ""),
+                    "save_path": torrent.get("save_path", ""),
+                    "added_on": torrent.get("added_on", 0)
+                })
+        
+        # Sort by most recently added (added_on descending)
+        active_torrents.sort(key=lambda x: x.get("added_on", 0), reverse=True)
         
         return jsonify({"torrents": active_torrents})
         
