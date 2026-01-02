@@ -10,6 +10,7 @@ import os
 import subprocess
 import threading
 import time
+import logging
 from datetime import datetime
 import copy
 import json
@@ -1308,5 +1309,25 @@ def downloads_manager():
 
 
 if __name__ == "__main__":
-    app.run(debug=True, host="0.0.0.0", port=5000)
-
+    # Auto-start scanner if configured for batchrate and perpetual mode
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    features = cfg.get('features', {})
+    
+    if features.get('batchrate') and features.get('perpetual'):
+        # Start the scanner in a background thread
+        def start_scanner():
+            import time as time_module
+            time_module.sleep(2)  # Give Flask time to start
+            try:
+                logger = logging.getLogger('sptnr')
+                logger.info("Auto-starting scanner with batchrate and perpetual mode...")
+                # Import and run the scanner
+                from start import run_scan
+                run_scan(scan_type='batchrate')
+            except Exception as e:
+                print(f"Error starting scanner: {e}")
+        
+        scanner_thread = threading.Thread(target=start_scanner, daemon=True)
+        scanner_thread.start()
+    
+    app.run(debug=False, host="0.0.0.0", port=5000)

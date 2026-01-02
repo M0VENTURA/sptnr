@@ -3060,6 +3060,293 @@ def _self_test_single_gate():
     print(f"✅ {passes}/{len(cases)} cases passed.\n")
 
 
+# ✅ Main scan function that can be called from app.py
+def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
+    """
+    Execute a scan of the music library.
+    
+    Args:
+        scan_type: 'batchrate' or 'perpetual' (default: 'batchrate')
+        verbose: Enable verbose output
+        force: Force re-scan of all tracks
+        dry_run: Preview only, don't apply ratings
+    """
+    global config
+    
+    # ✅ Reload config on each run
+    config, _ = load_config()
+    
+    # Get configuration options
+    batchrate = scan_type == 'batchrate'
+    perpetual = scan_type == 'perpetual'
+    force = force or config["features"].get("force", False)
+    dry_run = dry_run or config["features"].get("dry_run", False)
+    verbose = verbose or config["features"].get("verbose", False)
+    artist_list = config["features"].get("artist", [])
+    
+    # If verbose enabled, route debug logs to console as well
+    if verbose:
+        root_logger = logging.getLogger()
+        root_logger.setLevel(logging.DEBUG)
+        if not any(isinstance(h, logging.StreamHandler) for h in root_logger.handlers):
+            ch = logging.StreamHandler(sys.stdout)
+            ch.setLevel(logging.DEBUG)
+            ch.setFormatter(logging.Formatter("%(asctime)s [%(levelname)s] %(message)s"))
+            root_logger.addHandler(ch)
+
+    # Load artist stats from DB
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT artist_id, artist_name, album_count, track_count, last_updated
+        FROM artist_stats
+    """)
+    artist_stats = cursor.fetchall()
+    conn.close()
+
+    artist_map = {
+        row[1]: {
+            "id": row[0],
+            "album_count": row[2],
+            "track_count": row[3],
+            "last_updated": row[4],
+        }
+        for row in artist_stats
+    }
+
+    # If DB is empty, fallback to Navidrome API
+    if not artist_map:
+        print("⚠️ No artist stats found in DB. Building index from Navidrome...")
+        artist_map = build_artist_index()
+
+    # Auto-populate track cache when empty
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        has_tracks = (cursor.fetchone()[0] or 0) > 0
+        conn.close()
+    except Exception:
+        has_tracks = False
+
+    if not has_tracks:
+        print("⚠️ No cached tracks found in DB. Running full library scan to populate cache...")
+        try:
+            scan_library_to_db(verbose=verbose)
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
+            artist_stats = cursor.fetchall()
+            conn.close()
+            artist_map = {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in artist_stats}
+        except Exception as e:
+            logging.warning(f"Library scan failed at startup: {e}")
+    else:
+        if config.get("features", {}).get("scan_on_start", False):
+            print("ℹ️ scan_on_start enabled — checking Navidrome for new/updated tracks...")
+            try:
+                scan_library_to_db(verbose=verbose)
+            except Exception as e:
+                logging.warning(f"scan_on_start failed: {e}")
+
+    # Determine execution mode
+    if artist_list:
+        print("ℹ️ Running artist-specific rating based on config.yaml...")
+        for name in artist_list:
+            artist_info = artist_map.get(name)
+            if not artist_info:
+                print(f"⚠️ No data found for '{name}', skipping.")
+                continue
+
+            if dry_run:
+                print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
+                continue
+
+            if force:
+                print(f"⚠️ Force enabled: clearing cached data for artist '{name}'...")
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM tracks WHERE artist = ?", (name,))
+                cursor.execute("DELETE FROM artist_stats WHERE artist_name = ?", (name,))
+                conn.commit()
+                conn.close()
+                print(f"✅ Cache cleared for artist '{name}'")
+
+            rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
+            print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+
+            album_count = len(fetch_artist_albums(artist_info['id']))
+            track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                VALUES (?, ?, ?, ?, ?)
+            """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+            conn.commit()
+            conn.close()
+
+    # If force is enabled for batch mode, clear entire cache before scanning
+    if force and batchrate:
+        print("⚠️ Force enabled: clearing entire cached library...")
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("DELETE FROM tracks")
+        cursor.execute("DELETE FROM artist_stats")
+        conn.commit()
+        conn.close()
+        print("✅ Entire cache cleared. Starting fresh...")
+        print("ℹ️ Rebuilding artist index from Navidrome after force clear...")
+        build_artist_index()
+
+    # Always run batch rating when requested
+    if batchrate:
+        print("ℹ️ Running full library batch rating based on DB...")
+        
+        try:
+            url = f"{NAV_BASE_URL}/rest/getArtists.view"
+            params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
+            res = session.get(url, params=params)
+            res.raise_for_status()
+            index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
+            navidrome_artist_count = sum(len(group.get("artist", [])) for group in index)
+            
+            navidrome_album_count = 0
+            navidrome_track_count = 0
+            for group in index:
+                for artist in group.get("artist", []):
+                    artist_id = artist.get("id")
+                    if artist_id:
+                        albums = fetch_artist_albums(artist_id)
+                        navidrome_album_count += len(albums)
+                        for album in albums:
+                            tracks = fetch_album_tracks(album.get("id"))
+                            navidrome_track_count += len(tracks)
+            
+            print(f"📊 Navidrome: {navidrome_artist_count} artists, {navidrome_album_count} albums, {navidrome_track_count} tracks")
+        except Exception as e:
+            print(f"⚠️ Failed to get counts from Navidrome: {e}")
+            navidrome_track_count = 0
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+        db_artist_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
+        db_album_count = cursor.fetchone()[0]
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        db_track_count = cursor.fetchone()[0]
+        conn.close()
+        
+        print(f"💾 Database: {db_artist_count} artists, {db_album_count} albums, {db_track_count} tracks")
+        
+        if navidrome_track_count != db_track_count or db_track_count == 0:
+            print("🔄 Track counts don't match. Running full library scan to sync database...")
+            scan_library_to_db(verbose=verbose, force=force)
+        else:
+            print("✅ Database is in sync with Navidrome. Refreshing artist index...")
+            build_artist_index(verbose=verbose)
+
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT artist_id, artist_name, album_count, track_count, last_updated
+            FROM artist_stats
+        """)
+        artist_stats = cursor.fetchall()
+        conn.close()
+
+        artist_map = {
+            row[1]: {
+                "id": row[0],
+                "album_count": row[2],
+                "track_count": row[3],
+                "last_updated": row[4],
+            }
+            for row in artist_stats
+        }
+
+        if not artist_map:
+            print("❌ No artists found after rebuild. Aborting batch rating.")
+        else:
+            for name, artist_info in artist_map.items():
+                needs_update = True if force else (
+                    not artist_info['last_updated'] or
+                    (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+                )
+
+                if not needs_update:
+                    print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
+                    continue
+
+                if dry_run:
+                    print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
+                    continue
+
+                rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
+                print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
+
+                album_count = len(fetch_artist_albums(artist_info['id']))
+                track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
+                conn.commit()
+                conn.close()
+                time.sleep(1.5)
+
+    # Perpetual mode with self-healing index
+    if perpetual:
+        print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
+        while True:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT artist_id, artist_name FROM artist_stats
+                WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
+            """)
+            rows = cursor.fetchall()
+            conn.close()
+
+            if not rows:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM artist_stats")
+                total_artists = cursor.fetchone()[0]
+                conn.close()
+
+                if total_artists == 0:
+                    print("⚠️ No artists found in DB; rebuilding index from Navidrome...")
+                    build_artist_index()
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT artist_id, artist_name FROM artist_stats
+                        WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
+                    """)
+                    rows = cursor.fetchall()
+                    conn.close()
+
+            if not rows:
+                print("✅ No artists need updating. Sleeping for 12 hours...")
+                time.sleep(12 * 60 * 60)
+                continue
+
+            print(f"🔄 Starting scheduled scan for {len(rows)} stale artists...")
+            for artist_id, artist_name in rows:
+                print(f"🎨 Processing artist: {artist_name} (ID: {artist_id})")
+                rated = rate_artist(artist_id, artist_name, verbose=verbose, force=force)
+                print(f"✅ Completed rating for {artist_name}. Tracks rated: {len(rated)}")
+
+                update_artist_stats(artist_id, artist_name)
+                time.sleep(1.5)
+
+            print("🕒 Scan complete. Sleeping for 12 hours...")
+            time.sleep(12 * 60 * 60)
+
 
 # --- CLI Handling ---
 if __name__ == "__main__":
@@ -3177,278 +3464,24 @@ if __name__ == "__main__":
         refresh_all_playlists_from_db()
         sys.exit(0)
 
-
-# ✅ Load artist stats from DB instead of JSON
-conn = get_db_connection()
-cursor = conn.cursor()
-cursor.execute("""
-    SELECT artist_id, artist_name, album_count, track_count, last_updated
-    FROM artist_stats
-""")
-artist_stats = cursor.fetchall()
-conn.close()
-
-# Convert to dict for easy lookup
-
-artist_map = {
-    row[1]: {
-        "id": row[0],
-        "album_count": row[2],
-        "track_count": row[3],
-        "last_updated": row[4],
-    }
-    for row in artist_stats
-}
-
-
-# ✅ If DB is empty, fallback to Navidrome API
-if not artist_map:
-    print("⚠️ No artist stats found in DB. Building index from Navidrome...")
-    artist_map = build_artist_index()  # This should also insert into artist_stats after fetching
-
-
-# Auto-populate track cache when empty (or when explicitly enabled)
-try:
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(*) FROM tracks")
-    has_tracks = (cursor.fetchone()[0] or 0) > 0
-    conn.close()
-except Exception:
-    has_tracks = False
-
-# If no tracks cached, perform a full library scan into DB so downstream
-# operations (batch rating, playlists) can operate from the local cache
-if not has_tracks:
-    print("⚠️ No cached tracks found in DB. Running full library scan to populate cache...")
-    try:
-        scan_library_to_db(verbose=verbose if 'verbose' in locals() else False)
-        # reload artist_map from DB after scan
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
-        artist_stats = cursor.fetchall()
-        conn.close()
-        artist_map = {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in artist_stats}
-    except Exception as e:
-        logging.warning(f"Library scan failed at startup: {e}")
-else:
-    # Optionally run a scan-on-start to detect new additions when enabled in config
-    if config.get("features", {}).get("scan_on_start", False):
-        print("ℹ️ scan_on_start enabled — checking Navidrome for new/updated tracks...")
-        try:
-            scan_library_to_db(verbose=verbose if 'verbose' in locals() else False)
-        except Exception as e:
-            logging.warning(f"scan_on_start failed: {e}")
-
-
-# ✅ Determine execution mode
-if artist_list:
-    print("ℹ️ Running artist-specific rating based on config.yaml...")
-
-    for name in artist_list:
-        artist_info = artist_map.get(name)
-        if not artist_info:
-            print(f"⚠️ No data found for '{name}', skipping.")
-            continue
-
-        if dry_run:
-            print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
-            continue
-
-        # ✅ If force is enabled, clear cached data for this artist
-        if force:
-            print(f"⚠️ Force enabled: clearing cached data for artist '{name}'...")
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("DELETE FROM tracks WHERE artist = ?", (name,))
-            cursor.execute("DELETE FROM artist_stats WHERE artist_name = ?", (name,))
-            conn.commit()
-            conn.close()
-            print(f"✅ Cache cleared for artist '{name}'")
-
-        rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
-        print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
-
-        # ✅ Update artist_stats after rating
-        album_count = len(fetch_artist_albums(artist_info['id']))
-        track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-            VALUES (?, ?, ?, ?, ?)
-        """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
-        conn.commit()
-        conn.close()
-
-
-# ✅ If force is enabled for batch mode, clear entire cache before scanning
-if force and batchrate:
-    print("⚠️ Force enabled: clearing entire cached library...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM tracks")
-    cursor.execute("DELETE FROM artist_stats")
-    conn.commit()
-    conn.close()
-    print("✅ Entire cache cleared. Starting fresh...")
-
-    print("ℹ️ Rebuilding artist index from Navidrome after force clear...")
-    build_artist_index()
-
-# 🔧 Always run batch rating when requested (even if force just ran)
-if batchrate:
-    print("ℹ️ Running full library batch rating based on DB...")
+    # ✅ Determine which scan type to run
+    scan_type = None
+    if args.batchrate:
+        scan_type = 'batchrate'
+    elif args.perpetual:
+        scan_type = 'perpetual'
+    elif config["features"].get("batchrate") and config["features"].get("perpetual"):
+        scan_type = 'batchrate'
     
-    # Get total track count from Navidrome (more accurate than artist count)
-    try:
-        url = f"{NAV_BASE_URL}/rest/getArtists.view"
-        params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
-        res = session.get(url, params=params)
-        res.raise_for_status()
-        index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
-        navidrome_artist_count = sum(len(group.get("artist", [])) for group in index)
-        
-        # Count total albums and tracks in Navidrome
-        navidrome_album_count = 0
-        navidrome_track_count = 0
-        for group in index:
-            for artist in group.get("artist", []):
-                artist_id = artist.get("id")
-                if artist_id:
-                    albums = fetch_artist_albums(artist_id)
-                    navidrome_album_count += len(albums)
-                    for album in albums:
-                        tracks = fetch_album_tracks(album.get("id"))
-                        navidrome_track_count += len(tracks)
-        
-        print(f"📊 Navidrome: {navidrome_artist_count} artists, {navidrome_album_count} albums, {navidrome_track_count} tracks")
-    except Exception as e:
-        print(f"⚠️ Failed to get counts from Navidrome: {e}")
-        navidrome_track_count = 0
-    
-    # Get counts from database
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
-    db_artist_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
-    db_album_count = cursor.fetchone()[0]
-    cursor.execute("SELECT COUNT(*) FROM tracks")
-    db_track_count = cursor.fetchone()[0]
-    conn.close()
-    
-    print(f"💾 Database: {db_artist_count} artists, {db_album_count} albums, {db_track_count} tracks")
-    
-    if navidrome_track_count != db_track_count or db_track_count == 0:
-        print("🔄 Track counts don't match. Running full library scan to sync database...")
-        scan_library_to_db(verbose=verbose, force=force)
+    # ✅ Only call run_scan if we have a scan type to execute
+    if scan_type:
+        run_scan(
+            scan_type=scan_type, 
+            verbose=args.verbose or config["features"].get("verbose", False),
+            force=args.force or config["features"].get("force", False),
+            dry_run=args.dry_run or config["features"].get("dry_run", False)
+        )
     else:
-        print("✅ Database is in sync with Navidrome. Refreshing artist index...")
-        build_artist_index(verbose=verbose)
+        print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
+        sys.exit(0)
 
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("""
-        SELECT artist_id, artist_name, album_count, track_count, last_updated
-        FROM artist_stats
-    """)
-    artist_stats = cursor.fetchall()
-    conn.close()
-
-    
-    artist_map = {
-        row[1]: {
-            "id": row[0],
-            "album_count": row[2],
-            "track_count": row[3],
-            "last_updated": row[4],
-        }
-        for row in artist_stats
-    }
-
-    if not artist_map:
-        print("❌ No artists found after rebuild. Aborting batch rating.")
-    else:
-        for name, artist_info in artist_map.items():
-            needs_update = True if force else (
-                not artist_info['last_updated'] or
-                (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
-            )
-
-            if not needs_update:
-                print(f"⏩ Skipping '{name}' (last updated {artist_info['last_updated']})")
-                continue
-
-            if dry_run:
-                print(f"👀 Dry run: would scan '{name}' (ID {artist_info['id']})")
-                continue
-
-            rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
-            print(f"✅ Completed rating for {name}. Tracks rated: {len(rated)}")
-
-            album_count = len(fetch_artist_albums(artist_info['id']))
-            track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("""
-                INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                VALUES (?, ?, ?, ?, ?)
-            """, (artist_info['id'], name, album_count, track_count, datetime.now().strftime("%Y-%m-%dT%H:%M:%S")))
-            conn.commit()
-            conn.close()
-            time.sleep(1.5)
-
-# ♻️ Perpetual mode with self-healing index
-if perpetual:
-    print("ℹ️ Running perpetual mode based on DB (optimized for stale artists)...")
-    while True:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT artist_id, artist_name FROM artist_stats
-            WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
-        """)
-        rows = cursor.fetchall()
-        conn.close()
-
-        if not rows:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            cursor.execute("SELECT COUNT(*) FROM artist_stats")
-            total_artists = cursor.fetchone()[0]
-            conn.close()
-
-            if total_artists == 0:
-                print("⚠️ No artists found in DB; rebuilding index from Navidrome...")
-                build_artist_index()
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    SELECT artist_id, artist_name FROM artist_stats
-                    WHERE last_updated IS NULL OR last_updated < DATE('now','-7 days')
-                """)
-                rows = cursor.fetchall()
-                conn.close()
-
-        if not rows:
-            print("✅ No artists need updating. Sleeping for 12 hours...")
-            time.sleep(12 * 60 * 60)
-            continue
-
-        print(f"🔄 Starting scheduled scan for {len(rows)} stale artists...")
-        for artist_id, artist_name in rows:
-            print(f"🎨 Processing artist: {artist_name} (ID: {artist_id})")
-            rated = rate_artist(artist_id, artist_name, verbose=verbose, force=force)
-            print(f"✅ Completed rating for {artist_name}. Tracks rated: {len(rated)}")
-
-            update_artist_stats(artist_id, artist_name)
-            time.sleep(1.5)
-
-        print("🕒 Scan complete. Sleeping for 12 hours...")
-        time.sleep(12 * 60 * 60)
-
-else:
-    print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
-    sys.exit(0)

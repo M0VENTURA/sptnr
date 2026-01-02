@@ -26,4 +26,4 @@ COPY . /app
 RUN mkdir -p /config /database
 
 EXPOSE 5000
-CMD ["python", "start.py"]
+CMD ["python", "app.py"]
