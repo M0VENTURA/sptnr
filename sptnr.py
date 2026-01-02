@@ -47,6 +47,14 @@ if abs(total_weight - 1.0) > 0.001:  # Allow tiny floating-point tolerance
 SLEEP_TIME = 1.5  # Default sleep time between artist scans
 
 
+# ✅ Create persistent HTTP session with connection pooling & retry strategy
+session = create_retry_session(
+    retries=3,
+    backoff_factor=0.3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    session=requests.Session()
+)
+
 from collections import defaultdict
 
 
@@ -170,7 +178,7 @@ def get_listenbrainz_track_info(mbid):
         return 0
     try:
         url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}/listen-count"
-        res = requests.get(url, timeout=10)
+        res = session.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
         payload = data.get("payload", {})
@@ -201,7 +209,7 @@ def get_lastfm_track_info(artist, title):
     }
 
     try:
-        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params, timeout=10)
+        res = session.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params, timeout=10)
         res.raise_for_status()
 
         # ✅ Validate JSON response
@@ -247,7 +255,7 @@ def search_spotify_track(title, artist, album=None):
         params = {"q": q, "type": "track", "limit": 10}
         token = get_spotify_token()
         headers = {"Authorization": f"Bearer " + token}
-        res = requests.get("https://api.spotify.com/v1/search", headers=headers, params=params)
+        res = session.get("https://api.spotify.com/v1/search", headers=headers, params=params)
         res.raise_for_status()
         return res.json().get("tracks", {}).get("items", [])
 
@@ -453,7 +461,7 @@ def search_single_track(artist: str, title: str, max_results: int = 5, retries: 
 
     for attempt in range(retries):
         try:
-            resp = requests.get(SEARCH_URL, params=params)
+            resp = session.get(SEARCH_URL, params=params)
             resp.raise_for_status()
             items = resp.json().get("items", [])
             return [
@@ -489,7 +497,7 @@ def search_youtube_video(title, artist):
     }
 
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         data = res.json()
         return data.get("items", [])
@@ -527,7 +535,7 @@ def is_official_youtube_channel(channel_id, artist=None):
     }
 
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         data = res.json().get("items", [])
         if not data:
@@ -568,7 +576,7 @@ def is_lastfm_single(title, artist):
     query = f"{artist} {title}".replace(" ", "+")
     url = f"https://www.last.fm/music/{artist.replace(' ', '+')}/{title.replace(' ', '+')}"
     try:
-        res = requests.get(url, timeout=5)
+        res = session.get(url, timeout=5)
         res.raise_for_status()
         soup = BeautifulSoup(res.text, "html.parser")
         track_count = soup.find_all("td", class_="chartlist-duration")
@@ -638,7 +646,7 @@ def is_musicbrainz_single(title, artist, cache=None, retries=3, backoff_factor=2
 
     for attempt in range(retries):
         try:
-            res = requests.get(url, params=params, headers=headers, timeout=10)
+            res = session.get(url, params=params, headers=headers, timeout=10)
             res.raise_for_status()
             data = res.json().get("release-groups", [])
             is_single = any(rg.get("primary-type", "").lower() == "single" for rg in data)
@@ -679,7 +687,7 @@ def is_discogs_single(title, artist):
     }
 
     try:
-        res = requests.get(url, headers=headers, params=params)
+        res = session.get(url, headers=headers, params=params)
         res.raise_for_status()
         results = res.json().get("results", [])
         return any("Single" in r.get("format", []) for r in results)
@@ -693,7 +701,7 @@ def search_google_for_single(artist, title):
     query = f"{artist} {title} single"
     params = {"key": os.getenv("GOOGLE_API_KEY"), "cx": os.getenv("GOOGLE_CSE_ID"), "q": query, "num": 3}
     try:
-        res = requests.get("https://www.googleapis.com/customsearch/v1", params=params)
+        res = session.get("https://www.googleapis.com/customsearch/v1", params=params)
         res.raise_for_status()
         return res.json().get("items", [])
     except:
@@ -732,7 +740,7 @@ def get_spotify_token():
     data = {"grant_type": "client_credentials"}
 
     try:
-        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
+        res = session.post("https://accounts.spotify.com/api/token", headers=headers, data=data)
         res.raise_for_status()
         return res.json()["access_token"]
     except requests.exceptions.HTTPError as e:
@@ -762,7 +770,7 @@ def get_lastfm_track_info(artist, title):
     }
 
     try:
-        res = requests.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
+        res = session.get("https://ws.audioscrobbler.com/2.0/", headers=headers, params=params)
         res.raise_for_status()
         data = res.json().get("track", {})
         track_play = int(data.get("playcount", 0))
@@ -887,7 +895,7 @@ def get_lastfm_tags(artist):
     if not api_key:
         return []
     try:
-        res = requests.get("https://ws.audioscrobbler.com/2.0/", params={
+        res = session.get("https://ws.audioscrobbler.com/2.0/", params={
             "method": "artist.getInfo",
             "artist": artist,
             "api_key": api_key,
@@ -906,7 +914,7 @@ def get_discogs_genres(title, artist):
         return []
 
     try:
-        res = requests.get(
+        res = session.get(
             "https://api.discogs.com/database/search",
             headers={"Authorization": f"Discogs token={token}"},
             params={"q": f"{artist} {title}", "type": "release"},
@@ -930,7 +938,7 @@ def get_discogs_genres(title, artist):
 def get_audiodb_genres(artist):
     key = os.getenv("AUDIODB_API_KEY", "1")  # Public key fallback
     try:
-        res = requests.get(f"https://theaudiodb.com/api/v1/json/{key}/search.php?s={artist}", timeout=10)
+        res = session.get(f"https://theaudiodb.com/api/v1/json/{key}/search.php?s={artist}", timeout=10)
         res.raise_for_status()
         data = res.json().get("artists", [])
         if data:
@@ -941,7 +949,7 @@ def get_audiodb_genres(artist):
 
 def get_musicbrainz_genres(title, artist):
     try:
-        res = requests.get("https://musicbrainz.org/ws/2/recording/", params={
+        res = session.get("https://musicbrainz.org/ws/2/recording/", params={
             "query": f'"{title}" AND artist:"{artist}"',
             "fmt": "json",
             "limit": 1
@@ -997,7 +1005,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
     rated_map = {}
 
     try:
-        res = requests.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
+        res = session.get(f"{nav_base}/rest/getArtist.view", params={**auth, "id": artist_id})
         res.raise_for_status()
         albums = res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
     except:
@@ -1005,7 +1013,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
     def fetch_album_tracks(album):
         try:
-            res = requests.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
+            res = session.get(f"{nav_base}/rest/getAlbum.view", params={**auth, "id": album["id"]})
             res.raise_for_status()
             return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
         except:
@@ -1132,7 +1140,7 @@ def build_artist_index():
     if not nav_base or not auth:
         return {}
     try:
-        res = requests.get(f"{nav_base}/rest/getArtists.view", params=auth)
+        res = session.get(f"{nav_base}/rest/getArtists.view", params=auth)
         res.raise_for_status()
         index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
         artist_map = {a["name"]: a["id"] for group in index for a in group.get("artist", [])}
@@ -1179,7 +1187,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
 
         # Fetch current track genre from Navidrome
         try:
-            res = requests.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
+            res = session.get(f"{nav_base}/rest/getSong.view", params={**auth, "id": track_id})
             res.raise_for_status()
             nav_song = res.json().get("subsonic-response", {}).get("song", {})
             current_genre = nav_song.get("genre", "None")
@@ -1202,7 +1210,7 @@ def sync_to_navidrome(album_tracks, artist_name, verbose=False):
 
         try:
             set_params = {**auth, "id": track_id, "rating": stars}
-            set_res = requests.get(f"{nav_base}/rest/setRating.view", params=set_params)
+            set_res = session.get(f"{nav_base}/rest/setRating.view", params=set_params)
             set_res.raise_for_status()
 
             updated_cache[track_id] = build_cache_entry(stars, track.get("score", 0))
@@ -1383,3 +1391,4 @@ else:
     print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
 
     
+

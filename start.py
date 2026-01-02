@@ -152,6 +152,14 @@ def load_config():
 
 config = load_config()
 
+# ✅ Create persistent HTTP session with connection pooling & retry strategy
+session = create_retry_session(
+    retries=3,
+    backoff_factor=0.3,
+    status_forcelist=[429, 500, 502, 503, 504],
+    session=requests.Session()
+)
+
 # ✅ Merge defaults with existing config to avoid KeyErrors
 default_features = {
     "dry_run": False,
@@ -351,7 +359,7 @@ def get_supported_extensions():
     url = f"{NAV_BASE_URL}/rest/getOpenSubsonicExtensions.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         extensions = res.json().get("subsonic-response", {}).get("openSubsonicExtensions", [])
         print(f"✅ Supported extensions: {extensions}")
@@ -1306,7 +1314,7 @@ def is_musicbrainz_single(title: str, artist: str) -> bool:
     if not MUSICBRAINZ_ENABLED:
         return False
     try:
-        res = requests.get(
+        res = session.get(
             "https://musicbrainz.org/ws/2/release-group/",
             params={
                 "query": f'"{title}" AND artist:"{artist}" AND primarytype:Single',
@@ -1405,7 +1413,7 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, fl
             "limit": limit,
             "inc": "releases+artist-credits",  # releases needed to inspect release-group via second hop
         }
-        r = requests.get(rec_url, params=rec_params, headers=headers, timeout=10)
+        r = session.get(rec_url, params=rec_params, headers=headers, timeout=10)
         r.raise_for_status()
         recordings = r.json().get("recordings", []) or []
         if not recordings:
@@ -1431,7 +1439,7 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, fl
                 if rel_id:
                     rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
                     rel_params = {"fmt": "json", "inc": "release-groups"}
-                    rr = requests.get(rel_url, params=rel_params, headers=headers, timeout=10)
+                    rr = session.get(rel_url, params=rel_params, headers=headers, timeout=10)
                     if rr.ok:
                         rel_json = rr.json()
                         rg = rel_json.get("release-group") or {}
@@ -1465,7 +1473,7 @@ def get_discogs_genres(title, artist):
     params = {"q": f"{artist} {title}", "type": "release", "per_page": 5}
 
     try:
-        res = requests.get("https://api.discogs.com/database/search", headers=headers, params=params)
+        res = session.get("https://api.discogs.com/database/search", headers=headers, params=params)
         res.raise_for_status()
         results = res.json().get("results", [])
         genres = []
@@ -1481,7 +1489,7 @@ def get_audiodb_genres(artist):
     if not AUDIODB_ENABLED or not AUDIODB_API_KEY:
         return []
     try:
-        res = requests.get(f"https://theaudiodb.com/api/v1/json/{AUDIODB_API_KEY}/search.php?s={artist}", timeout=10)
+        res = session.get(f"https://theaudiodb.com/api/v1/json/{AUDIODB_API_KEY}/search.php?s={artist}", timeout=10)
         res.raise_for_status()
         data = res.json().get("artists", [])
         if data and data[0].get("strGenre"):
@@ -1512,7 +1520,7 @@ def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
             "inc": "tags+artist-credits+releases",
         }
         headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
-        r = requests.get(rec_url, params=rec_params, headers=headers, timeout=10)
+        r = session.get(rec_url, params=rec_params, headers=headers, timeout=10)
         r.raise_for_status()
         recs = r.json().get("recordings", []) or []
         if not recs:
@@ -1533,7 +1541,7 @@ def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
             if rel_id:
                 rel_url = f"https://musicbrainz.org/ws/2/release/{rel_id}"
                 rel_params = {"fmt": "json", "inc": "tags"}
-                rr = requests.get(rel_url, params=rel_params, headers=headers, timeout=10)
+                rr = session.get(rel_url, params=rel_params, headers=headers, timeout=10)
                 rr.raise_for_status()
                 rel_tags = rr.json().get("tags", []) or []
                 return [t.get("name", "") for t in rel_tags if t.get("name")]
@@ -1573,7 +1581,7 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     }
 
     try:
-        res = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
+        res = session.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
         res.raise_for_status()
         data = res.json().get("track", {})
         track_play = int(data.get("playcount", 0))
@@ -1593,7 +1601,7 @@ def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
         try:
             url = "https://api.listenbrainz.org/1/recording/search"
             params = {"artist_name": artist, "recording_name": title, "limit": 1}
-            res = requests.get(url, params=params, timeout=10)
+            res = session.get(url, params=params, timeout=10)
             res.raise_for_status()
             hits = res.json().get("recordings", [])
             if hits:
@@ -1604,7 +1612,7 @@ def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
     # Primary: stats by MBID
     try:
         url = f"https://api.listenbrainz.org/1/stats/recording/{mbid}/listen-count"
-        res = requests.get(url, timeout=10)
+        res = session.get(url, timeout=10)
         res.raise_for_status()
         data = res.json()
         payload = data.get("payload", {})
@@ -1690,7 +1698,7 @@ def set_track_rating_for_all(track_id, stars):
             "rating": stars
         }
         try:
-            res = requests.get(url, params=params, timeout=10)
+            res = session.get(url, params=params, timeout=10)
             res.raise_for_status()
             logging.info(f"✅ Set rating {stars}/5 for track {track_id} (user {user_cfg['user']})")
         except Exception as e:
@@ -1924,7 +1932,7 @@ def fetch_artist_albums(artist_id):
     url = f"{NAV_BASE_URL}/rest/getArtist.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": artist_id, "f": "json"}
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         return res.json().get("subsonic-response", {}).get("artist", {}).get("album", [])
     except Exception as e:
@@ -1941,7 +1949,7 @@ def fetch_album_tracks(album_id):
     url = f"{NAV_BASE_URL}/rest/getAlbum.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "id": album_id, "f": "json"}
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
     except Exception as e:
@@ -1952,7 +1960,7 @@ def build_artist_index(verbose: bool = False):
     url = f"{NAV_BASE_URL}/rest/getArtists.view"
     params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
     try:
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
         conn = get_db_connection()
@@ -3298,7 +3306,7 @@ if batchrate:
     try:
         url = f"{NAV_BASE_URL}/rest/getArtists.view"
         params = {"u": USERNAME, "p": PASSWORD, "v": "1.16.1", "c": "sptnr", "f": "json"}
-        res = requests.get(url, params=params)
+        res = session.get(url, params=params)
         res.raise_for_status()
         index = res.json().get("subsonic-response", {}).get("artists", {}).get("index", [])
         navidrome_artist_count = sum(len(group.get("artist", [])) for group in index)
