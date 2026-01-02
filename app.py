@@ -19,7 +19,8 @@ import io
 from functools import wraps
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
-from start import create_retry_session, scan_artist_to_db, rate_artist, build_artist_index
+from start import create_retry_session, rate_artist, build_artist_index
+from scan_helpers import scan_artist_to_db
 from popularity import scan_popularity
 from api_clients.slskd import SlskdClient
 
