@@ -38,6 +38,10 @@ except ValueError:
 
 SLEEP_TIME = 1.5
 
+# Progress update intervals
+PROGRESS_UPDATE_INTERVAL = 10  # Update progress every N items
+API_RATE_LIMIT_DELAY = 0.1  # Delay between API calls to avoid rate limiting
+
 # 📁 Cache paths (aligned with mounted volume)
 
 DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
@@ -761,6 +765,8 @@ def create_playlist(name, track_ids):
         
         if playlist_id and track_ids:
             # Add tracks to playlist
+            # Note: Subsonic API requires individual calls per track (N+1 pattern)
+            # This is a limitation of the API design and cannot be batched
             params = {**auth, "playlistId": playlist_id}
             for tid in track_ids:
                 params["songIdToAdd"] = tid
@@ -917,7 +923,7 @@ def scan_mp3_metadata(music_folder, show_progress=True):
                 if file.lower().endswith('.mp3'):
                     scanned += 1
                     
-                    if show_progress and scanned % 10 == 0:
+                    if show_progress and scanned % PROGRESS_UPDATE_INTERVAL == 0:
                         percentage = (scanned / total_files) * 100
                         print(f"\r{LIGHT_BLUE}📈 Progress: {scanned}/{total_files} files ({percentage:.1f}%){'  '}{RESET}", end='', flush=True)
         
@@ -1045,11 +1051,11 @@ def scan_navidrome_with_progress():
                     ratings_saved += 1
                 
                 # Show progress
-                if scanned % 50 == 0:
+                if scanned % PROGRESS_UPDATE_INTERVAL == 0:
                     percentage = (scanned / total_tracks) * 100
                     print(f"\r{LIGHT_BLUE}📈 Progress: {scanned}/{total_tracks} tracks ({percentage:.1f}%) | Ratings saved: {ratings_saved}{RESET}", end='', flush=True)
         
-        time.sleep(0.1)  # Small delay to avoid overwhelming the API
+        time.sleep(API_RATE_LIMIT_DELAY)  # Small delay to avoid overwhelming the API
     
     # Final progress
     print(f"\r{LIGHT_GREEN}✅ Progress: {scanned}/{total_tracks} tracks (100.0%) | Ratings saved: {ratings_saved}{'  '}{RESET}")
@@ -1506,15 +1512,13 @@ def run_perpetual_mode():
     while True:
         print(f"{LIGHT_BLUE}🔄 Starting scheduled scan cycle...{RESET}")
         
-        # Run MP3 metadata scan if batchrate is enabled
+        # Run MP3 metadata scan and Navidrome scan if batchrate is enabled
         if args.batchrate:
             try:
                 scan_mp3_metadata(MUSIC_FOLDER, show_progress=True)
             except Exception as e:
                 print(f"{LIGHT_RED}⚠️ MP3 scan failed: {type(e).__name__} - {e}{RESET}")
-        
-        # Run Navidrome scan if batchrate is enabled
-        if args.batchrate:
+            
             try:
                 scan_navidrome_with_progress()
             except Exception as e:
