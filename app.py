@@ -1369,33 +1369,42 @@ def api_create_smart_playlist():
 
 if __name__ == "__main__":
     # Auto-start scanner if configured for batchrate and perpetual mode
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    features = cfg.get('features', {})
-    
-    print(f"Checking auto-start configuration...")
-    print(f"  batchrate: {features.get('batchrate')}")
-    print(f"  perpetual: {features.get('perpetual')}")
-    
-    if features.get('batchrate') and features.get('perpetual'):
-        # Start the scanner in a background thread
-        def start_scanner():
-            import time as time_module
-            time_module.sleep(2)  # Give Flask time to start
-            try:
-                logger = logging.getLogger('sptnr')
-                print("Auto-starting scanner with batchrate and perpetual mode...")
-                logger.info("Auto-starting scanner with batchrate and perpetual mode...")
-                # Import and run the scanner
-                from start import run_scan
-                run_scan(scan_type='batchrate')
-            except Exception as e:
-                print(f"Error starting scanner: {e}")
-                logger.error(f"Error starting scanner: {e}")
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        features = cfg.get('features', {})
         
-        scanner_thread = threading.Thread(target=start_scanner, daemon=True)
-        scanner_thread.start()
-        print("Scanner thread started in background")
-    else:
-        print("Auto-start not enabled (both batchrate and perpetual must be true)")
+        print(f"Checking auto-start configuration...")
+        print(f"  batchrate: {features.get('batchrate')}")
+        print(f"  perpetual: {features.get('perpetual')}")
+        
+        if features.get('batchrate') and features.get('perpetual'):
+            # Start the scanner in a background thread
+            def start_scanner():
+                import time as time_module
+                time_module.sleep(2)  # Give Flask time to start
+                try:
+                    print("Auto-starting scanner with batchrate and perpetual mode...")
+                    logger = logging.getLogger('sptnr')
+                    logger.info("Auto-starting scanner with batchrate and perpetual mode...")
+                    # Import and run the scanner
+                    from start import run_scan
+                    run_scan(scan_type='batchrate')
+                except Exception as e:
+                    import traceback
+                    print(f"Error starting scanner: {e}")
+                    print(traceback.format_exc())
+                    logger = logging.getLogger('sptnr')
+                    logger.error(f"Error starting scanner: {e}")
+                    logger.error(traceback.format_exc())
+            
+            scanner_thread = threading.Thread(target=start_scanner, daemon=True)
+            scanner_thread.start()
+            print("Scanner thread started in background")
+        else:
+            print("Auto-start not enabled (both batchrate and perpetual must be true)")
+    except Exception as e:
+        import traceback
+        print(f"Error in auto-start configuration: {e}")
+        print(traceback.format_exc())
     
     app.run(debug=False, host="0.0.0.0", port=5000)
