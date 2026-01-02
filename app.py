@@ -99,6 +99,16 @@ def _baseline_config():
 
 def _needs_setup(cfg=None):
     cfg = cfg if cfg is not None else _read_yaml(CONFIG_PATH)[0]
+    
+    # Check for navidrome_users list first
+    nav_users = cfg.get("navidrome_users", [])
+    if isinstance(nav_users, list) and nav_users:
+        # At least one user with all required fields
+        first_user = nav_users[0]
+        required = [first_user.get("base_url"), first_user.get("user"), first_user.get("pass")]
+        return any(not (v and str(v).strip()) for v in required)
+    
+    # Fall back to single navidrome entry
     nav = cfg.get("navidrome", {}) or {}
     required = [nav.get("base_url"), nav.get("user"), nav.get("pass")]
     return any(not (v and str(v).strip()) for v in required)
@@ -139,39 +149,68 @@ def setup():
     baseline = copy.deepcopy(_baseline_config())
 
     if request.method == "POST":
-        nav_base = request.form.get("nav_base_url", "").strip()
-        nav_user = request.form.get("nav_user", "").strip()
-        nav_pass = request.form.get("nav_pass", "").strip()
+        # Get lists of user credentials (arrays from form)
+        nav_base_urls = request.form.getlist("nav_base_url[]")
+        nav_users = request.form.getlist("nav_user[]")
+        nav_passes = request.form.getlist("nav_pass[]")
+        
         spotify_client_id = request.form.get("spotify_client_id", "").strip()
         spotify_client_secret = request.form.get("spotify_client_secret", "").strip()
         discogs_token = request.form.get("discogs_token", "").strip()
         lastfm_api_key = request.form.get("lastfm_api_key", "").strip()
 
         errors = []
-        if not nav_base:
-            errors.append("Navidrome URL is required")
-        if not nav_user:
-            errors.append("Navidrome username is required")
-        if not nav_pass:
-            errors.append("Navidrome password is required")
+        
+        # Validate that we have at least one complete user entry
+        if not nav_base_urls or not nav_users or not nav_passes:
+            errors.append("At least one Navidrome user is required")
+        elif len(nav_base_urls) != len(nav_users) or len(nav_users) != len(nav_passes):
+            errors.append("User credential arrays have mismatched lengths")
+        else:
+            # Validate each user entry
+            for idx, (url, user, pwd) in enumerate(zip(nav_base_urls, nav_users, nav_passes), 1):
+                if not url.strip():
+                    errors.append(f"User {idx}: Navidrome URL is required")
+                if not user.strip():
+                    errors.append(f"User {idx}: Username is required")
+                if not pwd.strip():
+                    errors.append(f"User {idx}: Password is required")
 
         if errors:
             for err in errors:
                 flash(err, "danger")
+            
+            # Reconstruct user list for template
+            users_list = [
+                {"base_url": url, "user": user, "pass": pwd}
+                for url, user, pwd in zip(nav_base_urls, nav_users, nav_passes)
+            ]
+            
             return render_template(
                 "setup.html",
-                nav_base_url=nav_base,
-                nav_user=nav_user,
-                nav_pass=nav_pass,
+                nav_users=users_list,
                 spotify_client_id=spotify_client_id,
                 spotify_client_secret=spotify_client_secret,
                 discogs_token=discogs_token,
                 lastfm_api_key=lastfm_api_key,
             )
 
+        # Build navidrome_users list
+        navidrome_users = [
+            {"base_url": url.strip(), "user": user.strip(), "pass": pwd.strip()}
+            for url, user, pwd in zip(nav_base_urls, nav_users, nav_passes)
+            if url.strip() and user.strip() and pwd.strip()
+        ]
+
         new_cfg = copy.deepcopy(baseline)
-        new_cfg.setdefault("navidrome", {})
-        new_cfg["navidrome"].update({"base_url": nav_base, "user": nav_user, "pass": nav_pass})
+        
+        # Store as navidrome_users list (multi-user format)
+        new_cfg["navidrome_users"] = navidrome_users
+        
+        # Also set single navidrome entry for backward compatibility (first user)
+        if navidrome_users:
+            new_cfg.setdefault("navidrome", {})
+            new_cfg["navidrome"].update(navidrome_users[0])
 
         api = new_cfg.setdefault("api_integrations", {})
 
@@ -207,17 +246,32 @@ def setup():
         with open(CONFIG_PATH, "w", encoding="utf-8") as f:
             yaml.safe_dump(new_cfg, f, sort_keys=False, allow_unicode=False)
 
-        flash("Configuration saved. You are ready to start your first scan.", "success")
+        user_count = len(navidrome_users)
+        flash(f"Configuration saved with {user_count} Navidrome user(s). You are ready to start your first scan.", "success")
         return redirect(url_for("dashboard"))
 
-    nav_defaults = cfg.get("navidrome", {}) if cfg else baseline.get("navidrome", {})
+    # GET request - load existing config
+    # Check for navidrome_users list first, then fall back to single navidrome entry
+    nav_users_list = cfg.get("navidrome_users", []) if cfg else []
+    
+    # If no navidrome_users, check for single navidrome entry
+    if not nav_users_list:
+        nav_single = cfg.get("navidrome", {}) if cfg else baseline.get("navidrome", {})
+        if nav_single and nav_single.get("base_url"):
+            nav_users_list = [nav_single]
+    
+    # If still empty, provide default empty structure
+    if not nav_users_list:
+        nav_users_list = []
+    
     api_defaults = cfg.get("api_integrations", {}) if cfg else baseline.get("api_integrations", {})
 
     return render_template(
         "setup.html",
-        nav_base_url=nav_defaults.get("base_url", ""),
-        nav_user=nav_defaults.get("user", ""),
-        nav_pass=nav_defaults.get("pass", ""),
+        nav_users=nav_users_list,
+        nav_base_url=nav_users_list[0].get("base_url", "") if nav_users_list else "",
+        nav_user=nav_users_list[0].get("user", "") if nav_users_list else "",
+        nav_pass=nav_users_list[0].get("pass", "") if nav_users_list else "",
         spotify_client_id=api_defaults.get("spotify", {}).get("client_id", ""),
         spotify_client_secret=api_defaults.get("spotify", {}).get("client_secret", ""),
         discogs_token=api_defaults.get("discogs", {}).get("token", ""),

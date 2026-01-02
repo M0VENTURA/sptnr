@@ -50,9 +50,8 @@ SLEEP_TIME = 1.5  # Default sleep time between artist scans
 # ✅ Create persistent HTTP session with connection pooling & retry strategy
 session = create_retry_session(
     retries=3,
-    backoff_factor=0.3,
-    status_forcelist=[429, 500, 502, 503, 504],
-    session=requests.Session()
+    backoff=0.3,
+    status_forcelist=(429, 500, 502, 503, 504)
 )
 
 from collections import defaultdict
