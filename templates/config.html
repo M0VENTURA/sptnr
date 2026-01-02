@@ -460,16 +460,30 @@ function saveConfig() {
     },
     body: JSON.stringify(config)
   })
-  .then(response => response.json())
-  .then(data => {
-    if (data.success) {
+  .then(response => {
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return response.text().then(text => {
+        throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
+      });
+    }
+    return response.json().then(data => ({
+      status: response.status,
+      data: data
+    }));
+  })
+  .then(result => {
+    if (result.status !== 200) {
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
+    } else if (result.data.success) {
       showToast('Success', 'Configuration saved successfully', 'success');
     } else {
-      showToast('Error', data.error || 'Failed to save configuration', 'error');
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
     }
   })
   .catch(error => {
-    showToast('Error', 'Network error: ' + error.message, 'error');
+    showToast('Error', error.message || 'Network error: ' + error.toString(), 'error');
   })
   .finally(() => {
     saveBtn.disabled = false;

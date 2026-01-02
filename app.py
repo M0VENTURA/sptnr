@@ -639,7 +639,11 @@ def config_edit():
 def config_save_json():
     """Save config as JSON - converts to YAML and updates config.yaml"""
     try:
+        # Get JSON data
         data = request.get_json()
+        
+        if data is None:
+            return jsonify({"success": False, "error": "No JSON data provided"}), 400
         
         # Build YAML structure from JSON
         config_dict = {
@@ -662,7 +666,10 @@ def config_save_json():
                 config_dict['weights'] = existing_config['weights']
         
         # Convert to YAML
-        yaml_content = yaml.safe_dump(config_dict, sort_keys=False, allow_unicode=False)
+        yaml_content = yaml.safe_dump(config_dict, sort_keys=False, allow_unicode=True, default_flow_style=False)
+        
+        # Validate YAML before writing
+        yaml.safe_load(yaml_content)
         
         # Write to file
         cfg_dir = os.path.dirname(CONFIG_PATH)
@@ -672,8 +679,17 @@ def config_save_json():
             f.write(yaml_content)
         
         return jsonify({"success": True, "message": "Configuration saved successfully"})
+    
+    except yaml.YAMLError as e:
+        return jsonify({"success": False, "error": f"YAML error: {str(e)}"}), 400
+    except IOError as e:
+        return jsonify({"success": False, "error": f"File write error: {str(e)}"}), 400
     except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
+        import traceback
+        error_msg = str(e)
+        tb = traceback.format_exc()
+        print(f"Config save error: {tb}")  # Log to console for debugging
+        return jsonify({"success": False, "error": error_msg}), 400
 
 
 @app.route("/api/stats")
