@@ -7,6 +7,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 import sqlite3
 import yaml
 import os
+import sys
 import subprocess
 import threading
 import time
@@ -424,7 +425,13 @@ def dashboard():
     conn.close()
     
     with scan_lock:
-        scan_running = scan_process is not None and scan_process.poll() is None
+        web_ui_running = scan_process is not None and scan_process.poll() is None
+    
+    # Check if background scan from start.py is running
+    lock_file_path = "/config/.scan_lock"
+    background_running = os.path.exists(lock_file_path)
+    
+    scan_running = web_ui_running or background_running
     
     return render_template("dashboard.html",
                          artist_count=artist_count,
@@ -628,6 +635,24 @@ def scan_start():
         )
         
         flash(f"Scan started: {scan_type}", "success")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/mp3", methods=["POST"])
+def scan_mp3():
+    """Run mp3scanner to scan music folder and match files to database"""
+    try:
+        import subprocess
+        cmd = [sys.executable, "mp3scanner.py"]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        
+        if result.returncode == 0:
+            flash("✅ File scan completed successfully", "success")
+        else:
+            flash(f"❌ File scan failed: {result.stderr}", "danger")
+    except Exception as e:
+        flash(f"❌ Error running file scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
