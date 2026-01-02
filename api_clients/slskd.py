@@ -107,8 +107,8 @@ class SlskdClient:
         
         try:
             url = f"{self.base_url}/searches"
-            # Try both common API field names
-            data = {"searchText": query, "query": query}
+            # slskd API uses searchText as the field name
+            data = {"searchText": query}
             resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
             
             if resp.status_code not in [200, 201]:
@@ -145,20 +145,26 @@ class SlskdClient:
             return [], "Error", True
         
         try:
-            url = f"{self.base_url}/searches/{search_id}"
-            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            # First, get the search state
+            state_url = f"{self.base_url}/searches/{search_id}"
+            state_resp = self.session.get(state_url, headers=self.headers, timeout=timeout)
             
-            if resp.status_code != 200:
-                logger.warning(f"Slskd status failed: {resp.status_code} - {resp.text[:200]}")
+            if state_resp.status_code != 200:
+                logger.warning(f"Slskd status failed: {state_resp.status_code} - {state_resp.text[:200]}")
                 return [], "Error", True
             
-            search_data = resp.json()
-            if not search_data:
-                logger.debug(f"Slskd search {search_id}: empty response")
-                return [], "Searching", False
+            state_data = state_resp.json()
+            state = state_data.get("state", "InProgress")
             
-            state = search_data.get("state", "Searching")
-            raw_responses = search_data.get("responses", []) or []
+            # Get the actual responses from the responses endpoint
+            responses_url = f"{self.base_url}/searches/{search_id}/responses"
+            resp = self.session.get(responses_url, headers=self.headers, timeout=timeout)
+            
+            if resp.status_code != 200:
+                logger.debug(f"Slskd responses endpoint returned {resp.status_code}")
+                return [], state, state not in ["InProgress", "Requested"]
+            
+            raw_responses = resp.json() or []
             
             # Parse responses into SearchResponse objects
             responses = []
@@ -176,7 +182,7 @@ class SlskdClient:
                 except Exception as e:
                     logger.debug(f"Failed to parse slskd response: {e}")
             
-            is_complete = state in ["Completed", "Cancelled", "Errored"]
+            is_complete = state not in ["InProgress", "Requested"]
             logger.debug(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
             
             return responses, state, is_complete
