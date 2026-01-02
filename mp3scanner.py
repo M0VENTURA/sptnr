@@ -211,9 +211,17 @@ def match_to_database(audio_files):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Build ISRC lookup for files (for better matching)
+    isrc_lookup = {}
+    for key, metadata in audio_files.items():
+        if metadata.get("isrc"):
+            isrc_lookup[metadata["isrc"]] = metadata
+    
+    logging.info(f"Built ISRC index with {len(isrc_lookup)} unique ISRCs")
+    
     # Get all tracks from database
     cursor.execute("""
-        SELECT id, artist, album, title, file_path
+        SELECT id, artist, album, title, file_path, isrc
         FROM tracks
         WHERE file_path IS NULL OR file_path = ''
         ORDER BY artist, album, title
@@ -223,6 +231,9 @@ def match_to_database(audio_files):
     logging.info(f"Found {len(db_tracks)} tracks in database without file paths")
     
     matched_count = 0
+    isrc_matched = 0
+    exact_matched = 0
+    fuzzy_matched = 0
     processed_count = 0
     
     for track in db_tracks:
@@ -230,18 +241,59 @@ def match_to_database(audio_files):
         artist = track["artist"]
         album = track["album"]
         title = track["title"]
+        db_isrc = track["isrc"]
         
         processed_count += 1
         if processed_count % 50 == 0:
-            logging.info(f"Processing track {processed_count}/{len(db_tracks)} - {matched_count} matches so far")
+            logging.info(f"Processing track {processed_count}/{len(db_tracks)} - {matched_count} matches so far (ISRC: {isrc_matched}, Exact: {exact_matched}, Fuzzy: {fuzzy_matched})")
         
-        # Create search key
-        db_key = f"{normalize_title(artist)}|{normalize_title(album)}|{normalize_title(title)}"
+        matched_metadata = None
+        match_type = None
         
-        # Try exact match first
-        if db_key in audio_files:
-            metadata = audio_files[db_key]
-            file_path = metadata["file_path"]
+        # Priority 1: Try ISRC match (most reliable)
+        if db_isrc and db_isrc in isrc_lookup:
+            matched_metadata = isrc_lookup[db_isrc]
+            match_type = "ISRC"
+            isrc_matched += 1
+        
+        # Priority 2: Try exact string match
+        if not matched_metadata:
+            db_key = f"{normalize_title(artist)}|{normalize_title(album)}|{normalize_title(title)}"
+            if db_key in audio_files:
+                matched_metadata = audio_files[db_key]
+                match_type = "Exact"
+                exact_matched += 1
+        
+        # Priority 3: Try fuzzy matching
+        if not matched_metadata:
+            best_score = 0.7  # Minimum threshold
+            for file_key, metadata in audio_files.items():
+                parts = file_key.split("|")
+                if len(parts) != 3:
+                    continue
+                
+                file_artist, file_album, file_title = parts
+                
+                # Score the match
+                artist_score = similarity(artist, file_artist)
+                album_score = similarity(album, file_album)
+                title_score = similarity(title, file_title)
+                
+                # Average score
+                avg_score = (artist_score + album_score + title_score) / 3.0
+                
+                # Update best match if this is better
+                if avg_score > best_score:
+                    best_score = avg_score
+                    matched_metadata = metadata
+                    match_type = f"Fuzzy ({best_score:.0%})"
+            
+            if matched_metadata:
+                fuzzy_matched += 1
+        
+        # Update database if we found a match
+        if matched_metadata:
+            file_path = matched_metadata["file_path"]
             
             # Update with all metadata fields
             cursor.execute("""
@@ -262,93 +314,37 @@ def match_to_database(audio_files):
                 WHERE id = ?
             """, (
                 file_path,
-                metadata.get("duration"),
-                metadata.get("track_number"),
-                metadata.get("disc_number"),
-                metadata.get("year"),
-                metadata.get("album_artist"),
-                metadata.get("bpm"),
-                metadata.get("bitrate"),
-                metadata.get("sample_rate"),
-                metadata.get("isrc"),
-                metadata.get("composer"),
-                metadata.get("comment"),
-                metadata.get("lyrics"),
+                matched_metadata.get("duration"),
+                matched_metadata.get("track_number"),
+                matched_metadata.get("disc_number"),
+                matched_metadata.get("year"),
+                matched_metadata.get("album_artist"),
+                matched_metadata.get("bpm"),
+                matched_metadata.get("bitrate"),
+                matched_metadata.get("sample_rate"),
+                matched_metadata.get("isrc"),
+                matched_metadata.get("composer"),
+                matched_metadata.get("comment"),
+                matched_metadata.get("lyrics"),
                 track_id
             ))
             matched_count += 1
-            logging.info(f"Exact match: {artist} - {title} -> {file_path}")
-            continue
-        
-        # Try fuzzy matching if exact match fails
-        best_match = None
-        best_score = 0.7  # Minimum threshold
-        
-        for file_key, metadata in audio_files.items():
-            # Split the key to get components
-            parts = file_key.split("|")
-            if len(parts) != 3:
-                continue
-            
-            file_artist, file_album, file_title = parts
-            
-            # Score the match
-            artist_score = similarity(artist, file_artist)
-            album_score = similarity(album, file_album)
-            title_score = similarity(title, file_title)
-            
-            # Average score
-            avg_score = (artist_score + album_score + title_score) / 3.0
-            
-            # Update best match if this is better
-            if avg_score > best_score:
-                best_score = avg_score
-                best_match = metadata
-        
-        # If fuzzy match found, update database
-        if best_match:
-            file_path = best_match["file_path"]
-            
-            # Update with all metadata fields
-            cursor.execute("""
-                UPDATE tracks SET 
-                    file_path = ?, 
-                    duration = ?,
-                    track_number = ?,
-                    disc_number = ?,
-                    year = ?,
-                    album_artist = ?,
-                    bpm = ?,
-                    bitrate = ?,
-                    sample_rate = ?,
-                    isrc = ?,
-                    composer = ?,
-                    comment = ?,
-                    lyrics = ?
-                WHERE id = ?
-            """, (
-                file_path,
-                best_match.get("duration"),
-                best_match.get("track_number"),
-                best_match.get("disc_number"),
-                best_match.get("year"),
-                best_match.get("album_artist"),
-                best_match.get("bpm"),
-                best_match.get("bitrate"),
-                best_match.get("sample_rate"),
-                best_match.get("isrc"),
-                best_match.get("composer"),
-                best_match.get("comment"),
-                best_match.get("lyrics"),
-                track_id
-            ))
-            matched_count += 1
-            logging.info(f"Fuzzy match ({best_score:.2%}): {artist} - {title} -> {file_path}")
+            logging.info(f"{match_type} match: {artist} - {title} -> {file_path}")
+        else:
+            logging.debug(f"No match found for: {artist} - {title}")
     
     conn.commit()
     conn.close()
     
-    logging.info(f"Matching complete: {matched_count} tracks matched out of {len(db_tracks)} total")
+    logging.info(f"=" * 60)
+    logging.info(f"Matching Statistics:")
+    logging.info(f"  Total tracks processed: {len(db_tracks)}")
+    logging.info(f"  Total matches: {matched_count}")
+    logging.info(f"  - ISRC matches: {isrc_matched}")
+    logging.info(f"  - Exact matches: {exact_matched}")
+    logging.info(f"  - Fuzzy matches: {fuzzy_matched}")
+    logging.info(f"  Unmatched: {len(db_tracks) - matched_count}")
+    logging.info(f"=" * 60)
     return matched_count
 
 def scan_all_tracks():
