@@ -1600,10 +1600,10 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         row = cursor_check.fetchone()
                         conn_check.close()
                         
-                        # If any of these critical fields are NULL, we need to update
+                        # If any of these critical fields are NULL, we MUST update (especially duration)
                         if row and (row[0] is None or row[1] is None or row[2] is None or row[3] is None):
                             needs_update = True
-                            logging.info(f"Track {track_id} needs metadata update")
+                            logging.info(f"Track {track_id} needs metadata update (missing: duration={row[0] is None}, track_number={row[1] is None}, year={row[2] is None}, bitrate={row[3] is None})")
                         else:
                             tracks_skipped += 1
                             continue

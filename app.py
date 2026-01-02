@@ -654,7 +654,7 @@ def album_detail(artist, album):
         SELECT *
         FROM tracks
         WHERE artist = ? AND album = ?
-        ORDER BY track_number, title COLLATE NOCASE
+        ORDER BY disc_number, track_number, title COLLATE NOCASE
     """, (artist, album))
     tracks_data = cursor.fetchall()
     
@@ -667,7 +667,8 @@ def album_detail(artist, album):
             spotify_release_date,
             spotify_album_type,
             spotify_album_art_url,
-            MAX(last_scanned) as last_scanned
+            MAX(last_scanned) as last_scanned,
+            MAX(disc_number) as total_discs
         FROM tracks
         WHERE artist = ? AND album = ?
     """, (artist, album))
@@ -685,12 +686,21 @@ def album_detail(artist, album):
             genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
             album_genres.update(genres)
     
+    # Group tracks by disc number
+    tracks_by_disc = {}
+    for track in tracks_data:
+        disc_num = track['disc_number'] or 1
+        if disc_num not in tracks_by_disc:
+            tracks_by_disc[disc_num] = []
+        tracks_by_disc[disc_num].append(track)
+    
     conn.close()
     
     return render_template("album.html",
                          artist_name=artist,
                          album_name=album,
                          tracks=tracks_data,
+                         tracks_by_disc=tracks_by_disc,
                          album_data=album_data,
                          album_genres=sorted(list(album_genres)))
 
