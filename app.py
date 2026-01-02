@@ -22,6 +22,16 @@ from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres
 from start import create_retry_session
 from api_clients.slskd import SlskdClient
 
+# Configure logging for web UI
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s [%(levelname)s] %(message)s',
+    handlers=[
+        logging.FileHandler("/config/webui.log"),
+        logging.StreamHandler()
+    ]
+)
+
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
@@ -1121,10 +1131,12 @@ def logs():
     """View logs"""
     log_files = {
         "main": LOG_PATH,
+        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
         "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
+        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
     }
     return render_template("logs.html", log_path=LOG_PATH, log_files=log_files)
 
@@ -1135,10 +1147,12 @@ def logs_stream():
     log_type = request.args.get("type", "main")
     log_files = {
         "main": LOG_PATH,
+        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
         "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
+        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
     }
     log_path = log_files.get(log_type, LOG_PATH)
     
@@ -1166,10 +1180,12 @@ def logs_view():
     lines = request.args.get("lines", 500, type=int)
     log_files = {
         "main": LOG_PATH,
+        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
         "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
         "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log")
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
+        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
     }
     log_path = log_files.get(log_type, LOG_PATH)
     try:
