@@ -1,0 +1,246 @@
+"""
+Spotify API client module for SPTNR.
+Handles Spotify authentication, track searching, and singles detection.
+
+Usage:
+    from api_clients.spotify import SpotifyClient
+    client = SpotifyClient(client_id, client_secret, http_session)
+    artist_id = client.get_artist_id("Artist Name")
+    singles = client.get_artist_singles(artist_id)
+"""
+
+import base64
+import logging
+import time
+import threading
+import requests
+from concurrent.futures import ThreadPoolExecutor
+from api_clients import session, logger
+
+# Global token cache
+_spotify_token = None
+_spotify_token_exp = 0
+_token_lock = threading.Lock()
+
+
+class SpotifyClient:
+    """Client for interacting with Spotify Web API."""
+    
+    def __init__(self, client_id: str, client_secret: str, http_session=None, worker_threads: int = 4):
+        """
+        Initialize SpotifyClient.
+        
+        Args:
+            client_id: Spotify Client ID
+            client_secret: Spotify Client Secret
+            http_session: Optional requests session (uses global by default)
+            worker_threads: Number of threads for concurrent requests
+        """
+        self.client_id = client_id
+        self.client_secret = client_secret
+        self.session = http_session or session
+        self.worker_threads = worker_threads
+        
+        # Per-instance caches
+        self._artist_id_cache: dict[str, str] = {}
+        self._artist_singles_cache: dict[str, set[str]] = {}
+    
+    def _get_token(self) -> str:
+        """
+        Get valid Spotify token via Client Credentials flow.
+        Token is cached and automatically refreshed when near expiry.
+        """
+        global _spotify_token, _spotify_token_exp
+        
+        # Return cached token if still valid (refresh 60s before expiry)
+        if _spotify_token and time.time() < (_spotify_token_exp - 60):
+            return _spotify_token
+        
+        with _token_lock:
+            # Double-check after acquiring lock
+            if _spotify_token and time.time() < (_spotify_token_exp - 60):
+                return _spotify_token
+            
+            auth_str = f"{self.client_id}:{self.client_secret}"
+            headers = {
+                "Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(),
+                "Content-Type": "application/x-www-form-urlencoded"
+            }
+            data = {"grant_type": "client_credentials"}
+            
+            try:
+                res = requests.post(
+                    "https://accounts.spotify.com/api/token",
+                    headers=headers,
+                    data=data,
+                    timeout=10
+                )
+                res.raise_for_status()
+                payload = res.json()
+                _spotify_token = payload["access_token"]
+                _spotify_token_exp = time.time() + int(payload.get("expires_in", 3600))
+                logger.info("✅ Spotify token refreshed")
+                return _spotify_token
+            except Exception as e:
+                logger.error(f"❌ Spotify Token Error: {e}")
+                raise
+    
+    def _headers(self) -> dict:
+        """Build auth headers for Spotify API."""
+        return {
+            "Authorization": f"Bearer {self._get_token()}",
+            "Content-Type": "application/json"
+        }
+    
+    def get_artist_id(self, artist_name: str) -> str | None:
+        """
+        Search for an artist and cache their Spotify ID.
+        
+        Args:
+            artist_name: Artist name to search for
+            
+        Returns:
+            Spotify artist ID or None if not found
+        """
+        key = (artist_name or "").strip().lower()
+        if key in self._artist_id_cache:
+            return self._artist_id_cache[key]
+        
+        try:
+            params = {"q": f'artist:"{artist_name}"', "type": "artist", "limit": 1}
+            res = self.session.get(
+                "https://api.spotify.com/v1/search",
+                headers=self._headers(),
+                params=params,
+                timeout=10
+            )
+            res.raise_for_status()
+            items = res.json().get("artists", {}).get("items", [])
+            if items:
+                artist_id = items[0].get("id")
+                self._artist_id_cache[key] = artist_id
+                logger.debug(f"Found Spotify artist: {artist_name} → {artist_id}")
+                return artist_id
+        except Exception as e:
+            logger.debug(f"Spotify artist search failed for '{artist_name}': {e}")
+        
+        return None
+    
+    def get_artist_singles(self, artist_id: str) -> set[str]:
+        """
+        Fetch all track IDs from single releases for an artist.
+        Results are cached per artist_id.
+        
+        Args:
+            artist_id: Spotify artist ID
+            
+        Returns:
+            Set of Spotify track IDs from single releases
+        """
+        if not artist_id:
+            return set()
+        
+        if artist_id in self._artist_singles_cache:
+            return self._artist_singles_cache[artist_id]
+        
+        headers = self._headers()
+        singles_album_ids: list[str] = []
+        
+        # Paginate artist albums filtered to singles
+        url = f"https://api.spotify.com/v1/artists/{artist_id}/albums"
+        params = {"include_groups": "single", "limit": 50}
+        
+        try:
+            while True:
+                res = self.session.get(url, headers=headers, params=params, timeout=12)
+                res.raise_for_status()
+                payload = res.json()
+                singles_album_ids.extend([
+                    a.get("id") for a in payload.get("items", []) if a.get("id")
+                ])
+                
+                next_url = payload.get("next")
+                if next_url:
+                    url, params = next_url, None  # 'next' already has full query
+                else:
+                    break
+        except Exception as e:
+            logger.debug(f"Spotify singles album fetch failed for '{artist_id}': {e}")
+        
+        # Fetch tracks for each single album (with bounded concurrency)
+        single_track_ids: set[str] = set()
+        
+        def _fetch_album_tracks(album_id: str) -> list[str]:
+            """Fetch tracks from a single Spotify album."""
+            try:
+                res = self.session.get(
+                    f"https://api.spotify.com/v1/albums/{album_id}/tracks",
+                    headers=headers,
+                    params={"limit": 50},
+                    timeout=12
+                )
+                res.raise_for_status()
+                return [
+                    t.get("id") for t in (res.json().get("items") or []) if t.get("id")
+                ]
+            except Exception as e:
+                logger.debug(f"Failed to fetch tracks for album {album_id}: {e}")
+                return []
+        
+        # Use thread pool for concurrent album track fetching
+        with ThreadPoolExecutor(max_workers=self.worker_threads) as pool:
+            futures = [
+                pool.submit(_fetch_album_tracks, aid) 
+                for aid in singles_album_ids[:250]  # safety cap
+            ]
+            for future in futures:
+                for track_id in (future.result() or []):
+                    single_track_ids.add(track_id)
+        
+        self._artist_singles_cache[artist_id] = single_track_ids
+        logger.info(f"✅ Fetched {len(single_track_ids)} single track IDs for artist {artist_id}")
+        return single_track_ids
+    
+    def search_track(self, title: str, artist: str, album: str = None) -> list:
+        """
+        Search for a track on Spotify with fallback queries.
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            album: Album name (optional)
+            
+        Returns:
+            List of matching track objects
+        """
+        headers = self._headers()
+        
+        def _query(q: str) -> list:
+            """Execute a single search query."""
+            try:
+                params = {"q": q, "type": "track", "limit": 10}
+                res = self.session.get(
+                    "https://api.spotify.com/v1/search",
+                    headers=headers,
+                    params=params,
+                    timeout=10
+                )
+                res.raise_for_status()
+                return res.json().get("tracks", {}).get("items", []) or []
+            except Exception as e:
+                logger.debug(f"Spotify track search failed for '{q}': {e}")
+                return []
+        
+        # Try multiple query strategies
+        queries = [
+            f"{title} artist:{artist} album:{album}" if album else None,
+            f"{title} artist:{artist}",
+        ]
+        
+        all_results = []
+        for q in filter(None, queries):
+            results = _query(q)
+            if results:
+                all_results.extend(results)
+        
+        return all_results
