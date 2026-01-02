@@ -1019,6 +1019,43 @@ def slskd_download():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/slskd/cancel", methods=["POST"])
+def slskd_cancel():
+    """Cancel a Soulseek download"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    username = request.json.get("username", "")
+    filename = request.json.get("filename", "")
+    
+    if not username or not filename:
+        return jsonify({"error": "Username and filename required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req
+        
+        headers = {"X-API-Key": api_key} if api_key else {}
+        
+        # Cancel download - DELETE request to the specific download
+        cancel_url = f"{web_url}/api/v0/transfers/downloads/{username}/{filename}"
+        
+        resp = req.delete(cancel_url, headers=headers, timeout=10)
+        
+        if resp.status_code in [200, 204]:
+            return jsonify({"success": True, "message": "Download cancelled successfully"})
+        else:
+            return jsonify({"error": f"Failed to cancel download: {resp.status_code}"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/qbittorrent/search", methods=["POST"])
 def qbit_search():
     """Proxy endpoint for qBittorrent search API"""
