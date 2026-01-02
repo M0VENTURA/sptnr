@@ -755,7 +755,7 @@ def slskd_search():
         search_data = {"searchText": query}
         resp = req.post(search_url, json=search_data, headers=headers, timeout=10)
         
-        if resp.status_code != 201:
+        if resp.status_code not in [200, 201]:
             return jsonify({"error": f"Search failed: {resp.status_code}"}), 500
         
         search_response = resp.json()
@@ -885,9 +885,9 @@ def qbit_search():
             login_url = f"{web_url}/api/v2/auth/login"
             session.post(login_url, data={"username": username, "password": password})
         
-        # Start search
+        # Start search with music category and all plugins
         search_url = f"{web_url}/api/v2/search/start"
-        resp = session.post(search_url, data={"pattern": query, "plugins": "enabled", "category": "all"})
+        resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "music"})
         
         if resp.status_code != 200:
             return jsonify({"error": f"Search failed: {resp.status_code}"}), 500
@@ -898,10 +898,10 @@ def qbit_search():
         if not search_id:
             return jsonify({"error": "No search ID returned"}), 500
         
-        # Poll for results (max 10 seconds)
+        # Poll for results (max 15 seconds with longer wait time for plugins to respond)
         import time
         results = []
-        for _ in range(20):
+        for i in range(30):
             time.sleep(0.5)
             status_url = f"{web_url}/api/v2/search/status"
             status_resp = session.get(status_url, params={"id": search_id})
@@ -910,13 +910,15 @@ def qbit_search():
                 status_data = status_resp.json()
                 if status_data and len(status_data) > 0:
                     search_status = status_data[0]
+                    # Get results even if still searching (partial results)
+                    results_url = f"{web_url}/api/v2/search/results"
+                    results_resp = session.get(results_url, params={"id": search_id, "limit": 100})
+                    if results_resp.status_code == 200:
+                        data = results_resp.json()
+                        results = data.get("results", [])
+                    
+                    # If search is stopped, we're done
                     if search_status.get("status") == "Stopped":
-                        # Get results
-                        results_url = f"{web_url}/api/v2/search/results"
-                        results_resp = session.get(results_url, params={"id": search_id, "limit": 50})
-                        if results_resp.status_code == 200:
-                            data = results_resp.json()
-                            results = data.get("results", [])
                         break
         
         # Stop search
