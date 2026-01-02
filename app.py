@@ -1308,6 +1308,63 @@ def downloads_manager():
                          api_services=cfg.get('api_integrations', {}))
 
 
+@app.route("/smart-playlists")
+def smart_playlists():
+    """Smart Playlist creation UI page"""
+    return render_template("smart_playlists.html")
+
+
+@app.route("/api/smartplaylist/create", methods=["POST"])
+def api_create_smart_playlist():
+    """Create a new Smart Playlist (.nsp file)"""
+    try:
+        data = request.get_json()
+        file_name = data.get('fileName', '').strip()
+        playlist_data = data.get('playlist', {})
+        
+        if not file_name:
+            return jsonify({"error": "File name is required"}), 400
+        
+        if not playlist_data.get('name'):
+            return jsonify({"error": "Playlist name is required"}), 400
+        
+        # Sanitize file name
+        file_name = ''.join(c for c in file_name if c.isalnum() or c in ('-', '_', ' '))
+        if not file_name:
+            return jsonify({"error": "Invalid file name"}), 400
+        
+        # Create playlists directory if it doesn't exist
+        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
+        playlists_dir = os.path.join(music_folder, "Playlists")
+        os.makedirs(playlists_dir, exist_ok=True)
+        
+        # Create file path
+        file_path = os.path.join(playlists_dir, f"{file_name}.nsp")
+        
+        # Check if file already exists
+        if os.path.exists(file_path):
+            return jsonify({"error": f"Playlist file '{file_name}.nsp' already exists"}), 400
+        
+        # Write the playlist file
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(playlist_data, f, indent=2)
+            
+            return jsonify({
+                "success": True,
+                "message": f"Smart Playlist '{playlist_data.get('name')}' created successfully",
+                "file_path": file_path,
+                "file_name": f"{file_name}.nsp"
+            }), 201
+        
+        except IOError as e:
+            return jsonify({"error": f"Failed to write playlist file: {str(e)}"}), 500
+    
+    except Exception as e:
+        logging.error(f"Error creating smart playlist: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Auto-start scanner if configured for batchrate and perpetual mode
     cfg, _ = _read_yaml(CONFIG_PATH)
