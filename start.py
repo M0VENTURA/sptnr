@@ -2087,13 +2087,39 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             
             tracks_written = 0
             tracks_skipped = 0
+            tracks_updated = 0
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
                     continue
+                
+                # Check if track exists and needs metadata update
+                needs_update = False
                 if not force and (track_id in existing_track_ids or track_id in cached_ids_for_album):
-                    tracks_skipped += 1
-                    continue
+                    # Check if existing track is missing new metadata fields
+                    try:
+                        conn_check = get_db_connection()
+                        cursor_check = conn_check.cursor()
+                        cursor_check.execute("""
+                            SELECT duration, track_number, year, bitrate 
+                            FROM tracks 
+                            WHERE id = ?
+                        """, (track_id,))
+                        row = cursor_check.fetchone()
+                        conn_check.close()
+                        
+                        # If any of these critical fields are NULL, we need to update
+                        if row and (row[0] is None or row[1] is None or row[2] is None or row[3] is None):
+                            needs_update = True
+                            logging.info(f"Track {track_id} needs metadata update")
+                        else:
+                            tracks_skipped += 1
+                            continue
+                    except Exception as e:
+                        logging.debug(f"Error checking track metadata: {e}")
+                        tracks_skipped += 1
+                        continue
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -2143,15 +2169,21 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 try:
                     save_to_db(td)
                     total_written += 1
-                    tracks_written += 1
+                    if needs_update:
+                        tracks_updated += 1
+                    else:
+                        tracks_written += 1
                     existing_track_ids.add(track_id)
                     cached_ids_for_album.add(track_id)
                 except Exception as e:
                     logging.debug(f"Failed to save track {track_id} -> {e}")
             
             if tracks_written > 0:
-                print(f"      ✅ Saved {tracks_written} tracks to DB")
-                logging.info(f"Saved {tracks_written} tracks from album '{album_name}'")
+                print(f"      ✅ Saved {tracks_written} new tracks to DB")
+                logging.info(f"Saved {tracks_written} new tracks from album '{album_name}'")
+            if tracks_updated > 0:
+                print(f"      🔄 Updated {tracks_updated} tracks with new metadata")
+                logging.info(f"Updated {tracks_updated} tracks with metadata from album '{album_name}'")
             if tracks_skipped > 0:
                 total_skipped += tracks_skipped
                 print(f"      ⏩ Skipped {tracks_skipped} cached tracks")
