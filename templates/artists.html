@@ -3,12 +3,12 @@
 {% block title %}Artists - Sptnr{% endblock %}
 
 {% block content %}
-<div class="container mt-4">
-    <div class="d-flex justify-content-between align-items-center mb-4">
+<div class="container-fluid mt-4">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start align-md-items-center mb-4 gap-2">
         <h1 class="h2 mb-0">
             <i class="bi bi-people"></i> Artists
         </h1>
-        <span class="badge badge-success" style="font-size: 0.9rem;">
+        <span class="badge badge-success" style="font-size: 0.9rem; white-space: nowrap;">
             {{ artists|length }} artists
         </span>
     </div>
@@ -21,32 +21,45 @@
         <div class="card">
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead>
+                    <thead class="table-dark sticky-top">
                         <tr>
-                            <th>
+                            <th class="d-none d-sm-table-cell">
                                 <i class="bi bi-person"></i> Artist
                             </th>
-                            <th class="text-center">
+                            <th class="d-sm-none">Artist</th>
+                            <th class="d-none d-md-table-cell text-center">
                                 <i class="bi bi-disc"></i> Albums
                             </th>
-                            <th class="text-center">
+                            <th class="d-none d-md-table-cell text-center">
                                 <i class="bi bi-music-note"></i> Tracks
                             </th>
-                            <th class="text-center">Last Updated</th>
+                            <th class="d-none d-lg-table-cell text-center">Last Updated</th>
                             <th class="text-center">Actions</th>
                         </tr>
                     </thead>
                     <tbody>
                         {% for artist in artists %}
                         <tr>
-                            <td>
-                                <a href="{{ url_for('artist_detail', name=artist.artist) }}">
+                            <td class="d-none d-sm-table-cell">
+                                <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
                                     {{ artist.artist }}
                                 </a>
                             </td>
-                            <td class="text-center">{{ artist.album_count or 0 }}</td>
-                            <td class="text-center">{{ artist.track_count or 0 }}</td>
-                            <td class="text-center text-muted" style="font-size: 0.85rem;">
+                            <td class="d-sm-none">
+                                <div class="text-truncate">
+                                    <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
+                                        <strong>{{ artist.artist }}</strong>
+                                    </a>
+                                </div>
+                                <div class="small text-muted">
+                                    <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
+                                    <span class="d-inline d-md-none ms-1">•</span>
+                                    <span class="d-inline d-md-none ms-1">{{ artist.track_count or 0 }} tracks</span>
+                                </div>
+                            </td>
+                            <td class="d-none d-md-table-cell text-center">{{ artist.album_count or 0 }}</td>
+                            <td class="d-none d-md-table-cell text-center">{{ artist.track_count or 0 }}</td>
+                            <td class="d-none d-lg-table-cell text-center text-muted" style="font-size: 0.85rem;">
                                 {% if artist.last_updated %}
                                     {{ artist.last_updated }}
                                 {% else %}
@@ -54,12 +67,14 @@
                                 {% endif %}
                             </td>
                             <td class="text-center">
-                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist.artist }}')">
-                                    <i class="bi bi-search"></i> Info
-                                </button>
-                                <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="btn btn-sm btn-outline-secondary">
-                                    <i class="bi bi-arrow-right"></i> View
-                                </a>
+                                <div class="btn-group btn-group-sm" role="group">
+                                    <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.artist }}')" title="Get artist metadata">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                    <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="btn btn-outline-secondary" title="View artist details">
+                                        <i class="bi bi-arrow-right"></i>
+                                    </a>
+                                </div>
                             </td>
                         </tr>
                         {% endfor %}

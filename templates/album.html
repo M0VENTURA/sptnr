@@ -3,7 +3,7 @@
 {% block title %}{{ album_name }} - {{ artist_name }} - Sptnr{% endblock %}
 
 {% block content %}
-<div class="container mt-4">
+<div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
@@ -13,15 +13,15 @@
         </ol>
     </nav>
     
-    <div class="d-flex justify-content-between align-items-start mb-4">
-        <div>
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+        <div class="flex-grow-1">
             <h1 class="h2 mb-2">
                 <i class="bi bi-album"></i> {{ album_name }}
             </h1>
             <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
         </div>
-        <button class="btn btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
-            <i class="bi bi-search"></i> Album Info
+        <button class="btn btn-outline-primary w-100 w-md-auto" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
+            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Album Info</span>
         </button>
     </div>
     
@@ -33,29 +33,38 @@
         </div>
         <div class="table-responsive">
             <table class="table table-hover mb-0">
-                <thead>
+                <thead class="d-none d-md-table-header-group">
                     <tr>
-                        <th>#</th>
+                        <th style="width: 3rem;">#</th>
                         <th>Title</th>
-                        <th class="text-center">Rating</th>
-                        <th class="text-center">Single</th>
-                        <th class="text-center">Confidence</th>
-                        <th class="text-center">Updated</th>
-                        <th class="text-center">Actions</th>
+                        <th class="text-center" style="width: 4rem;">★</th>
+                        <th class="text-center d-none d-lg-table-cell">Single</th>
+                        <th class="text-center d-none d-lg-table-cell">Conf</th>
+                        <th class="text-center" style="width: 3rem;">Actions</th>
                     </tr>
                 </thead>
                 <tbody>
                     {% for track in tracks %}
-                    <tr>
-                        <td class="text-muted" style="font-size: 0.9rem;">
+                    <tr class="d-flex flex-column d-md-table-row">
+                        <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
+                            <div class="d-flex justify-content-between align-items-center">
+                                <strong>{{ loop.index }}</strong>
+                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                    {{ track.title }}
+                                </a>
+                            </div>
+                        </td>
+                        <td class="d-none d-md-table-cell text-muted">
                             {{ loop.index }}
                         </td>
-                        <td>
-                            <a href="{{ url_for('track_detail', track_id=track.id) }}">
+                        <td class="d-flex justify-content-between d-md-table-cell align-items-center">
+                            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                            <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
                                 {{ track.title }}
                             </a>
                         </td>
-                        <td class="text-center">
+                        <td class="d-flex justify-content-between d-md-table-cell text-center">
+                            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
                             {% if track.stars %}
                                 <span class="badge badge-success">
                                     {% for i in range(track.stars) %}★{% endfor %}
@@ -64,14 +73,14 @@
                                 <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td class="text-center">
+                        <td class="d-none d-lg-table-cell text-center">
                             {% if track.is_single == 1 %}
                                 <span class="badge bg-info">Single</span>
                             {% else %}
                                 <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td class="text-center">
+                        <td class="d-none d-lg-table-cell text-center">
                             {% if track.single_confidence %}
                                 <span class="badge bg-secondary" style="font-size: 0.75rem;">
                                     {{ track.single_confidence }}
@@ -80,18 +89,11 @@
                                 <span class="text-muted">—</span>
                             {% endif %}
                         </td>
-                        <td class="text-center text-muted" style="font-size: 0.85rem;">
-                            {% if track.last_scanned %}
-                                {{ track.last_scanned|default('Never') }}
-                            {% else %}
-                                Never
-                            {% endif %}
-                        </td>
-                        <td class="text-center">
-                            <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')">
+                        <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                            <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
                                 <i class="bi bi-search"></i>
                             </button>
-                            <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary">
+                            <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit track">
                                 <i class="bi bi-arrow-right"></i>
                             </a>
                         </td>

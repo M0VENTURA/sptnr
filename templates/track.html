@@ -3,7 +3,7 @@
 {% block title %}{{ track.title }} - Sptnr{% endblock %}
 
 {% block content %}
-<div class="container mt-4">
+<div class="container-fluid mt-4">
     <nav aria-label="breadcrumb">
         <ol class="breadcrumb">
             <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
@@ -14,22 +14,22 @@
         </ol>
     </nav>
     
-    <div class="d-flex justify-content-between align-items-start mb-4">
-        <div>
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+        <div class="flex-grow-1">
             <h1 class="h2 mb-1">
                 <i class="bi bi-music-note-list"></i> {{ track.title }}
             </h1>
             <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></p>
         </div>
-        <button class="btn btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')">
-            <i class="bi bi-search"></i> MP3 Metadata
+        <button class="btn btn-outline-primary w-100 w-md-auto" onclick="lookupMetadata('track', '{{ track.id }}')">
+            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">MP3 Data</span>
         </button>
     </div>
     
     <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
-        <div class="row">
+        <div class="row g-2 g-md-3">
             <!-- Left Column: Track Info -->
-            <div class="col-lg-6">
+            <div class="col-12 col-lg-6">
                 <div class="card mb-4">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -72,7 +72,7 @@
                         </div>
                         
                         <div class="mb-3">
-                            <label for="single_confidence" class="form-label">Single Detection Confidence</label>
+                            <label for="single_confidence" class="form-label">Single Confidence</label>
                             <select class="form-select" id="single_confidence" name="single_confidence">
                                 <option value="low" {% if track.single_confidence == 'low' %}selected{% endif %}>Low</option>
                                 <option value="medium" {% if track.single_confidence == 'medium' %}selected{% endif %}>Medium</option>
@@ -84,7 +84,7 @@
             </div>
             
             <!-- Right Column: Metadata & Info -->
-            <div class="col-lg-6">
+            <div class="col-12 col-lg-6">
                 <!-- Scoring Metadata -->
                 <div class="card mb-4">
                     <div class="card-header">
@@ -95,26 +95,26 @@
                     <div class="card-body">
                         <div class="metadata-row">
                             <div class="metadata-label">Track ID</div>
-                            <div class="metadata-value monospace" style="font-size: 0.85rem;">{{ track.id }}</div>
+                            <div class="metadata-value monospace" style="font-size: 0.8rem; overflow-wrap: break-word;">{{ track.id }}</div>
                         </div>
                         <div class="metadata-row">
                             <div class="metadata-label">MBID</div>
-                            <div class="metadata-value monospace" style="font-size: 0.85rem;">{{ track.mbid or '—' }}</div>
+                            <div class="metadata-value monospace" style="font-size: 0.8rem;">{{ track.mbid or '—' }}</div>
                         </div>
                         <div class="metadata-row">
-                            <div class="metadata-label">Spotify Score</div>
+                            <div class="metadata-label">Spotify</div>
                             <div class="metadata-value">{{ track.spotify_score or '—' }}</div>
                         </div>
                         <div class="metadata-row">
-                            <div class="metadata-label">Last.fm Ratio</div>
+                            <div class="metadata-label">Last.fm</div>
                             <div class="metadata-value">{{ track.lastfm_ratio or '—' }}</div>
                         </div>
                         <div class="metadata-row">
-                            <div class="metadata-label">ListenBrainz Plays</div>
+                            <div class="metadata-label">ListenBrainz</div>
                             <div class="metadata-value">{{ track.listenbrainz_count or '—' }}</div>
                         </div>
                         <div class="metadata-row">
-                            <div class="metadata-label">Final Score</div>
+                            <div class="metadata-label">Score</div>
                             <div class="metadata-value">
                                 {% if track.score %}
                                     <span class="badge badge-success">{{ track.score|round(3) }}</span>
@@ -130,17 +130,37 @@
                 <div class="card">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-info-circle"></i> Source Information
+                            <i class="bi bi-info-circle"></i> Sources & Audit
                         </h5>
                     </div>
                     <div class="card-body">
                         <div class="metadata-row">
-                            <div class="metadata-label">Single Sources</div>
+                            <div class="metadata-label">Sources</div>
                             <div class="metadata-value">
                                 {% if track.single_sources %}
                                     {% for source in track.single_sources.split(',') %}
-                                        <span class="badge bg-secondary me-1">{{ source.strip() }}</span>
+                                        <span class="badge bg-secondary">{{ source.strip() }}</span>
                                     {% endfor %}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Canonical</div>
+                            <div class="metadata-value">
+                                {% if track.is_canonical_title == 1 %}
+                                    <span class="badge badge-success">Yes</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">No</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Similarity</div>
+                            <div class="metadata-value">
+                                {% if track.title_similarity_to_base %}
+                                    {{ (track.title_similarity_to_base * 100)|round(1) }}%
                                 {% else %}
                                     —
                                 {% endif %}
@@ -154,36 +174,16 @@
                             <div class="metadata-label">Updated By</div>
                             <div class="metadata-value">{{ track.updated_by or '—' }}</div>
                         </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Is Canonical</div>
-                            <div class="metadata-value">
-                                {% if track.is_canonical_title == 1 %}
-                                    <span class="badge badge-success">Yes</span>
-                                {% else %}
-                                    <span class="badge bg-secondary">No</span>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Title Similarity</div>
-                            <div class="metadata-value">
-                                {% if track.title_similarity_to_base %}
-                                    {{ (track.title_similarity_to_base * 100)|round(1) }}%
-                                {% else %}
-                                    —
-                                {% endif %}
-                            </div>
-                        </div>
                     </div>
                 </div>
             </div>
         </div>
         
-        <div class="d-flex gap-2 mt-4">
-            <button type="submit" class="btn btn-primary btn-lg">
+        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4">
+            <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>
-            <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary btn-lg">
+            <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
                 <i class="bi bi-x-circle"></i> Cancel
             </a>
         </div>

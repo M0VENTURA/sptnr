@@ -3,7 +3,7 @@
 {% block title %}Dashboard - Sptnr{% endblock %}
 
 {% block content %}
-<div class="container mt-4">
+<div class="container-fluid mt-4">
     <div class="mb-4">
         <h1 class="h2 mb-1">
             <i class="bi bi-speedometer2"></i> Dashboard
@@ -12,62 +12,62 @@
     </div>
     
     <!-- Statistics Cards -->
-    <div class="row g-3 mb-4">
-        <div class="col-md-4 col-lg-2">
+    <div class="row g-2 g-md-3 mb-4">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
                         <i class="bi bi-people"></i> Artists
                     </div>
-                    <div class="h3 mb-0">{{ artist_count }}</div>
+                    <div class="h4 mb-0">{{ artist_count }}</div>
                 </div>
             </div>
         </div>
-        <div class="col-md-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
                         <i class="bi bi-disc"></i> Albums
                     </div>
-                    <div class="h3 mb-0">{{ album_count }}</div>
+                    <div class="h4 mb-0">{{ album_count }}</div>
                 </div>
             </div>
         </div>
-        <div class="col-md-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
                         <i class="bi bi-music-note"></i> Tracks
                     </div>
-                    <div class="h3 mb-0">{{ track_count }}</div>
+                    <div class="h4 mb-0">{{ track_count }}</div>
                 </div>
             </div>
         </div>
-        <div class="col-md-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
-                        <i class="bi bi-star-fill"></i> 5★ Tracks
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-star-fill"></i> 5★
                     </div>
-                    <div class="h3 mb-0">{{ five_star_count }}</div>
+                    <div class="h4 mb-0">{{ five_star_count }}</div>
                 </div>
             </div>
         </div>
-        <div class="col-md-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
                         <i class="bi bi-single-music"></i> Singles
                     </div>
-                    <div class="h3 mb-0">{{ singles_count }}</div>
+                    <div class="h4 mb-0">{{ singles_count }}</div>
                 </div>
             </div>
         </div>
-        <div class="col-md-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-lg-2">
             <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2">
-                        <i class="bi bi-circle-fill"></i> Scan Status
+                <div class="card-body text-center">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-circle-fill"></i> Status
                     </div>
                     <div class="h5 mb-0">
                         {% if scan_running %}
@@ -91,29 +91,31 @@
         <div class="card-body">
             {% if scan_running %}
                 <form method="POST" action="{{ url_for('scan_stop') }}" class="d-inline">
-                    <button type="submit" class="btn btn-danger btn-lg">
-                        <i class="bi bi-stop-circle"></i> Stop Scan
+                    <button type="submit" class="btn btn-danger w-100 w-md-auto">
+                        <i class="bi bi-stop-circle"></i> <span class="d-none d-sm-inline">Stop Scan</span>
                     </button>
                 </form>
-                <span class="ms-3 badge bg-success" style="font-size: 0.9rem;">Scan in progress...</span>
+                <span class="ms-2 ms-md-3 badge bg-success d-inline-block mt-2 mt-md-0">Scan in progress...</span>
             {% else %}
-                <form method="POST" action="{{ url_for('scan_start') }}" class="d-inline">
-                    <input type="hidden" name="scan_type" value="batchrate">
-                    <button type="submit" class="btn btn-primary btn-lg">
-                        <i class="bi bi-play-circle"></i> Start Batch Rating
-                    </button>
-                </form>
-                
-                <form method="POST" action="{{ url_for('scan_start') }}" class="d-inline">
-                    <input type="hidden" name="scan_type" value="force">
-                    <button type="submit" class="btn btn-warning btn-lg">
-                        <i class="bi bi-arrow-clockwise"></i> Force Rescan
-                    </button>
-                </form>
-                
-                <a href="{{ url_for('logs') }}" class="btn btn-outline-secondary btn-lg">
-                    <i class="bi bi-file-text"></i> View Logs
-                </a>
+                <div class="d-flex flex-column flex-md-row gap-2 gap-md-3">
+                    <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
+                        <input type="hidden" name="scan_type" value="batchrate">
+                        <button type="submit" class="btn btn-primary w-100">
+                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Batch</span>
+                        </button>
+                    </form>
+                    
+                    <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
+                        <input type="hidden" name="scan_type" value="force">
+                        <button type="submit" class="btn btn-warning w-100">
+                            <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Force</span>
+                        </button>
+                    </form>
+                    
+                    <a href="{{ url_for('logs') }}" class="btn btn-outline-secondary w-100 flex-grow-1">
+                        <i class="bi bi-file-text"></i> <span class="d-none d-sm-inline">Logs</span>
+                    </a>
+                </div>
             {% endif %}
         </div>
     </div>
@@ -128,7 +130,7 @@
             </div>
             <div class="table-responsive">
                 <table class="table table-hover mb-0">
-                    <thead>
+                    <thead class="d-none d-md-table-header-group">
                         <tr>
                             <th>
                                 <i class="bi bi-person"></i> Artist
@@ -142,21 +144,26 @@
                     </thead>
                     <tbody>
                         {% for scan in recent_scans %}
-                        <tr>
-                            <td>
+                        <tr class="d-flex flex-column d-md-table-row">
+                            <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Artist</span>
                                 <a href="{{ url_for('artist_detail', name=scan.artist) }}">
                                     {{ scan.artist }}
                                 </a>
                             </td>
-                            <td>
+                            <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Album</span>
                                 <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}">
                                     {{ scan.album }}
                                 </a>
                             </td>
-                            <td class="text-muted">{{ scan.last_scan }}</td>
-                            <td class="text-center">
+                            <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
+                                <span class="d-md-none text-muted fw-bold">Scanned</span>
+                                {{ scan.last_scan }}
+                            </td>
+                            <td class="d-flex justify-content-end d-md-table-cell">
                                 <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="btn btn-sm btn-outline-primary">
-                                    <i class="bi bi-arrow-right"></i> View
+                                    <i class="bi bi-arrow-right"></i>
                                 </a>
                             </td>
                         </tr>
@@ -167,12 +174,12 @@
         </div>
     {% endif %}
     
-    <div class="d-flex gap-2">
-        <a href="{{ url_for('artists') }}" class="btn btn-primary btn-lg">
-            <i class="bi bi-people"></i> Browse All Artists
+    <div class="d-flex flex-column flex-md-row gap-2">
+        <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
+            <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
         </a>
-        <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary btn-lg">
-            <i class="bi bi-gear"></i> Settings
+        <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
+            <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
         </a>
     </div>
 </div>
