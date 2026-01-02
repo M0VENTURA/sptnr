@@ -488,6 +488,109 @@ def artists():
     return render_template("artists.html", artists=artists_data, DB_PATH=DB_PATH)
 
 
+@app.route("/search")
+def search():
+    """Search page for artists, albums, and tracks"""
+    return render_template("search.html")
+
+
+@app.route("/api/search", methods=["POST"])
+def api_search():
+    """API endpoint to search the library for artists, albums, and tracks"""
+    try:
+        data = request.get_json()
+        query = data.get("query", "").strip().lower()
+        
+        if not query or len(query) < 2:
+            return jsonify({"error": "Search query must be at least 2 characters"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Prepare search pattern for LIKE queries
+        search_pattern = f"%{query}%"
+        
+        # Search artists
+        cursor.execute("""
+            SELECT 
+                artist as name,
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count
+            FROM tracks
+            WHERE LOWER(artist) LIKE LOWER(?)
+            GROUP BY artist
+            ORDER BY track_count DESC
+            LIMIT 20
+        """, (search_pattern,))
+        artists_results = [
+            {
+                "name": row[0],
+                "album_count": row[1],
+                "track_count": row[2]
+            }
+            for row in cursor.fetchall()
+        ]
+        
+        # Search albums
+        cursor.execute("""
+            SELECT 
+                artist,
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars
+            FROM tracks
+            WHERE LOWER(album) LIKE LOWER(?)
+            GROUP BY artist, album
+            ORDER BY track_count DESC
+            LIMIT 20
+        """, (search_pattern,))
+        albums_results = [
+            {
+                "artist": row[0],
+                "album": row[1],
+                "track_count": row[2],
+                "avg_stars": row[3]
+            }
+            for row in cursor.fetchall()
+        ]
+        
+        # Search tracks
+        cursor.execute("""
+            SELECT 
+                id,
+                title,
+                artist,
+                album,
+                stars
+            FROM tracks
+            WHERE LOWER(title) LIKE LOWER(?) OR LOWER(artist) LIKE LOWER(?)
+            ORDER BY stars DESC, title COLLATE NOCASE
+            LIMIT 50
+        """, (search_pattern, search_pattern))
+        tracks_results = [
+            {
+                "id": row[0],
+                "title": row[1],
+                "artist": row[2],
+                "album": row[3],
+                "stars": row[4]
+            }
+            for row in cursor.fetchall()
+        ]
+        
+        conn.close()
+        
+        return jsonify({
+            "artists": artists_results,
+            "albums": albums_results,
+            "tracks": tracks_results
+        })
+    
+    except Exception as e:
+        logging.error(f"Search error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/artist/<path:name>")
 def artist_detail(name):
     """View artist details and albums"""
