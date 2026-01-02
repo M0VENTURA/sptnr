@@ -37,6 +37,18 @@ class ListenBrainzClient:
         if not self.enabled:
             return 0
         
+        # If no MBID provided, try to get one from MusicBrainz
+        if not mbid and artist and title:
+            try:
+                from api_clients.musicbrainz import get_suggested_mbid
+                mbid, confidence = get_suggested_mbid(title, artist, limit=1)
+                if mbid and confidence >= 0.75:
+                    logger.debug(f"Got MBID from MusicBrainz for '{title}': {mbid} (confidence: {confidence})")
+                else:
+                    mbid = ""
+            except Exception as e:
+                logger.debug(f"MusicBrainz MBID lookup failed for '{title}': {e}")
+        
         # Primary: stats by MBID (if available)
         if mbid:
             try:
