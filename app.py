@@ -956,12 +956,12 @@ def qbit_add_torrent():
             login_url = f"{web_url}/api/v2/auth/login"
             session.post(login_url, data={"username": username, "password": password})
         
-        # Add torrent
+        # Add torrent with music category
         add_url = f"{web_url}/api/v2/torrents/add"
-        resp = session.post(add_url, data={"urls": torrent_url})
+        resp = session.post(add_url, data={"urls": torrent_url, "category": "music"})
         
         if resp.status_code == 200:
-            return jsonify({"success": True, "message": "Torrent added successfully"})
+            return jsonify({"success": True, "message": "Torrent added successfully to music category"})
         else:
             return jsonify({"error": f"Failed to add torrent: {resp.status_code}"}), 500
             
