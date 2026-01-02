@@ -273,17 +273,23 @@ def enforce_setup_wizard():
         pass
 
 
+# Track if schema has been updated this session
+_schema_updated = False
+
 def get_db():
     """Get database connection with WAL mode for better concurrency"""
+    global _schema_updated
     db_dir = os.path.dirname(DB_PATH)
     if db_dir:
         os.makedirs(db_dir, exist_ok=True)
     
-    # Ensure schema is up-to-date
-    try:
-        update_schema(DB_PATH)
-    except Exception as e:
-        print(f"⚠️ Database schema update warning: {e}")
+    # Ensure schema is up-to-date (only once per session)
+    if not _schema_updated:
+        try:
+            update_schema(DB_PATH)
+            _schema_updated = True
+        except Exception as e:
+            print(f"⚠️ Database schema update warning: {e}")
     
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
@@ -558,9 +564,9 @@ def api_search():
         """, (search_pattern,))
         artists_results = [
             {
-                "name": row[0],
-                "album_count": row[1],
-                "track_count": row[2]
+                "name": row["name"],
+                "album_count": row["album_count"],
+                "track_count": row["track_count"]
             }
             for row in cursor.fetchall()
         ]
@@ -580,10 +586,10 @@ def api_search():
         """, (search_pattern,))
         albums_results = [
             {
-                "artist": row[0],
-                "album": row[1],
-                "track_count": row[2],
-                "avg_stars": row[3]
+                "artist": row["artist"],
+                "album": row["album"],
+                "track_count": row["track_count"],
+                "avg_stars": row["avg_stars"]
             }
             for row in cursor.fetchall()
         ]
@@ -603,11 +609,11 @@ def api_search():
         """, (search_pattern, search_pattern))
         tracks_results = [
             {
-                "id": row[0],
-                "title": row[1],
-                "artist": row[2],
-                "album": row[3],
-                "stars": row[4]
+                "id": row["id"],
+                "title": row["title"],
+                "artist": row["artist"],
+                "album": row["album"],
+                "stars": row["stars"]
             }
             for row in cursor.fetchall()
         ]

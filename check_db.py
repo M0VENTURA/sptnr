@@ -79,8 +79,6 @@ def update_schema(db_path):
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
 
-    print(f"🔍 Updating schema for database: {db_path}")
-
     # ✅ Ensure tracks table exists
     cursor.execute("CREATE TABLE IF NOT EXISTS tracks (id TEXT PRIMARY KEY);")
 
@@ -89,12 +87,14 @@ def update_schema(db_path):
     existing_columns = [row[1] for row in cursor.fetchall()]
 
     # ✅ Add missing columns
+    columns_added = []
     for col, col_type in required_columns.items():
         if col not in existing_columns:
-            print(f"✅ Adding missing column: {col} ({col_type})")
             cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} {col_type};")
-        else:
-            print(f"✔ Column exists: {col}")
+            columns_added.append(col)
+    
+    if columns_added:
+        print(f"✅ Added {len(columns_added)} missing column(s): {', '.join(columns_added)}")
 
     # ✅ Ensure artist_stats table exists
     cursor.execute("""
@@ -106,7 +106,6 @@ def update_schema(db_path):
             last_updated TEXT
         );
     """)
-    print("✔ artist_stats table verified.")
 
     # ✅ Create indexes for faster lookups
     indexes = [
@@ -121,11 +120,12 @@ def update_schema(db_path):
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
-    print("✔ Indexes verified.")
 
     conn.commit()
     conn.close()
-    print("\n✅ Database schema update complete with indexes.")
+    
+    if columns_added:
+        print("✅ Database schema updated successfully")
 
 # ✅ Standalone usage
 if __name__ == "__main__":

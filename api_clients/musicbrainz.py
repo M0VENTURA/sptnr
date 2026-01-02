@@ -37,15 +37,17 @@ class MusicBrainzClient:
             return False
         
         try:
+            # Use simpler query format without extra quotes
+            query = f'{title} AND artist:{artist} AND primarytype:Single'
             res = self.session.get(
                 f"{self.base_url}release-group/",
                 params={
-                    "query": f'"{title}" AND artist:"{artist}" AND primarytype:Single',
+                    "query": query,
                     "fmt": "json",
                     "limit": 5
                 },
                 headers=self.headers,
-                timeout=8
+                timeout=15
             )
             res.raise_for_status()
             rgs = res.json().get("release-groups", [])
@@ -75,8 +77,9 @@ class MusicBrainzClient:
         
         try:
             # Step 1: search recording with richer includes
+            query = f'{title} AND artist:{artist}'
             rec_params = {
-                "query": f'"{title}" AND artist:"{artist}"',
+                "query": query,
                 "fmt": "json",
                 "limit": 3,
                 "inc": "tags+artist-credits+releases",
@@ -102,7 +105,7 @@ class MusicBrainzClient:
                 rel_id = releases[0].get("id")
                 if rel_id:
                     rel_params = {"fmt": "json", "inc": "tags"}
-                    rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
+                    rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=15)
                     rr.raise_for_status()
                     rel_tags = rr.json().get("tags", []) or []
                     return [t.get("name", "") for t in rel_tags if t.get("name")]
@@ -132,13 +135,14 @@ class MusicBrainzClient:
         
         try:
             # 1) Find recordings (with releases included for second hop)
+            query = f'{title} AND artist:{artist}'
             rec_params = {
-                "query": f'"{title}" AND artist:"{artist}"',
+                "query": query,
                 "fmt": "json",
                 "limit": limit,
                 "inc": "releases+artist-credits",
             }
-            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=10)
+            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=15)
             r.raise_for_status()
             recordings = r.json().get("recordings", []) or []
             if not recordings:
@@ -162,7 +166,7 @@ class MusicBrainzClient:
                     rel_id = releases[0].get("id")
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "release-groups"}
-                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
+                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=15)
                         if rr.ok:
                             rel_json = rr.json()
                             rg = rel_json.get("release-group") or {}
