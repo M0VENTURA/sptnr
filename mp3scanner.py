@@ -46,13 +46,62 @@ def similarity(a, b):
 def extract_mp3_metadata(file_path):
     """Extract metadata from MP3 file"""
     try:
+        from mutagen.mp3 import MP3
         audio = ID3(file_path)
-        return {
+        mp3 = MP3(file_path)
+        
+        metadata = {
             "title": str(audio.get("TIT2", "")),
             "artist": str(audio.get("TPE1", "")),
             "album": str(audio.get("TALB", "")),
-            "file_path": file_path
+            "file_path": file_path,
+            "duration": mp3.info.length if hasattr(mp3.info, 'length') else None,
+            "bitrate": mp3.info.bitrate // 1000 if hasattr(mp3.info, 'bitrate') else None,
+            "sample_rate": mp3.info.sample_rate if hasattr(mp3.info, 'sample_rate') else None
         }
+        
+        # Optional fields
+        if "TRCK" in audio:  # Track number
+            try:
+                metadata["track_number"] = int(str(audio["TRCK"]).split('/')[0])
+            except:
+                pass
+        
+        if "TPOS" in audio:  # Disc number
+            try:
+                metadata["disc_number"] = int(str(audio["TPOS"]).split('/')[0])
+            except:
+                pass
+        
+        if "TDRC" in audio or "TYER" in audio:  # Year
+            try:
+                year_str = str(audio.get("TDRC", audio.get("TYER", "")))
+                metadata["year"] = int(year_str[:4]) if len(year_str) >= 4 else None
+            except:
+                pass
+        
+        if "TPE2" in audio:  # Album artist
+            metadata["album_artist"] = str(audio["TPE2"])
+        
+        if "TBPM" in audio:  # BPM
+            try:
+                metadata["bpm"] = int(str(audio["TBPM"]))
+            except:
+                pass
+        
+        if "TSRC" in audio:  # ISRC
+            metadata["isrc"] = str(audio["TSRC"])
+        
+        if "TCOM" in audio:  # Composer
+            metadata["composer"] = str(audio["TCOM"])
+        
+        if "COMM" in audio:  # Comment
+            metadata["comment"] = str(audio["COMM"])
+        
+        if "USLT" in audio:  # Lyrics
+            metadata["lyrics"] = str(audio["USLT"])
+        
+        return metadata
     except Exception as e:
         logging.debug(f"Error reading MP3 {file_path}: {e}")
         return None
@@ -61,12 +110,59 @@ def extract_flac_metadata(file_path):
     """Extract metadata from FLAC file"""
     try:
         audio = FLAC(file_path)
-        return {
+        
+        metadata = {
             "title": audio.get("title", [""])[0] if audio.get("title") else "",
             "artist": audio.get("artist", [""])[0] if audio.get("artist") else "",
             "album": audio.get("album", [""])[0] if audio.get("album") else "",
-            "file_path": file_path
+            "file_path": file_path,
+            "duration": audio.info.length if hasattr(audio.info, 'length') else None,
+            "bitrate": audio.info.bitrate // 1000 if hasattr(audio.info, 'bitrate') else None,
+            "sample_rate": audio.info.sample_rate if hasattr(audio.info, 'sample_rate') else None
         }
+        
+        # Optional fields
+        if "tracknumber" in audio:
+            try:
+                metadata["track_number"] = int(audio["tracknumber"][0].split('/')[0])
+            except:
+                pass
+        
+        if "discnumber" in audio:
+            try:
+                metadata["disc_number"] = int(audio["discnumber"][0].split('/')[0])
+            except:
+                pass
+        
+        if "date" in audio:
+            try:
+                year_str = audio["date"][0]
+                metadata["year"] = int(year_str[:4]) if len(year_str) >= 4 else None
+            except:
+                pass
+        
+        if "albumartist" in audio:
+            metadata["album_artist"] = audio["albumartist"][0]
+        
+        if "bpm" in audio:
+            try:
+                metadata["bpm"] = int(audio["bpm"][0])
+            except:
+                pass
+        
+        if "isrc" in audio:
+            metadata["isrc"] = audio["isrc"][0]
+        
+        if "composer" in audio:
+            metadata["composer"] = audio["composer"][0]
+        
+        if "comment" in audio:
+            metadata["comment"] = audio["comment"][0]
+        
+        if "lyrics" in audio:
+            metadata["lyrics"] = audio["lyrics"][0]
+        
+        return metadata
     except Exception as e:
         logging.debug(f"Error reading FLAC {file_path}: {e}")
         return None
@@ -144,11 +240,42 @@ def match_to_database(audio_files):
         
         # Try exact match first
         if db_key in audio_files:
-            file_path = audio_files[db_key]["file_path"]
-            cursor.execute(
-                "UPDATE tracks SET file_path = ? WHERE id = ?",
-                (file_path, track_id)
-            )
+            metadata = audio_files[db_key]
+            file_path = metadata["file_path"]
+            
+            # Update with all metadata fields
+            cursor.execute("""
+                UPDATE tracks SET 
+                    file_path = ?, 
+                    duration = ?,
+                    track_number = ?,
+                    disc_number = ?,
+                    year = ?,
+                    album_artist = ?,
+                    bpm = ?,
+                    bitrate = ?,
+                    sample_rate = ?,
+                    isrc = ?,
+                    composer = ?,
+                    comment = ?,
+                    lyrics = ?
+                WHERE id = ?
+            """, (
+                file_path,
+                metadata.get("duration"),
+                metadata.get("track_number"),
+                metadata.get("disc_number"),
+                metadata.get("year"),
+                metadata.get("album_artist"),
+                metadata.get("bpm"),
+                metadata.get("bitrate"),
+                metadata.get("sample_rate"),
+                metadata.get("isrc"),
+                metadata.get("composer"),
+                metadata.get("comment"),
+                metadata.get("lyrics"),
+                track_id
+            ))
             matched_count += 1
             logging.info(f"Exact match: {artist} - {title} -> {file_path}")
             continue
@@ -181,10 +308,40 @@ def match_to_database(audio_files):
         # If fuzzy match found, update database
         if best_match:
             file_path = best_match["file_path"]
-            cursor.execute(
-                "UPDATE tracks SET file_path = ? WHERE id = ?",
-                (file_path, track_id)
-            )
+            
+            # Update with all metadata fields
+            cursor.execute("""
+                UPDATE tracks SET 
+                    file_path = ?, 
+                    duration = ?,
+                    track_number = ?,
+                    disc_number = ?,
+                    year = ?,
+                    album_artist = ?,
+                    bpm = ?,
+                    bitrate = ?,
+                    sample_rate = ?,
+                    isrc = ?,
+                    composer = ?,
+                    comment = ?,
+                    lyrics = ?
+                WHERE id = ?
+            """, (
+                file_path,
+                best_match.get("duration"),
+                best_match.get("track_number"),
+                best_match.get("disc_number"),
+                best_match.get("year"),
+                best_match.get("album_artist"),
+                best_match.get("bpm"),
+                best_match.get("bitrate"),
+                best_match.get("sample_rate"),
+                best_match.get("isrc"),
+                best_match.get("composer"),
+                best_match.get("comment"),
+                best_match.get("lyrics"),
+                track_id
+            ))
             matched_count += 1
             logging.info(f"Fuzzy match ({best_score:.2%}): {artist} - {title} -> {file_path}")
     

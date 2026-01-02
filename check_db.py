@@ -54,7 +54,20 @@ required_columns = {
     "album_median_score": "REAL",           # Median score for the album
     "spotify_release_age_days": "INTEGER",   # Days since release
     "popularity_score": "REAL",             # Calculated popularity from external sources
-    "single_source": "TEXT"                 # Source that confirmed single status
+    "single_source": "TEXT",                # Source that confirmed single status
+    # ✅ Audio file metadata
+    "duration": "REAL",                     # Track duration in seconds
+    "track_number": "INTEGER",              # Track number on album
+    "disc_number": "INTEGER",               # Disc number for multi-disc albums
+    "year": "INTEGER",                      # Release year
+    "album_artist": "TEXT",                 # Album artist (may differ from track artist)
+    "bpm": "INTEGER",                       # Beats per minute
+    "bitrate": "INTEGER",                   # Audio bitrate in kbps
+    "sample_rate": "INTEGER",               # Sample rate in Hz
+    "isrc": "TEXT",                         # International Standard Recording Code
+    "composer": "TEXT",                     # Composer/songwriter
+    "comment": "TEXT",                      # Comment field from file
+    "lyrics": "TEXT"                        # Song lyrics if embedded
 }
 
 def update_schema(db_path):
