@@ -1933,6 +1933,266 @@ def api_create_smart_playlist():
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================================
+# SPOTIFY PLAYLIST IMPORT ROUTES
+# ============================================================================
+
+@app.route("/smart_playlists")
+def smart_playlists():
+    """Smart playlists page"""
+    return render_template("smart_playlists.html")
+
+
+@app.route("/playlist/import")
+def playlist_import():
+    """Page to import Spotify playlists"""
+    # Check if Spotify is configured
+    config_data, _ = _read_yaml(CONFIG_PATH)
+    spotify_enabled = config_data.get("api_integrations", {}).get("spotify", {}).get("enabled", False)
+    slskd_enabled = config_data.get("slskd", {}).get("enabled", False)
+    
+    return render_template("playlist_importer.html", 
+                         spotify_enabled=spotify_enabled,
+                         slskd_enabled=slskd_enabled)
+
+
+@app.route("/api/playlist/import", methods=["POST"])
+def api_playlist_import():
+    """API endpoint to import a Spotify playlist and match to Navidrome database"""
+    try:
+        data = request.get_json()
+        spotify_url = data.get("spotify_url", "").strip()
+        playlist_name = data.get("playlist_name", "").strip()
+        playlist_description = data.get("playlist_description", "").strip()
+        
+        if not spotify_url or not playlist_name:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Extract playlist ID from various URL formats
+        playlist_id = extract_spotify_playlist_id(spotify_url)
+        if not playlist_id:
+            return jsonify({"error": "Invalid Spotify playlist URL or ID"}), 400
+        
+        # Get Spotify client and fetch playlist tracks
+        try:
+            spotify_tracks = get_spotify_playlist_tracks(playlist_id)
+        except Exception as e:
+            return jsonify({"error": f"Failed to fetch Spotify playlist: {str(e)}"}), 500
+        
+        if not spotify_tracks:
+            return jsonify({"error": "Playlist is empty or could not be fetched"}), 400
+        
+        # Match tracks to Navidrome database
+        matched_tracks = []
+        missing_tracks = []
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        for spotify_track in spotify_tracks:
+            title = spotify_track.get("title", "").lower().strip()
+            artist = spotify_track.get("artist", "").lower().strip()
+            
+            if not title or not artist:
+                continue
+            
+            # Try to find exact match first
+            cursor.execute("""
+                SELECT id, title, artist, album, stars FROM tracks
+                WHERE LOWER(title) = ? AND LOWER(artist) = ?
+                LIMIT 1
+            """, (title, artist))
+            
+            result = cursor.fetchone()
+            
+            if result:
+                matched_tracks.append({
+                    "id": result[0],
+                    "title": result[1],
+                    "artist": result[2],
+                    "album": result[3],
+                    "stars": result[4]
+                })
+            else:
+                # Try fuzzy match
+                cursor.execute("""
+                    SELECT id, title, artist, album, stars FROM tracks
+                    WHERE LOWER(title) LIKE ? OR LOWER(artist) LIKE ?
+                    ORDER BY stars DESC
+                    LIMIT 1
+                """, (f"%{title}%", f"%{artist}%"))
+                
+                result = cursor.fetchone()
+                if result:
+                    matched_tracks.append({
+                        "id": result[0],
+                        "title": result[1],
+                        "artist": result[2],
+                        "album": result[3],
+                        "stars": result[4]
+                    })
+                else:
+                    missing_tracks.append({
+                        "title": spotify_track.get("title", ""),
+                        "artist": spotify_track.get("artist", ""),
+                        "album": spotify_track.get("album", "")
+                    })
+        
+        conn.close()
+        
+        # Check if slskd is enabled
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        slskd_enabled = config_data.get("slskd", {}).get("enabled", False)
+        
+        return jsonify({
+            "success": True,
+            "playlist_name": playlist_name,
+            "playlist_description": playlist_description,
+            "matched_tracks": matched_tracks,
+            "missing_tracks": missing_tracks,
+            "slskd_enabled": slskd_enabled,
+            "spotify_playlist_id": playlist_id,
+            "message": f"Matched {len(matched_tracks)}/{len(spotify_tracks)} tracks"
+        })
+    
+    except Exception as e:
+        logging.error(f"Playlist import error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/playlist/create", methods=["POST"])
+def api_playlist_create():
+    """API endpoint to create a Navidrome playlist from matched tracks"""
+    try:
+        data = request.get_json()
+        playlist_name = data.get("playlist_name", "").strip()
+        playlist_description = data.get("playlist_description", "").strip()
+        matched_tracks = data.get("matched_tracks", [])
+        
+        if not playlist_name or not matched_tracks:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Get track IDs from matched tracks
+        track_ids = [track.get("id") for track in matched_tracks if track.get("id")]
+        
+        if not track_ids:
+            return jsonify({"error": "No valid tracks to add to playlist"}), 400
+        
+        # Create NSP playlist file
+        playlist_data = {
+            "name": playlist_name,
+            "comment": playlist_description or "Imported from Spotify",
+            "all": []
+        }
+        
+        # Add track IDs as a list
+        playlist_data["trackIds"] = track_ids
+        
+        # Create playlists directory if it doesn't exist
+        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
+        playlists_dir = os.path.join(music_folder, "Playlists")
+        os.makedirs(playlists_dir, exist_ok=True)
+        
+        # Sanitize playlist name for filename
+        file_name = "".join(c for c in playlist_name if c.isalnum() or c in ('-', '_', ' '))
+        if not file_name:
+            return jsonify({"error": "Invalid playlist name"}), 400
+        
+        file_path = os.path.join(playlists_dir, f"{file_name}.nsp")
+        
+        # Check if file already exists
+        if os.path.exists(file_path):
+            return jsonify({"error": f"Playlist file '{file_name}.nsp' already exists"}), 400
+        
+        # Write the playlist file
+        try:
+            with open(file_path, 'w') as f:
+                json.dump(playlist_data, f, indent=2)
+            
+            logging.info(f"Created playlist: {playlist_name} with {len(track_ids)} tracks")
+            
+            return jsonify({
+                "success": True,
+                "message": f"Playlist '{playlist_name}' created successfully",
+                "file_path": file_path,
+                "file_name": f"{file_name}.nsp",
+                "track_count": len(track_ids)
+            }), 201
+        
+        except IOError as e:
+            return jsonify({"error": f"Failed to write playlist file: {str(e)}"}), 500
+    
+    except Exception as e:
+        logging.error(f"Playlist creation error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+def extract_spotify_playlist_id(url_or_id):
+    """Extract Spotify playlist ID from URL or return the ID if already in correct format"""
+    import re
+    
+    # If it's just an ID (32 characters of alphanumeric)
+    if re.match(r"^[a-zA-Z0-9]{22}$", url_or_id):
+        return url_or_id
+    
+    # Extract from various URL formats
+    patterns = [
+        r"spotify\.com/playlist/([a-zA-Z0-9]+)",  # https://open.spotify.com/playlist/...
+        r"spotify:playlist:([a-zA-Z0-9]+)",       # spotify:playlist:...
+    ]
+    
+    for pattern in patterns:
+        match = re.search(pattern, url_or_id)
+        if match:
+            return match.group(1)
+    
+    return None
+
+
+def get_spotify_playlist_tracks(playlist_id):
+    """Fetch tracks from a Spotify playlist"""
+    try:
+        from start import spotify_client
+        if not spotify_client:
+            raise Exception("Spotify client not configured")
+        
+        # Use Spotify API to get playlist
+        sp = spotify_client.sp
+        if not sp:
+            raise Exception("Spotify not authenticated")
+        
+        results = sp.playlist_tracks(playlist_id, limit=50)
+        
+        tracks = []
+        while results:
+            for item in results.get('items', []):
+                track = item.get('track', {})
+                if track:
+                    artist = ", ".join([a.get('name', '') for a in track.get('artists', [])])
+                    tracks.append({
+                        "title": track.get('name', ''),
+                        "artist": artist,
+                        "album": track.get('album', {}).get('name', ''),
+                        "spotify_uri": track.get('uri', ''),
+                        "spotify_id": track.get('id', '')
+                    })
+            
+            # Get next page if available
+            if results.get('next'):
+                try:
+                    results = sp.next(results)
+                except:
+                    break
+            else:
+                break
+        
+        return tracks
+    
+    except Exception as e:
+        logging.error(f"Error fetching Spotify playlist: {str(e)}")
+        raise
+
+
 if __name__ == "__main__":
     # Auto-start scanner if configured for batchrate and perpetual mode
     try:

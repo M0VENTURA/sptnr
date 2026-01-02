@@ -177,33 +177,42 @@ def scan_music_folder():
     
     audio_files = {}
     file_count = 0
+    current_folder = None
     
     # Walk through music folder
     for root, dirs, files in os.walk(MUSIC_ROOT):
+        # Show which folder we're scanning (relative path for readability)
+        rel_path = os.path.relpath(root, MUSIC_ROOT)
+        if rel_path != current_folder:
+            current_folder = rel_path
+            logging.info(f"🔍 Scanning folder: {rel_path} ({len(files)} files)")
+        
         for file in files:
             file_path = os.path.join(root, file)
             
             if file.lower().endswith(".mp3"):
                 file_count += 1
                 if file_count % 100 == 0:
-                    logging.info(f"Scanned {file_count} files so far...")
+                    logging.info(f"📊 Progress: Scanned {file_count} files so far ({len(audio_files)} with valid metadata)")
                 metadata = extract_mp3_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
                     audio_files[key] = metadata
-                    logging.debug(f"Found MP3: {metadata['artist']} - {metadata['title']}")
+                    if file_count % 500 == 0 or file_count <= 5:
+                        logging.info(f"  ✓ MP3: {metadata['artist']} - {metadata['album']} - {metadata['title']}")
                     
             elif file.lower().endswith(".flac"):
                 file_count += 1
                 if file_count % 100 == 0:
-                    logging.info(f"Scanned {file_count} files so far...")
+                    logging.info(f"📊 Progress: Scanned {file_count} files so far ({len(audio_files)} with valid metadata)")
                 metadata = extract_flac_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
                     audio_files[key] = metadata
-                    logging.debug(f"Found FLAC: {metadata['artist']} - {metadata['title']}")
+                    if file_count % 500 == 0 or file_count <= 5:
+                        logging.info(f"  ✓ FLAC: {metadata['artist']} - {metadata['album']} - {metadata['title']}")
     
-    logging.info(f"Scan complete: Found {len(audio_files)} audio files with extractable metadata from {file_count} total files")
+    logging.info(f"✅ Scan complete: Found {len(audio_files)} audio files with extractable metadata from {file_count} total files")
     return audio_files
 
 def match_to_database(audio_files):
