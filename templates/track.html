@@ -135,6 +135,16 @@
                     </div>
                     <div class="card-body">
                         <div class="metadata-row">
+                            <div class="metadata-label">File Path</div>
+                            <div class="metadata-value">
+                                {% if track.file_path %}
+                                    <code style="font-size: 0.75rem; word-break: break-all;">{{ track.file_path }}</code>
+                                {% else %}
+                                    <span class="text-muted">Not available</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
                             <div class="metadata-label">Sources</div>
                             <div class="metadata-value">
                                 {% if track.single_sources %}
