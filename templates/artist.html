@@ -23,6 +23,11 @@
       <button class="btn btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist_name }}')">
         <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Metadata</span>
       </button>
+      {% if qbit_config.enabled and qbit_config.web_url %}
+      <a class="btn btn-outline-info" href="{{ qbit_config.web_url }}/#/search/{{ artist_name|urlencode }}" target="_blank" rel="noopener noreferrer" title="Search for {{ artist_name }} releases in qBittorrent">
+        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>
+      </a>
+      {% endif %}
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>

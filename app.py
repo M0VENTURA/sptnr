@@ -63,6 +63,12 @@ def _baseline_config():
             "google": {"enabled": False, "api_key": "", "cse_id": ""},
             "youtube": {"enabled": False, "api_key": ""},
         },
+        "qbittorrent": {
+            "enabled": False,
+            "web_url": "http://localhost:8080",
+            "username": "",
+            "password": ""
+        },
         "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
         "database": {"path": DB_PATH, "vacuum_on_start": False},
         "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
@@ -391,11 +397,16 @@ def artist_detail(name):
     # Aggregate genres from all tracks by this artist
     genres = aggregate_genres_from_tracks(name, DB_PATH)
     
+    # Get qBittorrent config
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+    
     return render_template("artist.html", 
                          artist_name=name,
                          albums=albums_data,
                          stats=artist_stats,
-                         genres=genres)
+                         genres=genres,
+                         qbit_config=qbit_config)
 
 
 @app.route("/album/<path:artist>/<path:album>")

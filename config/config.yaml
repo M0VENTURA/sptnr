@@ -13,6 +13,13 @@ navidrome:
 #     user: "user2"
 #     pass: "password2"
 
+# qBittorrent Integration - Search for missing releases from artist pages
+qbittorrent:
+  enabled: false
+  web_url: "http://localhost:8080"  # URL to your qBittorrent Web UI
+  username: ""  # Optional: for future API integration
+  password: ""  # Optional: for future API integration
+
 # API Integrations - Enable/disable external services and provide credentials
 api_integrations:
   spotify:
