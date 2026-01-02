@@ -2680,7 +2680,7 @@ if __name__ == "__main__":
     def api_album_discogs_lookup():
         """Lookup album on Discogs for better metadata and genres"""
         try:
-            from start import _discogs_search, _get_discogs_session
+            from singledetection import _discogs_search, _get_discogs_session
             
             data = request.get_json()
             album = data.get("album", "")
