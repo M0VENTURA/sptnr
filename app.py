@@ -1630,12 +1630,47 @@ def api_scan_progress():
 @app.route("/api/scan-logs")
 def api_scan_logs():
     """API endpoint to get last log entries for each scan type"""
+    import re
+    
     log_files = {
         "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
         "file_paths": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log")
     }
+    
+    def extract_meaningful_log(line):
+        """Extract meaningful log message, removing timestamps and excessive details"""
+        # Remove timestamp prefix (e.g., "2024-01-15 10:30:45,123 - ")
+        line = re.sub(r'^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2},\d+ - ', '', line)
+        # Remove log level prefix (e.g., "INFO - ", "DEBUG - ", "ERROR - ")
+        line = re.sub(r'^(INFO|DEBUG|WARNING|ERROR|CRITICAL)\s*-?\s*', '', line)
+        # Remove full file paths (keep just filename)
+        line = re.sub(r'[A-Za-z]:\\[^\s]*\\', '', line)
+        line = re.sub(r'/[^\s]*/([^\s/]*\.mp3)', r'\1', line)
+        return line.strip()
+    
+    def is_meaningful_log(line):
+        """Check if log line contains meaningful scan information"""
+        line_lower = line.lower()
+        # Keywords that indicate meaningful log entries
+        meaningful_keywords = [
+            'scanning', 'syncing', 'scanning album', 'scanning artist',
+            'found', 'match', 'updated', 'importing', 'processing',
+            'completed', 'finished', 'detected', 'checking', 'analyzing',
+            'no match', 'error', 'failed', 'success', 'track', 'album',
+            'artist', 'single', 'rating', 'score', 'popularity'
+        ]
+        # Skip debug lines that are too verbose
+        skip_keywords = ['debug', 'checking match', 'checking for', 'found in']
+        
+        # Check if line contains skip keywords
+        for skip in skip_keywords:
+            if skip in line_lower:
+                return False
+        
+        # Check if line contains meaningful keywords
+        return any(keyword in line_lower for keyword in meaningful_keywords)
     
     result = {}
     for scan_type, log_path in log_files.items():
@@ -1644,11 +1679,13 @@ def api_scan_logs():
             try:
                 with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
                     all_lines = f.readlines()
-                    # Get last 3 non-empty lines
+                    # Get last meaningful non-empty lines
                     for line in reversed(all_lines):
                         line = line.strip()
-                        if line and len(lines) < 3:
-                            lines.append(line)
+                        if line and is_meaningful_log(line):
+                            meaningful_line = extract_meaningful_log(line)
+                            if meaningful_line and len(lines) < 3:
+                                lines.append(meaningful_line)
                     lines.reverse()
             except Exception as e:
                 lines = [f"Error reading log: {str(e)}"]
