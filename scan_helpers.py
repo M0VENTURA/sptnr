@@ -256,6 +256,7 @@ def scan_navidrome_with_progress(verbose=False):
             scan_artist_to_db(artist_name, artist_id, verbose=verbose, force=False)
             
             # Count tracks for this artist
+            conn = None
             try:
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -267,10 +268,11 @@ def scan_navidrome_with_progress(verbose=False):
                 cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND navidrome_rating > 0", (artist_name,))
                 rated_count = cursor.fetchone()[0]
                 ratings_saved += rated_count
-                
-                conn.close()
             except Exception as e:
                 logging.debug(f"Failed to count tracks for {artist_name}: {e}")
+            finally:
+                if conn:
+                    conn.close()
             
             scanned += 1
             

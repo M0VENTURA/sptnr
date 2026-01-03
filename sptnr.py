@@ -1299,14 +1299,9 @@ def run_perpetual_mode():
                 from scan_helpers import scan_mp3_metadata, scan_navidrome_with_progress
                 music_folder = os.getenv("MUSIC_FOLDER", "/music")
                 scan_mp3_metadata(music_folder, show_progress=True)
-            except Exception as e:
-                print(f"{LIGHT_RED}⚠️ MP3 scan failed: {type(e).__name__} - {e}{RESET}")
-            
-            try:
-                from scan_helpers import scan_navidrome_with_progress
                 scan_navidrome_with_progress(verbose=args.verbose)
             except Exception as e:
-                print(f"{LIGHT_RED}⚠️ Navidrome scan failed: {type(e).__name__} - {e}{RESET}")
+                print(f"{LIGHT_RED}⚠️ Scan failed: {type(e).__name__} - {e}{RESET}")
         
         # Build artist index
         build_artist_index()
