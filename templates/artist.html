@@ -205,12 +205,12 @@
           <tbody>
             {% for album in albums %}
               <tr class="d-flex flex-column d-md-table-row">
-                <td class="d-flex justify-content-between d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+                <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
                   <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
                        alt="{{ album.album }}" 
                        class="img-thumbnail"
-                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color);"
-                       onerror="this.style.display='none';">
+                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                       onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';">
                 </td>
                 <td class="d-flex justify-content-between d-md-table-cell">
                   <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>

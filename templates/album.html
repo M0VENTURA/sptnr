@@ -21,7 +21,8 @@
                     <img src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
                          alt="{{ album_name }}" 
                          class="img-thumbnail" 
-                         style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color);">
+                         style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%232a2a2a%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2214%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
                 </div>
                 <div>
                     <h1 class="h2 mb-2">
