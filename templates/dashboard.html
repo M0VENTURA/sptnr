@@ -89,77 +89,7 @@
         </div>
     </div>
     
-    <!-- Scan Controls -->
-    <div class="card mb-4">
-        <div class="card-header">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-play-circle"></i> Scan Controls
-            </h5>
-        </div>
-        <div class="card-body">
-            {% if scan_running %}
-                <span class="badge bg-success d-inline-block mb-3">
-                    <i class="bi bi-play-fill"></i> Scan in progress...
-                </span>
-                
-                <!-- Progress Bar -->
-                <div class="mt-3" id="scan-progress-container" style="display: none;">
-                    <div class="d-flex justify-content-between mb-2">
-                        <small class="text-muted" id="progress-text">Processing...</small>
-                        <small class="text-muted" id="progress-percent">0%</small>
-                    </div>
-                    <div class="progress" style="height: 20px;">
-                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
-                             id="progress-bar" 
-                             role="progressbar" 
-                             style="width: 0%;" 
-                             aria-valuenow="0" 
-                             aria-valuemin="0" 
-                             aria-valuemax="100"></div>
-                    </div>
-                    <div class="mt-2">
-                        <small class="text-muted" id="progress-details">
-                            <span id="current-artist"></span>
-                            <span id="current-album"></span>
-                        </small>
-                    </div>
-                    <div class="mt-1">
-                        <small class="text-muted" id="progress-phase"></small>
-                    </div>
-                </div>
-                
-                <!-- Stop Button -->
-                <div class="mt-3">
-                    <form method="POST" action="{{ url_for('scan_stop') }}" class="d-inline">
-                        <button type="submit" class="btn btn-sm btn-danger">
-                            <i class="bi bi-stop-circle"></i> Stop Scan
-                        </button>
-                    </form>
-                </div>
-            {% else %}
-                <div class="d-flex flex-column flex-md-row gap-2 gap-md-3">
-                    <form method="POST" action="{{ url_for('scan_unified') }}" class="flex-grow-1">
-                        <button type="submit" class="btn btn-success w-100" style="background-color: #1db954; border-color: #1db954; color: #000; font-weight: 600;">
-                            <i class="bi bi-play-circle"></i> Start Unified Scan
-                        </button>
-                    </form>
-                    
-                    <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
-                        <input type="hidden" name="scan_type" value="force">
-                        <button type="submit" class="btn btn-force w-100">
-                            <i class="bi bi-arrow-clockwise"></i> Force Re-scan
-                        </button>
-                    </form>
-                    
-                    <a href="{{ url_for('logs') }}" class="btn btn-outline-secondary w-100 flex-grow-1">
-                        <i class="bi bi-file-text"></i> Logs
-                    </a>
-                </div>
-            {% endif %}
-        </div>
-    </div>
-    
-    <!-- Detailed Scan Controls -->
+    <!-- Scan Operations -->
     <div class="card mb-4">
         <div class="card-header">
             <h5 class="card-title mb-0">
@@ -167,39 +97,43 @@
             </h5>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
-            <div class="d-grid gap-3" style="grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));">
+            <p class="text-muted small mb-4">Run individual scan operations for more control over the process.</p>
+            <div class="d-grid gap-4">
                 <!-- Navidrome Scan -->
-                <div class="scan-card">
-                    <div class="d-flex align-items-center mb-2 gap-2">
-                        <h6 class="mb-0 flex-grow-1">
-                            <i class="bi bi-cloud"></i> Navidrome Sync
-                        </h6>
+                <div class="scan-card-large">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="bi bi-cloud"></i> Navidrome Sync
+                            </h6>
+                            <small class="text-muted" style="display: block;">Synchronize music library from Navidrome server</small>
+                        </div>
                         <span class="scan-badge" data-scan-type="navidrome_scan" style="display: none;">
-                            <span class="badge bg-success" style="font-size: 0.75rem;"><i class="bi bi-play-fill"></i> Running</span>
+                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="navidrome_scan" style="display: none;">
-                        <div class="progress" style="height: 16px; margin-bottom: 0.5rem;">
+                    <div class="scan-progress-container" data-scan-type="navidrome_scan" style="display: none; margin-bottom: 1rem;">
+                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
                                  role="progressbar" style="width: 0%;" 
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                             </div>
                         </div>
-                        <small class="text-muted d-block" style="font-size: 0.75rem; line-height: 1.3;">
-                            <span class="scan-progress-text">Initializing...</span>
-                        </small>
+                        <div class="d-flex justify-content-between mb-1">
+                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
+                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
+                        </div>
                     </div>
                     
-                    <div class="btn-group w-100 mt-2" role="group">
-                        <form method="POST" action="{{ url_for('scan_navidrome') }}" class="w-50">
-                            <button type="submit" class="btn btn-sm btn-primary w-100" style="border-radius: 4px 0 0 4px;">
+                    <div class="d-flex gap-2">
+                        <form method="POST" action="{{ url_for('scan_navidrome') }}" class="flex-grow-1">
+                            <button type="submit" class="btn btn-primary w-100">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}" class="w-50" style="border-left: 1px solid var(--border-color);">
-                            <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="border-radius: 0 4px 4px 0; border-left: none;">
+                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                            <button type="submit" class="btn btn-outline-danger">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -207,36 +141,40 @@
                 </div>
 
                 <!-- Popularity Scan -->
-                <div class="scan-card">
-                    <div class="d-flex align-items-center mb-2 gap-2">
-                        <h6 class="mb-0 flex-grow-1">
-                            <i class="bi bi-graph-up"></i> Popularity Update
-                        </h6>
+                <div class="scan-card-large">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="bi bi-graph-up"></i> Popularity Update
+                            </h6>
+                            <small class="text-muted" style="display: block;">Calculate popularity ratings from last.fm and ListenBrainz</small>
+                        </div>
                         <span class="scan-badge" data-scan-type="popularity_scan" style="display: none;">
-                            <span class="badge bg-success" style="font-size: 0.75rem;"><i class="bi bi-play-fill"></i> Running</span>
+                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="popularity_scan" style="display: none;">
-                        <div class="progress" style="height: 16px; margin-bottom: 0.5rem;">
+                    <div class="scan-progress-container" data-scan-type="popularity_scan" style="display: none; margin-bottom: 1rem;">
+                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
                                  role="progressbar" style="width: 0%;" 
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                             </div>
                         </div>
-                        <small class="text-muted d-block" style="font-size: 0.75rem; line-height: 1.3;">
-                            <span class="scan-progress-text">Initializing...</span>
-                        </small>
+                        <div class="d-flex justify-content-between mb-1">
+                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
+                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
+                        </div>
                     </div>
                     
-                    <div class="btn-group w-100 mt-2" role="group">
-                        <form method="POST" action="{{ url_for('scan_popularity') }}" class="w-50">
-                            <button type="submit" class="btn btn-sm btn-primary w-100" style="border-radius: 4px 0 0 4px;">
+                    <div class="d-flex gap-2">
+                        <form method="POST" action="{{ url_for('scan_popularity') }}" class="flex-grow-1">
+                            <button type="submit" class="btn btn-primary w-100">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}" class="w-50" style="border-left: 1px solid var(--border-color);">
-                            <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="border-radius: 0 4px 4px 0; border-left: none;">
+                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                            <button type="submit" class="btn btn-outline-danger">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -244,36 +182,40 @@
                 </div>
 
                 <!-- Singles Scan -->
-                <div class="scan-card">
-                    <div class="d-flex align-items-center mb-2 gap-2">
-                        <h6 class="mb-0 flex-grow-1">
-                            <i class="bi bi-music-note"></i> Singles Detection
-                        </h6>
+                <div class="scan-card-large">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="bi bi-music-note"></i> Singles Detection
+                            </h6>
+                            <small class="text-muted" style="display: block;">Identify and tag single tracks and compilation albums</small>
+                        </div>
                         <span class="scan-badge" data-scan-type="singles_scan" style="display: none;">
-                            <span class="badge bg-success" style="font-size: 0.75rem;"><i class="bi bi-play-fill"></i> Running</span>
+                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="singles_scan" style="display: none;">
-                        <div class="progress" style="height: 16px; margin-bottom: 0.5rem;">
+                    <div class="scan-progress-container" data-scan-type="singles_scan" style="display: none; margin-bottom: 1rem;">
+                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
                                  role="progressbar" style="width: 0%;" 
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                             </div>
                         </div>
-                        <small class="text-muted d-block" style="font-size: 0.75rem; line-height: 1.3;">
-                            <span class="scan-progress-text">Initializing...</span>
-                        </small>
+                        <div class="d-flex justify-content-between mb-1">
+                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
+                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
+                        </div>
                     </div>
                     
-                    <div class="btn-group w-100 mt-2" role="group">
-                        <form method="POST" action="{{ url_for('scan_singles') }}" class="w-50">
-                            <button type="submit" class="btn btn-sm btn-primary w-100" style="border-radius: 4px 0 0 4px;">
+                    <div class="d-flex gap-2">
+                        <form method="POST" action="{{ url_for('scan_singles') }}" class="flex-grow-1">
+                            <button type="submit" class="btn btn-primary w-100">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}" class="w-50" style="border-left: 1px solid var(--border-color);">
-                            <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="border-radius: 0 4px 4px 0; border-left: none;">
+                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                            <button type="submit" class="btn btn-outline-danger">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -281,36 +223,40 @@
                 </div>
 
                 <!-- File Paths Scan -->
-                <div class="scan-card">
-                    <div class="d-flex align-items-center mb-2 gap-2">
-                        <h6 class="mb-0 flex-grow-1">
-                            <i class="bi bi-disc"></i> Update File Paths
-                        </h6>
+                <div class="scan-card-large">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="bi bi-disc"></i> Update File Paths
+                            </h6>
+                            <small class="text-muted" style="display: block;">Scan music folder and update file paths in database</small>
+                        </div>
                         <span class="scan-badge" data-scan-type="mp3_scan" style="display: none;">
-                            <span class="badge bg-success" style="font-size: 0.75rem;"><i class="bi bi-play-fill"></i> Running</span>
+                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="mp3_scan" style="display: none;">
-                        <div class="progress" style="height: 16px; margin-bottom: 0.5rem;">
+                    <div class="scan-progress-container" data-scan-type="mp3_scan" style="display: none; margin-bottom: 1rem;">
+                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
                                  role="progressbar" style="width: 0%;" 
                                  aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
                             </div>
                         </div>
-                        <small class="text-muted d-block" style="font-size: 0.75rem; line-height: 1.3;">
-                            <span class="scan-progress-text">Initializing...</span>
-                        </small>
+                        <div class="d-flex justify-content-between mb-1">
+                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
+                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
+                        </div>
                     </div>
                     
-                    <div class="btn-group w-100 mt-2" role="group">
-                        <form method="POST" action="{{ url_for('scan_mp3') }}" class="w-50">
-                            <button type="submit" class="btn btn-sm btn-info w-100" style="border-radius: 4px 0 0 4px; color: #000; font-weight: 600;">
+                    <div class="d-flex gap-2">
+                        <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
+                            <button type="submit" class="btn btn-info w-100" style="color: #000; font-weight: 600;">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}" class="w-50" style="border-left: 1px solid var(--border-color);">
-                            <button type="submit" class="btn btn-sm btn-outline-danger w-100" style="border-radius: 0 4px 4px 0; border-left: none;">
+                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                            <button type="submit" class="btn btn-outline-danger">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -455,6 +401,30 @@
         background-color: var(--secondary-bg, #1e1e1e);
     }
 
+    /* Large scan card styling */
+    .scan-card-large {
+        padding: 1.5rem;
+        background-color: var(--primary-bg, #1e1e1e);
+        border: 1px solid var(--border-color, #333);
+        border-radius: 6px;
+    }
+
+    .scan-card-large h6 {
+        font-size: 1.1rem;
+        font-weight: 600;
+        color: var(--text-primary, #fff);
+        margin-bottom: 0.25rem;
+    }
+
+    .scan-card-large .btn {
+        padding: 0.625rem 1.25rem;
+        font-weight: 500;
+    }
+
+    .scan-card-large .progress {
+        background-color: rgba(255, 255, 255, 0.1);
+    }
+
     .scan-progress-container {
         border-top: 1px solid var(--border-color, #333);
         padding-top: 0.75rem;
@@ -557,12 +527,13 @@ document.addEventListener('DOMContentLoaded', function() {
                 runningScans.add(mappedScanType);
                 
                 // Find the scan card container for this type
-                const scanCard = document.querySelector(`.scan-card:has([data-scan-type="${mappedScanType}"])`);
+                const scanCard = document.querySelector(`.scan-card-large:has([data-scan-type="${mappedScanType}"])`);
                 if (!scanCard) return;
                 
                 const progressContainer = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"]`);
                 const progressBar = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .progress-bar`);
                 const progressText = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .scan-progress-text`);
+                const progressPercent = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .scan-progress-percent`);
                 
                 // Show progress container for this scan
                 if (progressContainer) {
@@ -598,7 +569,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 
                 // Update text with percentage
                 if (progressText) {
-                    progressText.textContent = `${percent}% · ${text}`;
+                    progressText.textContent = text;
+                }
+                
+                // Update percentage
+                if (progressPercent) {
+                    progressPercent.textContent = percent + '%';
                 }
             })
             .catch(error => console.error('Error fetching scan progress:', error));
