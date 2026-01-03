@@ -1946,20 +1946,7 @@ def slskd_download():
             return jsonify({"error": "Failed to enqueue download"}), 500
             
     except Exception as e:
-        return jsonify({"error": str(e)}), 500
-    api_key = slskd_config.get("api_key", "")
-    
-    try:
-        client = SlskdClient(web_url, api_key, enabled=True)
-        success = client.download_file(username, file_code)
-        
-        if success:
-            return jsonify({"success": True, "message": "Download added successfully"})
-        else:
-            return jsonify({"error": "Failed to enqueue download"}), 500
-            
-    except Exception as e:
-        print(f"[SLSKD] Download error: {str(e)}")
+        logging.error(f"[SLSKD] Download error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
