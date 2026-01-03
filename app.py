@@ -1161,9 +1161,16 @@ def scan_mp3():
     global scan_process_mp3
     
     with scan_lock:
-        if scan_process_mp3 and scan_process_mp3.poll() is None:
-            flash("Beets auto-import is already running", "warning")
-            return redirect(url_for("dashboard"))
+        # Check if scan is already running
+        if scan_process_mp3 is not None:
+            if isinstance(scan_process_mp3, dict):
+                thread = scan_process_mp3.get('thread')
+                if thread and thread.is_alive():
+                    flash("Beets auto-import is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_mp3, 'is_alive') and scan_process_mp3.is_alive():
+                flash("Beets auto-import is already running", "warning")
+                return redirect(url_for("dashboard"))
         
         try:
             db_dir = os.path.dirname(DB_PATH)
@@ -1186,12 +1193,8 @@ def scan_mp3():
             scan_thread = threading.Thread(target=run_beets_scan_bg, daemon=False)
             scan_thread.start()
             
-            # Create a dummy process object for compatibility with existing code
-            scan_process_mp3 = type('obj', (object,), {
-                'poll': lambda: None if scan_thread.is_alive() else 0,
-                'wait': lambda timeout=None: scan_thread.join(timeout),
-                'pid': -1
-            })()
+            # Store thread reference for tracking
+            scan_process_mp3 = {'thread': scan_thread, 'type': 'mp3'}
             
             flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
             logging.info("Beets scan thread started successfully")
@@ -1208,9 +1211,16 @@ def scan_navidrome():
     global scan_process_navidrome
     
     with scan_lock:
-        if scan_process_navidrome and scan_process_navidrome.poll() is None:
-            flash("Navidrome sync scan is already running", "warning")
-            return redirect(url_for("dashboard"))
+        # Check if scan is already running
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                thread = scan_process_navidrome.get('thread')
+                if thread and thread.is_alive():
+                    flash("Navidrome sync scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_navidrome, 'is_alive') and scan_process_navidrome.is_alive():
+                flash("Navidrome sync scan is already running", "warning")
+                return redirect(url_for("dashboard"))
         
         try:
             db_dir = os.path.dirname(DB_PATH)
@@ -1232,12 +1242,8 @@ def scan_navidrome():
             scan_thread = threading.Thread(target=run_navidrome_scan_bg, daemon=False)
             scan_thread.start()
             
-            # Create a dummy process object for compatibility with existing code
-            scan_process_navidrome = type('obj', (object,), {
-                'poll': lambda: None if scan_thread.is_alive() else 0,
-                'wait': lambda timeout=None: scan_thread.join(timeout),
-                'pid': -1
-            })()
+            # Store thread reference for tracking
+            scan_process_navidrome = {'thread': scan_thread, 'type': 'navidrome'}
             
             flash("✅ Navidrome sync scan started", "success")
             logging.info("Navidrome scan thread started successfully")
@@ -1254,9 +1260,17 @@ def scan_popularity():
     global scan_process_popularity
     
     with scan_lock:
-        if scan_process_popularity and scan_process_popularity.poll() is None:
-            flash("Popularity scan is already running", "warning")
-            return redirect(url_for("dashboard"))
+        # Check if scan is already running
+        if scan_process_popularity is not None:
+            if isinstance(scan_process_popularity, dict):
+                thread = scan_process_popularity.get('thread')
+                if thread and thread.is_alive():
+                    flash("Popularity scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_popularity, 'is_alive') and scan_process_popularity.is_alive():
+                flash("Popularity scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+        
         try:
             db_dir = os.path.dirname(DB_PATH)
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
@@ -1276,12 +1290,8 @@ def scan_popularity():
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
             
-            # Create a dummy process object for compatibility with existing code
-            scan_process_popularity = type('obj', (object,), {
-                'poll': lambda: None if scan_thread.is_alive() else 0,
-                'wait': lambda timeout=None: scan_thread.join(timeout),
-                'pid': -1
-            })()
+            # Store thread reference for tracking
+            scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
             
             flash("✅ Popularity score scan started", "success")
             logging.info("Popularity scan thread started successfully")
@@ -1467,13 +1477,8 @@ def logout():
 def logs():
     """View logs"""
     log_files = {
-        "main": LOG_PATH,
-        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
-        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
-        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
-        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
+        "app": LOG_PATH,
+        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
     }
     return render_template("logs.html", log_path=LOG_PATH, log_files=log_files)
 
@@ -1481,15 +1486,10 @@ def logs():
 @app.route("/logs/stream")
 def logs_stream():
     """Stream log file in real-time"""
-    log_type = request.args.get("type", "main")
+    log_type = request.args.get("type", "app")
     log_files = {
-        "main": LOG_PATH,
-        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
-        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
-        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
-        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
+        "app": LOG_PATH,
+        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
     
@@ -1513,16 +1513,11 @@ def logs_stream():
 @app.route("/logs/view")
 def logs_view():
     """View last N lines of log"""
-    log_type = request.args.get("type", "main")
+    log_type = request.args.get("type", "app")
     lines = request.args.get("lines", 500, type=int)
     log_files = {
-        "main": LOG_PATH,
-        "webui": os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"),
-        "mp3scanner": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"),
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
-        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
-        "downloads": os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log")
+        "app": LOG_PATH,
+        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
     try:
