@@ -1,40 +1,112 @@
+# Option 1: Single user (current format - works fine for one user)
 navidrome:
-  base_url: http://localhost:4533
-  user: admin
-  pass: password
-spotify:
-  client_id: your_spotify_client_id
-  client_secret: your_spotify_client_secret
-lastfm:
-  api_key: your_lastfm_api_key
-listenbrainz:
-  enabled: true
+  base_url: "http://localhost:4533"
+  user: "admin"
+  pass: "password"
+
+# Option 2: Multiple users (uncomment and configure if you want to set ratings for multiple users)
+# navidrome_users:
+#   - base_url: "http://localhost:4533"
+#     user: "user1"
+#     pass: "password1"
+#   - base_url: "http://localhost:4533"
+#     user: "user2"
+#     pass: "password2"
+
+# qBittorrent Integration - Search for missing releases from artist pages
+qbittorrent:
+  enabled: false
+  web_url: "http://localhost:8080"  # URL to your qBittorrent Web UI
+  username: ""  # qBittorrent username (required for API access)
+  password: ""  # qBittorrent password (required for API access)
+
+# Soulseek (slskd) Integration - P2P music file sharing
+slskd:
+  enabled: false
+  web_url: "http://localhost:5030"  # URL to your slskd Web UI
+  api_key: ""  # slskd API key (found in Settings > API)
+
+# Downloads Folder Configuration
+downloads:
+  folder: "/downloads/Music"  # Path to watch for downloaded music files
+
+# API Integrations - Enable/disable external services and provide credentials
+api_integrations:
+  spotify:
+    enabled: true
+    client_id: "your_spotify_client_id"
+    client_secret: "your_spotify_client_secret"
+  
+  lastfm:
+    enabled: true
+    api_key: "your_lastfm_api_key"
+  
+  listenbrainz:
+    enabled: true
+    # No API key needed - public API
+  
+  discogs:
+    enabled: true
+    token: "your_discogs_token"
+  
+  musicbrainz:
+    enabled: true
+    # No API key needed - public API with rate limits
+  
+  audiodb:
+    enabled: false
+    api_key: ""  # Optional - only used if enabled: true
+  
+  google:
+    enabled: false
+    api_key: ""
+    cse_id: ""
+  
+  youtube:
+    enabled: false
+    api_key: ""
+
 weights:
   spotify: 0.4
   lastfm: 0.3
   listenbrainz: 0.2
   age: 0.1
+
+database:
+  path: "/database/sptnr.db"
+  vacuum_on_start: false
+
+logging:
+  level: "INFO"
+  file: "/config/app.log"
+  console: true
+
 features:
-  use_google: false
-  use_ai: false
   dry_run: false
   sync: true
   force: false
   verbose: false
-  perpetual: false
+  perpetual: true
   batchrate: false
   artist: []
-database:
-  path: /database/sptnr.db
-logging:
-  level: INFO
-  file: /config/app.log
-bookmarks:
-- name: Navidrome
-  url: http://localhost:4533
-- name: GitHub - SPTNR
-  url: https://github.com/M0VENTURA/sptnr
-- name: Spotify
-  url: https://spotify.com
-- name: Last.fm
-  url: https://www.last.fm
+  # Single-detection and scoring knobs
+  album_skip_days: 7
+  album_skip_min_tracks: 1
+  clamp_min: 0.75
+  clamp_max: 1.25
+  cap_top4_pct: 0.25
+  title_sim_threshold: 0.92
+  short_release_counts_as_match: false
+  secondary_single_lookup_enabled: true
+  secondary_lookup_metric: "score"
+  secondary_lookup_delta: 0.05
+  secondary_required_strong_sources: 2
+  median_gate_strategy: "hard"
+  use_lastfm_single: true
+  refresh_artist_index_on_start: false
+  discogs_min_interval_sec: 0.35
+  include_user_ratings_on_scan: true
+  scan_worker_threads: 4
+  spotify_prefetch_timeout: 30
+
+
