@@ -234,6 +234,64 @@ class SlskdClient:
         except Exception as e:
             logger.error(f"Slskd download failed for {username}/{filename[:50]}: {e}")
             return False
+
+    def download_files(self, files: list[dict], timeout: int = 10) -> list[dict]:
+        """
+        Enqueue multiple files (potentially across users) for download.
+
+        Args:
+            files: List of {username, filename, size} dicts
+            timeout: Request timeout
+
+        Returns:
+            List of result dicts per user with status and error (if any)
+        """
+        if not self.enabled:
+            return []
+
+        # Group by username because slskd expects per-user batches
+        grouped: dict[str, list[dict]] = {}
+        for entry in files or []:
+            username = entry.get("username")
+            filename = entry.get("filename")
+            if not username or not filename:
+                logger.warning("Skipping slskd download entry missing username or filename")
+                continue
+            grouped.setdefault(username, []).append({
+                "filename": filename,
+                "size": int(entry.get("size") or 0)
+            })
+
+        results = []
+        for username, payload in grouped.items():
+            try:
+                url = f"{self.base_url}/transfers/downloads/{username}"
+                resp = self.session.post(url, json=payload, headers=self.headers, timeout=timeout)
+
+                success = resp.status_code in [200, 201, 204]
+                if success:
+                    logger.info(f"Download enqueued from {username} ({len(payload)} files)")
+                else:
+                    logger.warning(f"Slskd batch download failed: {resp.status_code} - {resp.text[:200]}")
+
+                results.append({
+                    "username": username,
+                    "requested": len(payload),
+                    "status": resp.status_code,
+                    "success": success,
+                    "error": None if success else resp.text[:200]
+                })
+            except Exception as e:
+                logger.error(f"Slskd batch download failed for {username}: {e}")
+                results.append({
+                    "username": username,
+                    "requested": len(payload),
+                    "status": None,
+                    "success": False,
+                    "error": str(e)
+                })
+
+        return results
     
     def filter_results_by_quality(
         self,

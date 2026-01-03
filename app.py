@@ -74,6 +74,28 @@ scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
 scan_lock = threading.Lock()
 
+
+def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dict | None = None):
+    """Persist minimal scan progress state so the dashboard can show status."""
+    try:
+        payload = {"is_running": is_running, "scan_type": scan_type}
+        if extra:
+            payload.update(extra)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(payload, f)
+    except Exception as e:
+        logging.debug(f"Failed to write progress file {path}: {e}")
+
+
+def _monitor_process_for_progress(proc: subprocess.Popen, progress_path: str, scan_type: str):
+    """Wait for a subprocess and mark its progress file as complete."""
+    try:
+        proc.wait()
+        _write_progress_file(progress_path, scan_type, False, {"exit_code": proc.returncode})
+    except Exception as e:
+        logging.debug(f"Progress monitor failed for {scan_type}: {e}")
+
 def _read_yaml(path):
     try:
         with open(path, "r", encoding="utf-8") as f:
@@ -1100,6 +1122,8 @@ def scan_mp3():
             return redirect(url_for("dashboard"))
         
         try:
+            mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             # Use beets auto-import instead of mp3scanner
             cmd = [sys.executable, "beets_auto_import.py"]
             scan_process_mp3 = subprocess.Popen(
@@ -1109,6 +1133,11 @@ def scan_mp3():
                 text=True,
                 bufsize=1
             )
+            threading.Thread(
+                target=_monitor_process_for_progress,
+                args=(scan_process_mp3, mp3_progress_file, "mp3_scan"),
+                daemon=True,
+            ).start()
             flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
         except Exception as e:
             flash(f"❌ Error starting beets import: {str(e)}", "danger")
@@ -1127,6 +1156,8 @@ def scan_navidrome():
             return redirect(url_for("dashboard"))
         
         try:
+            nav_progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
             cmd = [sys.executable, "start.py", "--batchrate", "--verbose"]
             scan_process_navidrome = subprocess.Popen(
                 cmd,
@@ -1135,6 +1166,11 @@ def scan_navidrome():
                 text=True,
                 bufsize=1
             )
+            threading.Thread(
+                target=_monitor_process_for_progress,
+                args=(scan_process_navidrome, nav_progress_file, "navidrome_scan"),
+                daemon=True,
+            ).start()
             flash("✅ Navidrome sync scan started", "success")
         except Exception as e:
             flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
@@ -1151,20 +1187,28 @@ def scan_popularity():
         if scan_process_popularity and scan_process_popularity.poll() is None:
             flash("Popularity scan is already running", "warning")
             return redirect(url_for("dashboard"))
-        
-        # Start popularity scan in background from popularity.py
-        cmd = [sys.executable, "-c", 
-               "from popularity import scan_popularity; scan_popularity(verbose=True)"]
-        
-        scan_process_popularity = subprocess.Popen(
-            cmd,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            text=True,
-            bufsize=1
-        )
-        
-        flash("Popularity score scan started", "success")
+        try:
+            popularity_progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+            _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
+
+            # Start popularity scan as a subprocess
+            cmd = [sys.executable, "popularity.py"]
+            scan_process_popularity = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+
+            threading.Thread(
+                target=_monitor_process_for_progress,
+                args=(scan_process_popularity, popularity_progress_file, "popularity_scan"),
+                daemon=True,
+            ).start()
+            flash("✅ Popularity score scan started", "success")
+        except Exception as e:
+            flash(f"❌ Error starting popularity scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
@@ -1949,9 +1993,44 @@ def slskd_download():
     if not slskd_config.get("enabled"):
         return jsonify({"error": "slskd integration not enabled"}), 400
     
-    username = request.json.get("username", "")
-    filename = request.json.get("filename", "")
-    size = request.json.get("size", 0)
+    payload = request.json or {}
+    files_payload = payload.get("files")
+    username = payload.get("username", "")
+    filename = payload.get("filename", "")
+    size = payload.get("size", 0)
+
+    # Batch mode: expect list of files
+    if files_payload:
+        if not isinstance(files_payload, list):
+            return jsonify({"error": "files must be a list"}), 400
+        normalized_files = []
+        for entry in files_payload:
+            u = entry.get("username")
+            f = entry.get("filename")
+            if not u or not f:
+                return jsonify({"error": "Each file requires username and filename"}), 400
+            normalized_files.append({
+                "username": u,
+                "filename": f,
+                "size": int(entry.get("size") or 0)
+            })
+
+        web_url = slskd_config.get("web_url", "http://localhost:5030")
+        api_key = slskd_config.get("api_key", "")
+        try:
+            client = SlskdClient(web_url, api_key, enabled=True)
+            results = client.download_files(normalized_files)
+            requested = sum(item.get("requested", 0) for item in results)
+            successful_users = sum(1 for item in results if item.get("success"))
+            overall_success = requested > 0 and successful_users > 0
+            return jsonify({
+                "success": overall_success,
+                "requested": requested,
+                "userBatches": results
+            })
+        except Exception as e:
+            logging.error(f"[SLSKD] Batch download error: {str(e)}")
+            return jsonify({"error": str(e)}), 500
     
     if not username or not filename:
         return jsonify({"error": "Username and filename required"}), 400
@@ -2481,20 +2560,8 @@ def smart_playlists():
 @app.route("/downloads-monitor")
 def downloads_monitor():
     """Downloads monitoring UI page"""
-    try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        qbit_config = cfg.get("qbittorrent", {})
-        slskd_config = cfg.get("slskd", {})
-        
-        return render_template("downloads_monitor.html", 
-                             qbit_enabled=qbit_config.get("enabled", False),
-                             slskd_enabled=slskd_config.get("enabled", False))
-    except Exception as e:
-        logging.error(f"Downloads monitor error: {e}")
-        import traceback
-        traceback.print_exc()
-        flash(f"Error loading downloads monitor: {str(e)}", "danger")
-        return redirect(url_for("dashboard"))
+    # Legacy route: redirect to unified downloads page (search + monitor)
+    return redirect(url_for("downloads"))
 
 
 @app.route("/api/qbittorrent/status", methods=["GET"])
