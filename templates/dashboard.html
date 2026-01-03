@@ -104,19 +104,44 @@
                     </button>
                 </form>
                 <span class="ms-2 ms-md-3 badge bg-success d-inline-block mt-2 mt-md-0">Scan in progress...</span>
+                
+                <!-- Progress Bar -->
+                <div class="mt-3" id="scan-progress-container" style="display: none;">
+                    <div class="d-flex justify-content-between mb-2">
+                        <small class="text-muted" id="progress-text">Processing...</small>
+                        <small class="text-muted" id="progress-percent">0%</small>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             id="progress-bar" 
+                             role="progressbar" 
+                             style="width: 0%;" 
+                             aria-valuenow="0" 
+                             aria-valuemin="0" 
+                             aria-valuemax="100"></div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="text-muted" id="progress-details">
+                            <span id="current-artist"></span>
+                            <span id="current-album"></span>
+                        </small>
+                    </div>
+                    <div class="mt-1">
+                        <small class="text-muted" id="progress-phase"></small>
+                    </div>
+                </div>
             {% else %}
                 <div class="d-flex flex-column flex-md-row gap-2 gap-md-3">
-                    <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
-                        <input type="hidden" name="scan_type" value="batchrate">
+                    <form method="POST" action="{{ url_for('scan_unified') }}" class="flex-grow-1">
                         <button type="submit" class="btn btn-success w-100" style="background-color: #1db954; border-color: #1db954; color: #000; font-weight: 600;">
-                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Batch Rate</span>
+                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Start Unified Scan</span>
                         </button>
                     </form>
                     
                     <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
                         <input type="hidden" name="scan_type" value="force">
                         <button type="submit" class="btn btn-force w-100">
-                            <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Force</span>
+                            <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Force Re-scan</span>
                         </button>
                     </form>
                     
@@ -340,11 +365,66 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching scan status:', error));
     }
     
+    // Poll scan progress every 1 second
+    function updateScanProgress() {
+        fetch('/api/scan-progress')
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('scan-progress-container');
+                
+                if (data.is_running) {
+                    // Show progress bar
+                    container.style.display = 'block';
+                    
+                    // Update progress bar
+                    const progressBar = document.getElementById('progress-bar');
+                    const percent = Math.round(data.percent_complete || 0);
+                    progressBar.style.width = percent + '%';
+                    progressBar.setAttribute('aria-valuenow', percent);
+                    
+                    // Update text
+                    document.getElementById('progress-percent').textContent = percent + '%';
+                    
+                    // Update details
+                    const artistText = data.current_artist ? 
+                        `<i class="bi bi-person"></i> ${data.current_artist}` : '';
+                    const albumText = data.current_album ? 
+                        ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
+                    document.getElementById('current-artist').innerHTML = artistText;
+                    document.getElementById('current-album').innerHTML = albumText;
+                    
+                    // Update phase
+                    let phaseText = '';
+                    if (data.current_phase === 'popularity') {
+                        phaseText = '<i class="bi bi-graph-up"></i> Detecting popularity...';
+                    } else if (data.current_phase === 'singles') {
+                        phaseText = '<i class="bi bi-music-note"></i> Detecting singles & rating...';
+                    } else if (data.current_phase === 'navidrome_update') {
+                        phaseText = '<i class="bi bi-cloud-upload"></i> Updating Navidrome...';
+                    }
+                    document.getElementById('progress-phase').innerHTML = phaseText;
+                    
+                    // Update progress text
+                    const progressText = `${data.processed_artists || 0}/${data.total_artists || 0} artists, ` +
+                                       `${data.processed_tracks || 0}/${data.total_tracks || 0} tracks`;
+                    document.getElementById('progress-text').textContent = progressText;
+                } else {
+                    // Hide progress bar when not running
+                    container.style.display = 'none';
+                }
+            })
+            .catch(error => console.error('Error fetching scan progress:', error));
+    }
+    
     // Initial update
     updateScanStatus();
+    updateScanProgress();
     
-    // Poll every 2 seconds
+    // Poll scan status every 2 seconds
     setInterval(updateScanStatus, 2000);
+    
+    // Poll progress every 1 second
+    setInterval(updateScanProgress, 1000);
 });
 </script>
 {% endblock %}
