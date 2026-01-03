@@ -32,6 +32,26 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
     }
 
+    /* Ensure all text is readable */
+    p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th, a {
+      color: inherit;
+    }
+
+    /* Placeholder text */
+    ::placeholder {
+      color: var(--text-tertiary) !important;
+      opacity: 0.8;
+    }
+
+    /* Input and select text */
+    input, select, textarea {
+      color: var(--text-primary) !important;
+    }
+
+    input::placeholder, select::placeholder, textarea::placeholder {
+      color: var(--text-tertiary) !important;
+    }
+
     /* Navbar Styling */
     .navbar {
       background-color: var(--primary-bg) !important;
