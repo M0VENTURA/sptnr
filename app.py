@@ -5,6 +5,7 @@ Sptnr Web UI - Flask application for managing music ratings and scans
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
 import sqlite3
+from contextlib import closing
 import yaml
 import os
 import sys
@@ -1624,6 +1625,70 @@ def api_scan_progress():
             "current_album": None,
             "error": str(e)
         })
+
+
+@app.route("/api/scan-logs")
+def api_scan_logs():
+    """API endpoint to get last log entries for each scan type"""
+    log_files = {
+        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
+        "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
+        "file_paths": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log")
+    }
+    
+    result = {}
+    for scan_type, log_path in log_files.items():
+        lines = []
+        if os.path.exists(log_path):
+            try:
+                with open(log_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    all_lines = f.readlines()
+                    # Get last 3 non-empty lines
+                    for line in reversed(all_lines):
+                        line = line.strip()
+                        if line and len(lines) < 3:
+                            lines.append(line)
+                    lines.reverse()
+            except Exception as e:
+                lines = [f"Error reading log: {str(e)}"]
+        result[scan_type] = lines
+    
+    return jsonify(result)
+
+
+@app.route("/api/track-count")
+def api_track_count():
+    """API endpoint to get total track count for progress calculation"""
+    try:
+        with closing(sqlite3.connect(DB_PATH)) as conn:
+            cursor = conn.cursor()
+            cursor.execute("SELECT COUNT(*) FROM tracks")
+            total_tracks = cursor.fetchone()[0]
+            
+            # Also get counts with different metadata filled in
+            cursor.execute("SELECT COUNT(*) FROM tracks WHERE navidrome_rating IS NOT NULL")
+            navidrome_filled = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM tracks WHERE spotify_score IS NOT NULL")
+            popularity_filled = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single IS NOT NULL")
+            singles_filled = cursor.fetchone()[0]
+            
+            cursor.execute("SELECT COUNT(*) FROM tracks WHERE file_path IS NOT NULL")
+            filepath_filled = cursor.fetchone()[0]
+            
+            return jsonify({
+                "total_tracks": total_tracks,
+                "navidrome_filled": navidrome_filled,
+                "popularity_filled": popularity_filled,
+                "singles_filled": singles_filled,
+                "filepath_filled": filepath_filled
+            })
+    except Exception as e:
+        logging.error(f"Error getting track count: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/downloads")
