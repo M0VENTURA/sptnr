@@ -1,0 +1,214 @@
+{% extends "base.html" %}
+{% block title %}Setup Wizard · Sptnr{% endblock %}
+{% block content %}
+<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
+  <div class="container">
+    <div class="row g-4 align-items-stretch">
+      <div class="col-lg-4">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
+              <div>
+                <h1 class="h4 mb-1">First-Run Setup</h1>
+                <p class="mb-0 text-secondary">Connect to Navidrome and drop in API keys.</p>
+              </div>
+            </div>
+            <ol class="ps-3 small text-secondary mb-0">
+              <li class="mb-2">Add Navidrome URL and credentials (required).</li>
+              <li class="mb-2">Paste API keys to unlock Spotify, Discogs, and Last.fm (optional).</li>
+              <li>Save and start your first scan from the dashboard.</li>
+            </ol>
+            <div class="mt-auto pt-3 small text-secondary">
+              Need to start over later? Re-open this wizard anytime from Config.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-8">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-primary text-white d-flex align-items-center">
+            <i class="bi bi-plug me-2"></i>
+            <div>
+              <div class="fw-semibold">Connection & API Keys</div>
+              <small class="text-light">We only need Navidrome to start. APIs are optional but recommended.</small>
+            </div>
+          </div>
+          <form method="post" action="{{ url_for('setup') }}" id="setupForm">
+            <div class="card-body">
+              <div class="row g-3">
+                <div class="col-12">
+                  <div class="d-flex justify-content-between align-items-center mb-2">
+                    <label class="form-label mb-0">Navidrome Users *</label>
+                    <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNavUser()">
+                      <i class="bi bi-plus-circle me-1"></i>Add User
+                    </button>
+                  </div>
+                  <div id="navUsersContainer">
+                    {% if nav_users and nav_users|length > 0 %}
+                      {% for user in nav_users %}
+                      <div class="card mb-2 nav-user-entry" data-index="{{ loop.index0 }}">
+                        <div class="card-body p-3">
+                          <div class="d-flex justify-content-between align-items-start mb-2">
+                            <h6 class="mb-0">User {{ loop.index }}</h6>
+                            {% if loop.index0 > 0 %}
+                            <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeNavUser(this)">
+                              <i class="bi bi-trash"></i>
+                            </button>
+                            {% endif %}
+                          </div>
+                          <div class="row g-2">
+                            <div class="col-12">
+                              <label class="form-label small mb-1">Navidrome URL</label>
+                              <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" value="{{ user.base_url }}" required>
+                            </div>
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Username</label>
+                              <input type="text" class="form-control form-control-sm" name="nav_user[]" value="{{ user.user }}" required>
+                            </div>
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Password</label>
+                              <input type="password" class="form-control form-control-sm" name="nav_pass[]" value="{{ user.pass }}" required>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                      {% endfor %}
+                    {% else %}
+                      <div class="card mb-2 nav-user-entry" data-index="0">
+                        <div class="card-body p-3">
+                          <div class="d-flex justify-content-between align-items-start mb-2">
+                            <h6 class="mb-0">User 1</h6>
+                          </div>
+                          <div class="row g-2">
+                            <div class="col-12">
+                              <label class="form-label small mb-1">Navidrome URL</label>
+                              <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" value="{{ nav_base_url }}" required>
+                            </div>
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Username</label>
+                              <input type="text" class="form-control form-control-sm" name="nav_user[]" value="{{ nav_user }}" required>
+                            </div>
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Password</label>
+                              <input type="password" class="form-control form-control-sm" name="nav_pass[]" value="{{ nav_pass }}" required>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    {% endif %}
+                  </div>
+                  <div class="form-text mt-2">Add multiple users to set ratings across different Navidrome accounts.</div>
+                </div>
+
+                <div class="col-12 mt-2">
+                  <div class="d-flex align-items-center text-muted small mb-1">
+                    <i class="bi bi-lightning-charge me-2"></i>
+                    <span>Optional integrations (recommended for best scoring)</span>
+                  </div>
+                </div>
+
+                <div class="col-md-6">
+                  <label for="spotify_client_id" class="form-label">Spotify Client ID</label>
+                  <input type="text" class="form-control" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}" placeholder="xx123...">
+                </div>
+                <div class="col-md-6">
+                  <label for="spotify_client_secret" class="form-label">Spotify Client Secret</label>
+                  <input type="password" class="form-control" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}" placeholder="xx123...">
+                </div>
+
+                <div class="col-md-6">
+                  <label for="discogs_token" class="form-label">Discogs Token</label>
+                  <input type="text" class="form-control" id="discogs_token" name="discogs_token" value="{{ discogs_token }}" placeholder="Discogs personal token">
+                </div>
+                <div class="col-md-6">
+                  <label for="lastfm_api_key" class="form-label">Last.fm API Key</label>
+                  <input type="text" class="form-control" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}" placeholder="abcd1234">
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex justify-content-end gap-2">
+              <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Skip for now</a>
+              <button type="submit" class="btn btn-primary">Save & Continue</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Store initial user count as data attribute for JavaScript to read -->
+<div id="configData" data-initial-users="{{ nav_users|length if nav_users else 1 }}" style="display:none;"></div>
+
+<script>
+// Read initial user count from data attribute to avoid Jinja in JS
+const configData = document.getElementById('configData');
+let userIndex = parseInt(configData.getAttribute('data-initial-users')) || 1;
+
+function addNavUser() {
+  const container = document.getElementById('navUsersContainer');
+  const newEntry = document.createElement('div');
+  newEntry.className = 'card mb-2 nav-user-entry';
+  newEntry.setAttribute('data-index', userIndex);
+  newEntry.innerHTML = `
+    <div class="card-body p-3">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <h6 class="mb-0">User ${userIndex + 1}</h6>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeNavUser(this)">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label small mb-1">Navidrome URL</label>
+          <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-1">Username</label>
+          <input type="text" class="form-control form-control-sm" name="nav_user[]" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-1">Password</label>
+          <input type="password" class="form-control form-control-sm" name="nav_pass[]" required>
+        </div>
+      </div>
+    </div>
+  `;
+  container.appendChild(newEntry);
+  userIndex++;
+  updateUserNumbers();
+}
+
+function removeNavUser(button) {
+  const entry = button.closest('.nav-user-entry');
+  entry.remove();
+  updateUserNumbers();
+}
+
+function updateUserNumbers() {
+  const entries = document.querySelectorAll('.nav-user-entry');
+  entries.forEach((entry, idx) => {
+    const header = entry.querySelector('h6');
+    if (header) {
+      header.textContent = `User ${idx + 1}`;
+    }
+    // Show remove button only if not first user
+    const removeBtn = entry.querySelector('.btn-outline-danger');
+    if (removeBtn) {
+      if (idx === 0) {
+        removeBtn.style.display = 'none';
+      } else {
+        removeBtn.style.display = 'inline-block';
+      }
+    }
+  });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  updateUserNumbers();
+});
+</script>
+{% endblock %}

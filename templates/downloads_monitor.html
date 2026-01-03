@@ -1,0 +1,544 @@
+{% extends "base.html" %}
+
+{% block title %}Download Monitor · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-arrow-down-circle"></i> Download Monitor
+    </h1>
+    <p class="text-muted mb-0">Monitor active downloads from qBittorrent and Soulseek</p>
+  </div>
+
+  <div class="row g-4">
+    <!-- qBittorrent Downloads -->
+    {% if qbit_enabled %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Torrents
+          </h5>
+          <button class="btn btn-sm btn-outline-primary" onclick="refreshQbit()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+        </div>
+        <div class="card-body">
+          <div id="qbitLoading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading qBittorrent torrents...</p>
+          </div>
+          
+          <div id="qbitError" class="alert alert-danger" style="display: none;"></div>
+          
+          <div id="qbitResults" style="display: none;">
+            <div id="qbitEmpty" class="alert alert-info" style="display: none;">
+              <i class="bi bi-info-circle"></i> No active torrents
+            </div>
+            <div id="qbitTable" style="display: none;">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Progress</th>
+                      <th class="text-center">Size</th>
+                      <th class="text-center">Down Speed</th>
+                      <th class="text-center">Up Speed</th>
+                      <th class="text-center">Seeds</th>
+                      <th class="text-center">ETA</th>
+                    </tr>
+                  </thead>
+                  <tbody id="qbitTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-body">
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
+            <a href="{{ url_for('config') }}" class="alert-link">Configure it here</a>.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Soulseek Downloads -->
+    {% if slskd_enabled %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-beamed"></i> Soulseek Downloads
+          </h5>
+          <button class="btn btn-sm btn-outline-primary" onclick="refreshSlskd()">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+        </div>
+        <div class="card-body">
+          <div id="slskdLoading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading Soulseek downloads...</p>
+          </div>
+          
+          <div id="slskdError" class="alert alert-danger" style="display: none;"></div>
+          
+          <div id="slskdResults" style="display: none;">
+            <div id="slskdEmpty" class="alert alert-info" style="display: none;">
+              <i class="bi bi-info-circle"></i> No active downloads
+            </div>
+            <div id="slskdTable" style="display: none;">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Filename</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Progress</th>
+                      <th class="text-center">Size</th>
+                      <th class="text-center">Speed</th>
+                      <th class="text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="slskdTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-body">
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled. 
+            <a href="{{ url_for('config') }}" class="alert-link">Configure it here</a>.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+let autoRefreshInterval = null;
+
+// Auto-refresh every 3 seconds
+function startAutoRefresh() {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+  }
+  
+  autoRefreshInterval = setInterval(() => {
+    if (typeof refreshQbit !== 'undefined') refreshQbit();
+    if (typeof refreshSlskd !== 'undefined') refreshSlskd();
+  }, 3000);
+}
+
+// Stop auto-refresh when leaving page
+window.addEventListener('beforeunload', () => {
+  if (autoRefreshInterval) {
+    clearInterval(autoRefreshInterval);
+  }
+});
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatETA(seconds) {
+  if (seconds === 8640000 || seconds < 0) return '∞';
+  if (seconds === 0) return '—';
+  
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+</script>
+
+{% if qbit_enabled %}
+<script>
+function refreshQbit() {
+  fetch('/api/qbittorrent/status')
+    .then(response => response.json())
+    .then(data => {
+      document.getElementById('qbitLoading').style.display = 'none';
+      
+      if (data.error) {
+        document.getElementById('qbitError').textContent = 'Error: ' + data.error;
+        document.getElementById('qbitError').style.display = 'block';
+        document.getElementById('qbitResults').style.display = 'none';
+        return;
+      }
+      
+      document.getElementById('qbitError').style.display = 'none';
+      document.getElementById('qbitResults').style.display = 'block';
+      
+      const torrents = data.torrents || [];
+      
+      if (torrents.length === 0) {
+        document.getElementById('qbitEmpty').style.display = 'block';
+        document.getElementById('qbitTable').style.display = 'none';
+        return;
+      }
+      
+      document.getElementById('qbitEmpty').style.display = 'none';
+      document.getElementById('qbitTable').style.display = 'block';
+      
+      const tbody = document.getElementById('qbitTableBody');
+      tbody.innerHTML = '';
+      
+      torrents.forEach(torrent => {
+        const row = document.createElement('tr');
+        
+        // State badge color
+        let stateClass = 'bg-secondary';
+        const state = torrent.state.toLowerCase();
+        if (state.includes('downloading')) stateClass = 'bg-primary';
+        else if (state.includes('uploading') || state.includes('seeding')) stateClass = 'bg-success';
+        else if (state.includes('paused')) stateClass = 'bg-warning';
+        else if (state.includes('error')) stateClass = 'bg-danger';
+        else if (state.includes('stalled')) stateClass = 'bg-warning';
+        
+        row.innerHTML = `
+          <td>
+            <div class="text-truncate" style="max-width: 400px;" title="${escapeHtml(torrent.name)}">
+              ${escapeHtml(torrent.name)}
+            </div>
+            ${torrent.category ? `<small class="text-muted"><i class="bi bi-tag"></i> ${escapeHtml(torrent.category)}</small>` : ''}
+          </td>
+          <td class="text-center">
+            <span class="badge ${stateClass}">${escapeHtml(torrent.state)}</span>
+          </td>
+          <td class="text-center">
+            <div class="progress" style="height: 20px; min-width: 100px;">
+              <div class="progress-bar ${torrent.progress >= 100 ? 'bg-success' : 'bg-primary'}" 
+                   role="progressbar" 
+                   style="width: ${torrent.progress}%"
+                   aria-valuenow="${torrent.progress}" 
+                   aria-valuemin="0" 
+                   aria-valuemax="100">
+                ${torrent.progress}%
+              </div>
+            </div>
+          </td>
+          <td class="text-center">${formatBytes(torrent.size)}</td>
+          <td class="text-center">
+            ${torrent.dlspeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(torrent.dlspeed)}/s</span>` : '—'}
+          </td>
+          <td class="text-center">
+            ${torrent.upspeed > 0 ? `<span class="text-success"><i class="bi bi-arrow-up"></i> ${formatBytes(torrent.upspeed)}/s</span>` : '—'}
+          </td>
+          <td class="text-center">
+            <span class="${torrent.num_seeds > 0 ? 'text-success' : 'text-muted'}">
+              ${torrent.num_seeds} / ${torrent.num_leechs}
+            </span>
+          </td>
+          <td class="text-center">${formatETA(torrent.eta)}</td>
+        `;
+        
+        tbody.appendChild(row);
+      });
+    })
+    .catch(error => {
+      document.getElementById('qbitLoading').style.display = 'none';
+      document.getElementById('qbitError').textContent = 'Network error: ' + error.message;
+      document.getElementById('qbitError').style.display = 'block';
+    });
+}
+</script>
+{% endif %}
+
+{% if slskd_enabled %}
+<script>
+function refreshSlskd() {
+  fetch('/api/slskd/status')
+    .then(response => response.json())
+    .then(data => {
+      document.getElementById('slskdLoading').style.display = 'none';
+      
+      if (data.error) {
+        document.getElementById('slskdError').textContent = 'Error: ' + data.error;
+        document.getElementById('slskdError').style.display = 'block';
+        document.getElementById('slskdResults').style.display = 'none';
+        return;
+      }
+      
+      document.getElementById('slskdError').style.display = 'none';
+      document.getElementById('slskdResults').style.display = 'block';
+      
+      const downloads = data.downloads || [];
+      
+      if (downloads.length === 0) {
+        document.getElementById('slskdEmpty').style.display = 'block';
+        document.getElementById('slskdTable').style.display = 'none';
+        return;
+      }
+      
+      document.getElementById('slskdEmpty').style.display = 'none';
+      document.getElementById('slskdTable').style.display = 'block';
+      
+      const tbody = document.getElementById('slskdTableBody');
+      tbody.innerHTML = '';
+      
+      downloads.forEach(download => {
+        const row = document.createElement('tr');
+        
+        // State badge color
+        let stateClass = 'bg-secondary';
+        const state = download.state.toLowerCase();
+        if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
+        else if (state.includes('completed')) stateClass = 'bg-success';
+        else if (state.includes('queued')) stateClass = 'bg-warning';
+        else if (state.includes('error') || state.includes('failed')) stateClass = 'bg-danger';
+        
+        // Calculate remaining bytes
+        const remainingBytes = download.size - download.bytesTransferred;
+        const eta = download.averageSpeed > 0 ? Math.floor(remainingBytes / download.averageSpeed) : 0;
+        
+        row.innerHTML = `
+          <td>
+            <strong>${escapeHtml(download.username)}</strong>
+          </td>
+          <td>
+            <div class="text-truncate" style="max-width: 400px;" title="${escapeHtml(download.filename)}">
+              ${escapeHtml(download.filename)}
+            </div>
+            <small class="text-muted">
+              ${formatBytes(download.bytesTransferred)} / ${formatBytes(download.size)}
+              ${eta > 0 ? ` · ETA: ${formatETA(eta)}` : ''}
+            </small>
+          </td>
+          <td class="text-center">
+            <span class="badge ${stateClass}">${escapeHtml(download.state)}</span>
+          </td>
+          <td class="text-center">
+            <div class="progress" style="height: 20px; min-width: 100px;">
+              <div class="progress-bar ${download.progress >= 100 ? 'bg-success' : 'bg-primary'}" 
+                   role="progressbar" 
+                   style="width: ${download.progress}%"
+                   aria-valuenow="${download.progress}" 
+                   aria-valuemin="0" 
+                   aria-valuemax="100">
+                ${download.progress.toFixed(1)}%
+              </div>
+            </div>
+          </td>
+          <td class="text-center">${formatBytes(download.size)}</td>
+          <td class="text-center">
+            ${download.averageSpeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(download.averageSpeed)}/s</span>` : '—'}
+          </td>
+          <td class="text-center">
+            <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', '${escapeHtml(download.remoteToken || '')}')" 
+                    title="Cancel download">
+              <i class="bi bi-x-circle"></i>
+            </button>
+          </td>
+        `;
+        
+        tbody.appendChild(row);
+      });
+    })
+    .catch(error => {
+      document.getElementById('slskdLoading').style.display = 'none';
+      document.getElementById('slskdError').textContent = 'Network error: ' + error.message;
+      document.getElementById('slskdError').style.display = 'block';
+    });
+}
+
+function cancelSlskdDownload(username, filename, token) {
+  if (!confirm(`Cancel download of "${filename}" from ${username}?`)) return;
+  
+  fetch('/api/slskd/cancel', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ 
+      username: username, 
+      filename: filename,
+      token: token
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Download cancelled');
+      refreshSlskd();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to cancel download'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+</script>
+{% endif %}
+
+<script>
+// Initial load
+document.addEventListener('DOMContentLoaded', function() {
+  if (typeof refreshQbit !== 'undefined') {
+    refreshQbit();
+  }
+  if (typeof refreshSlskd !== 'undefined') {
+    refreshSlskd();
+  }
+  
+  // Start auto-refresh
+  startAutoRefresh();
+});
+</script>
+
+<style>
+/* Dark theme improvements for downloads monitor page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+.progress {
+    background-color: rgba(255, 255, 255, 0.1) !important;
+    border: none !important;
+}
+
+.progress-bar {
+    background-color: var(--spotify-green) !important;
+}
+
+.progress-bar.bg-primary {
+    background-color: #0d6efd !important;
+}
+
+.progress-bar.bg-success {
+    background-color: var(--spotify-green) !important;
+}
+
+.alert {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.alert-info {
+    background-color: rgba(13, 202, 240, 0.1) !important;
+    border-color: rgba(13, 202, 240, 0.3) !important;
+    color: #0dcaf0 !important;
+}
+
+.alert-danger {
+    background-color: rgba(220, 53, 69, 0.1) !important;
+    border-color: rgba(220, 53, 69, 0.3) !important;
+    color: #f8d7da !important;
+}
+
+.spinner-border {
+    color: var(--spotify-green) !important;
+}
+
+.text-primary {
+    color: #0d6efd !important;
+}
+
+.text-success {
+    color: var(--spotify-green) !important;
+}
+
+.text-muted {
+    color: rgba(224, 224, 224, 0.6) !important;
+}
+
+.badge {
+    color: white !important;
+}
+</style>
+
+{% endblock %}

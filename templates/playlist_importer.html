@@ -1,0 +1,431 @@
+{% extends "base.html" %}
+
+{% block title %}Import Spotify Playlist - Sptnr{% endblock %}
+
+{% block content %}
+<div class="row mb-4">
+  <div class="col-12">
+    <h1><i class="bi bi-music-note-list"></i> Import Spotify Playlist</h1>
+    <p class="text-secondary">Create a Navidrome playlist from a Spotify playlist URL</p>
+  </div>
+</div>
+
+<!-- Input Section -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">Import Playlist</h5>
+      </div>
+      <div class="card-body">
+        <form id="playlistForm" onsubmit="importPlaylist(event)">
+          <div class="row g-3">
+            <div class="col-12">
+              <label for="spotifyUrl" class="form-label">Spotify Playlist URL</label>
+              <input 
+                type="text" 
+                id="spotifyUrl" 
+                class="form-control" 
+                placeholder="https://open.spotify.com/playlist/..."
+                required
+              />
+              <small class="text-secondary">
+                <i class="bi bi-info-circle"></i> 
+                Paste a Spotify playlist URL (any format: link, URI, or ID)
+              </small>
+            </div>
+            <div class="col-12 col-md-6">
+              <label for="playlistName" class="form-label">Playlist Name</label>
+              <input 
+                type="text" 
+                id="playlistName" 
+                class="form-control" 
+                placeholder="e.g., My Imported Playlist"
+                required
+              />
+            </div>
+            <div class="col-12 col-md-6">
+              <label for="playlistDescription" class="form-label">Description (optional)</label>
+              <input 
+                type="text" 
+                id="playlistDescription" 
+                class="form-control" 
+                placeholder="e.g., Imported from Spotify"
+              />
+            </div>
+            <div class="col-12">
+              <button type="submit" class="btn btn-primary">
+                <i class="bi bi-download"></i> Import Playlist
+              </button>
+              <span id="importStatus" class="ms-2 text-secondary"></span>
+            </div>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Results Section -->
+<div id="resultsSection" style="display: none;">
+  <!-- Summary Cards -->
+  <div class="row mb-4">
+    <div class="col-12 col-md-3">
+      <div class="card text-center bg-success bg-opacity-10 border-success">
+        <div class="card-body">
+          <h5 class="card-title text-success">Matched</h5>
+          <h2 id="matchedCount" class="text-success">0</h2>
+          <small class="text-secondary">songs found in library</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="card text-center bg-warning bg-opacity-10 border-warning">
+        <div class="card-body">
+          <h5 class="card-title text-warning">Missing</h5>
+          <h2 id="missingCount" class="text-warning">0</h2>
+          <small class="text-secondary">songs not in library</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="card text-center bg-info bg-opacity-10 border-info">
+        <div class="card-body">
+          <h5 class="card-title text-info">Total</h5>
+          <h2 id="totalCount" class="text-info">0</h2>
+          <small class="text-secondary">tracks in playlist</small>
+        </div>
+      </div>
+    </div>
+    <div class="col-12 col-md-3">
+      <div class="card text-center bg-secondary bg-opacity-10 border-secondary">
+        <div class="card-body">
+          <h5 class="card-title text-secondary">Coverage</h5>
+          <h2 id="coverage" class="text-secondary">0%</h2>
+          <small class="text-secondary">of playlist matched</small>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Matched Tracks -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0"><i class="bi bi-check-circle-fill text-success"></i> Matched Tracks</h5>
+          <button class="btn btn-sm btn-primary" onclick="createPlaylist()" id="createPlaylistBtn">
+            <i class="bi bi-music-note-list"></i> Create Playlist
+          </button>
+        </div>
+        <div class="card-body">
+          <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
+            <!-- Matched tracks will be listed here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Missing Tracks -->
+  <div class="row mb-4">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
+          <button class="btn btn-sm btn-primary" onclick="searchMissingTracks()" id="searchMissingBtn" style="display: none;">
+            <i class="bi bi-cloud-download"></i> Search in Soulseek
+          </button>
+        </div>
+        <div class="card-body">
+          <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
+            <!-- Missing tracks will be listed here -->
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Error Section -->
+<div id="errorSection" style="display: none;">
+  <div class="row">
+    <div class="col-12">
+      <div class="alert alert-danger" role="alert">
+        <h5 class="alert-heading"><i class="bi bi-exclamation-triangle"></i> Error</h5>
+        <p id="errorMessage"></p>
+      </div>
+    </div>
+  </div>
+</div>
+
+<style>
+  .track-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 0.75rem 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .track-row:last-child {
+    border-bottom: none;
+  }
+
+  .track-info {
+    flex: 1;
+  }
+
+  .track-title {
+    font-weight: 600;
+    color: var(--spotify-green);
+    margin-bottom: 0.25rem;
+  }
+
+  .track-artist {
+    color: var(--text-secondary);
+    font-size: 0.9rem;
+  }
+
+  .track-album {
+    color: var(--text-tertiary);
+    font-size: 0.85rem;
+  }
+
+  .track-actions {
+    display: flex;
+    gap: 0.5rem;
+    align-items: center;
+  }
+
+  .missing-track-badge {
+    background-color: rgba(255, 193, 7, 0.1);
+    color: #ffc107;
+    padding: 0.25rem 0.75rem;
+    border-radius: 4px;
+    font-size: 0.8rem;
+    white-space: nowrap;
+  }
+</style>
+
+<script>
+  let currentImportData = null;
+  let missingTracksForSearch = [];
+
+  async function importPlaylist(event) {
+    event.preventDefault();
+    
+    const spotifyUrl = document.getElementById('spotifyUrl').value.trim();
+    const playlistName = document.getElementById('playlistName').value.trim();
+    const playlistDescription = document.getElementById('playlistDescription').value.trim();
+    const statusEl = document.getElementById('importStatus');
+    
+    if (!spotifyUrl || !playlistName) {
+      alert('Please fill in all required fields');
+      return;
+    }
+    
+    // Show loading state
+    statusEl.textContent = '⏳ Importing...';
+    statusEl.classList.remove('text-danger');
+    statusEl.classList.add('text-secondary');
+    
+    try {
+      const response = await fetch('/api/playlist/import', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          spotify_url: spotifyUrl,
+          playlist_name: playlistName,
+          playlist_description: playlistDescription
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Import failed');
+      }
+      
+      currentImportData = data;
+      displayResults(data);
+      statusEl.textContent = '✅ Import complete!';
+      statusEl.classList.remove('text-secondary', 'text-danger');
+      statusEl.classList.add('text-success');
+      
+      // Show search button if slskd is enabled and there are missing tracks
+      if (data.missing_tracks && data.missing_tracks.length > 0 && data.slskd_enabled) {
+        document.getElementById('searchMissingBtn').style.display = 'inline-block';
+        missingTracksForSearch = data.missing_tracks;
+      }
+    } catch (error) {
+      console.error('Error:', error);
+      statusEl.textContent = `❌ ${error.message}`;
+      statusEl.classList.remove('text-secondary', 'text-success');
+      statusEl.classList.add('text-danger');
+      
+      document.getElementById('errorSection').style.display = 'block';
+      document.getElementById('errorMessage').textContent = error.message;
+      document.getElementById('resultsSection').style.display = 'none';
+    }
+  }
+  
+  function displayResults(data) {
+    const matchedCount = data.matched_tracks ? data.matched_tracks.length : 0;
+    const missingCount = data.missing_tracks ? data.missing_tracks.length : 0;
+    const totalCount = matchedCount + missingCount;
+    const coverage = totalCount > 0 ? Math.round((matchedCount / totalCount) * 100) : 0;
+    
+    // Update summary
+    document.getElementById('matchedCount').textContent = matchedCount;
+    document.getElementById('missingCount').textContent = missingCount;
+    document.getElementById('totalCount').textContent = totalCount;
+    document.getElementById('coverage').textContent = coverage + '%';
+    
+    // Update progress bar color based on coverage
+    const coverageEl = document.getElementById('coverage').parentElement.parentElement;
+    if (coverage >= 90) {
+      coverageEl.classList.remove('bg-warning', 'bg-danger');
+      coverageEl.classList.add('bg-success');
+    } else if (coverage >= 70) {
+      coverageEl.classList.remove('bg-danger', 'bg-success');
+      coverageEl.classList.add('bg-warning');
+    } else {
+      coverageEl.classList.remove('bg-success', 'bg-warning');
+      coverageEl.classList.add('bg-danger');
+    }
+    
+    // Display matched tracks
+    const matchedContainer = document.getElementById('matchedTracksContainer');
+    if (matchedCount > 0) {
+      matchedContainer.innerHTML = data.matched_tracks.map(track => `
+        <div class="track-row">
+          <div class="track-info">
+            <div class="track-title">${escapeHtml(track.title)}</div>
+            <div class="track-artist">${escapeHtml(track.artist)}</div>
+            <div class="track-album">${escapeHtml(track.album)}</div>
+          </div>
+          <div class="track-actions">
+            <span class="badge bg-success">✓ Found</span>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      matchedContainer.innerHTML = '<p class="text-secondary text-center py-5">No matched tracks found</p>';
+    }
+    
+    // Display missing tracks
+    const missingContainer = document.getElementById('missingTracksContainer');
+    if (missingCount > 0) {
+      missingContainer.innerHTML = data.missing_tracks.map((track, idx) => `
+        <div class="track-row">
+          <div class="track-info">
+            <div class="track-title">${escapeHtml(track.title)}</div>
+            <div class="track-artist">${escapeHtml(track.artist)}</div>
+            <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
+          </div>
+          <div class="track-actions">
+            <span class="missing-track-badge">✗ Missing</span>
+          </div>
+        </div>
+      `).join('');
+    } else {
+      missingContainer.innerHTML = '<p class="text-success text-center py-5">All tracks found in library!</p>';
+    }
+    
+    // Show results section
+    document.getElementById('resultsSection').style.display = 'block';
+    document.getElementById('errorSection').style.display = 'none';
+  }
+  
+  async function createPlaylist() {
+    if (!currentImportData) return;
+    
+    const createBtn = document.getElementById('createPlaylistBtn');
+    const originalText = createBtn.innerHTML;
+    createBtn.disabled = true;
+    createBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
+    
+    try {
+      const response = await fetch('/api/playlist/create', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          playlist_name: currentImportData.playlist_name,
+          playlist_description: currentImportData.playlist_description,
+          matched_tracks: currentImportData.matched_tracks
+        })
+      });
+      
+      const data = await response.json();
+      
+      if (!response.ok) {
+        throw new Error(data.error || 'Playlist creation failed');
+      }
+      
+      alert(`✅ Playlist "${currentImportData.playlist_name}" created successfully!`);
+      createBtn.innerHTML = '<i class="bi bi-check-circle"></i> Playlist Created!';
+      createBtn.classList.remove('btn-primary');
+      createBtn.classList.add('btn-success');
+    } catch (error) {
+      alert(`❌ Error: ${error.message}`);
+      createBtn.disabled = false;
+      createBtn.innerHTML = originalText;
+    }
+  }
+  
+  async function searchMissingTracks() {
+    if (missingTracksForSearch.length === 0) {
+      alert('No missing tracks to search');
+      return;
+    }
+    
+    const searchBtn = document.getElementById('searchMissingBtn');
+    const originalText = searchBtn.innerHTML;
+    searchBtn.disabled = true;
+    searchBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Searching...';
+    
+    try {
+      // Start searches for all missing tracks
+      for (const track of missingTracksForSearch) {
+        const query = `${track.artist} ${track.title}`;
+        
+        const response = await fetch('/api/slskd/search', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({ query })
+        });
+        
+        if (response.ok) {
+          const data = await response.json();
+          console.log(`Started search for: ${query}`, data);
+        }
+        
+        // Small delay between requests
+        await new Promise(resolve => setTimeout(resolve, 500));
+      }
+      
+      alert(`✅ Started searching for ${missingTracksForSearch.length} missing tracks in Soulseek. Check the Downloads page for results!`);
+      searchBtn.disabled = false;
+      searchBtn.innerHTML = originalText;
+    } catch (error) {
+      alert(`❌ Error starting searches: ${error.message}`);
+      searchBtn.disabled = false;
+      searchBtn.innerHTML = originalText;
+    }
+  }
+  
+  function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+  }
+</script>
+
+{% endblock %}

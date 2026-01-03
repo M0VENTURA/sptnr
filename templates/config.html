@@ -1,0 +1,686 @@
+{% extends "base.html" %}
+{% block title %}Config · Sptnr{% endblock %}
+{% block content %}
+<div class="container-fluid py-3 py-md-4">
+  <div class="row mb-3">
+    <div class="col-12 col-md-auto">
+      <h1 class="h3 mb-2">Configuration</h1>
+      <p class="text-muted mb-0">Edit settings below or use the setup wizard for guided configuration.</p>
+    </div>
+    <div class="col-12 col-md-auto ms-md-auto d-flex gap-2 flex-wrap">
+      <a href="{{ url_for('setup') }}" class="btn btn-outline-primary btn-sm">
+        <i class="bi bi-stars"></i> <span class="d-none d-sm-inline">Setup Wizard</span>
+      </a>
+      <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#rawYamlModal">
+        <i class="bi bi-code"></i> <span class="d-none d-sm-inline">Raw YAML</span>
+      </button>
+    </div>
+  </div>
+
+  <!-- Navidrome Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-music-note-beamed"></i> Navidrome</h5>
+      <small class="text-muted">Music streaming server configuration</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Base URL</label>
+          <input type="text" class="form-control" id="nav_base_url" placeholder="http://localhost:4533" value="{{ config.get('navidrome', {}).get('base_url', '') }}">
+          <div class="form-text">URL to your Navidrome server</div>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Username</label>
+          <input type="text" class="form-control" id="nav_user" placeholder="admin" value="{{ config.get('navidrome', {}).get('user', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Password</label>
+          <input type="password" class="form-control" id="nav_pass" placeholder="••••••••" value="{{ config.get('navidrome', {}).get('pass', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- qBittorrent Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-download"></i> qBittorrent
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
+            <label class="form-check-label" for="qbit_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">BitTorrent client for searching and downloading releases</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
+          <div class="form-text">URL to your qBittorrent Web UI</div>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Username</label>
+          <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Password</label>
+          <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Downloads Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-folder-down"></i> Downloads</h5>
+      <small class="text-muted">Download folder configuration</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Downloads Folder Path</label>
+          <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
+          <div class="form-text">Path where downloaded files are stored. Used for monitoring downloads and building the library.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Soulseek (slskd) Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-cloud-download"></i> Soulseek (slskd)
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="slskd_enabled" {% if config.get('slskd', {}).get('enabled') %}checked{% endif %}>
+            <label class="form-check-label" for="slskd_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">P2P music file sharing network</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
+          <div class="form-text">URL to your slskd Web UI</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">API Key</label>
+          <input type="password" class="form-control" id="slskd_api_key" placeholder="••••••••" value="{{ config.get('slskd', {}).get('api_key', '') }}">
+          <div class="form-text">Found in Settings > API</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Authentik SSO Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-shield-lock"></i> Authentik SSO
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="authentik_enabled" {% if config.get('authentik', {}).get('enabled') %}checked{% endif %}>
+            <label class="form-check-label" for="authentik_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">Single Sign-On authentication provider</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Server URL</label>
+          <input type="text" class="form-control" id="authentik_server_url" placeholder="https://auth.example.com" value="{{ config.get('authentik', {}).get('server_url', '') }}">
+          <div class="form-text">URL to your Authentik server</div>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client ID</label>
+          <input type="text" class="form-control" id="authentik_client_id" placeholder="client_id" value="{{ config.get('authentik', {}).get('client_id', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client Secret</label>
+          <input type="password" class="form-control" id="authentik_client_secret" placeholder="••••••••" value="{{ config.get('authentik', {}).get('client_secret', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bookmarks Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-bookmark-star"></i> Bookmarks
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="bookmarks_enabled" {% if config.get('bookmarks', {}).get('enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="bookmarks_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">Quick access to favorite artists, albums, and tracks</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Max Bookmarks</label>
+          <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
+          <div class="form-text">Maximum number of bookmarks allowed per user</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API Integrations Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-link-45deg"></i> API Integrations</h5>
+      <small class="text-muted">External data sources for music metadata</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <!-- Spotify -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Spotify</h6>
+              <small class="text-muted d-block">Album, artist, and track data</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">Client ID</label>
+              <input type="text" class="form-control form-control-sm" id="spotify_client_id" placeholder="your_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">Client Secret</label>
+              <input type="password" class="form-control form-control-sm" id="spotify_client_secret" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Last.fm -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Last.fm</h6>
+              <small class="text-muted d-block">Listening history and user ratings</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="lastfm_enabled" {% if config.get('api_integrations', {}).get('lastfm', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="text" class="form-control form-control-sm" id="lastfm_api_key" placeholder="your_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- ListenBrainz -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">ListenBrainz</h6>
+              <small class="text-muted d-block">Community music database (public API)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discogs -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Discogs</h6>
+              <small class="text-muted d-block">Release database and catalog info</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="discogs_enabled" {% if config.get('api_integrations', {}).get('discogs', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">Token</label>
+              <input type="password" class="form-control form-control-sm" id="discogs_token" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- MusicBrainz -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">MusicBrainz</h6>
+              <small class="text-muted d-block">Music metadata database (public API)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="musicbrainz_enabled" {% if config.get('api_integrations', {}).get('musicbrainz', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+        </div>
+
+        <!-- AudioDB -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">AudioDB</h6>
+              <small class="text-muted d-block">Album artwork and artist info (optional)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="audiodb_enabled" {% if config.get('api_integrations', {}).get('audiodb', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="audiodb_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Google -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Google Custom Search</h6>
+              <small class="text-muted d-block">Web search integration</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="google_enabled" {% if config.get('api_integrations', {}).get('google', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12 col-sm-6">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="google_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('google', {}).get('api_key', '') }}">
+            </div>
+            <div class="col-12 col-sm-6">
+              <label class="form-label form-label-sm">CSE ID</label>
+              <input type="password" class="form-control form-control-sm" id="google_cse_id" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- YouTube -->
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">YouTube</h6>
+              <small class="text-muted d-block">Video and music search</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="youtube_enabled" {% if config.get('api_integrations', {}).get('youtube', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="youtube_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Database Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-database"></i> Database</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Database Path</label>
+          <input type="text" class="form-control" id="db_path" placeholder="/database/sptnr.db" value="{{ config.get('database', {}).get('path', '') }}">
+        </div>
+        <div class="col-12">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="db_vacuum" {% if config.get('database', {}).get('vacuum_on_start') %}checked{% endif %}>
+            <label class="form-check-label" for="db_vacuum">
+              Vacuum on start (optimize database file)
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logging Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-file-text"></i> Logging</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Log Level</label>
+          <select class="form-select" id="log_level">
+            {% set current_level = config.get('logging', {}).get('level', 'INFO') %}
+            <option value="DEBUG" {% if current_level == 'DEBUG' %}selected{% endif %}>DEBUG</option>
+            <option value="INFO" {% if current_level == 'INFO' %}selected{% endif %}>INFO</option>
+            <option value="WARNING" {% if current_level == 'WARNING' %}selected{% endif %}>WARNING</option>
+            <option value="ERROR" {% if current_level == 'ERROR' %}selected{% endif %}>ERROR</option>
+          </select>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Log to Console</label>
+          <select class="form-select" id="log_console">
+            {% set current_console = config.get('logging', {}).get('console', true) %}
+            <option value="true" {% if current_console == true or current_console == 'true' %}selected{% endif %}>Yes</option>
+            <option value="false" {% if current_console == false or current_console == 'false' %}selected{% endif %}>No</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Log File Path</label>
+          <input type="text" class="form-control" id="log_file" placeholder="/config/app.log" value="{{ config.get('logging', {}).get('file', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Save Button -->
+  <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
+    <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='{{ url_for('dashboard') }}'">
+      Cancel
+    </button>
+    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
+      <i class="bi bi-check-circle"></i> Save Configuration
+    </button>
+  </div>
+
+  <!-- Toast notification -->
+  <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+    <div id="configToast" class="toast" role="alert">
+      <div class="toast-header">
+        <i class="bi bi-info-circle me-2"></i>
+        <strong class="me-auto" id="toastTitle">Status</strong>
+        <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+      </div>
+      <div class="toast-body" id="toastMessage">
+        Message
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Raw YAML Modal -->
+<div class="modal fade" id="rawYamlModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-code"></i> Raw YAML Editor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label for="config_content" class="form-label">config.yaml</label>
+        <textarea class="form-control monospace" id="config_content" style="font-family: monospace; font-size: 0.875rem;" rows="24">{{ config_raw }}</textarea>
+        <div class="form-text mt-2">Changes are written as-is. Confirm YAML indentation before saving.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="saveRawYaml()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function showToast(title, message, type = 'info') {
+  const toast = new bootstrap.Toast(document.getElementById('configToast'));
+  document.getElementById('toastTitle').textContent = title;
+  document.getElementById('toastMessage').textContent = message;
+  
+  const toastEl = document.getElementById('configToast');
+  toastEl.classList.remove('bg-success', 'bg-danger', 'bg-warning');
+  if (type === 'success') toastEl.classList.add('bg-success', 'text-white');
+  else if (type === 'error') toastEl.classList.add('bg-danger', 'text-white');
+  else if (type === 'warning') toastEl.classList.add('bg-warning', 'text-dark');
+  
+  toast.show();
+}
+
+function buildConfigObject() {
+  return {
+    navidrome: {
+      base_url: document.getElementById('nav_base_url').value,
+      user: document.getElementById('nav_user').value,
+      pass: document.getElementById('nav_pass').value
+    },
+    qbittorrent: {
+      enabled: document.getElementById('qbit_enabled').checked,
+      web_url: document.getElementById('qbit_web_url').value,
+      username: document.getElementById('qbit_username').value,
+      password: document.getElementById('qbit_password').value
+    },
+    slskd: {
+      enabled: document.getElementById('slskd_enabled').checked,
+      web_url: document.getElementById('slskd_web_url').value,
+      api_key: document.getElementById('slskd_api_key').value
+    },
+    authentik: {
+      enabled: document.getElementById('authentik_enabled').checked,
+      server_url: document.getElementById('authentik_server_url').value,
+      client_id: document.getElementById('authentik_client_id').value,
+      client_secret: document.getElementById('authentik_client_secret').value
+    },
+    bookmarks: {
+      enabled: document.getElementById('bookmarks_enabled').checked,
+      max_bookmarks: parseInt(document.getElementById('bookmarks_max').value) || 100
+    },
+    api_integrations: {
+      spotify: {
+        enabled: document.getElementById('spotify_enabled').checked,
+        client_id: document.getElementById('spotify_client_id').value,
+        client_secret: document.getElementById('spotify_client_secret').value
+      },
+      lastfm: {
+        enabled: document.getElementById('lastfm_enabled').checked,
+        api_key: document.getElementById('lastfm_api_key').value
+      },
+      listenbrainz: {
+        enabled: document.getElementById('listenbrainz_enabled').checked
+      },
+      discogs: {
+        enabled: document.getElementById('discogs_enabled').checked,
+        token: document.getElementById('discogs_token').value
+      },
+      musicbrainz: {
+        enabled: document.getElementById('musicbrainz_enabled').checked
+      },
+      audiodb: {
+        enabled: document.getElementById('audiodb_enabled').checked,
+        api_key: document.getElementById('audiodb_api_key').value
+      },
+      google: {
+        enabled: document.getElementById('google_enabled').checked,
+        api_key: document.getElementById('google_api_key').value,
+        cse_id: document.getElementById('google_cse_id').value
+      },
+      youtube: {
+        enabled: document.getElementById('youtube_enabled').checked,
+        api_key: document.getElementById('youtube_api_key').value
+      }
+    },
+    downloads: {
+      folder: document.getElementById('downloads_folder').value
+    },
+    database: {
+      path: document.getElementById('db_path').value,
+      vacuum_on_start: document.getElementById('db_vacuum').checked
+    },
+    logging: {
+      level: document.getElementById('log_level').value,
+      file: document.getElementById('log_file').value,
+      console: document.getElementById('log_console').value === 'true'
+    }
+  };
+}
+
+function saveConfig() {
+  const saveBtn = document.getElementById('saveBtn');
+  saveBtn.disabled = true;
+  const originalText = saveBtn.innerHTML;
+  saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  
+  const config = buildConfigObject();
+  
+  fetch('{{ url_for("config_save_json") }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(config)
+  })
+  .then(response => {
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return response.text().then(text => {
+        throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
+      });
+    }
+    return response.json().then(data => ({
+      status: response.status,
+      data: data
+    }));
+  })
+  .then(result => {
+    if (result.status !== 200) {
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
+    } else if (result.data.success) {
+      showToast('Success', 'Configuration saved successfully', 'success');
+    } else {
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
+    }
+  })
+  .catch(error => {
+    showToast('Error', error.message || 'Network error: ' + error.toString(), 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = originalText;
+  });
+}
+
+function saveRawYaml() {
+  const saveBtn = event.target;
+  saveBtn.disabled = true;
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Saving...';
+  
+  const configContent = document.getElementById('config_content').value;
+  
+  const formData = new FormData();
+  formData.append('config_content', configContent);
+  
+  fetch('{{ url_for("config_edit") }}', {
+    method: 'POST',
+    body: formData
+  })
+  .then(response => response.text())
+  .then(() => {
+    showToast('Success', 'Configuration saved successfully', 'success');
+    bootstrap.Modal.getInstance(document.getElementById('rawYamlModal')).hide();
+  })
+  .catch(error => {
+    showToast('Error', 'Network error: ' + error.message, 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalText;
+  });
+}
+</script>
+
+<style>
+.form-label-sm {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.form-control-sm {
+  font-size: 0.9rem;
+}
+
+.monospace {
+  font-family: 'Courier New', monospace !important;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 576px) {
+  .card {
+    border: none;
+    border-top: 1px solid #dee2e6;
+    border-radius: 0;
+    box-shadow: none !important;
+  }
+  
+  .card:first-of-type {
+    border-top: none;
+  }
+  
+  .card-header {
+    padding: 1rem 0 0.5rem 0;
+    border: none;
+    background: none !important;
+  }
+  
+  .card-body {
+    padding: 1rem 0;
+  }
+  
+  h5 {
+    font-size: 1rem;
+  }
+}
+
+/* Dark theme improvements for config page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+}
+</style>
+{% endblock %}

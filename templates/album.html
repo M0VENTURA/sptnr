@@ -1,0 +1,511 @@
+{% extends "base.html" %}
+
+{% block title %}{{ album_name }} - {{ artist_name }} - Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ album_name }}</li>
+        </ol>
+    </nav>
+    
+    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
+        <div class="flex-grow-1">
+            <div class="d-flex gap-3">
+                <!-- Album Art -->
+                <div class="d-none d-md-block">
+                    <img src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                         alt="{{ album_name }}" 
+                         class="img-thumbnail" 
+                         style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color);">
+                </div>
+                <div>
+                    <h1 class="h2 mb-2">
+                        <i class="bi bi-album"></i> {{ album_name }}
+                    </h1>
+                    <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+                </div>
+            </div>
+        </div>
+        <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
+            <button class="btn btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
+                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Album Info</span>
+            </button>
+            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name }}', '{{ artist_name }}', '{{ album_name }}', null)" title="Bookmark this album">
+                <i class="bi bi-bookmark"></i> <span class="d-none d-sm-inline">Bookmark</span>
+            </button>
+            <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
+                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
+            </button>
+            <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
+                <button class="btn btn-outline-secondary" type="submit">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album Artist</span>
+                </button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Album Metadata Cards -->
+    {% if album_data %}
+    <div class="row g-2 g-md-3 mb-4">
+        {% if album_data.spotify_release_date %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-calendar"></i> Release Date
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.spotify_release_date }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if album_data.spotify_album_type %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-collection"></i> Album Type
+                    </div>
+                    <div class="h6 mb-0">
+                        <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-hourglass"></i> Duration
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.total_duration %}
+                            {% set hours = (album_data.total_duration / 3600)|int %}
+                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
+                            {% if hours > 0 %}
+                                {{ hours }}h {{ minutes }}m
+                            {% else %}
+                                {{ minutes }}m
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-star-fill"></i> Avg Rating
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.avg_stars %}
+                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- Genres -->
+    {% if album_genres %}
+    <div class="card mb-4">
+        <div class="card-body">
+            <h5 class="card-title mb-3">
+                <i class="bi bi-tags"></i> Genres
+            </h5>
+            <div class="d-flex flex-wrap gap-2">
+                {% for genre in album_genres %}
+                <span class="badge badge-secondary">{{ genre }}</span>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <div class="card">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-music-note-list"></i> Tracks
+            </h5>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="d-none d-md-table-header-group">
+                    <tr>
+                        <th style="width: 3rem;">#</th>
+                        <th>Title</th>
+                        <th class="text-center" style="width: 4rem;">★</th>
+                        <th class="text-center d-none d-lg-table-cell">Single</th>
+                        <th class="text-center d-none d-lg-table-cell">Conf</th>
+                        <th class="d-none d-xl-table-cell" style="max-width: 200px;">File Path</th>
+                        <th class="text-center" style="width: 3rem;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if album_data.total_discs and album_data.total_discs > 1 %}
+                        <!-- Multi-disc album view -->
+                        {% for disc_num in tracks_by_disc|dictsort %}
+                            <tr class="table-secondary">
+                                <td colspan="7" style="padding: 0.75rem 0.5rem;">
+                                    <strong style="font-size: 1.1rem;">
+                                        <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
+                                    </strong>
+                                </td>
+                            </tr>
+                            {% for track in disc_num[1] %}
+                            <tr class="d-flex flex-column d-md-table-row">
+                                <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <strong>{{ track.track_number or loop.index }}</strong>
+                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                            {{ track.title }}
+                                        </a>
+                                    </div>
+                                </td>
+                                <td class="d-none d-md-table-cell text-muted">
+                                    {{ track.track_number or loop.index }}
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell align-items-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
+                                        {{ track.title }}
+                                    </a>
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
+                                    {% if track.stars %}
+                                        <span class="badge badge-success">
+                                            {% for i in range(track.stars) %}★{% endfor %}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-lg-table-cell text-center">
+                                    {% if track.is_single == 1 %}
+                                        <span class="badge bg-info">Single</span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-lg-table-cell text-center">
+                                    {% if track.single_confidence %}
+                                        <span class="badge bg-secondary" style="font-size: 0.75rem;">
+                                            {{ track.single_confidence }}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.file_path or 'Not available' }}">
+                                    {% if track.file_path %}
+                                        <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                    <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit track">
+                                        <i class="bi bi-arrow-right"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% endfor %}
+                    {% else %}
+                        <!-- Single-disc album view -->
+                        {% for track in tracks %}
+                        <tr class="d-flex flex-column d-md-table-row">
+                            <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <strong>{{ loop.index }}</strong>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                        {{ track.title }}
+                                    </a>
+                                </div>
+                            </td>
+                            <td class="d-none d-md-table-cell text-muted">
+                                {{ loop.index }}
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell align-items-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
+                                    {{ track.title }}
+                                </a>
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
+                                {% if track.stars %}
+                                    <span class="badge badge-success">
+                                        {% for i in range(track.stars) %}★{% endfor %}
+                                    </span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-lg-table-cell text-center">
+                                {% if track.is_single == 1 %}
+                                    <span class="badge bg-info">Single</span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-lg-table-cell text-center">
+                                {% if track.single_confidence %}
+                                    <span class="badge bg-secondary" style="font-size: 0.75rem;">
+                                        {{ track.single_confidence }}
+                                    </span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.file_path or 'Not available' }}">
+                                {% if track.file_path %}
+                                    <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                    <i class="bi bi-search"></i>
+                                </button>
+                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit track">
+                                    <i class="bi bi-arrow-right"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Dark theme improvements for album page */
+.d-contents {
+    display: contents;
+}
+
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+</style>
+
+<!-- Album Metadata Lookup Modal -->
+<div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">External Metadata Lookup for "{{ album_name }}"</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-grid gap-2 d-md-flex mb-4">
+                    <button type="button" class="btn btn-outline-info" onclick="lookupAlbumMusicBrainz()">
+                        <i class="bi bi-search"></i> MusicBrainz
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="lookupAlbumDiscogs()">
+                        <i class="bi bi-search"></i> Discogs
+                    </button>
+                </div>
+                <div id="albumLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function openAlbumLookupModal() {
+        const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
+        modal.show();
+    }
+
+    function lookupAlbumMusicBrainz() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+        
+        fetch('/api/album/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'musicbrainz');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function lookupAlbumDiscogs() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching Discogs...';
+        
+        fetch('/api/album/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'discogs');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function displayAlbumResults(results, source) {
+        const resultsDiv = document.getElementById('albumLookupResults');
+        
+        if (!results || results.length === 0) {
+            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            return;
+        }
+        
+        let html = '';
+        if (source === 'musicbrainz') {
+            results.forEach(result => {
+                html += `
+                    <div class="card">
+                        <div class="card-body">
+                            <h6>MusicBrainz Match</h6>
+                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
+                                <strong>MBID:</strong> <code>${result.mbid}</code><br>
+                                <strong>Confidence:</strong> ${(result.confidence * 100).toFixed(1)}%
+                            </p>
+                            <button class="btn btn-sm btn-primary" onclick="applyAlbumMBID('${result.mbid}')">
+                                <i class="bi bi-check-circle"></i> Apply MBID
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            results.forEach(result => {
+                const genres = (result.genre || []).join(', ');
+                const styles = (result.style || []).join(', ');
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body">
+                            <h6>${result.title}</h6>
+                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
+                                <strong>Year:</strong> ${result.year || '—'}<br>
+                                <strong>Format:</strong> ${(result.format || []).join(', ') || '—'}
+                            </p>
+                            ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
+                            ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
+                            <button class="btn btn-sm btn-primary" onclick="applyAlbumGenres('${genres}')">
+                                <i class="bi bi-check-circle"></i> Apply Genres
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        resultsDiv.innerHTML = html;
+    }
+
+    function applyAlbumMBID(mbid) {
+        alert('Applied Album MBID: ' + mbid);
+    }
+
+    function applyAlbumGenres(genres) {
+        alert('Applied Discogs Genres: ' + genres);
+    }
+</script>
+{% endblock %}

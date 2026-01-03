@@ -1,22 +1,29 @@
-# Use an official Python runtime as a parent image
 FROM python:3.11-slim
-# Updated for better compatibility with latest packages
 
-# Install system dependencies for pip packages (especially for pylast if it uses SSL)
+# System deps + vim (unchanged)
 RUN apt-get update && apt-get install -y \
     build-essential \
     libssl-dev \
+    libffi-dev \
+    python3-dev \
+    vim \
     && rm -rf /var/lib/apt/lists/*
 
-# Set working directory
-WORKDIR /usr/src/app
+WORKDIR /app
 
-# Copy project files
-COPY . .
+# Copy requirements first for caching
+COPY requirements.txt /app/
 
-# Install Python packages
+# Install Python deps
+# Add beautifulsoup4 here, and ensure your requirements.txt includes requests, colorama, PyYAML, etc.
 RUN pip install --no-cache-dir --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir flask beautifulsoup4
 
-# Entrypoint
-ENTRYPOINT ["python", "./sptnr.py"]
+# App files
+COPY . /app
+
+RUN mkdir -p /config /database
+
+EXPOSE 5000
+CMD ["python", "app.py"]

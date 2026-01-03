@@ -1,0 +1,403 @@
+{% extends "base.html" %}
+
+{% block title %}Downloads Manager · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="mb-4">
+        <h1 class="h3 mb-1">
+            <i class="bi bi-download"></i> Downloads Manager
+        </h1>
+        <p class="text-muted mb-0">Automatically organize MP3 files from {{ downloads_dir }} and add to your music library</p>
+    </div>
+
+    <!-- Information Card -->
+    <div class="card mb-4">
+        <div class="card-header bg-info bg-opacity-10 border-bottom">
+            <h5 class="mb-0">
+                <i class="bi bi-info-circle"></i> How It Works
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">📂</div>
+                        <strong>1. Drop MP3s</strong>
+                        <p class="text-muted small mt-1">Place MP3 files in <code>{{ downloads_dir }}</code></p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">📊</div>
+                        <strong>2. Extract Metadata</strong>
+                        <p class="text-muted small mt-1">Reads ID3 tags from files</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">🔍</div>
+                        <strong>3. Enhance Metadata</strong>
+                        <p class="text-muted small mt-1">Searches online for better data</p>
+                    </div>
+                </div>
+                <div class="col-md-3">
+                    <div class="text-center">
+                        <div style="font-size: 2rem; margin-bottom: 0.5rem;">💾</div>
+                        <strong>4. Organize & Store</strong>
+                        <p class="text-muted small mt-1">Moves to /Music with proper structure</p>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Control Buttons -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-play-circle"></i> Controls
+            </h5>
+        </div>
+        <div class="card-body">
+            <div class="d-flex flex-column flex-md-row gap-2">
+                <button type="button" class="btn btn-primary" onclick="scanDownloads()">
+                    <i class="bi bi-arrow-clockwise"></i> Scan Downloads Folder
+                </button>
+                <button type="button" class="btn btn-success" onclick="processAllDownloads()">
+                    <i class="bi bi-play-fill"></i> Process All Files
+                </button>
+                <button type="button" class="btn btn-outline-secondary" onclick="openDownloadsFolder()">
+                    <i class="bi bi-folder-open"></i> Open {{ downloads_dir }}
+                </button>
+            </div>
+            <div class="mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle"></i> 
+                    <strong>File Organization:</strong> Artist / Release Year - Album / Track #. Artist - Title.mp3
+                </small>
+            </div>
+        </div>
+    </div>
+
+    <!-- Files List -->
+    <div class="card">
+        <div class="card-header">
+            <div class="d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-file-earmark-music"></i> Pending Files
+                </h5>
+                <span class="badge bg-primary" id="fileCount">0</span>
+            </div>
+        </div>
+        <div class="card-body">
+            <!-- Loading State -->
+            <div id="loadingState" class="text-center py-4" style="display: none;">
+                <div class="spinner-border text-primary" role="status">
+                    <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Scanning downloads folder...</p>
+            </div>
+
+            <!-- Empty State -->
+            <div id="emptyState" class="alert alert-info" style="display: none;">
+                <i class="bi bi-check-circle"></i> No pending files in /downloads folder
+            </div>
+
+            <!-- Files Table -->
+            <div id="filesContainer" class="table-responsive" style="display: none;">
+                <table class="table table-hover mb-0">
+                    <thead>
+                        <tr>
+                            <th>Filename</th>
+                            <th>Artist</th>
+                            <th>Album</th>
+                            <th>Title</th>
+                            <th class="text-center">Size</th>
+                            <th class="text-center">Duration</th>
+                            <th class="text-center">Action</th>
+                        </tr>
+                    </thead>
+                    <tbody id="filesList"></tbody>
+                </table>
+            </div>
+
+            <!-- Error State -->
+            <div id="errorState" class="alert alert-danger" style="display: none;"></div>
+        </div>
+    </div>
+
+    <!-- Processing Log -->
+    <div class="card mt-4" id="logCard" style="display: none;">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-clipboard-check"></i> Processing Log
+            </h5>
+        </div>
+        <div class="card-body" id="logContainer" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;"></div>
+    </div>
+</div>
+
+<!-- Processing Modal -->
+<div class="modal fade" id="processingModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-hourglass-split"></i> Processing Files
+                </h5>
+            </div>
+            <div class="modal-body">
+                <div id="processingLog" style="max-height: 400px; overflow-y: auto; font-family: monospace; font-size: 0.85rem;"></div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" id="closeProcessingBtn" onclick="closeProcessingModal()" style="display: none;">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Dark theme improvements for downloads manager page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: var(--secondary-bg) !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table tbody {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+}
+</style>
+
+{% endblock %}
+
+<script>
+    function formatBytes(bytes) {
+        if (bytes === 0) return '0 B';
+        const k = 1024;
+        const sizes = ['B', 'KB', 'MB', 'GB'];
+        const i = Math.floor(Math.log(bytes) / Math.log(k));
+        return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+    }
+
+    function formatDuration(seconds) {
+        if (!seconds) return '—';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    function scanDownloads() {
+        document.getElementById('loadingState').style.display = 'block';
+        document.getElementById('emptyState').style.display = 'none';
+        document.getElementById('filesContainer').style.display = 'none';
+        document.getElementById('errorState').style.display = 'none';
+
+        fetch('/api/downloads/scan')
+            .then(response => response.json())
+            .then(data => {
+                document.getElementById('loadingState').style.display = 'none';
+
+                if (data.error) {
+                    document.getElementById('errorState').style.display = 'block';
+                    document.getElementById('errorState').textContent = data.error;
+                    document.getElementById('fileCount').textContent = '0';
+                    return;
+                }
+
+                const files = data.files || [];
+                document.getElementById('fileCount').textContent = data.count;
+
+                if (files.length === 0) {
+                    document.getElementById('emptyState').style.display = 'block';
+                } else {
+                    renderFilesList(files);
+                    document.getElementById('filesContainer').style.display = 'block';
+                }
+            })
+            .catch(error => {
+                document.getElementById('loadingState').style.display = 'none';
+                document.getElementById('errorState').style.display = 'block';
+                document.getElementById('errorState').textContent = 'Error: ' + error.message;
+            });
+    }
+
+    function renderFilesList(files) {
+        const tbody = document.getElementById('filesList');
+        tbody.innerHTML = '';
+
+        files.forEach(file => {
+            const row = document.createElement('tr');
+            
+            if (file.error) {
+                row.innerHTML = `
+                    <td colspan="7">
+                        <strong>${escapeHtml(file.filename)}</strong>
+                        <div class="text-danger small"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(file.error)}</div>
+                    </td>
+                `;
+            } else {
+                row.innerHTML = `
+                    <td>
+                        <code style="font-size: 0.85rem;">${escapeHtml(file.filename)}</code>
+                    </td>
+                    <td>${escapeHtml(file.artist || '—')}</td>
+                    <td>${escapeHtml(file.album || '—')}</td>
+                    <td>${escapeHtml(file.title || '—')}</td>
+                    <td class="text-center">${formatBytes(file.size)}</td>
+                    <td class="text-center">${formatDuration(file.duration)}</td>
+                    <td class="text-center">
+                        <button class="btn btn-sm btn-success" onclick="processOneFile('${escapeHtml(file.path)}')">
+                            <i class="bi bi-arrow-right-circle"></i> Process
+                        </button>
+                    </td>
+                `;
+            }
+            tbody.appendChild(row);
+        });
+    }
+
+    function processOneFile(path) {
+        if (!confirm('Process this file and move to /Music?')) return;
+
+        const btn = event.target.closest('button');
+        btn.disabled = true;
+        const originalHtml = btn.innerHTML;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
+
+        fetch('/api/downloads/process-one', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ path: path })
+        })
+            .then(response => response.json())
+            .then(data => {
+                if (data.success) {
+                    btn.closest('tr').style.opacity = '0.5';
+                    btn.innerHTML = '<i class="bi bi-check-circle"></i> Processed';
+                    setTimeout(() => scanDownloads(), 1000);
+                } else {
+                    alert('Error: ' + (data.error || 'Failed to process file'));
+                    btn.disabled = false;
+                    btn.innerHTML = originalHtml;
+                }
+            })
+            .catch(error => {
+                alert('Error: ' + error.message);
+                btn.disabled = false;
+                btn.innerHTML = originalHtml;
+            });
+    }
+
+    function processAllDownloads() {
+        if (!confirm('Process all pending files and move to /Music? This may take a while.')) return;
+
+        showProcessingModal();
+        updateLog('Starting batch processing...\n');
+
+        fetch('/api/downloads/process', { method: 'POST' })
+            .then(response => response.json())
+            .then(data => {
+                if (data.error) {
+                    updateLog(`ERROR: ${data.error}\n`);
+                    return;
+                }
+
+                updateLog(`\n✓ Processing complete!\n`);
+                updateLog(`Total: ${data.total}, Successful: ${data.successful}, Failed: ${data.failed}\n\n`);
+
+                if (data.results) {
+                    data.results.forEach(result => {
+                        if (result.status === 'success') {
+                            updateLog(`✓ ${result.filename} → ${result.artist}/${result.album}/${result.title}\n`);
+                        } else {
+                            updateLog(`✗ ${result.filename}: ${result.error}\n`);
+                        }
+                    });
+                }
+
+                updateLog('\nPress Close to refresh the file list.');
+                document.getElementById('closeProcessingBtn').style.display = 'block';
+
+                setTimeout(() => scanDownloads(), 2000);
+            })
+            .catch(error => {
+                updateLog(`ERROR: ${error.message}\n`);
+                document.getElementById('closeProcessingBtn').style.display = 'block';
+            });
+    }
+
+    function showProcessingModal() {
+        const modal = new bootstrap.Modal(document.getElementById('processingModal'));
+        modal.show();
+    }
+
+    function closeProcessingModal() {
+        bootstrap.Modal.getInstance(document.getElementById('processingModal')).hide();
+    }
+
+    function updateLog(text) {
+        const log = document.getElementById('processingLog');
+        log.textContent += text;
+        log.scrollTop = log.scrollHeight;
+    }
+
+    function openDownloadsFolder() {
+        // This won't work from browser, but we can show a message
+        alert('Open /downloads folder in your file explorer to add MP3 files.');
+    }
+
+    // Initial scan on page load
+    document.addEventListener('DOMContentLoaded', function() {
+        scanDownloads();
+    });
+</script>

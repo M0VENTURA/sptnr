@@ -1,0 +1,623 @@
+{% extends "base.html" %}
+
+{% block title %}Downloads · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-download"></i> Music Downloads
+    </h1>
+    <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
+  </div>
+
+  <div class="row g-4">
+    <!-- qBittorrent Search -->
+    {% if qbit_config.enabled %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="input-group">
+              <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search torrents...">
+              <button class="btn btn-primary" onclick="performQbitSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+          
+          <div id="qbitLoading" class="text-center py-4" style="display: none;">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Searching...</span>
+            </div>
+            <p class="mt-2">Searching qBittorrent...</p>
+          </div>
+          
+          <div id="qbitResults" style="max-height: 600px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+
+    <!-- Soulseek (slskd) Search -->
+    {% if slskd_config.enabled %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-list"></i> Soulseek Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <div class="input-group">
+              <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search Soulseek...">
+              <button class="btn btn-success" onclick="performSlskdSearch()">
+                <i class="bi bi-search"></i> Search
+              </button>
+            </div>
+          </div>
+          
+          <div id="slskdStatus" style="display: none;">
+            <div class="progress mb-2" style="height: 2px;">
+              <div class="progress-bar progress-bar-striped progress-bar-animated bg-success" role="progressbar" style="width: 100%"></div>
+            </div>
+            <div class="d-flex justify-content-between align-items-center mb-2">
+              <span id="slskdStatusText" class="text-muted small">Searching...</span>
+              <div>
+                <span class="badge bg-secondary" id="slskdResponseCount">0 responses</span>
+                <span class="badge bg-info" id="slskdResultCount">0 results</span>
+              </div>
+            </div>
+          </div>
+          
+          <div id="slskdResults" style="max-height: 600px; overflow-y: auto;"></div>
+        </div>
+      </div>
+    </div>
+    {% else %}
+    <div class="col-12 col-lg-6">
+      <div class="card h-100">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-list"></i> Soulseek Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+</div>
+
+<script>
+// qBittorrent Search
+function performQbitSearch() {
+  const query = document.getElementById('qbitSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('qbitLoading').style.display = 'block';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  fetch('/api/qbittorrent/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found.
+        </div>
+      `;
+      return;
+    }
+    
+    let html = '<div class="list-group">';
+    
+    results.forEach((result) => {
+      const size = formatBytes(result.fileSize || 0);
+      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
+      
+      html += `
+        <div class="list-group-item list-group-item-action">
+          <div class="d-flex w-100 justify-content-between align-items-start">
+            <div class="flex-grow-1 me-2">
+              <h6 class="mb-1" style="font-size: 0.9rem;">${escapeHtml(result.fileName || 'Unknown')}</h6>
+              <small class="text-muted">${escapeHtml(result.siteUrl || '')}</small>
+            </div>
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')"
+              ${!result.fileUrl ? 'disabled' : ''}>
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </div>
+          <div class="d-flex gap-3 mt-2">
+            <small><i class="bi bi-hdd"></i> ${size}</small>
+            <small class="${seedClass}"><i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}</small>
+            <small><i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}</small>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += '</div>';
+    document.getElementById('qbitResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    document.getElementById('qbitResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> ${error.message}
+      </div>
+    `;
+  });
+}
+
+function addTorrent(url) {
+  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
+  
+  fetch('/api/qbittorrent/add', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: url })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Torrent added successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+// Soulseek Search with Polling
+let currentSlskdSearchId = null;
+let slskdPollInterval = null;
+let slskdResponsesData = {};
+
+function performSlskdSearch() {
+  const query = document.getElementById('slskdSearchInput').value.trim();
+  if (!query) {
+    alert('Please enter a search query');
+    return;
+  }
+  
+  // Clear previous results
+  slskdResponsesData = {};
+  currentSlskdSearchId = null;
+  if (slskdPollInterval) clearInterval(slskdPollInterval);
+  
+  document.getElementById('slskdResults').innerHTML = '';
+  document.getElementById('slskdStatus').style.display = 'block';
+  document.getElementById('slskdResponseCount').textContent = '0 responses';
+  document.getElementById('slskdResultCount').textContent = '0 results';
+  document.getElementById('slskdStatusText').textContent = 'Searching...';
+  
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      showSlskdError(data.error);
+      return;
+    }
+    
+    currentSlskdSearchId = data.searchId;
+    document.getElementById('slskdStatusText').textContent = 'Searching the Soulseek network...';
+    
+    // Start polling for results
+    setTimeout(() => {
+      slskdPollInterval = setInterval(pollSlskdResults, 1000);
+      pollSlskdResults(); // Poll immediately
+    }, 500);
+  })
+  .catch(error => {
+    showSlskdError('Network error: ' + error.message);
+  });
+}
+
+function pollSlskdResults() {
+  if (!currentSlskdSearchId) return;
+  
+  fetch(`/api/slskd/search/${currentSlskdSearchId}`)
+    .then(response => response.json())
+    .then(data => {
+      if (data.error) {
+        showSlskdError(data.error);
+        return;
+      }
+      
+      const results = data.results || [];
+      const responseCount = data.responseCount || 0;
+      const isComplete = data.isComplete || false;
+      const state = data.state || 'Searching';
+      
+      // Group results by username
+      slskdResponsesData = {};
+      results.forEach(result => {
+        const username = result.username;
+        if (!slskdResponsesData[username]) {
+          slskdResponsesData[username] = {
+            username: username,
+            files: [],
+            lockedFiles: 0
+          };
+        }
+        slskdResponsesData[username].files.push(result);
+      });
+      
+      // Update status
+      const totalFiles = results.length;
+      document.getElementById('slskdResponseCount').textContent = responseCount + ' response' + (responseCount !== 1 ? 's' : '');
+      document.getElementById('slskdResultCount').textContent = totalFiles + ' file' + (totalFiles !== 1 ? 's' : '');
+      
+      if (isComplete) {
+        document.getElementById('slskdStatusText').textContent = 'Search completed - ' + state;
+        if (slskdPollInterval) {
+          clearInterval(slskdPollInterval);
+          slskdPollInterval = null;
+        }
+      } else {
+        document.getElementById('slskdStatusText').textContent = `Searching... (${responseCount} responses, ${totalFiles} files)`;
+      }
+      
+      // Display user responses
+      if (Object.keys(slskdResponsesData).length > 0) {
+        displaySlskdResponses();
+      } else if (isComplete) {
+        document.getElementById('slskdResults').innerHTML = `
+          <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> No results found.
+          </div>
+        `;
+      }
+    })
+    .catch(error => {
+      console.error('Poll error:', error);
+    });
+}
+
+function displaySlskdResponses() {
+  const container = document.getElementById('slskdResults');
+  
+  let html = '<div class="list-group">';
+  
+  // Sort by number of files (descending)
+  const sortedUsers = Object.values(slskdResponsesData).sort((a, b) => b.files.length - a.files.length);
+  
+  sortedUsers.forEach(userData => {
+    const fileCount = userData.files.length;
+    const lockedCount = userData.lockedFiles;
+    
+    html += `
+      <div class="list-group-item list-group-item-action" style="cursor: pointer;" onclick="toggleSlskdUserFiles('${escapeHtml(userData.username)}')">
+        <div class="d-flex w-100 justify-content-between align-items-center">
+          <div>
+            <h6 class="mb-1">
+              <i class="bi bi-person-circle"></i> ${escapeHtml(userData.username)}
+            </h6>
+            <small class="text-muted">
+              <i class="bi bi-file-earmark-music"></i> ${fileCount} file${fileCount !== 1 ? 's' : ''}
+              ${lockedCount > 0 ? ` · <i class="bi bi-lock"></i> ${lockedCount} locked` : ''}
+            </small>
+          </div>
+          <i class="bi bi-chevron-down" id="chevron-${escapeHtml(userData.username)}"></i>
+        </div>
+        <div id="files-${escapeHtml(userData.username)}" style="display: none; margin-top: 12px;">
+          <!-- Files will be inserted here -->
+        </div>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function toggleSlskdUserFiles(username) {
+  const filesDiv = document.getElementById(`files-${username}`);
+  const chevron = document.getElementById(`chevron-${username}`);
+  
+  if (filesDiv.style.display === 'none') {
+    // Show files
+    filesDiv.style.display = 'block';
+    chevron.className = 'bi bi-chevron-up';
+    
+    // Populate files if not already done
+    if (filesDiv.innerHTML.trim() === '') {
+      const userData = slskdResponsesData[username];
+      let filesHtml = '<div class="table-responsive"><table class="table table-sm table-hover mb-0">';
+      filesHtml += `
+        <thead>
+          <tr>
+            <th>Filename</th>
+            <th class="text-center">Size</th>
+            <th class="text-center">Bitrate</th>
+            <th class="text-center">Length</th>
+            <th class="text-center">Action</th>
+          </tr>
+        </thead>
+        <tbody>
+      `;
+      
+      userData.files.forEach(file => {
+        filesHtml += `
+          <tr>
+            <td>
+              <div class="text-truncate" style="max-width: 300px;" title="${escapeHtml(file.filename)}">
+                ${escapeHtml(file.filename)}
+              </div>
+            </td>
+            <td class="text-center">${formatBytes(file.size)}</td>
+            <td class="text-center">${file.bitrate > 0 ? file.bitrate + ' kbps' : '—'}</td>
+            <td class="text-center">${file.length > 0 ? formatDuration(file.length) : '—'}</td>
+            <td class="text-center">
+              <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}')">
+                <i class="bi bi-download"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+      
+      filesHtml += '</tbody></table></div>';
+      filesDiv.innerHTML = filesHtml;
+    }
+  } else {
+    // Hide files
+    filesDiv.style.display = 'none';
+    chevron.className = 'bi bi-chevron-down';
+  }
+}
+
+function showSlskdError(message) {
+  document.getElementById('slskdStatus').style.display = 'none';
+  document.getElementById('slskdResults').innerHTML = `
+    <div class="alert alert-danger">
+      <i class="bi bi-exclamation-triangle"></i> ${message}
+    </div>
+  `;
+  if (slskdPollInterval) {
+    clearInterval(slskdPollInterval);
+    slskdPollInterval = null;
+  }
+}
+
+function downloadSlskd(username, filename) {
+  if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
+  
+  // Find the file object in slskdResponsesData to get size
+  const userData = slskdResponsesData[username];
+  if (!userData) {
+    alert('❌ Error: User data not found');
+    return;
+  }
+  
+  const fileData = userData.files.find(f => f.filename === filename);
+  if (!fileData) {
+    alert('❌ Error: File data not found');
+    return;
+  }
+  
+  fetch('/api/slskd/download', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username: username, filename: filename, size: fileData.size })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Download added to queue!');
+    } else {
+      alert('❌ Error: ' + (data.error || data.message || 'Failed to add download'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+// Utility functions
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function formatDuration(seconds) {
+  if (!seconds) return 'Unknown';
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Allow Enter key to trigger search
+document.addEventListener('DOMContentLoaded', function() {
+  const qbitInput = document.getElementById('qbitSearchInput');
+  if (qbitInput) {
+    qbitInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') performQbitSearch();
+    });
+  }
+  
+  const slskdInput = document.getElementById('slskdSearchInput');
+  if (slskdInput) {
+    slskdInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') performSlskdSearch();
+    });
+  }
+});
+
+// Clean up polling when leaving page
+window.addEventListener('beforeunload', () => {
+  if (slskdPollInterval) {
+    clearInterval(slskdPollInterval);
+    slskdPollInterval = null;
+  }
+});
+</script>
+
+<style>
+/* Dark theme improvements for downloads page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+
+.form-control {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.form-control:focus {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--spotify-green) !important;
+    color: var(--text-primary) !important;
+}
+
+/* List group styling for Soulseek responses */
+.list-group-item {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.list-group-item:hover {
+    background-color: rgba(255, 255, 255, 0.05) !important;
+}
+
+/* Nested file tables in Soulseek results */
+#slskdResults .table-responsive {
+    background-color: rgba(0, 0, 0, 0.3) !important;
+    border-radius: 4px;
+    padding: 8px;
+}
+
+#slskdResults .table-sm {
+    font-size: 0.85rem;
+    margin-bottom: 0 !important;
+}
+
+#slskdResults .table-sm thead th {
+    background-color: rgba(0, 0, 0, 0.4) !important;
+    padding: 0.4rem;
+}
+
+#slskdResults .table-sm tbody td {
+    padding: 0.4rem;
+}
+</style>
+
+{% endblock %}

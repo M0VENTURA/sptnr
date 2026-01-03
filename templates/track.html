@@ -1,0 +1,560 @@
+{% extends "base.html" %}
+
+{% block title %}{{ track.title }} - Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}">{{ track.album }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ track.title }}</li>
+        </ol>
+    </nav>
+    
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+        <div class="flex-grow-1">
+            <h1 class="h2 mb-1">
+                <i class="bi bi-music-note-list"></i> {{ track.title }}
+            </h1>
+            <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></p>
+        </div>
+        <button class="btn btn-outline-primary w-100 w-md-auto" onclick="lookupMetadata('track', '{{ track.id }}')">
+            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">MP3 Data</span>
+        </button>
+    </div>
+    
+    <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
+        <div class="row g-2 g-md-3">
+            <!-- Left Column: Track Info -->
+            <div class="col-12 col-lg-6">
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-pencil-square"></i> Track Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="mb-3">
+                            <label for="title" class="form-label">Title</label>
+                            <input type="text" class="form-control" id="title" name="title" value="{{ track.title }}" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="artist" class="form-label">Artist</label>
+                            <input type="text" class="form-control" id="artist" name="artist" value="{{ track.artist }}" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="album" class="form-label">Album</label>
+                            <input type="text" class="form-control" id="album" name="album" value="{{ track.album }}" required>
+                        </div>
+                                                <div class="mb-3">
+                            <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
+                            <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                            <div class="form-text">Official MusicBrainz recording ID</div>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="suggested_mbid" class="form-label">Suggested MBID</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="suggested_mbid" name="suggested_mbid" value="{{ track.suggested_mbid or '' }}" readonly>
+                                <input type="number" class="form-control" id="suggested_mbid_confidence" name="suggested_mbid_confidence" 
+                                       value="{{ track.suggested_mbid_confidence or '' }}" placeholder="Confidence" step="0.01" min="0" max="1" style="max-width: 120px;" readonly>
+                            </div>
+                            <div class="form-text">Auto-suggested MBID with confidence score</div>
+                        </div>
+                                                <div class="mb-3">
+                            <label for="stars" class="form-label">Rating</label>
+                            <select class="form-select" id="stars" name="stars">
+                                <option value="0" {% if track.stars == 0 %}selected{% endif %}>☆☆☆☆☆ — 0 Stars</option>
+                                <option value="1" {% if track.stars == 1 %}selected{% endif %}>★☆☆☆☆ — 1 Star</option>
+                                <option value="2" {% if track.stars == 2 %}selected{% endif %}>★★☆☆☆ — 2 Stars</option>
+                                <option value="3" {% if track.stars == 3 %}selected{% endif %}>★★★☆☆ — 3 Stars</option>
+                                <option value="4" {% if track.stars == 4 %}selected{% endif %}>★★★★☆ — 4 Stars</option>
+                                <option value="5" {% if track.stars == 5 %}selected{% endif %}>★★★★★ — 5 Stars</option>
+                            </select>
+                        </div>
+                        
+                        <div class="mb-3 form-check">
+                            <input type="checkbox" class="form-check-input" id="is_single" name="is_single" {% if track.is_single == 1 %}checked{% endif %}>
+                            <label class="form-check-label" for="is_single">
+                                <i class="bi bi-single-music"></i> Is Single
+                            </label>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="single_confidence" class="form-label">Single Confidence</label>
+                            <select class="form-select" id="single_confidence" name="single_confidence">
+                                <option value="low" {% if track.single_confidence == 'low' %}selected{% endif %}>Low</option>
+                                <option value="medium" {% if track.single_confidence == 'medium' %}selected{% endif %}>Medium</option>
+                                <option value="high" {% if track.single_confidence == 'high' %}selected{% endif %}>High</option>
+                            </select>
+                        </div>
+                    </div>
+                </div>
+            </div>
+            
+            <!-- Right Column: Metadata & Info -->
+            <div class="col-12 col-lg-6">
+                <!-- Scoring Metadata -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-graph-up"></i> Scoring Metadata
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="metadata-row">
+                            <div class="metadata-label">Track ID</div>
+                            <div class="metadata-value monospace" style="font-size: 0.8rem; overflow-wrap: break-word;">{{ track.id }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">MBID</div>
+                            <div class="metadata-value monospace" style="font-size: 0.8rem;">{{ track.mbid or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Spotify</div>
+                            <div class="metadata-value">{{ track.spotify_score or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Last.fm</div>
+                            <div class="metadata-value">{{ track.lastfm_ratio or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">ListenBrainz</div>
+                            <div class="metadata-value">{{ track.listenbrainz_score or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Score</div>
+                            <div class="metadata-value">
+                                {% if track.score %}
+                                    <span class="badge badge-success">{{ track.score|round(3) }}</span>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Audio Metadata -->
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-disc-fill"></i> Audio Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="metadata-row">
+                            <div class="metadata-label">Duration</div>
+                            <div class="metadata-value">
+                                {% if track.duration %}
+                                    {% set mins = (track.duration / 60)|int %}
+                                    {% set secs = (track.duration % 60)|int %}
+                                    {{ mins }}:{{ "%02d"|format(secs) }}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Year</div>
+                            <div class="metadata-value">{{ track.year or '—' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Track Number</div>
+                            <div class="metadata-value">{{ track.track_number or '—' }}</div>
+                        </div>
+                        {% if track.disc_number %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Disc Number</div>
+                            <div class="metadata-value">{{ track.disc_number }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.bpm %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">BPM</div>
+                            <div class="metadata-value">{{ track.bpm }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.bitrate %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Bitrate</div>
+                            <div class="metadata-value">{{ (track.bitrate / 1000)|round(0)|int }} kbps</div>
+                        </div>
+                        {% endif %}
+                        {% if track.sample_rate %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Sample Rate</div>
+                            <div class="metadata-value">{{ (track.sample_rate / 1000)|round(1) }} kHz</div>
+                        </div>
+                        {% endif %}
+                        {% if track.composer %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Composer</div>
+                            <div class="metadata-value">{{ track.composer }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.isrc %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">ISRC</div>
+                            <div class="metadata-value monospace" style="font-size: 0.75rem;">{{ track.isrc }}</div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+
+                <!-- Source & Audit Info -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-info-circle"></i> Sources & Audit
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="metadata-row">
+                            <div class="metadata-label">File Path</div>
+                            <div class="metadata-value">
+                                {% if track.file_path %}
+                                    <code style="font-size: 0.75rem; word-break: break-all;">{{ track.file_path }}</code>
+                                {% else %}
+                                    <span class="text-muted">Not available</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Sources</div>
+                            <div class="metadata-value">
+                                {% if track.single_sources %}
+                                    {% for source in track.single_sources.split(',') %}
+                                        <span class="badge bg-secondary">{{ source.strip() }}</span>
+                                    {% endfor %}
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Canonical</div>
+                            <div class="metadata-value">
+                                {% if track.is_canonical_title == 1 %}
+                                    <span class="badge badge-success">Yes</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">No</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Similarity</div>
+                            <div class="metadata-value">
+                                {% if track.title_similarity_to_base %}
+                                    {{ (track.title_similarity_to_base * 100)|round(1) }}%
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Last Scanned</div>
+                            <div class="metadata-value">{{ track.last_scanned or 'Never' }}</div>
+                        </div>
+                        <div class="metadata-row">
+                            <div class="metadata-label">Updated By</div>
+                            <div class="metadata-value">{{ track.updated_by or '—' }}</div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Recommended Genres -->
+                {% if recommended_genres %}
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-tags"></i> Recommended Genres
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-2" style="font-size: 0.85rem;">Based on other {{ track.artist }} tracks in your library</p>
+                        <div class="d-flex flex-wrap gap-2">
+                            {% for genre in recommended_genres %}
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="addGenreToTrack('{{ genre|escape }}')">
+                                    <i class="bi bi-plus-circle"></i> {{ genre }}
+                                </button>
+                            {% endfor %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- External Metadata Lookups -->
+                <div class="card">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-database"></i> External Metadata Lookups
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <p class="text-muted mb-3" style="font-size: 0.85rem;">Find potential matches from external databases to improve track and genre information</p>
+                        
+                        <div class="d-grid gap-2 d-md-flex">
+                            <button type="button" class="btn btn-outline-info" onclick="lookupMusicBrainz()">
+                                <i class="bi bi-search"></i> MusicBrainz Lookup
+                            </button>
+                            <button type="button" class="btn btn-outline-warning" onclick="lookupDiscogs()">
+                                <i class="bi bi-search"></i> Discogs Lookup
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4">
+            <button type="submit" class="btn btn-primary">
+                <i class="bi bi-check-circle"></i> Save Changes
+            </button>
+            <a href="{{ url_for('album_detail', artist=track.artist, album=track.album) }}" class="btn btn-secondary">
+                <i class="bi bi-x-circle"></i> Cancel
+            </a>
+        </div>
+    </form>
+</div>
+
+<script>
+    function addGenreToTrack(genre) {
+        // This could update a hidden genres field if you add it to the form
+        // For now, just show an alert
+        alert('Genre: ' + genre + '\n\nYou can add genre support by adding a genres field to the track editing form.');
+    }
+
+    function lookupMusicBrainz() {
+        const trackTitle = document.getElementById('title').value;
+        const trackArtist = document.getElementById('artist').value;
+        
+        if (!trackTitle || !trackArtist) {
+            alert('Please enter track title and artist');
+            return;
+        }
+        
+        fetch('/api/track/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: trackTitle,
+                artist: trackArtist
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
+            document.getElementById('lookupTitle').textContent = 'MusicBrainz Lookup Results';
+            displayExternalResults(data.results, 'musicbrainz');
+            modal.show();
+        })
+        .catch(error => alert('Network error: ' + error.message));
+    }
+
+    function lookupDiscogs() {
+        const trackTitle = document.getElementById('title').value;
+        const trackArtist = document.getElementById('artist').value;
+        const trackAlbum = document.getElementById('album').value;
+        
+        if (!trackTitle || !trackArtist) {
+            alert('Please enter track title and artist');
+            return;
+        }
+        
+        fetch('/api/track/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                title: trackTitle,
+                artist: trackArtist,
+                album: trackAlbum
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.error) {
+                alert('Error: ' + data.error);
+                return;
+            }
+            
+            const modal = new bootstrap.Modal(document.getElementById('externalLookupModal'));
+            document.getElementById('lookupTitle').textContent = 'Discogs Lookup Results';
+            displayExternalResults(data.results, 'discogs');
+            modal.show();
+        })
+        .catch(error => alert('Network error: ' + error.message));
+    }
+
+    function displayExternalResults(results, source) {
+        const resultsDiv = document.getElementById('externalLookupResults');
+        
+        if (!results || results.length === 0) {
+            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            return;
+        }
+        
+        let html = '';
+        if (source === 'musicbrainz') {
+            results.forEach(result => {
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body p-3">
+                            <div class="d-flex justify-content-between align-items-start">
+                                <div class="flex-grow-1">
+                                    <h6 class="mb-1">MBID: <code>${result.mbid}</code></h6>
+                                    <p class="text-muted mb-0" style="font-size: 0.85rem;">Confidence: ${(result.confidence * 100).toFixed(1)}%</p>
+                                </div>
+                                <button class="btn btn-sm btn-primary" onclick="applyMBID('${result.mbid}', ${result.confidence || 0})">
+                                    <i class="bi bi-check-circle"></i> Apply
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            results.forEach(result => {
+                const genres = (result.genre || []).join(', ');
+                const styles = (result.style || []).join(', ');
+                html += `
+                    <div class="card mb-2">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">${result.title}</h6>
+                            <div class="row g-2 mb-2">
+                                <div class="col-6">
+                                    <span class="text-muted" style="font-size: 0.75rem;">Year: </span>
+                                    <span>${result.year || '—'}</span>
+                                </div>
+                                <div class="col-6">
+                                    <span class="text-muted" style="font-size: 0.75rem;">Format: </span>
+                                    <span>${(result.format || []).join(', ') || '—'}</span>
+                                </div>
+                            </div>
+                            ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
+                            ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
+                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData('${result.title}', '${genres}')">
+                                <i class="bi bi-check-circle"></i> Apply Genres
+                            </button>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        
+        resultsDiv.innerHTML = html;
+    }
+
+    function applyMBID(mbid, confidence) {
+        // Populate the suggested MBID fields
+        document.getElementById('suggested_mbid').value = mbid;
+        document.getElementById('suggested_mbid_confidence').value = (confidence || 0).toFixed(2);
+        
+        // Also populate the main MBID field if it's empty
+        const mbidField = document.getElementById('mbid');
+        if (!mbidField.value || confirm('Replace current MBID with this suggested one?')) {
+            mbidField.value = mbid;
+        }
+        
+        // Close modal and show success
+        const modal = bootstrap.Modal.getInstance(document.getElementById('externalLookupModal'));
+        if (modal) modal.hide();
+        
+        alert('✅ MBID applied! Remember to save the form.');
+    }
+
+    function applyDiscogsData(title, genres) {
+        // In a real implementation, this would update genres in the track record
+        alert('Applied Discogs metadata:\nTitle: ' + title + '\nGenres: ' + genres);
+    }
+</script>
+
+<!-- External Lookup Modal -->
+<div class="modal fade" id="externalLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="lookupTitle">External Lookup Results</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="externalLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Dark theme improvements for track page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+</style>
+
+{% endblock %}

@@ -1,0 +1,619 @@
+{% extends "base.html" %}
+
+{% block title %}{{ artist_name }} · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+      <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
+    </ol>
+  </nav>
+
+  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+    <div class="flex-grow-1">
+      <h1 class="h2 mb-2">
+        <i class="bi bi-person-music"></i> {{ artist_name }}
+      </h1>
+      <p class="text-muted mb-0">Artist overview</p>
+    </div>
+    <div class="d-flex flex-column flex-sm-row gap-2 w-100 w-md-auto">
+      <button class="btn btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist_name }}')">
+        <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Metadata</span>
+      </button>
+      <button class="btn btn-outline-success" onclick="addBookmark('artist', '{{ artist_name }}', '{{ artist_name }}', null, null)" title="Bookmark this artist">
+        <i class="bi bi-bookmark"></i> <span class="d-none d-sm-inline">Bookmark</span>
+      </button>
+      {% if qbit_config.enabled and qbit_config.web_url %}
+      <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
+        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>
+      </button>
+      {% endif %}
+      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
+        <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
+      </a>
+      <form class="flex-grow-1" action="{{ url_for('scan_start') }}" method="post">
+        <input type="hidden" name="scan_type" value="artist">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <button type="submit" class="btn btn-warning w-100">
+          <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan</span>
+        </button>
+      </form>
+    </div>
+  </div>
+
+  <!-- Genre Display -->
+  {% if genres %}
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-body">
+        <h5 class="card-title mb-3">
+          <i class="bi bi-collection"></i> Genres
+        </h5>
+        <div class="d-flex flex-wrap gap-2">
+          {% for genre in genres %}
+          <span class="badge badge-success">{{ genre }}</span>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Statistics Cards -->
+  <div class="row g-2 g-md-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-disc"></i> Albums
+          </div>
+          <div class="h4 mb-0">{{ stats.album_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-music-note"></i> Tracks
+          </div>
+          <div class="h4 mb-0">{{ stats.track_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-star-fill"></i> Avg
+          </div>
+          <div class="h4 mb-0">{{ stats.avg_stars|round(2) if stats.avg_stars else "—" }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-star-fill"></i> 5★
+          </div>
+          <div class="h4 mb-0">{{ stats.five_star_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Additional Stats: Duration and Year Range -->
+  <div class="row g-2 g-md-3 mb-4">
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-hourglass"></i> Total Duration
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.total_duration %}
+              {% set hours = (stats.total_duration / 3600)|int %}
+              {% set minutes = ((stats.total_duration % 3600) / 60)|int %}
+              {% if hours > 0 %}
+                {{ hours }}h {{ minutes }}m
+              {% else %}
+                {{ minutes }}m
+              {% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar-range"></i> Year Range
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.earliest_year and stats.latest_year %}
+              {{ stats.earliest_year }} – {{ stats.latest_year }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar"></i> Avg Score
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.avg_stars %}
+              <span class="badge badge-info">{{ (stats.avg_stars * 20)|round(0)|int }}%</span>
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Albums Table -->
+  {% if albums and albums|length > 0 %}
+    <div class="card">
+      <div class="card-header">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection-play"></i> Albums
+        </h5>
+      </div>
+      <div class="table-responsive">
+        <table class="table table-hover mb-0">
+          <thead class="d-none d-md-table-header-group">
+            <tr>
+              <th style="width: 120px;">Art</th>
+              <th>Album</th>
+              <th class="text-center">Tracks</th>
+              <th class="text-center">Avg ★</th>
+              <th class="text-center">Singles</th>
+              <th class="text-center">Last Scanned</th>
+              <th class="text-center">Actions</th>
+            </tr>
+          </thead>
+          <tbody>
+            {% for album in albums %}
+              <tr class="d-flex flex-column d-md-table-row">
+                <td class="d-flex justify-content-between d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+                  <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
+                       alt="{{ album.album }}" 
+                       class="img-thumbnail"
+                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color);"
+                       onerror="this.style.display='none';">
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
+                  <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    {{ album.album }}
+                  </a>
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
+                  {{ album.track_count }}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
+                  {% if album.avg_stars %}
+                    <span class="badge badge-success">{{ album.avg_stars|round(2) }}★</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
+                  {% if album.singles_count > 0 %}
+                    <span class="badge bg-info">{{ album.singles_count }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
+                  {% if album.last_updated %}
+                    {{ album.last_updated }}
+                  {% else %}
+                    <span>Never</span>
+                  {% endif %}
+                </td>
+                <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')">
+                    <i class="bi bi-search"></i>
+                  </button>
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    <i class="bi bi-arrow-right"></i>
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  {% else %}
+    <div class="alert alert-secondary">
+      <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>.
+    </div>
+  {% endif %}
+</div>
+
+<!-- qBittorrent Search Modal -->
+{% if qbit_config.enabled %}
+<div class="modal fade" id="qbitModal" tabindex="-1" aria-labelledby="qbitModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="qbitModalLabel">
+          <i class="bi bi-download"></i> Search qBittorrent for <span id="qbitArtistName"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <div class="input-group">
+            <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search query...">
+            <button class="btn btn-primary" onclick="performQbitSearch()">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+          <div class="form-text">Search for albums, discographies, or specific releases</div>
+        </div>
+        
+        <div id="qbitLoading" class="text-center py-4" style="display: none;">
+          <div class="spinner-border text-primary" role="status">
+            <span class="visually-hidden">Searching...</span>
+          </div>
+          <p class="mt-2">Searching qBittorrent...</p>
+        </div>
+        
+        <div id="qbitResults"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+function openQbitSearch(artistName) {
+  document.getElementById('qbitArtistName').textContent = artistName;
+  document.getElementById('qbitSearchInput').value = artistName + ' discography';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  const modal = new bootstrap.Modal(document.getElementById('qbitModal'));
+  modal.show();
+  
+  // Auto-search on open
+  setTimeout(() => performQbitSearch(), 300);
+}
+
+function performQbitSearch() {
+  const query = document.getElementById('qbitSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('qbitLoading').style.display = 'block';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  fetch('/api/qbittorrent/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found. Try a different search query.
+        </div>
+      `;
+      return;
+    }
+    
+    let html = `
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="text-center">Size</th>
+              <th class="text-center">Seeds</th>
+              <th class="text-center">Peers</th>
+              <th class="text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    
+    results.forEach((result, idx) => {
+      const size = formatBytes(result.fileSize || 0);
+      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
+      
+      html += `
+        <tr>
+          <td>
+            <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
+              ${escapeHtml(result.fileName || 'Unknown')}
+            </div>
+            <div class="text-muted" style="font-size: 0.75rem;">
+              ${escapeHtml(result.siteUrl || '')}
+            </div>
+          </td>
+          <td class="text-center">${size}</td>
+          <td class="text-center ${seedClass}">
+            <i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}
+          </td>
+          <td class="text-center">
+            <i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}
+          </td>
+          <td class="text-center">
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')"
+              ${!result.fileUrl ? 'disabled' : ''}>
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+    
+    html += `
+          </tbody>
+        </table>
+      </div>
+      <div class="text-muted small mt-2">
+        Found ${results.length} results
+      </div>
+    `;
+    
+    document.getElementById('qbitResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    document.getElementById('qbitResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Network error: ${error.message}
+      </div>
+    `;
+  });
+}
+
+function addTorrent(url) {
+  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
+  
+  fetch('/api/qbittorrent/add', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ url: url })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Torrent added successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Allow Enter key to trigger search
+document.addEventListener('DOMContentLoaded', function() {
+  const searchInput = document.getElementById('qbitSearchInput');
+  if (searchInput) {
+    searchInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        performQbitSearch();
+      }
+    });
+  }
+});
+</script>
+{% endif %}
+
+<style>
+/* Dark theme improvements for artist page */
+
+/* Fix outline buttons visibility on dark theme */
+.btn-outline-primary {
+    color: #0d6efd !important;
+    border-color: #0d6efd !important;
+    background-color: rgba(13, 110, 253, 0.1) !important;
+}
+
+.btn-outline-primary:hover {
+    color: #fff !important;
+    background-color: #0d6efd !important;
+    border-color: #0d6efd !important;
+}
+
+.btn-outline-info {
+    color: #0dcaf0 !important;
+    border-color: #0dcaf0 !important;
+    background-color: rgba(13, 202, 240, 0.1) !important;
+}
+
+.btn-outline-info:hover {
+    color: #000 !important;
+    background-color: #0dcaf0 !important;
+    border-color: #0dcaf0 !important;
+}
+
+.btn-outline-secondary {
+    color: #6c757d !important;
+    border-color: #6c757d !important;
+    background-color: rgba(108, 117, 125, 0.1) !important;
+}
+
+.btn-outline-secondary:hover {
+    color: #fff !important;
+    background-color: #6c757d !important;
+    border-color: #6c757d !important;
+}
+
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-control {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-control:focus {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--spotify-green) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-text {
+    color: var(--text-secondary) !important;
+}
+
+.modal-body .table {
+    background-color: transparent !important;
+}
+
+.modal-body .table thead {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-body .table tbody {
+    background-color: transparent !important;
+}
+
+.modal-body .table tbody tr {
+    background-color: transparent !important;
+}
+
+.modal-body .table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-body .table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+</style>
+
+{% endblock %}

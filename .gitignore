@@ -1,25 +1,14 @@
-logs/*.log
+data/
 .env
 docker-compose.yml
-
-# Python cache
 __pycache__/
-*.py[cod]
-*$py.class
-*.so
+*.pyc
+*.pyo
+*.pyd
 .Python
-
-# Virtual environments
-venv/
-env/
-ENV/
-
-# IDE
-.vscode/
-.idea/
-*.swp
-*.swo
-
-# OS
-.DS_Store
-Thumbs.db
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+logs/*.log

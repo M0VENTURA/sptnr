@@ -1,418 +1,470 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>SPTNR Dashboard</title>
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
+{% extends "base.html" %}
 
-        body {
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            min-height: 100vh;
-            padding: 20px;
-        }
+{% block title %}Dashboard - Sptnr{% endblock %}
 
-        .container {
-            max-width: 1200px;
-            margin: 0 auto;
-        }
-
-        .header {
-            background: white;
-            border-radius: 12px;
-            padding: 30px;
-            margin-bottom: 20px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .header h1 {
-            color: #333;
-            margin-bottom: 10px;
-            font-size: 2.5em;
-        }
-
-        .header p {
-            color: #666;
-            font-size: 1.1em;
-        }
-
-        .bookmarks-section {
-            background: white;
-            border-radius: 12px;
-            padding: 30px;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
-        }
-
-        .section-title {
-            color: #333;
-            font-size: 1.8em;
-            margin-bottom: 20px;
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-        }
-
-        .bookmark-dropdown {
-            position: relative;
-            margin-bottom: 30px;
-        }
-
-        .dropdown-button {
-            width: 100%;
-            padding: 15px 20px;
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            border: none;
-            border-radius: 8px;
-            font-size: 1.1em;
-            cursor: pointer;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            transition: transform 0.2s;
-        }
-
-        .dropdown-button:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-
-        .dropdown-content {
-            display: none;
-            position: absolute;
-            background-color: white;
-            min-width: 100%;
-            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2);
-            z-index: 1;
-            border-radius: 8px;
-            margin-top: 5px;
-            max-height: 300px;
-            overflow-y: auto;
-        }
-
-        .dropdown-content.show {
-            display: block;
-        }
-
-        .dropdown-content a {
-            color: #333;
-            padding: 15px 20px;
-            text-decoration: none;
-            display: block;
-            transition: background-color 0.2s;
-        }
-
-        .dropdown-content a:hover {
-            background-color: #f0f0f0;
-        }
-
-        .dropdown-content a:first-child {
-            border-radius: 8px 8px 0 0;
-        }
-
-        .dropdown-content a:last-child {
-            border-radius: 0 0 8px 8px;
-        }
-
-        .empty-state {
-            text-align: center;
-            padding: 40px;
-            color: #999;
-        }
-
-        .bookmarks-list {
-            margin-top: 30px;
-        }
-
-        .bookmark-item {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 15px;
-            background: #f8f9fa;
-            border-radius: 8px;
-            margin-bottom: 10px;
-            transition: background-color 0.2s;
-        }
-
-        .bookmark-item:hover {
-            background: #e9ecef;
-        }
-
-        .bookmark-info {
-            flex: 1;
-        }
-
-        .bookmark-name {
-            font-weight: 600;
-            color: #333;
-            margin-bottom: 5px;
-        }
-
-        .bookmark-url {
-            color: #666;
-            font-size: 0.9em;
-            word-break: break-all;
-        }
-
-        .bookmark-actions {
-            display: flex;
-            gap: 10px;
-        }
-
-        .btn {
-            padding: 8px 16px;
-            border: none;
-            border-radius: 6px;
-            cursor: pointer;
-            font-size: 0.9em;
-            transition: all 0.2s;
-        }
-
-        .btn-primary {
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-        }
-
-        .btn-primary:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 12px rgba(102, 126, 234, 0.4);
-        }
-
-        .btn-danger {
-            background: #dc3545;
-            color: white;
-        }
-
-        .btn-danger:hover {
-            background: #c82333;
-        }
-
-        .btn-secondary {
-            background: #6c757d;
-            color: white;
-        }
-
-        .btn-secondary:hover {
-            background: #5a6268;
-        }
-
-        .add-bookmark-form {
-            background: #f8f9fa;
-            padding: 20px;
-            border-radius: 8px;
-            margin-top: 20px;
-        }
-
-        .form-group {
-            margin-bottom: 15px;
-        }
-
-        .form-group label {
-            display: block;
-            margin-bottom: 5px;
-            color: #333;
-            font-weight: 500;
-        }
-
-        .form-group input {
-            width: 100%;
-            padding: 10px;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            font-size: 1em;
-        }
-
-        .form-group input:focus {
-            outline: none;
-            border-color: #667eea;
-        }
-
-        .form-actions {
-            display: flex;
-            gap: 10px;
-            margin-top: 20px;
-        }
-
-        .hidden {
-            display: none;
-        }
-
-        .arrow {
-            transition: transform 0.3s;
-        }
-
-        .arrow.rotate {
-            transform: rotate(180deg);
-        }
-
-        @keyframes slideIn {
-            from {
-                opacity: 0;
-                transform: translateY(-10px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .dropdown-content.show {
-            animation: slideIn 0.3s ease-out;
-        }
-    </style>
-</head>
-<body>
-    <div class="container">
-        <div class="header">
-            <h1>🎧 SPTNR Dashboard</h1>
-            <p>Navidrome Rating CLI - Configuration & Bookmarks</p>
+{% block content %}
+<div class="container-fluid mt-4">
+    <div class="mb-4">
+        <h1 class="h2 mb-1">
+            <i class="bi bi-speedometer2"></i> Dashboard
+        </h1>
+        <p class="text-muted mb-0">Music library overview and scan controls</p>
+    </div>
+    
+    {% if error %}
+    <div class="alert alert-danger alert-dismissible fade show" role="alert">
+        <i class="bi bi-exclamation-triangle-fill"></i>
+        <strong>Dashboard Error:</strong> {{ error }}
+        <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+    </div>
+    {% endif %}
+    
+    <!-- Statistics Cards -->
+    <div class="row g-2 g-md-3 mb-4">
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-people"></i> Artists
+                    </div>
+                    <div class="h4 mb-0">{{ artist_count }}</div>
+                </div>
+            </div>
         </div>
-
-        <div class="bookmarks-section">
-            <div class="section-title">
-                <span>📚 Bookmarks</span>
-                <button class="btn btn-primary" onclick="toggleAddForm()">+ Add Bookmark</button>
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-disc"></i> Albums
+                    </div>
+                    <div class="h4 mb-0">{{ album_count }}</div>
+                </div>
             </div>
-
-            <!-- Add Bookmark Form -->
-            <div id="addBookmarkForm" class="add-bookmark-form hidden">
-                <h3 style="margin-bottom: 15px; color: #333;">Add New Bookmark</h3>
-                <form onsubmit="addBookmark(event)">
-                    <div class="form-group">
-                        <label for="bookmarkName">Site Name</label>
-                        <input type="text" id="bookmarkName" name="name" placeholder="e.g., GitHub" required>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-music-note"></i> Tracks
                     </div>
-                    <div class="form-group">
-                        <label for="bookmarkUrl">URL</label>
-                        <input type="url" id="bookmarkUrl" name="url" placeholder="https://github.com" required>
-                    </div>
-                    <div class="form-actions">
-                        <button type="submit" class="btn btn-primary">Save Bookmark</button>
-                        <button type="button" class="btn btn-secondary" onclick="toggleAddForm()">Cancel</button>
-                    </div>
-                </form>
+                    <div class="h4 mb-0">{{ track_count }}</div>
+                </div>
             </div>
-
-            <!-- Bookmark Dropdown -->
-            <div class="bookmark-dropdown">
-                {% if bookmarks %}
-                    <button class="dropdown-button" onclick="toggleDropdown()">
-                        <span>Select a bookmark to visit</span>
-                        <span class="arrow" id="dropdownArrow">▼</span>
-                    </button>
-                    <div class="dropdown-content" id="dropdownContent">
-                        {% for bookmark in bookmarks %}
-                        <a href="{{ bookmark.url }}" target="_blank">{{ bookmark.name }}</a>
-                        {% endfor %}
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-star-fill"></i> 5★
                     </div>
-                {% else %}
-                    <div class="empty-state">
-                        <p>No bookmarks yet. Add your first bookmark to get started!</p>
-                    </div>
-                {% endif %}
+                    <div class="h4 mb-0">{{ five_star_count }}</div>
+                </div>
             </div>
-
-            <!-- Bookmarks List -->
-            {% if bookmarks %}
-            <div class="bookmarks-list">
-                <h3 style="margin-bottom: 15px; color: #333;">Manage Bookmarks</h3>
-                {% for bookmark in bookmarks %}
-                <div class="bookmark-item" data-index="{{ loop.index0 }}">
-                    <div class="bookmark-info">
-                        <div class="bookmark-name">{{ bookmark.name }}</div>
-                        <div class="bookmark-url">{{ bookmark.url }}</div>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-single-music"></i> Singles
                     </div>
-                    <div class="bookmark-actions">
-                        <button class="btn btn-danger" onclick="deleteBookmark({{ loop.index0 }})">Delete</button>
+                    <div class="h4 mb-0">{{ singles_count }}</div>
+                </div>
+            </div>
+        </div>
+        <div class="col-6 col-sm-4 col-lg-2">
+            <div class="card h-100">
+                <div class="card-body text-center">
+                    <div class="stat-label mb-2">
+                        <i class="bi bi-circle-fill"></i> Status
+                    </div>
+                    <div class="h5 mb-0">
+                        {% if scan_running %}
+                            <span class="badge bg-danger">Running</span>
+                        {% else %}
+                            <span class="badge bg-success">Idle</span>
+                        {% endif %}
                     </div>
                 </div>
-                {% endfor %}
             </div>
+        </div>
+    </div>
+    
+    <!-- Scan Controls -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-play-circle"></i> Scan Controls
+            </h5>
+        </div>
+        <div class="card-body">
+            {% if scan_running %}
+                <form method="POST" action="{{ url_for('scan_stop') }}" class="d-inline">
+                    <button type="submit" class="btn btn-danger w-100 w-md-auto">
+                        <i class="bi bi-stop-circle"></i> <span class="d-none d-sm-inline">Stop Scan</span>
+                    </button>
+                </form>
+                <span class="ms-2 ms-md-3 badge bg-success d-inline-block mt-2 mt-md-0">Scan in progress...</span>
+                
+                <!-- Progress Bar -->
+                <div class="mt-3" id="scan-progress-container" style="display: none;">
+                    <div class="d-flex justify-content-between mb-2">
+                        <small class="text-muted" id="progress-text">Processing...</small>
+                        <small class="text-muted" id="progress-percent">0%</small>
+                    </div>
+                    <div class="progress" style="height: 20px;">
+                        <div class="progress-bar progress-bar-striped progress-bar-animated" 
+                             id="progress-bar" 
+                             role="progressbar" 
+                             style="width: 0%;" 
+                             aria-valuenow="0" 
+                             aria-valuemin="0" 
+                             aria-valuemax="100"></div>
+                    </div>
+                    <div class="mt-2">
+                        <small class="text-muted" id="progress-details">
+                            <span id="current-artist"></span>
+                            <span id="current-album"></span>
+                        </small>
+                    </div>
+                    <div class="mt-1">
+                        <small class="text-muted" id="progress-phase"></small>
+                    </div>
+                </div>
+            {% else %}
+                <div class="d-flex flex-column flex-md-row gap-2 gap-md-3">
+                    <form method="POST" action="{{ url_for('scan_unified') }}" class="flex-grow-1">
+                        <button type="submit" class="btn btn-success w-100" style="background-color: #1db954; border-color: #1db954; color: #000; font-weight: 600;">
+                            <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Start Unified Scan</span>
+                        </button>
+                    </form>
+                    
+                    <form method="POST" action="{{ url_for('scan_start') }}" class="flex-grow-1">
+                        <input type="hidden" name="scan_type" value="force">
+                        <button type="submit" class="btn btn-force w-100">
+                            <i class="bi bi-arrow-clockwise"></i> <span class="d-none d-sm-inline">Force Re-scan</span>
+                        </button>
+                    </form>
+                    
+                    <a href="{{ url_for('logs') }}" class="btn btn-outline-secondary w-100 flex-grow-1">
+                        <i class="bi bi-file-text"></i> <span class="d-none d-sm-inline">Logs</span>
+                    </a>
+                </div>
             {% endif %}
         </div>
     </div>
+    
+    <!-- Detailed Scan Controls -->
+    <div class="card mb-4">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-sliders"></i> Detailed Scans
+            </h5>
+        </div>
+        <div class="card-body">
+            <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
+            <div class="d-grid gap-2 gap-md-3" style="grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));">
+                <div class="position-relative">
+                    <form method="POST" action="{{ url_for('scan_navidrome') }}" class="d-inline w-100">
+                        <button type="submit" class="btn btn-outline-primary w-100">
+                            <i class="bi bi-cloud"></i> <span class="d-sm-inline">Navidrome</span>
+                        </button>
+                    </form>
+                    <span class="scan-badge" data-scan-type="navidrome_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
+                        <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
+                    </span>
+                </div>
+                
+                <div class="position-relative">
+                    <form method="POST" action="{{ url_for('scan_popularity') }}" class="d-inline w-100">
+                        <button type="submit" class="btn btn-outline-primary w-100">
+                            <i class="bi bi-graph-up"></i> <span class="d-sm-inline">Popularity</span>
+                        </button>
+                    </form>
+                    <span class="scan-badge" data-scan-type="popularity_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
+                        <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
+                    </span>
+                </div>
+                
+                <div class="position-relative">
+                    <form method="POST" action="{{ url_for('scan_singles') }}" class="d-inline w-100">
+                        <button type="submit" class="btn btn-outline-primary w-100">
+                            <i class="bi bi-music-note"></i> <span class="d-sm-inline">Singles</span>
+                        </button>
+                    </form>
+                    <span class="scan-badge" data-scan-type="singles_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
+                        <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
+                    </span>
+                </div>
+                
+                <div class="position-relative">
+                    <form method="POST" action="{{ url_for('scan_mp3') }}" class="d-inline w-100">
+                        <button type="submit" class="btn btn-outline-info w-100">
+                            <i class="bi bi-disc"></i> <span class="d-sm-inline">File Paths</span>
+                        </button>
+                    </form>
+                    <span class="scan-badge" data-scan-type="mp3_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
+                        <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
+                    </span>
+                </div>
+            </div>
+            <div class="mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-lightbulb"></i> <strong>Tip:</strong> Check the <a href="{{ url_for('logs') }}">Logs page</a> to view detailed progress for each scan type.
+                </small>
+            </div>
+        </div>
+    </div>
+    
+    <!-- Recent Scans -->
+    {% if recent_scans %}
+        <div class="card mb-4">
+            <div class="card-header">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-clock-history"></i> Recent Scans
+                </h5>
+            </div>
+            <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                    <thead class="d-none d-md-table-header-group">
+                        <tr>
+                            <th>
+                                <i class="bi bi-person"></i> Artist
+                            </th>
+                            <th>
+                                <i class="bi bi-disc"></i> Album
+                            </th>
+                            <th>Last Scanned</th>
+                            <th class="text-center">Actions</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {% for scan in recent_scans %}
+                        <tr class="d-flex flex-column d-md-table-row">
+                            <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Artist</span>
+                                <a href="{{ url_for('artist_detail', name=scan.artist) }}">
+                                    {{ scan.artist }}
+                                </a>
+                            </td>
+                            <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Album</span>
+                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}">
+                                    {{ scan.album }}
+                                </a>
+                            </td>
+                            <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
+                                <span class="d-md-none text-muted fw-bold">Scanned</span>
+                                {{ scan.last_scan }}
+                            </td>
+                            <td class="d-flex justify-content-end d-md-table-cell">
+                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="btn btn-sm btn-outline-primary">
+                                    <i class="bi bi-arrow-right"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    </tbody>
+                </table>
+            </div>
+        </div>
+    {% endif %}
+    
+    <div class="d-flex flex-column flex-md-row gap-2">
+        <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
+            <i class="bi bi-people"></i> <span class="d-none d-sm-inline">Browse Artists</span>
+        </a>
+        <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
+            <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
+        </a>
+    </div>
+</div>
 
-    <script>
-        function toggleDropdown() {
-            const dropdown = document.getElementById('dropdownContent');
-            const arrow = document.getElementById('dropdownArrow');
-            dropdown.classList.toggle('show');
-            arrow.classList.toggle('rotate');
-        }
+<style>
+    .stat-label {
+        font-size: 0.85rem;
+        color: var(--text-secondary, #b0b0b0);
+        font-weight: 500;
+    }
 
-        function toggleAddForm() {
-            const form = document.getElementById('addBookmarkForm');
-            form.classList.toggle('hidden');
-        }
+    /* Table and card dark theme fixes */
+    .card {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+        border-color: var(--border-color, #333) !important;
+    }
 
-        async function addBookmark(event) {
-            event.preventDefault();
-            
-            const form = event.target;
-            const name = form.name.value;
-            const url = form.url.value;
+    .card-header {
+        background-color: var(--primary-bg, #121212) !important;
+        border-bottom-color: var(--border-color, #333) !important;
+    }
 
-            try {
-                const response = await fetch('/api/bookmarks', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json',
-                    },
-                    body: JSON.stringify({ name, url }),
+    .table-responsive {
+        background-color: var(--secondary-bg, #1e1e1e) !important;
+    }
+
+    .table {
+        color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+    }
+
+    .table thead th {
+        color: var(--text-primary, #fff) !important;
+        background-color: var(--primary-bg, #121212) !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table tbody td {
+        color: var(--text-primary, #fff) !important;
+        background-color: transparent !important;
+        border-color: var(--border-color, #333) !important;
+    }
+
+    .table-hover tbody tr:hover {
+        background-color: var(--primary-bg, #121212) !important;
+    }
+
+    .btn-force {
+        background-color: #ff6b00;
+        border-color: #ff6b00;
+        color: #fff;
+        font-weight: 600;
+    }
+
+    .btn-force:hover {
+        background-color: #ff8000;
+        border-color: #ff8000;
+        color: #fff;
+    }
+
+    .btn-force:active,
+    .btn-force:focus {
+        background-color: #ff5500;
+        border-color: #ff5500;
+        box-shadow: 0 0 0 0.25rem rgba(255, 107, 0, 0.5);
+    }
+</style>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+    // Poll scan status every 2 seconds
+    function updateScanStatus() {
+        fetch('/api/scan-status')
+            .then(response => response.json())
+            .then(data => {
+                // Update badge visibility based on running status
+                document.querySelectorAll('.scan-badge').forEach(badge => {
+                    const scanType = badge.getAttribute('data-scan-type');
+                    const scanData = data[scanType];
+                    
+                    if (scanData && scanData.running) {
+                        badge.style.display = 'block';
+                    } else {
+                        badge.style.display = 'none';
+                    }
                 });
-
-                if (response.ok) {
-                    // Reload the page to show the new bookmark
-                    window.location.reload();
+            })
+            .catch(error => console.error('Error fetching scan status:', error));
+    }
+    
+    // Poll scan progress every 1 second
+    function updateScanProgress() {
+        fetch('/api/scan-progress')
+            .then(response => response.json())
+            .then(data => {
+                const container = document.getElementById('scan-progress-container');
+                
+                if (data.is_running) {
+                    // Show progress bar
+                    container.style.display = 'block';
+                    
+                    const scanType = data.scan_type || 'unified';
+                    
+                    // Handle unified scan
+                    if (scanType === 'unified') {
+                        // Update progress bar
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = Math.round(data.percent_complete || 0);
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        // Update text
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        
+                        // Update details
+                        const artistText = data.current_artist ? 
+                            `<i class="bi bi-person"></i> ${data.current_artist}` : '';
+                        const albumText = data.current_album ? 
+                            ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
+                        document.getElementById('current-artist').innerHTML = artistText;
+                        document.getElementById('current-album').innerHTML = albumText;
+                        
+                        // Update phase
+                        let phaseText = '';
+                        if (data.current_phase === 'popularity') {
+                            phaseText = '<i class="bi bi-graph-up"></i> Detecting popularity...';
+                        } else if (data.current_phase === 'singles') {
+                            phaseText = '<i class="bi bi-music-note"></i> Detecting singles & rating...';
+                        } else if (data.current_phase === 'navidrome_update') {
+                            phaseText = '<i class="bi bi-cloud-upload"></i> Updating Navidrome...';
+                        }
+                        document.getElementById('progress-phase').innerHTML = phaseText;
+                        
+                        // Update progress text
+                        const progressText = `${data.processed_artists || 0}/${data.total_artists || 0} artists, ` +
+                                           `${data.processed_tracks || 0}/${data.total_tracks || 0} tracks`;
+                        document.getElementById('progress-text').textContent = progressText;
+                    }
+                    // Handle MP3 scan
+                    else if (scanType === 'mp3_scan') {
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = data.scanned_files && data.total_files ? 
+                            Math.round((data.scanned_files / data.total_files) * 100) : 0;
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        document.getElementById('current-artist').innerHTML = 
+                            `<i class="bi bi-folder"></i> ${data.current_folder || 'Scanning...'}`;
+                        document.getElementById('current-album').innerHTML = '';
+                        document.getElementById('progress-phase').innerHTML = 
+                            '<i class="bi bi-disc"></i> Scanning music files...';
+                        document.getElementById('progress-text').textContent = 
+                            `${data.scanned_files || 0} files scanned, ${data.matched_files || 0} matched`;
+                    }
+                    // Handle Navidrome scan
+                    else if (scanType === 'navidrome_scan') {
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = data.scanned_albums && data.total_albums ? 
+                            Math.round((data.scanned_albums / data.total_albums) * 100) : 0;
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        document.getElementById('current-artist').innerHTML = 
+                            `<i class="bi bi-person"></i> ${data.current_artist || 'Scanning...'}`;
+                        document.getElementById('current-album').innerHTML = 
+                            data.current_album ? ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
+                        document.getElementById('progress-phase').innerHTML = 
+                            '<i class="bi bi-cloud"></i> Importing from Navidrome...';
+                        document.getElementById('progress-text').textContent = 
+                            `${data.scanned_albums || 0}/${data.total_albums || 0} albums`;
+                    }
                 } else {
-                    alert('Failed to add bookmark');
+                    // Hide progress bar when not running
+                    container.style.display = 'none';
                 }
-            } catch (error) {
-                console.error('Error:', error);
-                alert('Failed to add bookmark');
-            }
-        }
-
-        async function deleteBookmark(index) {
-            if (!confirm('Are you sure you want to delete this bookmark?')) {
-                return;
-            }
-
-            try {
-                const response = await fetch(`/api/bookmarks/${index}`, {
-                    method: 'DELETE',
-                });
-
-                if (response.ok) {
-                    // Reload the page to show the updated list
-                    window.location.reload();
-                } else {
-                    alert('Failed to delete bookmark');
-                }
-            } catch (error) {
-                console.error('Error:', error);
-                alert('Failed to delete bookmark');
-            }
-        }
-
-        // Close dropdown when clicking outside
-        window.onclick = function(event) {
-            if (!event.target.matches('.dropdown-button') && !event.target.closest('.dropdown-button')) {
-                const dropdown = document.getElementById('dropdownContent');
-                const arrow = document.getElementById('dropdownArrow');
-                if (dropdown && dropdown.classList.contains('show')) {
-                    dropdown.classList.remove('show');
-                    arrow.classList.remove('rotate');
-                }
-            }
-        }
-    </script>
-</body>
-</html>
+            })
+            .catch(error => console.error('Error fetching scan progress:', error));
+    }
+    
+    // Initial update
+    updateScanStatus();
+    updateScanProgress();
+    
+    // Poll scan status every 2 seconds
+    setInterval(updateScanStatus, 2000);
+    
+    // Poll progress every 1 second
+    setInterval(updateScanProgress, 1000);
+});
+</script>
+{% endblock %}
