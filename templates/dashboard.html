@@ -248,7 +248,7 @@
                             </td>
                             <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
                                 <span class="d-md-none text-muted fw-bold">Album</span>
-                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}">
+                                <a href="{{ url_for('album_detail', combo=(scan.artist + '|||' + scan.album)) }}">
                                     {{ scan.album }}
                                 </a>
                             </td>
@@ -257,7 +257,7 @@
                                 {{ scan.last_scan }}
                             </td>
                             <td class="d-flex justify-content-end d-md-table-cell">
-                                <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="btn btn-sm btn-outline-primary">
+                                <a href="{{ url_for('album_detail', combo=(scan.artist + '|||' + scan.album)) }}" class="btn btn-sm btn-outline-primary">
                                     <i class="bi bi-arrow-right"></i>
                                 </a>
                             </td>

@@ -692,11 +692,46 @@ def artist_detail(name):
                          qbit_config=qbit_config)
 
 
-@app.route("/album/<path:artist>/<path:album>")
-def album_detail(artist, album):
-    """View album details and tracks"""
+@app.route("/album/<path:combo>")
+def album_detail(combo):
+    """View album details and tracks
+    
+    URL format: /album/artist|||album
+    The ||| separator is used to avoid ambiguity when artist/album names contain slashes.
+    """
     try:
-        # URL decode the artist and album names
+        # Parse the combo parameter - split on ||| separator
+        if '|||' in combo:
+            parts = combo.split('|||', 1)
+            if len(parts) == 2:
+                artist, album = parts
+            else:
+                return render_template("album.html",
+                                     artist_name="",
+                                     album_name="",
+                                     tracks=[],
+                                     tracks_by_disc={},
+                                     album_data=None,
+                                     album_genres=[],
+                                     error="Invalid URL format"), 400
+        else:
+            # Fallback: try to parse old format (might not work correctly for artists with slashes)
+            #  Attempt to split on last / to get artist and album
+            # This is best-effort for backward compatibility
+            parts = combo.rsplit('/', 1)
+            if len(parts) == 2:
+                artist, album = parts
+            else:
+                return render_template("album.html",
+                                     artist_name="",
+                                     album_name="",
+                                     tracks=[],
+                                     tracks_by_disc={},
+                                     album_data=None,
+                                     album_genres=[],
+                                     error="Invalid URL format"), 400
+        
+        # URL decode if needed (Flask should already handle this, but be explicit)
         from urllib.parse import unquote
         artist = unquote(artist)
         album = unquote(album)
@@ -812,10 +847,29 @@ def album_detail(artist, album):
                              error=f"Error loading album: {str(e)}")
 
 
-@app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
-def album_rescan(artist, album):
-    """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection."""
+@app.route("/album/<path:combo>/rescan", methods=["POST"])
+def album_rescan(combo):
+    """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection.
+    
+    URL format: /album/artist|||album/rescan
+    """
     from urllib.parse import unquote
+    
+    # Parse the combo parameter
+    if '|||' in combo:
+        parts = combo.split('|||', 1)
+        if len(parts) == 2:
+            artist, album = parts
+        else:
+            return jsonify({"error": "Invalid URL format"}), 400
+    else:
+        # Fallback for backward compatibility
+        parts = combo.rsplit('/', 1)
+        if len(parts) == 2:
+            artist, album = parts
+        else:
+            return jsonify({"error": "Invalid URL format"}), 400
+    
     artist = unquote(artist)
     album = unquote(album)
 
@@ -850,7 +904,7 @@ def album_rescan(artist, album):
 
     threading.Thread(target=_worker, args=(artist,), daemon=True).start()
     flash(f"Rescan started for {artist}", "info")
-    return redirect(url_for("album_detail", artist=artist, album=album))
+    return redirect(url_for("album_detail", combo=f'{artist}|||{album}'))
 
 
 @app.route("/track/<track_id>")
@@ -1863,11 +1917,24 @@ def api_metadata():
                     metadata["single_confidence"] = track_info.get("single_confidence")
         
         elif lookup_type == "album" and identifier:
-            # Album lookup: artist/album format
-            parts = identifier.split("/")
-            if len(parts) >= 2:
-                artist = parts[0]
-                album = "/".join(parts[1:])
+            # Album lookup: artist|||album format (using ||| to avoid ambiguity with slashes in names)
+            # Also support legacy artist/album format for backward compatibility
+            if '|||' in identifier:
+                parts = identifier.split('|||', 1)
+                if len(parts) == 2:
+                    artist, album = parts
+                else:
+                    metadata = {"error": "Invalid album identifier format"}
+                    return jsonify(metadata)
+            else:
+                # Legacy format: try rsplit to handle albums with slashes
+                parts = identifier.rsplit('/', 1)
+                if len(parts) >= 2:
+                    artist = parts[0]
+                    album = parts[1]
+                else:
+                    metadata = {"error": "Invalid album identifier format"}
+                    return jsonify(metadata)
                 
                 conn = get_db()
                 cursor = conn.cursor()
@@ -1926,10 +1993,32 @@ def api_metadata():
     return jsonify(metadata)
 
 
-@app.route("/api/album-art/<path:artist>/<path:album>")
-def api_album_art(artist, album):
-    """Get album art from Navidrome or MP3 files"""
+@app.route("/api/album-art/<path:combo>")
+def api_album_art(combo):
+    """Get album art from Navidrome or MP3 files
+    
+    URL format: /api/album-art/artist|||album
+    """
     try:
+        # Parse the combo parameter
+        from urllib.parse import unquote
+        if '|||' in combo:
+            parts = combo.split('|||', 1)
+            if len(parts) == 2:
+                artist, album = parts
+            else:
+                return "Invalid URL format", 400
+        else:
+            # Fallback for backward compatibility
+            parts = combo.rsplit('/', 1)
+            if len(parts) == 2:
+                artist, album = parts
+            else:
+                return "Invalid URL format", 400
+        
+        artist = unquote(artist)
+        album = unquote(album)
+        
         # First try to get from Navidrome
         cfg, _ = _read_yaml(CONFIG_PATH)
         nav_users = cfg.get("navidrome_users", [])

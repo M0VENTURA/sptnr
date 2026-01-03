@@ -307,7 +307,7 @@
           </h5>
           <div class="results-grid">
             ${albums.map(album => `
-              <div class="card search-result-card" onclick="navigateTo('/album/${encodeURIComponent(album.artist)}/${encodeURIComponent(album.album)}')">
+              <div class="card search-result-card" onclick="navigateTo('/album/${encodeURIComponent(album.artist)}|||${encodeURIComponent(album.album)}')">
                 <div class="card-body">
                   <span class="badge badge-success result-type-badge">Album</span>
                   <div class="result-title">${escapeHtml(album.album)}</div>
@@ -354,7 +354,7 @@
                       </a>
                     </td>
                     <td>
-                      <a href="/album/${encodeURIComponent(track.artist)}/${encodeURIComponent(track.album)}" onclick="event.stopPropagation();">
+                      <a href="/album/${encodeURIComponent(track.artist)}|||${encodeURIComponent(track.album)}" onclick="event.stopPropagation();">
                         ${escapeHtml(track.album)}
                       </a>
                     </td>
