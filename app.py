@@ -2318,6 +2318,47 @@ def qbit_force_start():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/qbittorrent/stop", methods=["POST"])
+def qbit_stop():
+    """Pause/stop a qBittorrent torrent"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+
+    if not qbit_config.get("enabled"):
+        return jsonify({"error": "qBittorrent integration not enabled"}), 400
+
+    data = request.get_json(silent=True) or {}
+    torrent_hash = data.get("hash", "").strip()
+    if not torrent_hash:
+        return jsonify({"error": "hash is required"}), 400
+
+    web_url = qbit_config.get("web_url", "http://localhost:8080")
+    username = qbit_config.get("username", "")
+    password = qbit_config.get("password", "")
+
+    try:
+        import requests as req
+
+        session = req.Session()
+        login_url = f"{web_url}/api/v2/auth/login"
+        login_resp = session.post(login_url, data={"username": username, "password": password}, timeout=10)
+
+        if login_resp.text != "Ok.":
+            return jsonify({"error": "Failed to login to qBittorrent"}), 500
+
+        # Pause the torrent
+        pause_url = f"{web_url}/api/v2/torrents/pause"
+        pause_resp = session.post(pause_url, data={"hashes": torrent_hash}, timeout=10)
+        
+        if pause_resp.status_code != 200:
+            return jsonify({"error": f"Failed to pause: {pause_resp.status_code}"}), 500
+
+        return jsonify({"success": True})
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/metadata")
 def api_metadata():
     """API endpoint for MP3 metadata lookup"""
@@ -2774,37 +2815,64 @@ def slskd_status():
         
         downloads_data = resp.json()
         
-        # Format downloads - slskd returns dict: {username: {folder_id: {files: []}}}
+        # Format downloads - handle multiple possible slskd API formats
         active_downloads = []
         
-        if isinstance(downloads_data, dict):
-            # Expected format: {username: {folderId: {files: [{filename, size, bytesTransferred, state, ...}]}}}
-            for username, folders in downloads_data.items():
-                if isinstance(folders, dict):
-                    for folder_id, folder_data in folders.items():
-                        # Each folder can have multiple files
-                        files_list = folder_data.get("files", []) if isinstance(folder_data, dict) else []
-                        
-                        for file_obj in files_list:
-                            if isinstance(file_obj, dict):
-                                filename = file_obj.get("filename", "Unknown")
-                                # Handle both possible field names from slskd
-                                state = file_obj.get("state", "") or file_obj.get("status", "")
-                                bytes_transferred = file_obj.get("bytesTransferred", 0) or file_obj.get("bytesReceived", 0) or 0
-                                size = file_obj.get("size", 0) or 0
-                                progress = (bytes_transferred / size * 100) if size > 0 else 0
-                                
-                                active_downloads.append({
-                                    "username": username,
-                                    "filename": filename,
-                                    "state": state,
-                                    "progress": round(progress, 2),
-                                    "bytesTransferred": bytes_transferred,
-                                    "size": size,
-                                    "averageSpeed": file_obj.get("averageSpeed", 0) or 0,
-                                    "remoteToken": file_obj.get("remoteToken", "") or ""
-                                })
+        def extract_file(file_obj, username="Unknown"):
+            """Extract file info from various possible slskd response formats"""
+            if not isinstance(file_obj, dict):
+                return None
+            
+            filename = file_obj.get("filename") or file_obj.get("name") or "Unknown"
+            state = file_obj.get("state") or file_obj.get("status") or ""
+            bytes_transferred = file_obj.get("bytesTransferred") or file_obj.get("bytesReceived") or 0
+            size = file_obj.get("size") or 0
+            progress = (bytes_transferred / size * 100) if size > 0 else 0
+            
+            return {
+                "username": username,
+                "filename": filename,
+                "state": state,
+                "progress": round(progress, 2),
+                "bytesTransferred": bytes_transferred,
+                "size": size,
+                "averageSpeed": file_obj.get("averageSpeed") or 0,
+                "remoteToken": file_obj.get("remoteToken") or ""
+            }
         
+        if isinstance(downloads_data, dict):
+            # Format 1: {username: {folderId: {files: []}}}
+            for username, folders_or_files in downloads_data.items():
+                if isinstance(folders_or_files, dict):
+                    for key, value in folders_or_files.items():
+                        # Check if this is a folder structure or direct file
+                        if isinstance(value, dict) and "files" in value:
+                            # Folder structure: extract files
+                            files_list = value.get("files", [])
+                            for file_obj in files_list:
+                                extracted = extract_file(file_obj, username)
+                                if extracted:
+                                    active_downloads.append(extracted)
+                        elif isinstance(value, dict):
+                            # Try direct extraction (might be a file object)
+                            extracted = extract_file(value, username)
+                            if extracted:
+                                active_downloads.append(extracted)
+                        elif isinstance(value, list):
+                            # Format 2: {username: [files]}
+                            for file_obj in value:
+                                extracted = extract_file(file_obj, username)
+                                if extracted:
+                                    active_downloads.append(extracted)
+        elif isinstance(downloads_data, list):
+            # Format 3: [files] with username field
+            for file_obj in downloads_data:
+                username = file_obj.get("username", "Unknown")
+                extracted = extract_file(file_obj, username)
+                if extracted:
+                    active_downloads.append(extracted)
+        
+        logging.debug(f"slskd status: found {len(active_downloads)} downloads")
         return jsonify({"downloads": active_downloads})
         
     except Exception as e:

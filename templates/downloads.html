@@ -776,9 +776,11 @@ function refreshQbitMonitor(options = {}) {
 
         const needsForceStart = state.includes('stalled') || state.includes('paused') || state.includes('error');
         const hash = torrent.hash || '';
-        const actionHtml = needsForceStart && hash
-          ? `<button class="btn btn-sm btn-outline-primary" onclick="forceStartQbitTorrent('${escapeHtml(hash)}')"><i class="bi bi-lightning-charge"></i> Force start</button>`
-          : '<span class="text-muted">—</span>';
+        const isRunning = !state.includes('stalled') && !state.includes('paused') && state !== 'stopped';
+        const actionHtml = hash ? `<div style="display: flex; gap: 4px; justify-content: center;">
+          ${needsForceStart ? `<button class="btn btn-sm btn-outline-primary" onclick="forceStartQbitTorrent('${escapeHtml(hash)}')" title="Force start torrent"><i class="bi bi-lightning-charge"></i> Start</button>` : ''}
+          ${isRunning ? `<button class="btn btn-sm btn-outline-danger" onclick="stopQbitTorrent('${escapeHtml(hash)}')" title="Stop torrent"><i class="bi bi-pause-circle"></i> Stop</button>` : ''}
+        </div>` : '<span class="text-muted">—</span>';
 
         row.innerHTML = `
           <td>
@@ -941,6 +943,25 @@ function forceStartQbitTorrent(hash) {
         refreshQbitMonitor({ silent: true });
       } else {
         alert('❌ Error: ' + (data.error || 'Failed to force start'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
+}
+
+function stopQbitTorrent(hash) {
+  if (!hash) return;
+  if (!confirm('Stop this torrent?')) return;
+  fetch('/api/qbittorrent/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash })
+  })
+    .then(resp => resp.json())
+    .then(data => {
+      if (data.success) {
+        refreshQbitMonitor({ silent: true });
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to stop torrent'));
       }
     })
     .catch(err => alert('❌ Network error: ' + err.message));
