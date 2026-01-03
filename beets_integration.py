@@ -37,6 +37,10 @@ class BeetsClient:
         self.config_file = self.config_path / "beetsconfig.yaml"
         self.beets_dir = self.config_path / "beets"
         self.library_db = self.beets_dir / "musiclibrary.db"
+        
+        # Ensure beets directory exists
+        if self.enabled:
+            self.beets_dir.mkdir(parents=True, exist_ok=True)
     
     def is_installed(self) -> bool:
         """Check if beets is installed and available."""

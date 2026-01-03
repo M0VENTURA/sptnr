@@ -88,6 +88,9 @@ class BeetsAutoImporter:
         Returns:
             Subprocess handle
         """
+        # Ensure beets database directory exists
+        self.beets_db.parent.mkdir(parents=True, exist_ok=True)
+        
         import_path = Path(artist_path) if artist_path else self.music_path
         
         cmd = [

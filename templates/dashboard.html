@@ -459,6 +459,10 @@ document.addEventListener('DOMContentLoaded', function() {
                 if (!data.is_running) {
                     // Clear running scans if nothing is running
                     runningScans.clear();
+                    // Hide all progress containers
+                    document.querySelectorAll('.scan-progress-container').forEach(container => {
+                        container.style.display = 'none';
+                    });
                     return;
                 }
                 
