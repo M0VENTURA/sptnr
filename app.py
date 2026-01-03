@@ -1307,6 +1307,121 @@ def logs_view():
         return jsonify({"error": "Log file not found", "lines": []})
 
 
+@app.route("/bookmarks")
+def bookmarks():
+    """View all bookmarks"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, type, name, artist, album, track_id, created_at
+            FROM bookmarks
+            ORDER BY created_at DESC
+        """)
+        
+        bookmarks_data = []
+        for row in cursor.fetchall():
+            bookmarks_data.append({
+                'id': row[0],
+                'type': row[1],
+                'name': row[2],
+                'artist': row[3],
+                'album': row[4],
+                'track_id': row[5],
+                'created_at': row[6]
+            })
+        
+        conn.close()
+        
+        return render_template("bookmarks.html", bookmarks=bookmarks_data)
+    except Exception as e:
+        logging.error(f"Error loading bookmarks: {e}")
+        return render_template("bookmarks.html", bookmarks=[], error=str(e))
+
+
+@app.route("/api/bookmarks", methods=["GET", "POST"])
+def api_bookmarks():
+    """Get all bookmarks or add a new bookmark"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if request.method == "GET":
+        try:
+            cursor.execute("""
+                SELECT id, type, name, artist, album, track_id, created_at
+                FROM bookmarks
+                ORDER BY created_at DESC
+            """)
+            
+            bookmarks_data = []
+            for row in cursor.fetchall():
+                bookmarks_data.append({
+                    'id': row[0],
+                    'type': row[1],
+                    'name': row[2],
+                    'artist': row[3],
+                    'album': row[4],
+                    'track_id': row[5],
+                    'created_at': row[6]
+                })
+            
+            conn.close()
+            return jsonify({"success": True, "bookmarks": bookmarks_data})
+        except Exception as e:
+            logging.error(f"Error fetching bookmarks: {e}")
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+    
+    elif request.method == "POST":
+        try:
+            data = request.get_json()
+            bookmark_type = data.get('type')
+            name = data.get('name')
+            artist = data.get('artist')
+            album = data.get('album')
+            track_id = data.get('track_id')
+            
+            if not bookmark_type or not name:
+                return jsonify({"success": False, "error": "Missing required fields"}), 400
+            
+            cursor.execute("""
+                INSERT OR IGNORE INTO bookmarks (type, name, artist, album, track_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (bookmark_type, name, artist, album, track_id))
+            
+            conn.commit()
+            bookmark_id = cursor.lastrowid
+            conn.close()
+            
+            return jsonify({"success": True, "id": bookmark_id, "message": "Bookmark added"})
+        except Exception as e:
+            logging.error(f"Error adding bookmark: {e}")
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/bookmarks/<int:bookmark_id>", methods=["DELETE"])
+def api_delete_bookmark(bookmark_id):
+    """Delete a bookmark"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({"success": False, "error": "Bookmark not found"}), 404
+        
+        conn.close()
+        return jsonify({"success": True, "message": "Bookmark deleted"})
+    except Exception as e:
+        logging.error(f"Error deleting bookmark: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/config")
 def config_editor():
     """View/edit config.yaml"""
@@ -1353,6 +1468,8 @@ def config_save_json():
             'navidrome': data.get('navidrome', {}),
             'qbittorrent': data.get('qbittorrent', {}),
             'slskd': data.get('slskd', {}),
+            'authentik': data.get('authentik', {}),
+            'bookmarks': data.get('bookmarks', {}),
             'downloads': data.get('downloads', {}),
             'api_integrations': data.get('api_integrations', {}),
             'database': data.get('database', {}),

@@ -107,6 +107,20 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure bookmarks table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS bookmarks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            type TEXT NOT NULL,
+            name TEXT NOT NULL,
+            artist TEXT,
+            album TEXT,
+            track_id TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(type, name, artist, album, track_id)
+        );
+    """)
+
     # ✅ Create indexes for faster lookups
     indexes = [
         ("idx_artist_stats_name", "artist_stats(artist_name)"),
@@ -116,7 +130,9 @@ def update_schema(db_path):
         ("idx_tracks_last_scanned", "tracks(last_scanned)"),
         ("idx_tracks_is_single", "tracks(is_single)"),
         ("idx_tracks_mbid", "tracks(mbid)"),
-        ("idx_tracks_suggested_mbid", "tracks(suggested_mbid)")
+        ("idx_tracks_suggested_mbid", "tracks(suggested_mbid)"),
+        ("idx_bookmarks_type", "bookmarks(type)"),
+        ("idx_bookmarks_created", "bookmarks(created_at)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")

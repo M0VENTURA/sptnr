@@ -28,18 +28,25 @@
                         <i class="bi bi-album"></i> {{ album_name }}
                     </h1>
                     <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
-                                <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="ms-3">
-                                    <button class="btn btn-sm btn-outline-primary" type="submit">Rescan Album Artist</button>
-                                </form>
                 </div>
             </div>
         </div>
-        <button class="btn btn-outline-primary w-100 w-lg-auto" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
-            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Album Info</span>
-        </button>
-        <button class="btn btn-outline-info w-100 w-lg-auto" onclick="openAlbumLookupModal()">
-            <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
-        </button>
+        <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
+            <button class="btn btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album_name }}')">
+                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Album Info</span>
+            </button>
+            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name }}', '{{ artist_name }}', '{{ album_name }}', null)" title="Bookmark this album">
+                <i class="bi bi-bookmark"></i> <span class="d-none d-sm-inline">Bookmark</span>
+            </button>
+            <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
+                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
+            </button>
+            <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
+                <button class="btn btn-outline-secondary" type="submit">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album Artist</span>
+                </button>
+            </form>
+        </div>
     </div>
     
     <!-- Album Metadata Cards -->
@@ -297,6 +304,10 @@
 
 <style>
 /* Dark theme improvements for album page */
+.d-contents {
+    display: contents;
+}
+
 .card {
     background-color: var(--secondary-bg) !important;
     border-color: var(--border-color) !important;
@@ -497,3 +508,4 @@
         alert('Applied Discogs Genres: ' + genres);
     }
 </script>
+{% endblock %}
