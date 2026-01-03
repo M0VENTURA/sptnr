@@ -45,6 +45,8 @@ class ListenBrainzClient:
                 if mbid and confidence >= 0.75:
                     logger.debug(f"Got MBID from MusicBrainz for '{title}': {mbid} (confidence: {confidence})")
                 else:
+                    if confidence < 0.75:
+                        logger.debug(f"MusicBrainz confidence too low for '{title}': {confidence} (need >= 0.75)")
                     mbid = ""
             except Exception as e:
                 logger.debug(f"MusicBrainz MBID lookup failed for '{title}': {e}")
@@ -59,15 +61,19 @@ class ListenBrainzClient:
                 payload = data.get("payload", {})
                 count = int(payload.get("total_listen_count", 0))
                 if count > 0:
-                    logger.debug(f"ListenBrainz count for '{title}' (MBID): {count}")
+                    logger.debug(f"ListenBrainz count for '{title}' (MBID {mbid}): {count}")
                     return count
+                else:
+                    logger.debug(f"ListenBrainz no listens found for MBID {mbid} ('{title}')")
+                    return 0
             except Exception as e:
-                logger.debug(f"ListenBrainz MBID lookup failed for {mbid}: {e}")
+                logger.debug(f"ListenBrainz MBID lookup failed for {mbid} ('{title}'): {e}")
         
         # Fallback: Without a reliable search endpoint, return 0
         # The /1/recording/search endpoint is not available or deprecated
         # ListenBrainz primarily works with MBIDs, not artist/title search
-        logger.debug(f"ListenBrainz count for {title}: 0 (no MBID available)")
+        if not mbid:
+            logger.debug(f"ListenBrainz: No MBID available for '{artist} - {title}'")
         return 0
 
 

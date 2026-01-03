@@ -129,8 +129,11 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                 mbid_value = track['mbid'] if 'mbid' in track.keys() else ''
                 score = get_listenbrainz_score(mbid_value, artist_name, title)
                 listenbrainz_count = score
-                if verbose:
-                    logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
+                if verbose or score > 0:
+                    if score > 0:
+                        logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
+                    else:
+                        logging.debug(f"ListenBrainz: No data available for {title} (MBID: {mbid_value or 'N/A'})")
             except Exception as e:
                 logging.debug(f"ListenBrainz lookup failed for {title}: {e}")
 

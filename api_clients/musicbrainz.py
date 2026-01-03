@@ -1,9 +1,19 @@
 """MusicBrainz API client module."""
 import logging
 import difflib
+import time
+import json
+import os
+import requests
+from requests.adapters import HTTPAdapter
+from urllib3.util.retry import Retry
 from . import session
 
 logger = logging.getLogger(__name__)
+
+# Simple MBID cache to avoid repeated lookups
+_mbid_cache = {}
+_CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
 
 
 class MusicBrainzClient:
@@ -21,6 +31,49 @@ class MusicBrainzClient:
         self.enabled = enabled
         self.base_url = "https://musicbrainz.org/ws/2/"
         self.headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
+        self._setup_retry_strategy()
+        self._load_cache()
+    
+    def _load_cache(self):
+        """Load MBID cache from file if it exists."""
+        global _mbid_cache
+        if os.path.exists(_CACHE_FILE):
+            try:
+                with open(_CACHE_FILE, 'r') as f:
+                    _mbid_cache = json.load(f)
+                logger.debug(f"Loaded MBID cache with {len(_mbid_cache)} entries")
+            except Exception as e:
+                logger.debug(f"Failed to load MBID cache: {e}")
+                _mbid_cache = {}
+    
+    def _save_cache(self):
+        """Save MBID cache to file."""
+        global _mbid_cache
+        try:
+            with open(_CACHE_FILE, 'w') as f:
+                json.dump(_mbid_cache, f)
+        except Exception as e:
+            logger.debug(f"Failed to save MBID cache: {e}")
+    
+    def _get_cache_key(self, title: str, artist: str) -> str:
+        """Generate cache key from title and artist."""
+        return f"{artist.lower()} / {title.lower()}"
+    
+    def _setup_retry_strategy(self):
+        """Configure retry strategy with exponential backoff for connection failures."""
+        # Define what to retry on: connection errors, timeouts, and 429/503/504 errors
+        retry_strategy = Retry(
+            total=3,  # Total number of retries
+            backoff_factor=0.5,  # Exponential backoff: 0.5s, 1s, 2s
+            status_forcelist=[429, 503, 504],  # Retry on these HTTP status codes
+            allowed_methods=["HEAD", "GET", "OPTIONS"]  # Only retry safe methods
+        )
+        adapter = HTTPAdapter(max_retries=retry_strategy)
+        
+        # Apply to both http and https
+        if hasattr(self.session, 'mount'):
+            self.session.mount("http://", adapter)
+            self.session.mount("https://", adapter)
     
     def is_single(self, title: str, artist: str) -> bool:
         """
@@ -47,13 +100,16 @@ class MusicBrainzClient:
                     "limit": 5
                 },
                 headers=self.headers,
-                timeout=15
+                timeout=10  # Reduced from 15s to prevent hanging
             )
             res.raise_for_status()
             rgs = res.json().get("release-groups", [])
             return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
+        except requests.exceptions.Timeout:
+            logger.debug(f"MusicBrainz timeout checking if single for '{title}' by '{artist}'")
+            return False
         except Exception as e:
-            logger.debug(f"MusicBrainz single check failed for '{title}': {e}")
+            logger.debug(f"MusicBrainz single check failed for '{title}' by '{artist}': {e}")
             return False
     
     def get_genres(self, title: str, artist: str) -> list[str]:
@@ -105,10 +161,13 @@ class MusicBrainzClient:
                 rel_id = releases[0].get("id")
                 if rel_id:
                     rel_params = {"fmt": "json", "inc": "tags"}
-                    rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=15)
+                    rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
                     rr.raise_for_status()
                     rel_tags = rr.json().get("tags", []) or []
                     return [t.get("name", "") for t in rel_tags if t.get("name")]
+            return []
+        except requests.exceptions.Timeout:
+            logger.debug(f"MusicBrainz timeout fetching genres for '{title}' by '{artist}'")
             return []
         except Exception as e:
             logger.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
@@ -122,6 +181,8 @@ class MusicBrainzClient:
           - Title similarity (SequenceMatcher)
           - +0.15 bonus if associated release-group primary-type == 'Single'
           
+        Uses caching to avoid repeated lookups.
+          
         Args:
             title: Track title
             artist: Artist name
@@ -133,6 +194,14 @@ class MusicBrainzClient:
         if not self.enabled:
             return "", 0.0
         
+        # Check cache first
+        cache_key = self._get_cache_key(title, artist)
+        global _mbid_cache
+        if cache_key in _mbid_cache:
+            cached = _mbid_cache[cache_key]
+            logger.debug(f"MBID cache hit for '{title}' by '{artist}': {cached[0]} (confidence: {cached[1]})")
+            return tuple(cached)
+        
         try:
             # 1) Find recordings (with releases included for second hop)
             query = f'{title} AND artist:{artist}'
@@ -142,10 +211,12 @@ class MusicBrainzClient:
                 "limit": limit,
                 "inc": "releases+artist-credits",
             }
-            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=15)
+            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=10)
             r.raise_for_status()
             recordings = r.json().get("recordings", []) or []
             if not recordings:
+                _mbid_cache[cache_key] = ("", 0.0)
+                self._save_cache()
                 return "", 0.0
             
             best_mbid = ""
@@ -166,20 +237,35 @@ class MusicBrainzClient:
                     rel_id = releases[0].get("id")
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "release-groups"}
-                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=15)
-                        if rr.ok:
-                            rel_json = rr.json()
-                            rg = rel_json.get("release-group") or {}
-                            primary_type = (rg.get("primary-type") or "").lower()
-                            if primary_type == "single":
-                                single_bonus = 0.15
+                        try:
+                            rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
+                            if rr.ok:
+                                rel_json = rr.json()
+                                rg = rel_json.get("release-group") or {}
+                                primary_type = (rg.get("primary-type") or "").lower()
+                                if primary_type == "single":
+                                    single_bonus = 0.15
+                        except requests.exceptions.Timeout:
+                            # Skip release lookup if timeout, still use recording match
+                            logger.debug(f"MusicBrainz timeout fetching release {rel_id}")
+                        except Exception as e:
+                            # Log but continue with next recording
+                            logger.debug(f"MusicBrainz release lookup failed for {rel_id}: {e}")
                 
                 confidence = min(1.0, title_sim + single_bonus)
                 if confidence > best_score:
                     best_score = confidence
                     best_mbid = rec_mbid
             
-            return best_mbid, round(best_score, 3)
+            # Cache the result
+            result = (best_mbid, round(best_score, 3))
+            _mbid_cache[cache_key] = result
+            self._save_cache()
+            
+            return result
+        except requests.exceptions.Timeout:
+            logger.debug(f"MusicBrainz timeout looking up MBID for '{title}' by '{artist}'")
+            return "", 0.0
         except Exception as e:
             logger.debug(f"MusicBrainz suggested MBID lookup failed for '{title}' by '{artist}': {e}")
             return "", 0.0
