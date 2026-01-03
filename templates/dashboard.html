@@ -421,7 +421,7 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/scan-status')
             .then(response => response.json())
             .then(data => {
-                // Update badge and progress bar visibility based on running status
+                // Update badge and progress container visibility based on running status
                 document.querySelectorAll('.scan-badge').forEach(badge => {
                     const scanType = badge.getAttribute('data-scan-type');
                     const scanData = data[scanType];
@@ -429,19 +429,15 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (scanData && scanData.running) {
                         badge.style.display = 'block';
                         
-                        // Show progress bar for this scan type
-                        const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${scanType}"]`);
-                        if (progressBarContainer) {
-                            progressBarContainer.style.display = 'block';
-                        }
+                        // Show progress container for this scan type
+                        const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
+                        if (progressContainer) progressContainer.style.display = 'block';
                     } else {
                         badge.style.display = 'none';
                         
-                        // Hide progress bar for this scan type
-                        const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${scanType}"]`);
-                        if (progressBarContainer) {
-                            progressBarContainer.style.display = 'none';
-                        }
+                        // Hide progress container for this scan type
+                        const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
+                        if (progressContainer) progressContainer.style.display = 'none';
                     }
                 });
             })
@@ -549,6 +545,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const logMapping = {
                     'navidrome': 'navidrome_scan',
                     'popularity': 'popularity_scan',
+                    'singles': 'singles_scan',
                     'file_paths': 'mp3_scan'
                 };
                 

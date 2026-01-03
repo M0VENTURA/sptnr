@@ -1745,7 +1745,8 @@ def api_scan_logs():
         "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
-        "file_paths": os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log")
+        # Beets auto-import now drives the file-path scan; read its log instead of the old mp3scanner log
+        "file_paths": os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log")
     }
     
     def extract_meaningful_log(line):
