@@ -466,10 +466,31 @@ document.addEventListener('DOMContentLoaded', function() {
                 let activeScanType = null;
                 
                 if (!data.is_running) {
-                    // No scans running - hide all progress containers
-                    document.querySelectorAll('.scan-progress-container').forEach(container => {
-                        container.style.display = 'none';
-                    });
+                    // Check if scan failed (has error info)
+                    if (data.error || data.exit_code !== undefined) {
+                        // Show error state in the appropriate progress container
+                        const scanType = data.scan_type;
+                        if (scanType) {
+                            const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
+                            if (progressContainer) {
+                                progressContainer.style.display = 'block';
+                                const progressText = progressContainer.querySelector('.scan-progress-text');
+                                if (progressText) {
+                                    const errorMsg = data.error || `Failed with exit code ${data.exit_code}`;
+                                    progressText.innerHTML = `<span class="text-danger">❌ Error: ${errorMsg}</span>`;
+                                }
+                                // Hide after 10 seconds
+                                setTimeout(() => {
+                                    progressContainer.style.display = 'none';
+                                }, 10000);
+                            }
+                        }
+                    } else {
+                        // No scans running and no errors - hide all progress containers
+                        document.querySelectorAll('.scan-progress-container').forEach(container => {
+                            container.style.display = 'none';
+                        });
+                    }
                     runningScans.clear();
                     return;
                 }

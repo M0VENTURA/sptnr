@@ -91,10 +91,54 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
 def _monitor_process_for_progress(proc: subprocess.Popen, progress_path: str, scan_type: str):
     """Wait for a subprocess and mark its progress file as complete."""
     try:
-        proc.wait()
-        _write_progress_file(progress_path, scan_type, False, {"exit_code": proc.returncode})
+        # Capture output while process runs
+        output_lines = []
+        if proc.stdout:
+            for line in iter(proc.stdout.readline, ''):
+                if not line:
+                    break
+                line = line.strip()
+                if line:
+                    output_lines.append(line)
+                    logging.info(f"[{scan_type}] {line}")
+        
+        # Wait for process to complete
+        returncode = proc.wait()
+        
+        # Capture any remaining output
+        if proc.stdout:
+            remaining = proc.stdout.read()
+            if remaining:
+                for line in remaining.strip().split('\n'):
+                    if line.strip():
+                        output_lines.append(line.strip())
+                        logging.info(f"[{scan_type}] {line.strip()}")
+        
+        # Mark as complete with error info if failed
+        result = {
+            "exit_code": returncode,
+            "completed_at": datetime.now().isoformat()
+        }
+        
+        if returncode != 0:
+            error_msg = f"Process exited with code {returncode}"
+            if output_lines:
+                # Include last few lines of output as error context
+                result["error"] = error_msg
+                result["output_tail"] = output_lines[-10:]
+            logging.error(f"{scan_type} failed: {error_msg}")
+            if output_lines:
+                logging.error(f"Last output lines: {output_lines[-5:]}")
+        else:
+            logging.info(f"{scan_type} completed successfully")
+        
+        _write_progress_file(progress_path, scan_type, False, result)
     except Exception as e:
-        logging.debug(f"Progress monitor failed for {scan_type}: {e}")
+        logging.error(f"Progress monitor failed for {scan_type}: {e}", exc_info=True)
+        _write_progress_file(progress_path, scan_type, False, {
+            "exit_code": -1,
+            "error": str(e)
+        })
 
 def _read_yaml(path):
     try:
@@ -1127,15 +1171,28 @@ def scan_mp3():
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             # Use beets auto-import instead of mp3scanner
             beets_script = os.path.join(APP_DIR, "beets_auto_import.py")
+            if not os.path.exists(beets_script):
+                raise FileNotFoundError(f"Beets script not found: {beets_script}")
+            
             cmd = [sys.executable, beets_script]
             logging.info(f"Starting beets scan: {' '.join(cmd)}")
+            logging.info(f"Working directory: {APP_DIR}")
+            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            
+            # Pass environment variables to subprocess
+            env = os.environ.copy()
+            env['DB_PATH'] = DB_PATH
+            env['CONFIG_PATH'] = CONFIG_PATH
+            
             scan_process_mp3 = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=APP_DIR
+                cwd=APP_DIR,
+                universal_newlines=True,
+                env=env
             )
             threading.Thread(
                 target=_monitor_process_for_progress,
@@ -1166,15 +1223,28 @@ def scan_navidrome():
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
             _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
             start_script = os.path.join(APP_DIR, "start.py")
+            if not os.path.exists(start_script):
+                raise FileNotFoundError(f"Start script not found: {start_script}")
+            
             cmd = [sys.executable, start_script, "--batchrate", "--verbose"]
             logging.info(f"Starting Navidrome scan: {' '.join(cmd)}")
+            logging.info(f"Working directory: {APP_DIR}")
+            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            
+            # Pass environment variables to subprocess
+            env = os.environ.copy()
+            env['DB_PATH'] = DB_PATH
+            env['CONFIG_PATH'] = CONFIG_PATH
+            
             scan_process_navidrome = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=APP_DIR
+                cwd=APP_DIR,
+                universal_newlines=True,
+                env=env
             )
             threading.Thread(
                 target=_monitor_process_for_progress,
@@ -1206,15 +1276,28 @@ def scan_popularity():
 
             # Start popularity scan as a subprocess
             popularity_script = os.path.join(APP_DIR, "popularity.py")
+            if not os.path.exists(popularity_script):
+                raise FileNotFoundError(f"Popularity script not found: {popularity_script}")
+            
             cmd = [sys.executable, popularity_script]
             logging.info(f"Starting popularity scan: {' '.join(cmd)}")
+            logging.info(f"Working directory: {APP_DIR}")
+            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            
+            # Pass environment variables to subprocess
+            env = os.environ.copy()
+            env['DB_PATH'] = DB_PATH
+            env['CONFIG_PATH'] = CONFIG_PATH
+            
             scan_process_popularity = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
                 bufsize=1,
-                cwd=APP_DIR
+                cwd=APP_DIR,
+                universal_newlines=True,
+                env=env
             )
 
             threading.Thread(
