@@ -25,6 +25,8 @@ SPTNR works by blending multiple sources of listening data:
 ✅ Print debugging info with scoring breakdowns  
 ✅ Resume batch scans from the last synced artist  
 ✅ Force re-scan of all tracks, overriding the cache  
+✅ Auto-scan MP3 files in music folder with progress indicators  
+✅ Auto-scan Navidrome library with progress indicators and save current ratings  
 
 ---
 
@@ -120,6 +122,9 @@ perpetual: false
 batchrate: false
 artist: []
 
+**Optional Environment Variables:**
+- `MUSIC_FOLDER`: Path to music folder for MP3 metadata scanning (default: `/music`)
+
 ---
 
 ## 🧭 CLI Switches
@@ -156,6 +161,10 @@ python start.py --artist "Radiohead" --dry-run --verbose
 Run auto rating every 12 hours:
 
 python start.py --perpetual
+
+Run auto rating every 12 hours with MP3 and Navidrome scans:
+
+python start.py --perpetual --batchrate --sync
 
 ---
 
