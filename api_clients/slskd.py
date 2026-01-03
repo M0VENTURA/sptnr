@@ -155,6 +155,7 @@ class SlskdClient:
             
             state_data = state_resp.json()
             state = state_data.get("state", "InProgress")
+            logger.debug(f"Slskd search {search_id} state: {state}")
             
             # Get the actual responses from the responses endpoint
             responses_url = f"{self.base_url}/searches/{search_id}/responses"
@@ -166,31 +167,36 @@ class SlskdClient:
             
             raw_responses = resp.json() or []
             
-            # Debug: log response structure
+            # Debug: log response structure and count
             if raw_responses:
-                logger.debug(f"Slskd response structure: {type(raw_responses)}, first item type: {type(raw_responses[0]) if raw_responses else 'empty'}")
-                if isinstance(raw_responses, list) and raw_responses and isinstance(raw_responses[0], dict):
-                    logger.debug(f"First response keys: {raw_responses[0].keys()}")
+                logger.debug(f"Slskd got {len(raw_responses)} raw responses, response type: {type(raw_responses)}")
+                if isinstance(raw_responses, list) and raw_responses:
+                    first_item = raw_responses[0]
+                    logger.debug(f"First response type: {type(first_item)}, keys: {first_item.keys() if isinstance(first_item, dict) else 'N/A'}")
+            else:
+                logger.debug(f"Slskd responses list is empty or None")
             
             # Parse responses into SearchResponse objects
             responses = []
-            for raw_resp in raw_responses:
+            for idx, raw_resp in enumerate(raw_responses):
                 try:
                     # Handle both dict and pre-parsed object formats
                     if isinstance(raw_resp, dict):
+                        username = raw_resp.get("username", "Unknown")
+                        files = raw_resp.get("files", [])
+                        logger.debug(f"Response {idx}: username={username}, files={len(files)}")
                         sr = SearchResponse(
-                            username=raw_resp.get("username", "Unknown"),
-                            files=raw_resp.get("files", [])
+                            username=username,
+                            files=files
                         )
                         responses.append(sr)
-                        logger.debug(f"Parsed response for {sr.username}: {len(sr.files)} files")
                     else:
                         responses.append(raw_resp)
                 except Exception as e:
-                    logger.debug(f"Failed to parse slskd response: {e}")
+                    logger.warning(f"Failed to parse slskd response {idx}: {e}")
             
             is_complete = state not in ["InProgress", "Requested"]
-            logger.debug(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
+            logger.info(f"Slskd search {search_id}: state={state}, peers={len(responses)}, is_complete={is_complete}")
             
             return responses, state, is_complete
         except Exception as e:

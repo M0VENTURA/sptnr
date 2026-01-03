@@ -1807,9 +1807,13 @@ def slskd_search_results(search_id):
         
         response_count = len(responses) if responses else 0
         
+        # Log all results
         logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
-        if response_count > 0:
-            logging.debug(f"[SLSKD] First response files: {len(responses[0].files) if responses else 0}")
+        
+        if response_count == 0:
+            logging.warning(f"[SLSKD] Search {search_id} returned 0 responses - check if slskd service is reachable at {web_url}")
+        elif len(results) == 0:
+            logging.warning(f"[SLSKD] Search {search_id} got {response_count} responses but 0 files - peers may not have matching files")
         
         return jsonify({
             "results": results,
@@ -1820,7 +1824,7 @@ def slskd_search_results(search_id):
         })
         
     except Exception as e:
-        print(f"[SLSKD] Error getting search results: {str(e)}")
+        logging.error(f"[SLSKD] Error getting search results for {search_id}: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
