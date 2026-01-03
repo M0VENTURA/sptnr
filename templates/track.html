@@ -137,8 +137,99 @@
                                 {% endif %}
                             </div>
                         </div>
+                        {% if track.spotify_popularity %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Spotify Popularity</div>
+                            <div class="metadata-value">{{ track.spotify_popularity }}/100</div>
+                        </div>
+                        {% endif %}
+                        {% if track.lastfm_track_playcount %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Last.fm Plays</div>
+                            <div class="metadata-value">{{ "{:,}".format(track.lastfm_track_playcount) }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.spotify_release_age_days %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Release Age</div>
+                            <div class="metadata-value">{{ track.spotify_release_age_days }} days</div>
+                        </div>
+                        {% endif %}
                     </div>
                 </div>
+
+                <!-- Genres Information -->
+                {% if track.genres or track.navidrome_genres or track.spotify_genres or track.lastfm_tags or track.discogs_genres or track.musicbrainz_genres %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-tags-fill"></i> Genre Sources
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        {% if track.genres %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Merged Genres</div>
+                            <div class="metadata-value">
+                                {% for genre in track.genres.split(',') %}
+                                    <span class="badge badge-success">{{ genre.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.navidrome_genres %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Navidrome</div>
+                            <div class="metadata-value">
+                                {% for genre in track.navidrome_genres.split(',') %}
+                                    <span class="badge bg-info">{{ genre.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.spotify_genres %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Spotify</div>
+                            <div class="metadata-value">
+                                {% for genre in track.spotify_genres.split(',') %}
+                                    <span class="badge bg-success">{{ genre.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.lastfm_tags %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Last.fm</div>
+                            <div class="metadata-value">
+                                {% for tag in track.lastfm_tags.split(',') %}
+                                    <span class="badge bg-danger">{{ tag.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.discogs_genres %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Discogs</div>
+                            <div class="metadata-value">
+                                {% for genre in track.discogs_genres.split(',') %}
+                                    <span class="badge bg-warning text-dark">{{ genre.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.musicbrainz_genres %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">MusicBrainz</div>
+                            <div class="metadata-value">
+                                {% for genre in track.musicbrainz_genres.split(',') %}
+                                    <span class="badge bg-primary">{{ genre.strip() }}</span>
+                                {% endfor %}
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
 
                 <!-- Audio Metadata -->
                 <div class="card mb-4">
