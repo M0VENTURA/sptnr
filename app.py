@@ -652,63 +652,85 @@ def api_search():
 @app.route("/artist/<path:name>")
 def artist_detail(name):
     """View artist details and albums"""
-    # URL decode the artist name
-    from urllib.parse import unquote
-    name = unquote(name)
-    
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    # Get albums for this artist
-    cursor.execute("""
-        SELECT 
-            album,
-            COUNT(*) as track_count,
-            AVG(stars) as avg_stars,
-            SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
-            MAX(last_scanned) as last_updated
-        FROM tracks
-        WHERE artist = ?
-        GROUP BY album
-        ORDER BY album COLLATE NOCASE
-    """, (name,))
-    albums_data = cursor.fetchall()
-    
-    # Get artist stats with additional metrics
-    cursor.execute("""
-        SELECT 
-            COUNT(*) as track_count,
-            COUNT(DISTINCT album) as album_count,
-            AVG(stars) as avg_stars,
-            SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-            SUM(COALESCE(duration, 0)) as total_duration,
-            MIN(year) as earliest_year,
-            MAX(year) as latest_year,
-            MAX(beets_artist_mbid) as beets_artist_mbid
-        FROM tracks
-        WHERE artist = ?
-    """, (name,))
-    artist_stats = cursor.fetchone()
-    
-    conn.close()
-    
-    # Convert Row to dict for template access
-    if artist_stats:
-        artist_stats = dict(artist_stats)
-    
-    # Aggregate genres from all tracks by this artist
-    genres = aggregate_genres_from_tracks(name, DB_PATH)
-    
-    # Get qBittorrent config
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
-    
-    return render_template("artist.html", 
-                         artist_name=name,
-                         albums=albums_data,
-                         stats=artist_stats,
-                         genres=genres,
-                         qbit_config=qbit_config)
+    try:
+        # URL decode the artist name
+        from urllib.parse import unquote
+        name = unquote(name)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get albums for this artist
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE artist = ?
+            GROUP BY album
+            ORDER BY album COLLATE NOCASE
+        """, (name,))
+        albums_data = cursor.fetchall()
+        
+        # Get artist stats with additional metrics
+        try:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    COUNT(DISTINCT album) as album_count,
+                    AVG(stars) as avg_stars,
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MIN(year) as earliest_year,
+                    MAX(year) as latest_year,
+                    MAX(beets_artist_mbid) as beets_artist_mbid
+                FROM tracks
+                WHERE artist = ?
+            """, (name,))
+        except:
+            # Fallback for databases without beets columns
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    COUNT(DISTINCT album) as album_count,
+                    AVG(stars) as avg_stars,
+                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MIN(year) as earliest_year,
+                    MAX(year) as latest_year,
+                    NULL as beets_artist_mbid
+                FROM tracks
+                WHERE artist = ?
+            """, (name,))
+        
+        artist_stats = cursor.fetchone()
+        
+        conn.close()
+        
+        # Convert Row to dict for template access
+        if artist_stats:
+            artist_stats = dict(artist_stats)
+        
+        # Aggregate genres from all tracks by this artist
+        genres = aggregate_genres_from_tracks(name, DB_PATH)
+        
+        # Get qBittorrent config
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+        
+        return render_template("artist.html", 
+                             artist_name=name,
+                             albums=albums_data,
+                             stats=artist_stats,
+                             genres=genres,
+                             qbit_config=qbit_config)
+    except Exception as e:
+        logging.error(f"Error loading artist details: {str(e)}")
+        flash(f"Error loading artist: {str(e)}", "error")
+        return redirect(url_for("artists"))
 
 
 @app.route("/album/<path:artist>/<path:album>")
@@ -742,20 +764,37 @@ def album_detail(artist, album):
                                  error="Album not found")
         
         # Get album metadata from first track
-        cursor.execute("""
-            SELECT 
-                COUNT(*) as track_count,
-                AVG(stars) as avg_stars,
-                SUM(COALESCE(duration, 0)) as total_duration,
-                MAX(spotify_release_date) as spotify_release_date,
-                MAX(spotify_album_type) as spotify_album_type,
-                MAX(spotify_album_art_url) as spotify_album_art_url,
-                MAX(last_scanned) as last_scanned,
-                MAX(COALESCE(disc_number, 1)) as total_discs,
-                MAX(beets_album_mbid) as beets_album_mbid
-            FROM tracks
-            WHERE artist = ? AND album = ?
-        """, (artist, album))
+        try:
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MAX(spotify_release_date) as spotify_release_date,
+                    MAX(spotify_album_type) as spotify_album_type,
+                    MAX(spotify_album_art_url) as spotify_album_art_url,
+                    MAX(last_scanned) as last_scanned,
+                    MAX(COALESCE(disc_number, 1)) as total_discs,
+                    MAX(beets_album_mbid) as beets_album_mbid
+                FROM tracks
+                WHERE artist = ? AND album = ?
+            """, (artist, album))
+        except:
+            # Fallback for databases without beets columns
+            cursor.execute("""
+                SELECT 
+                    COUNT(*) as track_count,
+                    AVG(stars) as avg_stars,
+                    SUM(COALESCE(duration, 0)) as total_duration,
+                    MAX(spotify_release_date) as spotify_release_date,
+                    MAX(spotify_album_type) as spotify_album_type,
+                    MAX(spotify_album_art_url) as spotify_album_art_url,
+                    MAX(last_scanned) as last_scanned,
+                    MAX(COALESCE(disc_number, 1)) as total_discs,
+                    NULL as beets_album_mbid
+                FROM tracks
+                WHERE artist = ? AND album = ?
+            """, (artist, album))
         album_data = cursor.fetchone()
         
         # Convert to dict if it's a Row object
