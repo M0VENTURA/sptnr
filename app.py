@@ -1050,16 +1050,17 @@ def scan_unified():
 
 @app.route("/scan/mp3", methods=["POST"])
 def scan_mp3():
-    """Run mp3scanner to scan music folder and match files to database"""
+    """Run beets auto-import to scan music folder and capture metadata"""
     global scan_process_mp3
     
     with scan_lock:
         if scan_process_mp3 and scan_process_mp3.poll() is None:
-            flash("File path scan is already running", "warning")
+            flash("Beets auto-import is already running", "warning")
             return redirect(url_for("dashboard"))
         
         try:
-            cmd = [sys.executable, "mp3scanner.py"]
+            # Use beets auto-import instead of mp3scanner
+            cmd = [sys.executable, "beets_auto_import.py"]
             scan_process_mp3 = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -1067,9 +1068,9 @@ def scan_mp3():
                 text=True,
                 bufsize=1
             )
-            flash("✅ File path scan started", "success")
+            flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
         except Exception as e:
-            flash(f"❌ Error starting file scan: {str(e)}", "danger")
+            flash(f"❌ Error starting beets import: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
@@ -3043,23 +3044,33 @@ if __name__ == "__main__":
         print(f"  perpetual: {features.get('perpetual')}")
         
         if features.get('batchrate') and features.get('perpetual'):
-            # Start the scanner in a background thread
+            # Start the beets auto-import and scanner in background thread
             def start_scanner():
                 import time as time_module
                 time_module.sleep(2)  # Give Flask time to start
                 try:
-                    print("Auto-starting scanner with batchrate and perpetual mode...")
+                    print("Auto-starting beets import and scanner with batchrate and perpetual mode...")
                     logger = logging.getLogger('sptnr')
-                    logger.info("Auto-starting scanner with batchrate and perpetual mode...")
-                    # Import and run the scanner
+                    logger.info("Auto-starting beets import and scanner with batchrate and perpetual mode...")
+                    
+                    # First, run beets auto-import to capture file paths and metadata
+                    print("Step 1: Running beets auto-import...")
+                    logger.info("Step 1: Running beets auto-import...")
+                    from beets_auto_import import BeetsAutoImporter
+                    importer = BeetsAutoImporter()
+                    importer.import_and_capture()
+                    
+                    # Then run the standard scanner
+                    print("Step 2: Running Navidrome sync and rating scan...")
+                    logger.info("Step 2: Running Navidrome sync and rating scan...")
                     from start import run_scan
                     run_scan(scan_type='batchrate')
                 except Exception as e:
                     import traceback
-                    print(f"Error starting scanner: {e}")
+                    print(f"Error starting auto-import/scanner: {e}")
                     print(traceback.format_exc())
                     logger = logging.getLogger('sptnr')
-                    logger.error(f"Error starting scanner: {e}")
+                    logger.error(f"Error starting auto-import/scanner: {e}")
                     logger.error(traceback.format_exc())
             
             scanner_thread = threading.Thread(target=start_scanner, daemon=True)
