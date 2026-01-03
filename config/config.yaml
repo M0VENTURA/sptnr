@@ -22,7 +22,7 @@ qbittorrent:
 
 # Soulseek (slskd) Integration - P2P music file sharing
 slskd:
-  enabled: false
+  enabled: true
   web_url: "http://localhost:5030"  # URL to your slskd Web UI
   api_key: ""  # slskd API key (found in Settings > API)
 
