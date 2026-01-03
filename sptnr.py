@@ -1243,6 +1243,18 @@ def pipe_output(search_term=None):
 def batch_rate(sync=False, dry_run=False, force=False, resume_from=None, use_google=False, use_ai=False):
     print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
 
+    # Use unified scan pipeline for better integration
+    try:
+        from unified_scan import unified_scan_pipeline
+        print(f"{LIGHT_GREEN}🚀 Starting unified scan pipeline (popularity → singles → ratings){RESET}")
+        unified_scan_pipeline(verbose=True, force=force, artist_filter=resume_from)
+        print(f"\n{LIGHT_GREEN}✅ Unified scan complete.{RESET}")
+        return
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Unified scan failed, falling back to legacy mode: {e}{RESET}")
+        # Fall back to legacy scan
+    
+    # Legacy batch scan (fallback)
     artists = fetch_all_artists()
     artist_index = load_artist_index()
 
@@ -1279,7 +1291,19 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None, use_goo
 
 def run_perpetual_mode():
     while True:
-        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
+        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan cycle...{RESET}")
+        
+        # Run MP3 metadata scan and Navidrome scan if batchrate is enabled
+        if args.batchrate:
+            try:
+                from scan_helpers import scan_mp3_metadata, scan_navidrome_with_progress
+                music_folder = os.getenv("MUSIC_FOLDER", "/music")
+                scan_mp3_metadata(music_folder, show_progress=True)
+                scan_navidrome_with_progress(verbose=args.verbose)
+            except Exception as e:
+                print(f"{LIGHT_RED}⚠️ Scan failed: {type(e).__name__} - {e}{RESET}")
+        
+        # Build artist index
         build_artist_index()
 
         resume_artist = None
@@ -1295,14 +1319,26 @@ def run_perpetual_mode():
         else:
             print(f"{LIGHT_CYAN}🚀 Starting from beginning of artist list{RESET}")
 
-        batch_rate(
-            sync=args.sync,
-            dry_run=args.dry_run,
-            force=args.force,
-            resume_from=resume_artist
-        )
+        # Use unified scan in perpetual mode
+        try:
+            from unified_scan import unified_scan_pipeline
+            print(f"{LIGHT_GREEN}🚀 Running unified scan pipeline{RESET}")
+            unified_scan_pipeline(
+                verbose=args.verbose,
+                force=args.force,
+                artist_filter=resume_artist
+            )
+        except Exception as e:
+            print(f"{LIGHT_RED}⚠️ Unified scan failed: {e}{RESET}")
+            # Fall back to legacy batch_rate
+            batch_rate(
+                sync=args.sync,
+                dry_run=args.dry_run,
+                force=args.force,
+                resume_from=resume_artist
+            )
 
-        print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
+        print(f"{LIGHT_GREEN}🕒 Scan cycle complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
 
 

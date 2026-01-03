@@ -23,6 +23,9 @@
       <button class="btn btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist_name }}')">
         <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Metadata</span>
       </button>
+      <button class="btn btn-outline-success" onclick="addBookmark('artist', '{{ artist_name }}', '{{ artist_name }}', null, null)" title="Bookmark this artist">
+        <i class="bi bi-bookmark"></i> <span class="d-none d-sm-inline">Bookmark</span>
+      </button>
       {% if qbit_config.enabled and qbit_config.web_url %}
       <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>

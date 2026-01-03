@@ -116,6 +116,11 @@ def _baseline_config():
             "web_url": "http://localhost:5030",
             "api_key": ""
         },
+        "bookmarks": {
+            "enabled": True,
+            "max_bookmarks": 100,
+            "custom_links": []
+        },
         "downloads": {
             "folder": "/downloads/Music"
         },
@@ -238,6 +243,17 @@ def login_required(f):
         
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.context_processor
+def inject_custom_bookmarks():
+    """Inject custom bookmark links into all templates"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        custom_links = cfg.get('bookmarks', {}).get('custom_links', [])
+        return {'custom_bookmark_links': custom_links}
+    except Exception:
+        return {'custom_bookmark_links': []}
 
 
 @app.before_request
@@ -959,6 +975,33 @@ def scan_start():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/unified", methods=["POST"])
+def scan_unified():
+    """Start the unified scan pipeline (popularity + singles)"""
+    global scan_process
+    
+    with scan_lock:
+        if scan_process and scan_process.poll() is None:
+            flash("A scan is already running", "warning")
+            return redirect(url_for("dashboard"))
+        
+        try:
+            # Start unified scan process
+            cmd = [sys.executable, "unified_scan.py", "--verbose"]
+            scan_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            flash("✅ Unified scan started (popularity → singles → ratings)", "success")
+        except Exception as e:
+            flash(f"❌ Error starting unified scan: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/mp3", methods=["POST"])
 def scan_mp3():
     """Run mp3scanner to scan music folder and match files to database"""
@@ -1280,6 +1323,121 @@ def logs_view():
         return jsonify({"error": "Log file not found", "lines": []})
 
 
+@app.route("/bookmarks")
+def bookmarks():
+    """View all bookmarks"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, type, name, artist, album, track_id, created_at
+            FROM bookmarks
+            ORDER BY created_at DESC
+        """)
+        
+        bookmarks_data = []
+        for row in cursor.fetchall():
+            bookmarks_data.append({
+                'id': row[0],
+                'type': row[1],
+                'name': row[2],
+                'artist': row[3],
+                'album': row[4],
+                'track_id': row[5],
+                'created_at': row[6]
+            })
+        
+        conn.close()
+        
+        return render_template("bookmarks.html", bookmarks=bookmarks_data)
+    except Exception as e:
+        logging.error(f"Error loading bookmarks: {e}")
+        return render_template("bookmarks.html", bookmarks=[], error=str(e))
+
+
+@app.route("/api/bookmarks", methods=["GET", "POST"])
+def api_bookmarks():
+    """Get all bookmarks or add a new bookmark"""
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    if request.method == "GET":
+        try:
+            cursor.execute("""
+                SELECT id, type, name, artist, album, track_id, created_at
+                FROM bookmarks
+                ORDER BY created_at DESC
+            """)
+            
+            bookmarks_data = []
+            for row in cursor.fetchall():
+                bookmarks_data.append({
+                    'id': row[0],
+                    'type': row[1],
+                    'name': row[2],
+                    'artist': row[3],
+                    'album': row[4],
+                    'track_id': row[5],
+                    'created_at': row[6]
+                })
+            
+            conn.close()
+            return jsonify({"success": True, "bookmarks": bookmarks_data})
+        except Exception as e:
+            logging.error(f"Error fetching bookmarks: {e}")
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+    
+    elif request.method == "POST":
+        try:
+            data = request.get_json()
+            bookmark_type = data.get('type')
+            name = data.get('name')
+            artist = data.get('artist')
+            album = data.get('album')
+            track_id = data.get('track_id')
+            
+            if not bookmark_type or not name:
+                return jsonify({"success": False, "error": "Missing required fields"}), 400
+            
+            cursor.execute("""
+                INSERT OR IGNORE INTO bookmarks (type, name, artist, album, track_id)
+                VALUES (?, ?, ?, ?, ?)
+            """, (bookmark_type, name, artist, album, track_id))
+            
+            conn.commit()
+            bookmark_id = cursor.lastrowid
+            conn.close()
+            
+            return jsonify({"success": True, "id": bookmark_id, "message": "Bookmark added"})
+        except Exception as e:
+            logging.error(f"Error adding bookmark: {e}")
+            conn.close()
+            return jsonify({"success": False, "error": str(e)}), 500
+
+
+@app.route("/api/bookmarks/<int:bookmark_id>", methods=["DELETE"])
+def api_delete_bookmark(bookmark_id):
+    """Delete a bookmark"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM bookmarks WHERE id = ?", (bookmark_id,))
+        conn.commit()
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({"success": False, "error": "Bookmark not found"}), 404
+        
+        conn.close()
+        return jsonify({"success": True, "message": "Bookmark deleted"})
+    except Exception as e:
+        logging.error(f"Error deleting bookmark: {e}")
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/config")
 def config_editor():
     """View/edit config.yaml"""
@@ -1326,6 +1484,8 @@ def config_save_json():
             'navidrome': data.get('navidrome', {}),
             'qbittorrent': data.get('qbittorrent', {}),
             'slskd': data.get('slskd', {}),
+            'authentik': data.get('authentik', {}),
+            'bookmarks': data.get('bookmarks', {}),
             'downloads': data.get('downloads', {}),
             'api_integrations': data.get('api_integrations', {}),
             'database': data.get('database', {}),
@@ -1420,6 +1580,49 @@ def api_scan_status():
                 "name": "Single Detection",
                 "running": scan_process_singles is not None and scan_process_singles.poll() is None
             }
+        })
+
+
+@app.route("/api/scan-progress")
+def api_scan_progress():
+    """API endpoint to get detailed scan progress"""
+    try:
+        from unified_scan import get_scan_progress
+        progress = get_scan_progress()
+        
+        # If unified scan is not running, check for MP3 and Navidrome scans
+        if not progress.get("is_running", False):
+            # Check MP3 scan progress
+            mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            if os.path.exists(mp3_progress_file):
+                try:
+                    with open(mp3_progress_file, 'r') as f:
+                        mp3_progress = json.load(f)
+                        if mp3_progress.get("is_running", False):
+                            return jsonify(mp3_progress)
+                except:
+                    pass
+            
+            # Check Navidrome scan progress
+            nav_progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            if os.path.exists(nav_progress_file):
+                try:
+                    with open(nav_progress_file, 'r') as f:
+                        nav_progress = json.load(f)
+                        if nav_progress.get("is_running", False):
+                            return jsonify(nav_progress)
+                except:
+                    pass
+        
+        return jsonify(progress)
+    except Exception as e:
+        logging.error(f"Error getting scan progress: {e}")
+        return jsonify({
+            "is_running": False,
+            "percent_complete": 0,
+            "current_artist": None,
+            "current_album": None,
+            "error": str(e)
         })
 
 

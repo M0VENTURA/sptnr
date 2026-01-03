@@ -122,6 +122,85 @@
     </div>
   </div>
 
+  <!-- Authentik SSO Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-shield-lock"></i> Authentik SSO
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="authentik_enabled" {% if config.get('authentik', {}).get('enabled') %}checked{% endif %}>
+            <label class="form-check-label" for="authentik_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">Single Sign-On authentication provider</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Server URL</label>
+          <input type="text" class="form-control" id="authentik_server_url" placeholder="https://auth.example.com" value="{{ config.get('authentik', {}).get('server_url', '') }}">
+          <div class="form-text">URL to your Authentik server</div>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client ID</label>
+          <input type="text" class="form-control" id="authentik_client_id" placeholder="client_id" value="{{ config.get('authentik', {}).get('client_id', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client Secret</label>
+          <input type="password" class="form-control" id="authentik_client_secret" placeholder="••••••••" value="{{ config.get('authentik', {}).get('client_secret', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bookmarks Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0">
+        <i class="bi bi-bookmark-star"></i> Bookmarks
+        <span class="float-end">
+          <div class="form-check form-switch d-inline-block">
+            <input class="form-check-input" type="checkbox" id="bookmarks_enabled" {% if config.get('bookmarks', {}).get('enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="bookmarks_enabled">Enabled</label>
+          </div>
+        </span>
+      </h5>
+      <small class="text-muted">Quick access to favorite artists, albums, and tracks</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Max Bookmarks</label>
+          <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
+          <div class="form-text">Maximum number of bookmarks allowed per user</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Custom Links</label>
+          <div class="form-text mb-2">Add custom links to the Bookmarks dropdown menu</div>
+          <div id="customBookmarksList" class="mb-2">
+            {% set custom_links = config.get('bookmarks', {}).get('custom_links', []) %}
+            {% if custom_links %}
+              {% for link in custom_links %}
+              <div class="input-group mb-2 bookmark-link-item">
+                <input type="text" class="form-control bookmark-link-title" placeholder="Link Title" value="{{ link.title }}">
+                <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com" value="{{ link.url }}">
+                <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>
+              {% endfor %}
+            {% endif %}
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="addBookmarkLink()">
+            <i class="bi bi-plus-circle"></i> Add Link
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- API Integrations Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -416,6 +495,17 @@ function buildConfigObject() {
       web_url: document.getElementById('slskd_web_url').value,
       api_key: document.getElementById('slskd_api_key').value
     },
+    authentik: {
+      enabled: document.getElementById('authentik_enabled').checked,
+      server_url: document.getElementById('authentik_server_url').value,
+      client_id: document.getElementById('authentik_client_id').value,
+      client_secret: document.getElementById('authentik_client_secret').value
+    },
+    bookmarks: {
+      enabled: document.getElementById('bookmarks_enabled').checked,
+      max_bookmarks: parseInt(document.getElementById('bookmarks_max').value) || 100,
+      custom_links: getCustomBookmarkLinks()
+    },
     api_integrations: {
       spotify: {
         enabled: document.getElementById('spotify_enabled').checked,
@@ -538,6 +628,38 @@ function saveRawYaml() {
     saveBtn.disabled = false;
     saveBtn.textContent = originalText;
   });
+}
+
+// Custom Bookmark Link Management Functions
+function addBookmarkLink() {
+  const container = document.getElementById('customBookmarksList');
+  const newItem = document.createElement('div');
+  newItem.className = 'input-group mb-2 bookmark-link-item';
+  newItem.innerHTML = `
+    <input type="text" class="form-control bookmark-link-title" placeholder="Link Title">
+    <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com">
+    <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+      <i class="bi bi-trash"></i>
+    </button>
+  `;
+  container.appendChild(newItem);
+}
+
+function removeBookmarkLink(button) {
+  button.closest('.bookmark-link-item').remove();
+}
+
+function getCustomBookmarkLinks() {
+  const items = document.querySelectorAll('.bookmark-link-item');
+  const links = [];
+  items.forEach(item => {
+    const title = item.querySelector('.bookmark-link-title').value.trim();
+    const url = item.querySelector('.bookmark-link-url').value.trim();
+    if (title && url) {
+      links.push({ title, url });
+    }
+  });
+  return links;
 }
 </script>
 
