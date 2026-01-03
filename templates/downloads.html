@@ -363,11 +363,12 @@ function displaySlskdResponses() {
   container.innerHTML = html;
   
   // Attach event listeners after rendering
-  document.querySelectorAll('.slskd-user-header').forEach((header, index) => {
+  document.querySelectorAll('.slskd-user-header').forEach((header) => {
     header.addEventListener('click', function(e) {
       e.stopPropagation();
       const userGroup = this.closest('.slskd-user-group');
       const username = userGroup.getAttribute('data-username');
+      const index = userGroup.getAttribute('data-index');
       const safeId = `slskd-user-${index}`;
       toggleSlskdUserFiles(username, safeId);
     });
