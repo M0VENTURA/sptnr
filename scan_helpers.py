@@ -231,9 +231,9 @@ def scan_navidrome_with_progress(verbose=False):
     
     print(f"{LIGHT_BLUE}📊 Scanning Navidrome library...{RESET}")
     
-    # Get artist index
-    from start import get_artist_index
-    artist_index = get_artist_index()
+    # Get artist index - use build_artist_index from start.py
+    from start import build_artist_index as get_artist_map
+    artist_index = get_artist_map(verbose=verbose)
     
     if not artist_index:
         print(f"{LIGHT_RED}❌ No artists found in index{RESET}")
@@ -247,8 +247,9 @@ def scan_navidrome_with_progress(verbose=False):
     artist_count = 0
     total_tracks = 0
     
-    for artist_name, artist_id in artist_index.items():
+    for artist_name, artist_info in artist_index.items():
         artist_count += 1
+        artist_id = artist_info.get("id") if isinstance(artist_info, dict) else artist_info
         
         try:
             # Scan artist to database
