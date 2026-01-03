@@ -32,24 +32,68 @@
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
     }
 
-    /* Ensure all text is readable */
-    p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th, a {
-      color: inherit;
+    /* Ensure all text is readable - override Bootstrap defaults */
+    p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th {
+      color: var(--text-primary) !important;
+    }
+
+    a {
+      color: var(--spotify-green) !important;
+    }
+
+    a:hover {
+      color: var(--spotify-green-hover) !important;
+    }
+
+    strong, b {
+      color: var(--text-primary) !important;
     }
 
     /* Placeholder text */
     ::placeholder {
-      color: var(--text-tertiary) !important;
-      opacity: 0.8;
+      color: var(--text-secondary) !important;
+      opacity: 1 !important;
     }
 
     /* Input and select text */
     input, select, textarea {
       color: var(--text-primary) !important;
+      background-color: var(--secondary-bg) !important;
+      border-color: var(--border-color) !important;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      color: var(--text-primary) !important;
+      background-color: var(--tertiary-bg) !important;
+      border-color: var(--spotify-green) !important;
+      box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25) !important;
     }
 
     input::placeholder, select::placeholder, textarea::placeholder {
-      color: var(--text-tertiary) !important;
+      color: var(--text-secondary) !important;
+      opacity: 0.9 !important;
+    }
+
+    /* Form control labels */
+    .form-label {
+      color: var(--text-primary) !important;
+      font-weight: 500;
+    }
+
+    /* Form text help */
+    .form-text {
+      color: var(--text-secondary) !important;
+    }
+
+    /* Select dropdown options background - need to style selected state */
+    option {
+      background-color: var(--secondary-bg);
+      color: var(--text-primary);
+    }
+
+    option:checked {
+      background-color: var(--spotify-green);
+      color: #000;
     }
 
     /* Navbar Styling */
@@ -295,7 +339,7 @@
     }
 
     .form-label {
-      color: var(--text-secondary);
+      color: var(--text-primary) !important;
       font-weight: 500;
       margin-bottom: 0.5rem;
     }
@@ -374,33 +418,53 @@
     }
 
     .text-secondary {
-      color: var(--text-tertiary);
+      color: var(--text-secondary) !important;
     }
 
-    a {
-      color: var(--spotify-green);
+    /* Override any greyed-out text to be readable */
+    .text-muted {
+      color: var(--text-secondary) !important;
+    }
+
+    /* Catch-all for any remaining grey text */
+    *:not(.badge):not(.badge-success) {
+      color-scheme: dark;
+    }
+
+    /* Ensure links are always readable */
+    a, .link, [role="button"] {
+      color: var(--spotify-green) !important;
       text-decoration: none;
-      transition: color 0.2s ease;
     }
 
-    a:hover {
-      color: var(--spotify-green-hover);
-      text-decoration: underline;
+    a:hover, .link:hover, [role="button"]:hover {
+      color: var(--spotify-green-hover) !important;
     }
 
     /* Modal */
     .modal-content {
       background-color: var(--secondary-bg);
       border: 1px solid var(--border-color);
+      color: var(--text-primary);
     }
 
     .modal-header {
       border-bottom: 1px solid var(--border-color);
+      background-color: var(--tertiary-bg);
     }
 
     .modal-title {
       color: var(--text-primary);
       font-weight: 700;
+    }
+
+    .modal-body {
+      color: var(--text-primary);
+    }
+
+    .modal-footer {
+      border-top: 1px solid var(--border-color);
+      background-color: var(--tertiary-bg);
     }
 
     .btn-close {
@@ -780,6 +844,137 @@
         margin-left: auto;
         margin-right: auto;
       }
+    }
+
+    /* === COMPREHENSIVE TEXT COLOR FIXES === */
+    /* Force all text to be bright and readable */
+    
+    /* Bootstrap overrides - ensure no grey text appears */
+    .text-dark { color: var(--text-primary) !important; }
+    .text-light { color: var(--text-primary) !important; }
+    .text-body { color: var(--text-primary) !important; }
+    
+    /* Input group styling */
+    .input-group-text {
+      background-color: var(--tertiary-bg) !important;
+      border-color: var(--border-color) !important;
+      color: var(--text-primary) !important;
+    }
+    
+    /* Dropdown menu styling */
+    .dropdown-menu {
+      background-color: var(--secondary-bg) !important;
+      border-color: var(--border-color) !important;
+    }
+    
+    .dropdown-item {
+      color: var(--text-primary) !important;
+      background-color: var(--secondary-bg) !important;
+    }
+    
+    .dropdown-item:hover,
+    .dropdown-item:focus {
+      background-color: var(--tertiary-bg) !important;
+      color: var(--spotify-green) !important;
+    }
+    
+    .dropdown-item.active {
+      background-color: var(--spotify-green) !important;
+      color: #000 !important;
+    }
+    
+    /* Pagination styling */
+    .pagination .page-link {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .pagination .page-link:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--spotify-green);
+    }
+    
+    .pagination .page-item.active .page-link {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+    }
+    
+    /* Collapse/Accordion styling */
+    .collapse {
+      background-color: var(--secondary-bg);
+    }
+    
+    .accordion-button {
+      background-color: var(--secondary-bg) !important;
+      color: var(--text-primary) !important;
+      border-color: var(--border-color) !important;
+    }
+    
+    .accordion-button:not(.collapsed) {
+      background-color: var(--tertiary-bg) !important;
+      color: var(--spotify-green) !important;
+      box-shadow: none !important;
+    }
+    
+    .accordion-button:focus {
+      border-color: var(--spotify-green) !important;
+      box-shadow: none !important;
+    }
+    
+    /* Popover and Tooltip styling */
+    .popover {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color);
+    }
+    
+    .popover-header {
+      background-color: var(--tertiary-bg);
+      border-bottom-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .popover-body {
+      color: var(--text-primary);
+    }
+    
+    /* Spinners and loading indicators */
+    .spinner-border {
+      color: var(--spotify-green);
+    }
+    
+    /* Nav tabs styling */
+    .nav-tabs {
+      border-bottom-color: var(--border-color);
+    }
+    
+    .nav-tabs .nav-link {
+      color: var(--text-secondary);
+      border-color: transparent;
+    }
+    
+    .nav-tabs .nav-link:hover {
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .nav-tabs .nav-link.active {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color) var(--border-color) var(--secondary-bg);
+      color: var(--spotify-green);
+    }
+    
+    /* Ensure every text element has proper contrast */
+    body {
+      background-color: var(--primary-bg);
+      color: var(--text-primary);
+    }
+    
+    /* Catch any remaining text that might be hard to read */
+    * {
+      background-color-scheme: dark;
     }
   </style>
 </head>
