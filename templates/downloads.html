@@ -366,14 +366,24 @@ function toggleSlskdUserFiles(username) {
   const filesDiv = document.getElementById(`files-${username}`);
   const chevron = document.getElementById(`chevron-${username}`);
   
-  if (filesDiv.style.display === 'none') {
+  if (!filesDiv || !chevron) {
+    console.error(`Elements not found for user: ${username}`);
+    return;
+  }
+  
+  if (filesDiv.style.display === 'none' || filesDiv.style.display === '') {
     // Show files
     filesDiv.style.display = 'block';
-    chevron.className = 'bi bi-chevron-up slskd-chevron';
+    chevron.classList.add('rotated');
     
     // Populate files if not already done
     if (filesDiv.innerHTML.trim() === '') {
       const userData = slskdResponsesData[username];
+      if (!userData) {
+        console.error(`No data found for user: ${username}`);
+        return;
+      }
+      
       let filesHtml = '<div class="slskd-files-list">';
       
       userData.files.forEach((file, idx) => {
@@ -429,7 +439,7 @@ function toggleSlskdUserFiles(username) {
   } else {
     // Hide files
     filesDiv.style.display = 'none';
-    chevron.className = 'bi bi-chevron-down slskd-chevron';
+    chevron.classList.remove('rotated');
   }
 }
 
@@ -658,6 +668,14 @@ window.addEventListener('beforeunload', () => {
     color: var(--text-secondary);
     transition: transform 0.2s ease;
     font-size: 1rem;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    flex-shrink: 0;
+}
+
+.slskd-chevron.rotated {
+    transform: rotate(180deg);
 }
 
 .slskd-files-container {
