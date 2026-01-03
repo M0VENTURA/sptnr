@@ -339,8 +339,8 @@ function displaySlskdResponses() {
     const safeId = `slskd-user-${index}`;
     
     html += `
-      <div class="slskd-user-group" data-username="${escapeHtml(userData.username)}">
-        <div class="slskd-user-header" onclick="toggleSlskdUserFiles(this)" style="cursor: pointer;">
+      <div class="slskd-user-group" data-username="${escapeHtml(userData.username)}" data-index="${index}">
+        <div class="slskd-user-header" style="cursor: pointer;">
           <div class="slskd-user-info">
             <div class="slskd-username">
               <i class="bi bi-person-circle"></i> ${escapeHtml(userData.username)}
