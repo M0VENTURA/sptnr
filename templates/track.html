@@ -21,11 +21,17 @@
             </h1>
             <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></p>
         </div>
-        <button class="btn btn-outline-primary w-100 w-md-auto" onclick="lookupMetadata('track', '{{ track.id }}')">
-            <i class="bi bi-search"></i> <span class="d-none d-sm-inline">MP3 Data</span>
-        </button>
-    </div>
-    
+        <div class="d-flex gap-2 flex-column flex-md-row w-100 w-md-auto">
+            <button class="btn btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')">
+                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">MP3 Data</span>
+            </button>
+            <form method="POST" action="{{ url_for('scan_track_rescan', artist=track.artist, album=track.album, track_id=track.id) }}" class="d-contents">
+                <button class="btn btn-outline-info" type="submit" title="Rescan this track (Navidrome + Popularity + Singles)">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Track</span>
+                </button>
+            </form>
+        </div>
+    </div>    
     <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
         <div class="row g-2 g-md-3">
             <!-- Left Column: Track Info -->

@@ -21,7 +21,7 @@
     
     <!-- Statistics Cards -->
     <div class="row g-2 g-md-3 mb-4">
-        <div class="col-6 col-sm-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -31,7 +31,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -41,7 +41,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -51,7 +51,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -61,29 +61,13 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-lg-2">
+        <div class="col-6 col-sm-4 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
                         <i class="bi bi-single-music"></i> Singles
                     </div>
                     <div class="h4 mb-0">{{ singles_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-sm-4 col-lg-2">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-circle-fill"></i> Status
-                    </div>
-                    <div class="h5 mb-0">
-                        {% if scan_running %}
-                            <span class="badge bg-danger">Running</span>
-                        {% else %}
-                            <span class="badge bg-success">Idle</span>
-                        {% endif %}
-                    </div>
                 </div>
             </div>
         </div>
@@ -140,14 +124,14 @@
                     </div>
                 </div>
 
-                <!-- Popularity Scan -->
+                <!-- Popularity & Singles Scan -->
                 <div class="scan-card-large">
                     <div class="d-flex align-items-center justify-content-between mb-3">
                         <div>
                             <h6 class="mb-1">
-                                <i class="bi bi-graph-up"></i> Popularity Update
+                                <i class="bi bi-graph-up"></i> Popularity & Singles Detection
                             </h6>
-                            <small class="text-muted" style="display: block;">Calculate popularity ratings from last.fm and ListenBrainz</small>
+                            <small class="text-muted" style="display: block;">Calculate popularity ratings and identify singles</small>
                         </div>
                         <span class="scan-badge" data-scan-type="popularity_scan" style="display: none;">
                             <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
@@ -169,47 +153,6 @@
                     
                     <div class="d-flex gap-2">
                         <form method="POST" action="{{ url_for('scan_popularity') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-primary w-100">
-                                <i class="bi bi-play-fill"></i> Start
-                            </button>
-                        </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger">
-                                <i class="bi bi-stop-fill"></i> Stop
-                            </button>
-                        </form>
-                    </div>
-                </div>
-
-                <!-- Singles Scan -->
-                <div class="scan-card-large">
-                    <div class="d-flex align-items-center justify-content-between mb-3">
-                        <div>
-                            <h6 class="mb-1">
-                                <i class="bi bi-music-note"></i> Singles Detection
-                            </h6>
-                            <small class="text-muted" style="display: block;">Identify and tag single tracks and compilation albums</small>
-                        </div>
-                        <span class="scan-badge" data-scan-type="singles_scan" style="display: none;">
-                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
-                        </span>
-                    </div>
-                    
-                    <div class="scan-progress-container" data-scan-type="singles_scan" style="display: none; margin-bottom: 1rem;">
-                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
-                                 role="progressbar" style="width: 0%;" 
-                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-                            </div>
-                        </div>
-                        <div class="d-flex justify-content-between mb-1">
-                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
-                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
-                        </div>
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <form method="POST" action="{{ url_for('scan_singles') }}" class="flex-grow-1">
                             <button type="submit" class="btn btn-primary w-100">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>

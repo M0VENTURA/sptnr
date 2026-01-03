@@ -12,7 +12,7 @@
     </ol>
   </nav>
 
-  <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2">
         <i class="bi bi-person-music"></i> {{ artist_name }}
@@ -37,8 +37,8 @@
       <form class="flex-grow-1" action="{{ url_for('scan_start') }}" method="post">
         <input type="hidden" name="scan_type" value="artist">
         <input type="hidden" name="artist" value="{{ artist_name }}">
-        <button type="submit" class="btn btn-warning w-100">
-          <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan</span>
+        <button type="submit" class="btn btn-warning w-100" title="Full scan: Navidrome + Popularity + Singles">
+          <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
         </button>
       </form>
     </div>

@@ -42,8 +42,8 @@
                 <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
             </button>
             <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
-                <button class="btn btn-outline-secondary" type="submit">
-                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album Artist</span>
+                <button class="btn btn-warning" type="submit" title="Full scan: Navidrome + Popularity + Singles">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album</span>
                 </button>
             </form>
         </div>

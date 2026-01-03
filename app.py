@@ -871,6 +871,50 @@ def album_rescan(artist, album):
     return redirect(url_for("album_detail", artist=artist, album=album))
 
 
+@app.route("/track/<path:artist>/<path:album>/<path:track_id>/rescan", methods=["POST"])
+def scan_track_rescan(artist, album, track_id):
+    """Trigger per-track rescan: Navidrome fetch -> popularity -> single detection."""
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    album = unquote(album)
+    track_id = unquote(track_id)
+
+    def _worker(artist_name: str, track_identifier: str):
+        try:
+            # Look up artist_id
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            row = cursor.fetchone()
+            conn.close()
+            artist_id = row[0] if row else None
+
+            if not artist_id:
+                idx = build_artist_index()
+                artist_id = (idx.get(artist_name, {}) or {}).get("id")
+
+            if not artist_id:
+                logging.error(f"Track rescan aborted: no artist_id for {artist_name}")
+                return
+
+            # Step 1: refresh Navidrome cache for this artist
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
+
+            # Step 2: popularity (per-artist, which includes the track)
+            scan_popularity(verbose=True, artist=artist_name)
+
+            # Step 3: single detection & scoring
+            rate_artist(artist_id, artist_name, verbose=True, force=True)
+            
+            logging.info(f"Track rescan completed for {track_identifier}")
+        except Exception as e:
+            logging.error(f"Track rescan failed for {track_identifier}: {e}")
+
+    threading.Thread(target=_worker, args=(artist, track_id), daemon=True).start()
+    flash(f"Track rescan started for {artist}", "info")
+    return redirect(url_for("track_detail", track_id=track_id))
+
+
 @app.route("/track/<track_id>")
 def track_detail(track_id):
     """View and edit track details"""
