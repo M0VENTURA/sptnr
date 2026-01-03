@@ -3562,7 +3562,297 @@ if __name__ == "__main__":
             return jsonify({"results": formatted_results}), 200
         except Exception as e:
             logger = logging.getLogger('sptnr')
-            logger.error(f"Discogs album lookup error: {e}")
+            logger.error(f"Discogs lookup error: {e}")
             return jsonify({"error": str(e)}), 500
-    
+
+    # ==========================================================================
+    # PLAYLIST MANAGER ROUTES
+    # ==========================================================================
+
+    @app.route("/playlist-manager")
+    def playlist_manager():
+        """Playlist manager page with downloader and custom creator"""
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        navidrome_users = cfg.get("navidrome_users", [])
+        
+        # If navidrome_users not configured, use single user
+        if not navidrome_users and navidrome_config.get("user"):
+            navidrome_users = [{
+                "base_url": navidrome_config.get("base_url"),
+                "user": navidrome_config.get("user")
+            }]
+        
+        return render_template('playlist_manager.html', navidrome_users=navidrome_users)
+
+    @app.route("/api/playlist/list")
+    def api_playlist_list():
+        """List all playlists in Navidrome"""
+        try:
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            navidrome_config = cfg.get("navidrome", {})
+            base_url = navidrome_config.get("base_url", "http://localhost:4533")
+            user = navidrome_config.get("user", "admin")
+            password = navidrome_config.get("pass", "")
+            
+            import requests as req
+            
+            # Get user token
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={
+                    "u": user,
+                    "p": password,
+                    "c": "sptnr",
+                    "f": "json"
+                },
+                timeout=10
+            )
+            
+            if auth_response.status_code != 200:
+                return jsonify({"error": "Failed to authenticate with Navidrome"}), 500
+            
+            auth_data = auth_response.json()
+            if not auth_data.get("subsonic-response", {}).get("token"):
+                return jsonify({"error": "Invalid Navidrome credentials"}), 500
+            
+            token = auth_data["subsonic-response"]["token"]
+            
+            # Get playlists
+            playlists_response = req.get(
+                f"{base_url}/rest/getPlaylists.view",
+                params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            
+            if playlists_response.status_code != 200:
+                return jsonify({"error": "Failed to get playlists"}), 500
+            
+            playlists_data = playlists_response.json()
+            playlists = []
+            
+            for playlist in playlists_data.get("subsonic-response", {}).get("playlists", {}).get("playlist", []):
+                playlists.append({
+                    "id": playlist.get("id"),
+                    "name": playlist.get("name"),
+                    "path": playlist.get("id")
+                })
+            
+            return jsonify({"playlists": playlists}), 200
+        except Exception as e:
+            logging.error(f"Error listing playlists: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/playlist/load", methods=["POST"])
+    def api_playlist_load():
+        """Load playlist tracks"""
+        try:
+            data = request.get_json()
+            playlist_id = data.get("playlist_path")
+            
+            if not playlist_id:
+                return jsonify({"error": "Missing playlist_path"}), 400
+            
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            navidrome_config = cfg.get("navidrome", {})
+            base_url = navidrome_config.get("base_url", "http://localhost:4533")
+            user = navidrome_config.get("user", "admin")
+            password = navidrome_config.get("pass", "")
+            
+            import requests as req
+            
+            # Authenticate
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            token = auth_response.json()["subsonic-response"]["token"]
+            
+            # Get playlist tracks
+            playlist_response = req.get(
+                f"{base_url}/rest/getPlaylist.view",
+                params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json", "id": playlist_id},
+                timeout=10
+            )
+            
+            playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
+            tracks = playlist_data.get("entry", [])
+            
+            if not isinstance(tracks, list):
+                tracks = [tracks] if tracks else []
+            
+            songs = []
+            matched_files = []
+            
+            for track in tracks:
+                song = {
+                    "id": track.get("id"),
+                    "title": track.get("title", "Unknown"),
+                    "artist": track.get("artist", "Unknown"),
+                    "album": track.get("album", "Unknown"),
+                    "detected": True
+                }
+                songs.append(song)
+                matched_files.append({
+                    "id": track.get("id"),
+                    "title": song["title"],
+                    "artist": song["artist"],
+                    "filename": track.get("path", "")
+                })
+            
+            return jsonify({
+                "playlist_path": playlist_id,
+                "songs": songs,
+                "matched_files": matched_files,
+                "total": len(songs),
+                "matched": len(matched_files)
+            }), 200
+        except Exception as e:
+            logging.error(f"Error loading playlist: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/playlist/search-songs", methods=["POST"])
+    def api_playlist_search_songs():
+        """Search for songs in library"""
+        try:
+            data = request.get_json()
+            query = data.get("query", "").strip()
+            
+            if not query or len(query) < 2:
+                return jsonify({"error": "Query too short"}), 400
+            
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            navidrome_config = cfg.get("navidrome", {})
+            base_url = navidrome_config.get("base_url", "http://localhost:4533")
+            user = navidrome_config.get("user", "admin")
+            password = navidrome_config.get("pass", "")
+            
+            import requests as req
+            
+            # Authenticate
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            token = auth_response.json()["subsonic-response"]["token"]
+            
+            # Search
+            search_response = req.get(
+                f"{base_url}/rest/search3.view",
+                params={
+                    "u": user, 
+                    "t": token, 
+                    "s": "salt", 
+                    "c": "sptnr", 
+                    "f": "json",
+                    "query": query,
+                    "songCount": 50
+                },
+                timeout=10
+            )
+            
+            search_data = search_response.json().get("subsonic-response", {}).get("searchResult3", {})
+            songs = search_data.get("song", [])
+            
+            if not isinstance(songs, list):
+                songs = [songs] if songs else []
+            
+            results = []
+            for song in songs[:50]:
+                results.append({
+                    "id": song.get("id"),
+                    "title": song.get("title", "Unknown"),
+                    "artist": song.get("artist", "Unknown"),
+                    "album": song.get("album", "Unknown"),
+                    "duration": song.get("duration", 0)
+                })
+            
+            return jsonify({"songs": results}), 200
+        except Exception as e:
+            logging.error(f"Error searching songs: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/playlist/create-custom", methods=["POST"])
+    def api_playlist_create_custom():
+        """Create a custom playlist in Navidrome"""
+        try:
+            data = request.get_json()
+            name = data.get("name", "").strip()
+            description = data.get("description", "").strip()
+            user_name = data.get("user", "admin")
+            is_public = data.get("is_public", False)
+            songs = data.get("songs", [])
+            
+            if not name:
+                return jsonify({"error": "Playlist name is required"}), 400
+            
+            if not songs:
+                return jsonify({"error": "Add at least one song"}), 400
+            
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            navidrome_config = cfg.get("navidrome", {})
+            base_url = navidrome_config.get("base_url", "http://localhost:4533")
+            user = navidrome_config.get("user", "admin")
+            password = navidrome_config.get("pass", "")
+            
+            import requests as req
+            
+            # Authenticate
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            token = auth_response.json()["subsonic-response"]["token"]
+            
+            # Create playlist
+            create_response = req.post(
+                f"{base_url}/rest/createPlaylist.view",
+                params={
+                    "u": user,
+                    "t": token,
+                    "s": "salt",
+                    "c": "sptnr",
+                    "f": "json",
+                    "name": name,
+                    "comment": description,
+                    "public": "true" if is_public else "false"
+                },
+                timeout=10
+            )
+            
+            create_data = create_response.json()
+            playlist_id = create_data.get("subsonic-response", {}).get("playlist", {}).get("id")
+            
+            if not playlist_id:
+                return jsonify({"error": "Failed to create playlist"}), 500
+            
+            # Add songs to playlist
+            for song in songs:
+                req.post(
+                    f"{base_url}/rest/updatePlaylist.view",
+                    params={
+                        "u": user,
+                        "t": token,
+                        "s": "salt",
+                        "c": "sptnr",
+                        "f": "json",
+                        "playlistId": playlist_id,
+                        "songIdToAdd": song.get("id")
+                    },
+                    timeout=10
+                )
+            
+            logging.info(f"Created playlist '{name}' with {len(songs)} songs")
+            return jsonify({
+                "success": True,
+                "playlist_id": playlist_id,
+                "message": f"Playlist created with {len(songs)} songs"
+            }), 201
+        except Exception as e:
+            logging.error(f"Error creating custom playlist: {e}", exc_info=True)
+            return jsonify({"error": str(e)}), 500
+
     app.run(debug=False, host="0.0.0.0", port=5000)

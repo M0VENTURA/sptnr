@@ -1,0 +1,570 @@
+{% extends "base.html" %}
+
+{% block title %}Playlist Manager · Sptnr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-music-note-list"></i> Playlist Manager
+    </h1>
+    <p class="text-muted mb-0">Download playlists from file sources or create custom playlists</p>
+  </div>
+
+  <!-- Tabs -->
+  <ul class="nav nav-tabs mb-4" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="downloaderTab" data-bs-toggle="tab" data-bs-target="#downloaderContent" type="button" role="tab" aria-controls="downloaderContent" aria-selected="true">
+        <i class="bi bi-cloud-download"></i> Playlist Downloader
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="creatorTab" data-bs-toggle="tab" data-bs-target="#creatorContent" type="button" role="tab" aria-controls="creatorContent" aria-selected="false">
+        <i class="bi bi-plus-circle"></i> Custom Playlist Creator
+      </button>
+    </li>
+  </ul>
+
+  <div class="tab-content">
+    <!-- Tab 1: Playlist Downloader -->
+    <div class="tab-pane fade show active" id="downloaderContent" role="tabpanel" aria-labelledby="downloaderTab">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-file-earmark-music"></i> Download Playlist Files
+          </h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted mb-4">
+            Select a playlist file to download missing tracks and replace detected matches from your Soulseek sources.
+          </p>
+
+          <div class="row g-3 mb-4">
+            <div class="col-12 col-md-6">
+              <label for="playlistFileSelect" class="form-label">Select Playlist File</label>
+              <select id="playlistFileSelect" class="form-select">
+                <option value="">Loading playlists...</option>
+              </select>
+              <small class="text-muted">Navidrome playlist (.m3u files)</small>
+            </div>
+            <div class="col-12 col-md-6 d-flex align-items-end">
+              <button class="btn btn-primary w-100" onclick="loadPlaylistForDownload()">
+                <i class="bi bi-folder-open"></i> Load Playlist
+              </button>
+            </div>
+          </div>
+
+          <!-- Results Section -->
+          <div id="downloaderResults" style="display: none;">
+            <div class="row mb-4">
+              <div class="col-12 col-md-4">
+                <div class="card text-center bg-primary bg-opacity-10 border-primary">
+                  <div class="card-body">
+                    <h5 class="card-title">Original Songs</h5>
+                    <h2 id="dlTotalCount" class="text-primary">0</h2>
+                  </div>
+                </div>
+              </div>
+              <div class="col-12 col-md-4">
+                <div class="card text-center bg-success bg-opacity-10 border-success">
+                  <div class="card-body">
+                    <h5 class="card-title">Detected Matches</h5>
+                    <h2 id="dlMatchedCount" class="text-success">0</h2>
+                  </div>
+                </div>
+              </div>
+              <div class="col-12 col-md-4">
+                <div class="card text-center bg-warning bg-opacity-10 border-warning">
+                  <div class="card-body">
+                    <h5 class="card-title">Coverage</h5>
+                    <h2 id="dlCoverage" class="text-warning">0%</h2>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Songs Grid -->
+            <div class="row g-3">
+              <!-- Left Column: Original Songs -->
+              <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                  <div class="card-header">
+                    <h6 class="mb-0">Original Playlist Songs</h6>
+                  </div>
+                  <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                    <div id="dlOriginalSongs">
+                      <p class="text-center text-muted py-5">Select a playlist to view songs</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Right Column: Detected Matches -->
+              <div class="col-12 col-lg-6">
+                <div class="card h-100">
+                  <div class="card-header">
+                    <h6 class="mb-0">Detected Matches from Collection</h6>
+                  </div>
+                  <div class="card-body" style="max-height: 600px; overflow-y: auto;">
+                    <div id="dlDetectedMatches">
+                      <p class="text-center text-muted py-5">Matches will appear here</p>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Actions -->
+            <div class="mt-4 d-flex gap-2 justify-content-end">
+              <button class="btn btn-success" onclick="downloadPlaylistMatches()" id="dlDownloadBtn">
+                <i class="bi bi-download"></i> Download Missing Tracks
+              </button>
+            </div>
+          </div>
+
+          <div id="downloaderEmpty" class="alert alert-info">
+            <i class="bi bi-info-circle"></i> Select a playlist file to get started
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tab 2: Custom Playlist Creator -->
+    <div class="tab-pane fade" id="creatorContent" role="tabpanel" aria-labelledby="creatorTab">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-plus-circle"></i> Create Custom Playlist
+          </h5>
+        </div>
+        <div class="card-body">
+          <form id="customPlaylistForm" onsubmit="createCustomPlaylist(event)">
+            <div class="row g-3 mb-4">
+              <!-- Playlist Name -->
+              <div class="col-12">
+                <label for="customPlaylistName" class="form-label">Playlist Name *</label>
+                <input type="text" id="customPlaylistName" class="form-control" placeholder="e.g., My Favorite Songs" required>
+              </div>
+
+              <!-- Description -->
+              <div class="col-12">
+                <label for="customPlaylistDesc" class="form-label">Description (optional)</label>
+                <textarea id="customPlaylistDesc" class="form-control" rows="2" placeholder="Add a description for your playlist"></textarea>
+              </div>
+
+              <!-- Navidrome User Selection -->
+              <div class="col-12 col-md-6">
+                <label for="customPlaylistUser" class="form-label">Assign to User *</label>
+                <select id="customPlaylistUser" class="form-select" required>
+                  <option value="">Select a user...</option>
+                  {% if navidrome_users %}
+                    {% for user in navidrome_users %}
+                    <option value="{{ user.user }}">{{ user.user }} ({{ user.base_url }})</option>
+                    {% endfor %}
+                  {% else %}
+                    <option value="admin">admin</option>
+                  {% endif %}
+                </select>
+              </div>
+
+              <!-- Public Toggle -->
+              <div class="col-12 col-md-6 d-flex align-items-end">
+                <div class="form-check form-switch w-100">
+                  <input type="checkbox" id="customPlaylistPublic" class="form-check-input">
+                  <label for="customPlaylistPublic" class="form-check-label">Make playlist public</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Search and Add Songs -->
+            <div class="mb-4">
+              <h6 class="mb-3">Add Songs</h6>
+              <div class="input-group mb-3">
+                <input type="text" id="songSearchInput" class="form-control" placeholder="Search: artist, title, album...">
+                <button class="btn btn-primary" type="button" onclick="searchSongs()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+
+              <!-- Search Results -->
+              <div id="songSearchResults" style="display: none; max-height: 300px; overflow-y: auto;" class="border rounded p-3 bg-light mb-3">
+                <!-- Results will appear here -->
+              </div>
+            </div>
+
+            <!-- Selected Songs List -->
+            <div class="mb-4">
+              <h6 class="mb-2">Selected Songs <span id="selectedSongsCount" class="badge bg-secondary">0</span></h6>
+              <div id="selectedSongsList" style="max-height: 300px; overflow-y: auto;">
+                <p class="text-muted text-center py-5">No songs added yet</p>
+              </div>
+            </div>
+
+            <!-- Submit -->
+            <div class="d-flex gap-2 justify-content-end">
+              <button type="reset" class="btn btn-outline-secondary">Clear</button>
+              <button type="submit" class="btn btn-success">
+                <i class="bi bi-plus-circle"></i> Create Playlist
+              </button>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+// =============================================================================
+// PLAYLIST DOWNLOADER
+// =============================================================================
+
+let currentPlaylistData = null;
+let selectedReplacements = {};
+
+// Load playlists on page init
+document.addEventListener('DOMContentLoaded', function() {
+  loadPlaylistList();
+});
+
+async function loadPlaylistList() {
+  try {
+    const response = await fetch('/api/playlist/list');
+    const data = await response.json();
+    
+    const select = document.getElementById('playlistFileSelect');
+    select.innerHTML = '<option value="">Select a playlist...</option>';
+    
+    if (data.playlists && data.playlists.length > 0) {
+      data.playlists.forEach(playlist => {
+        const option = document.createElement('option');
+        option.value = playlist.path;
+        option.textContent = playlist.name || playlist.path;
+        select.appendChild(option);
+      });
+    } else {
+      select.innerHTML = '<option value="">No playlists found</option>';
+    }
+  } catch (error) {
+    console.error('Error loading playlists:', error);
+    document.getElementById('playlistFileSelect').innerHTML = '<option value="">Error loading playlists</option>';
+  }
+}
+
+async function loadPlaylistForDownload() {
+  const playlistPath = document.getElementById('playlistFileSelect').value;
+  if (!playlistPath) {
+    alert('Please select a playlist');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/playlist/load', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ playlist_path: playlistPath })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to load playlist');
+
+    currentPlaylistData = data;
+    displayPlaylistDownloader(data);
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Error: ' + error.message);
+  }
+}
+
+function displayPlaylistDownloader(data) {
+  const songs = data.songs || [];
+  const matched = data.matched_files || [];
+  
+  document.getElementById('downloaderEmpty').style.display = 'none';
+  document.getElementById('downloaderResults').style.display = 'block';
+
+  // Update counts
+  document.getElementById('dlTotalCount').textContent = songs.length;
+  document.getElementById('dlMatchedCount').textContent = matched.length;
+  const coverage = songs.length > 0 ? Math.round((matched.length / songs.length) * 100) : 0;
+  document.getElementById('dlCoverage').textContent = coverage + '%';
+
+  // Original Songs (Left Column)
+  const originalHtml = songs.map((song, idx) => `
+    <div class="card mb-2">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-start">
+          <div>
+            <strong class="d-block">${escapeHtml(song.title || 'Unknown')}</strong>
+            <small class="text-muted">${escapeHtml(song.artist || 'Unknown Artist')}</small>
+            ${song.album ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(song.album)}</small>` : ''}
+          </div>
+          <span class="badge ${song.detected ? 'bg-success' : 'bg-warning'}">
+            ${song.detected ? '✓' : '✗'}
+          </span>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  document.getElementById('dlOriginalSongs').innerHTML = originalHtml || '<p class="text-muted text-center py-5">No songs in playlist</p>';
+
+  // Detected Matches (Right Column)
+  const matchedHtml = matched.map((match, idx) => `
+    <div class="card mb-2 border-success">
+      <div class="card-body py-2">
+        <div class="d-flex justify-content-between align-items-start gap-2">
+          <div style="flex: 1;">
+            <strong class="d-block">${escapeHtml(match.title || 'Unknown')}</strong>
+            <small class="text-muted">${escapeHtml(match.artist || 'Unknown')}</small>
+            ${match.filename ? `<br><small class="text-secondary text-opacity-75">${escapeHtml(match.filename.split(/[\/\\]/).pop())}</small>` : ''}
+          </div>
+          <button class="btn btn-sm btn-outline-primary" onclick="replacePlaylistMatch(${idx})" title="Replace this match">
+            <i class="bi bi-arrow-repeat"></i> Replace
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+  document.getElementById('dlDetectedMatches').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matches detected yet</p>';
+
+  selectedReplacements = {};
+}
+
+function replacePlaylistMatch(matchIndex) {
+  // TODO: Open modal to search for alternative match
+  alert('Replace functionality coming soon');
+}
+
+async function downloadPlaylistMatches() {
+  if (!currentPlaylistData) return;
+  const btn = document.getElementById('dlDownloadBtn');
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Downloading...';
+
+  try {
+    const response = await fetch('/api/playlist/download', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        playlist_path: currentPlaylistData.playlist_path,
+        replacements: selectedReplacements
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Download failed');
+
+    alert('✅ Download queued! ' + (data.queued || 0) + ' files enqueued');
+  } catch (error) {
+    console.error('Error:', error);
+    alert('❌ Error: ' + error.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+// =============================================================================
+// CUSTOM PLAYLIST CREATOR
+// =============================================================================
+
+let selectedSongs = [];
+
+async function searchSongs() {
+  const query = document.getElementById('songSearchInput').value.trim();
+  if (!query || query.length < 2) {
+    alert('Please enter at least 2 characters');
+    return;
+  }
+
+  try {
+    const response = await fetch('/api/playlist/search-songs', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ query })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Search failed');
+
+    displaySearchResults(data.songs || []);
+  } catch (error) {
+    console.error('Error:', error);
+    alert('Error: ' + error.message);
+  }
+}
+
+function displaySearchResults(songs) {
+  const resultsDiv = document.getElementById('songSearchResults');
+  if (songs.length === 0) {
+    resultsDiv.innerHTML = '<p class="text-muted text-center">No songs found</p>';
+    resultsDiv.style.display = 'block';
+    return;
+  }
+
+  resultsDiv.innerHTML = songs.map(song => `
+    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+      <div>
+        <strong>${escapeHtml(song.title || 'Unknown')}</strong><br>
+        <small class="text-muted">${escapeHtml(song.artist || 'Unknown')} ${song.album ? '· ' + escapeHtml(song.album) : ''}</small>
+      </div>
+      <button class="btn btn-sm btn-outline-success" onclick="addSongToPlaylist('${escapeHtml(JSON.stringify(song))}')">
+        <i class="bi bi-plus"></i> Add
+      </button>
+    </div>
+  `).join('');
+  resultsDiv.style.display = 'block';
+}
+
+function addSongToPlaylist(songJson) {
+  try {
+    const song = JSON.parse(songJson);
+    // Check if already added
+    if (selectedSongs.find(s => s.id === song.id)) {
+      alert('This song is already in the playlist');
+      return;
+    }
+    selectedSongs.push(song);
+    updateSelectedSongsList();
+  } catch (error) {
+    console.error('Error:', error);
+  }
+}
+
+function updateSelectedSongsList() {
+  const listDiv = document.getElementById('selectedSongsList');
+  const countBadge = document.getElementById('selectedSongsCount');
+  
+  countBadge.textContent = selectedSongs.length;
+
+  if (selectedSongs.length === 0) {
+    listDiv.innerHTML = '<p class="text-muted text-center py-5">No songs added yet</p>';
+    return;
+  }
+
+  listDiv.innerHTML = selectedSongs.map((song, idx) => `
+    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+      <div>
+        <strong>${escapeHtml(song.title || 'Unknown')}</strong><br>
+        <small class="text-muted">${escapeHtml(song.artist || 'Unknown')}</small>
+      </div>
+      <button class="btn btn-sm btn-outline-danger" onclick="removeSongFromPlaylist(${idx})">
+        <i class="bi bi-trash"></i>
+      </button>
+    </div>
+  `).join('');
+}
+
+function removeSongFromPlaylist(index) {
+  selectedSongs.splice(index, 1);
+  updateSelectedSongsList();
+}
+
+async function createCustomPlaylist(event) {
+  event.preventDefault();
+
+  if (selectedSongs.length === 0) {
+    alert('Please add at least one song to the playlist');
+    return;
+  }
+
+  const btn = event.target.querySelector('button[type="submit"]');
+  const originalText = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Creating...';
+
+  try {
+    const response = await fetch('/api/playlist/create-custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: document.getElementById('customPlaylistName').value.trim(),
+        description: document.getElementById('customPlaylistDesc').value.trim(),
+        user: document.getElementById('customPlaylistUser').value,
+        is_public: document.getElementById('customPlaylistPublic').checked,
+        songs: selectedSongs
+      })
+    });
+
+    const data = await response.json();
+    if (!response.ok) throw new Error(data.error || 'Failed to create playlist');
+
+    alert('✅ Playlist created successfully!');
+    
+    // Reset form
+    event.target.reset();
+    selectedSongs = [];
+    updateSelectedSongsList();
+  } catch (error) {
+    console.error('Error:', error);
+    alert('❌ Error: ' + error.message);
+  } finally {
+    btn.disabled = false;
+    btn.innerHTML = originalText;
+  }
+}
+
+// Utility function
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+</script>
+
+<style>
+.track-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 12px 0;
+  border-bottom: 1px solid var(--border-color);
+}
+
+.track-row:last-child {
+  border-bottom: none;
+}
+
+.track-info {
+  flex: 1;
+}
+
+.track-title {
+  font-weight: 600;
+  margin-bottom: 4px;
+}
+
+.track-artist {
+  font-size: 0.875rem;
+  color: var(--text-secondary);
+  margin-bottom: 2px;
+}
+
+.track-album {
+  font-size: 0.75rem;
+  color: var(--text-secondary);
+  opacity: 0.7;
+}
+
+.track-actions {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  margin-left: 12px;
+}
+
+/* Dark theme support */
+:root {
+  --border-color: #495057;
+  --text-secondary: #adb5bd;
+}
+
+@media (prefers-color-scheme: dark) {
+  .bg-light {
+    background-color: var(--secondary-bg) !important;
+  }
+}
+</style>
+
+{% endblock %}
