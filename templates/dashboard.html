@@ -526,16 +526,23 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching scan status:', error));
     }
     
+    // Track which scans are currently running
+    let runningScans = new Set();
+    
     // Poll individual scan progress every 1 second
     function updateIndividualScanProgress() {
         fetch('/api/scan-progress')
             .then(response => response.json())
             .then(data => {
-                if (!data.is_running) return;
+                if (!data.is_running) {
+                    // Clear running scans if nothing is running
+                    runningScans.clear();
+                    return;
+                }
                 
                 const scanType = data.scan_type || 'unified';
                 
-                // Map scan types to their respective progress bar elements
+                // Map backend scan types to card data-scan-type values
                 const scanTypeMapping = {
                     'mp3_scan': 'mp3_scan',
                     'navidrome_scan': 'navidrome_scan',
@@ -546,19 +553,29 @@ document.addEventListener('DOMContentLoaded', function() {
                 const mappedScanType = scanTypeMapping[scanType];
                 if (!mappedScanType) return;
                 
-                const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${mappedScanType}"]`);
-                if (!progressBarContainer) return;
+                // Track this scan as running
+                runningScans.add(mappedScanType);
                 
-                const progressBar = progressBarContainer.querySelector('.progress-bar');
-                const progressText = progressBarContainer.querySelector('.scan-progress-text');
+                // Find the scan card container for this type
+                const scanCard = document.querySelector(`.scan-card:has([data-scan-type="${mappedScanType}"])`);
+                if (!scanCard) return;
+                
+                const progressContainer = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"]`);
+                const progressBar = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .progress-bar`);
+                const progressText = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .scan-progress-text`);
+                
+                // Show progress container for this scan
+                if (progressContainer) {
+                    progressContainer.style.display = 'block';
+                }
                 
                 let percent = 0;
                 let text = 'Processing...';
                 
                 // Calculate progress based on scan type
-                if (scanType === 'mp3_scan' && data.scanned_files && data.total_files) {
-                    percent = Math.round((data.scanned_files / data.total_files) * 100);
-                    text = `${data.scanned_files}/${data.total_files} files scanned`;
+                if (scanType === 'mp3_scan' && data.processed_files && data.total_files) {
+                    percent = Math.round((data.processed_files / data.total_files) * 100);
+                    text = `${data.processed_files}/${data.total_files} files`;
                 } else if (scanType === 'navidrome_scan' && data.scanned_albums && data.total_albums) {
                     percent = Math.round((data.scanned_albums / data.total_albums) * 100);
                     text = `${data.scanned_albums}/${data.total_albums} albums`;
@@ -587,170 +604,12 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching scan progress:', error));
     }
     
-    // Poll scan progress every 1 second
-    function updateScanProgress() {
-        fetch('/api/scan-progress')
-            .then(response => response.json())
-            .then(data => {
-                const container = document.getElementById('scan-progress-container');
-                
-                if (data.is_running) {
-                    // Show progress bar
-                    container.style.display = 'block';
-                    
-                    const scanType = data.scan_type || 'unified';
-                    
-                    // Handle unified scan
-                    if (scanType === 'unified') {
-                        // Update progress bar
-                        const progressBar = document.getElementById('progress-bar');
-                        const percent = Math.round(data.percent_complete || 0);
-                        progressBar.style.width = percent + '%';
-                        progressBar.setAttribute('aria-valuenow', percent);
-                        
-                        // Update text
-                        document.getElementById('progress-percent').textContent = percent + '%';
-                        
-                        // Update details
-                        const artistText = data.current_artist ? 
-                            `<i class="bi bi-person"></i> ${data.current_artist}` : '';
-                        const albumText = data.current_album ? 
-                            ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
-                        document.getElementById('current-artist').innerHTML = artistText;
-                        document.getElementById('current-album').innerHTML = albumText;
-                        
-                        // Update phase
-                        let phaseText = '';
-                        if (data.current_phase === 'popularity') {
-                            phaseText = '<i class="bi bi-graph-up"></i> Detecting popularity...';
-                        } else if (data.current_phase === 'singles') {
-                            phaseText = '<i class="bi bi-music-note"></i> Detecting singles & rating...';
-                        } else if (data.current_phase === 'navidrome_update') {
-                            phaseText = '<i class="bi bi-cloud-upload"></i> Updating Navidrome...';
-                        }
-                        document.getElementById('progress-phase').innerHTML = phaseText;
-                        
-                        // Update progress text
-                        const progressText = `${data.processed_artists || 0}/${data.total_artists || 0} artists, ` +
-                                           `${data.processed_tracks || 0}/${data.total_tracks || 0} tracks`;
-                        document.getElementById('progress-text').textContent = progressText;
-                    }
-                    // Handle MP3 scan
-                    else if (scanType === 'mp3_scan') {
-                        const progressBar = document.getElementById('progress-bar');
-                        const percent = data.scanned_files && data.total_files ? 
-                            Math.round((data.scanned_files / data.total_files) * 100) : 0;
-                        progressBar.style.width = percent + '%';
-                        progressBar.setAttribute('aria-valuenow', percent);
-                        
-                        document.getElementById('progress-percent').textContent = percent + '%';
-                        document.getElementById('current-artist').innerHTML = 
-                            `<i class="bi bi-folder"></i> ${data.current_folder || 'Scanning...'}`;
-                        document.getElementById('current-album').innerHTML = '';
-                        document.getElementById('progress-phase').innerHTML = 
-                            '<i class="bi bi-disc"></i> Scanning music files...';
-                        document.getElementById('progress-text').textContent = 
-                            `${data.scanned_files || 0} files scanned, ${data.matched_files || 0} matched`;
-                    }
-                    // Handle Navidrome scan
-                    else if (scanType === 'navidrome_scan') {
-                        const progressBar = document.getElementById('progress-bar');
-                        const percent = data.scanned_albums && data.total_albums ? 
-                            Math.round((data.scanned_albums / data.total_albums) * 100) : 0;
-                        progressBar.style.width = percent + '%';
-                        progressBar.setAttribute('aria-valuenow', percent);
-                        
-                        document.getElementById('progress-percent').textContent = percent + '%';
-                        document.getElementById('current-artist').innerHTML = 
-                            `<i class="bi bi-person"></i> ${data.current_artist || 'Scanning...'}`;
-                        document.getElementById('current-album').innerHTML = 
-                            data.current_album ? ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
-                        document.getElementById('progress-phase').innerHTML = 
-                            '<i class="bi bi-cloud"></i> Importing from Navidrome...';
-                        document.getElementById('progress-text').textContent = 
-                            `${data.scanned_albums || 0}/${data.total_albums || 0} albums`;
-                    }
-                } else {
-                    // Hide progress bar when not running
-                    container.style.display = 'none';
-                }
-            })
-            .catch(error => console.error('Error fetching scan progress:', error));
-    }
-    
     // Initial update
     updateScanStatus();
-    updateScanProgress();
     updateIndividualScanProgress();
     
-    // Load logs and progress for scan cards
-    function updateScanLogsAndProgress() {
-        // Load track counts for progress calculation
-        fetch('/api/track-count')
-            .then(response => response.json())
-            .then(data => {
-                const totalTracks = data.total_tracks || 1;
-                
-                // Update progress for each scan type
-                const scanMappings = {
-                    'navidrome': { filled: data.navidrome_filled, container: 'navidrome_scan' },
-                    'popularity': { filled: data.popularity_filled, container: 'popularity_scan' },
-                    'singles': { filled: data.singles_filled, container: 'singles_scan' },
-                    'file_paths': { filled: data.filepath_filled, container: 'mp3_scan' }
-                };
-                
-                for (const [scanType, mapping] of Object.entries(scanMappings)) {
-                    const percent = Math.round((mapping.filled / totalTracks) * 100);
-                    const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${mapping.container}"]`);
-                    if (progressContainer && !progressContainer.style.display || progressContainer.style.display === 'none') {
-                        // Only update progress bar text if not currently running
-                        const progressText = progressContainer.querySelector('.progress-text');
-                        if (progressText) {
-                            progressText.textContent = percent + '%';
-                        }
-                        const progressBar = progressContainer.querySelector('.progress-bar');
-                        if (progressBar) {
-                            progressBar.style.width = percent + '%';
-                        }
-                        const scanText = progressContainer.querySelector('.scan-progress-text');
-                        if (scanText) {
-                            scanText.textContent = `${mapping.filled}/${totalTracks} complete`;
-                        }
-                    }
-                }
-            })
-            .catch(error => console.error('Error fetching track count:', error));
-        
-        // Load recent log entries
-        fetch('/api/scan-logs')
-            .then(response => response.json())
-            .then(data => {
-                for (const [scanType, lines] of Object.entries(data)) {
-                    const logsContainer = document.querySelector(`.scan-logs[data-scan-type="${scanType}"]`);
-                    if (logsContainer) {
-                        if (lines.length > 0) {
-                            logsContainer.innerHTML = lines.map(line => {
-                                // Extract just the message part if it contains timestamp
-                                const match = line.match(/\] (.+)$/);
-                                const message = match ? match[1] : line;
-                                return `<small class="text-muted d-block text-truncate">${escapeHtml(message)}</small>`;
-                            }).join('');
-                        } else {
-                            logsContainer.innerHTML = '<small class="text-muted d-block">No recent activity</small>';
-                        }
-                    }
-                }
-            })
-            .catch(error => console.error('Error fetching scan logs:', error));
-    }
-    
-    function escapeHtml(text) {
-        const div = document.createElement('div');
-        div.textContent = text;
-        return div.innerHTML;
-    }
-    
-    // Load logs and progress initially
+    // Poll every 1 second
+    setInterval(updateIndividualScanProgress, 1000);
     updateScanLogsAndProgress();
     
     // Refresh logs and progress every 5 seconds
