@@ -1126,13 +1126,16 @@ def scan_mp3():
             mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             # Use beets auto-import instead of mp3scanner
-            cmd = [sys.executable, "beets_auto_import.py"]
+            beets_script = os.path.join(APP_DIR, "beets_auto_import.py")
+            cmd = [sys.executable, beets_script]
+            logging.info(f"Starting beets scan: {' '.join(cmd)}")
             scan_process_mp3 = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                cwd=APP_DIR
             )
             threading.Thread(
                 target=_monitor_process_for_progress,
@@ -1140,7 +1143,9 @@ def scan_mp3():
                 daemon=True,
             ).start()
             flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
+            logging.info("Beets scan process started successfully")
         except Exception as e:
+            logging.error(f"Error starting beets import: {e}", exc_info=True)
             flash(f"❌ Error starting beets import: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
@@ -1160,13 +1165,16 @@ def scan_navidrome():
             db_dir = os.path.dirname(DB_PATH)
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
             _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
-            cmd = [sys.executable, "start.py", "--batchrate", "--verbose"]
+            start_script = os.path.join(APP_DIR, "start.py")
+            cmd = [sys.executable, start_script, "--batchrate", "--verbose"]
+            logging.info(f"Starting Navidrome scan: {' '.join(cmd)}")
             scan_process_navidrome = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                cwd=APP_DIR
             )
             threading.Thread(
                 target=_monitor_process_for_progress,
@@ -1174,7 +1182,9 @@ def scan_navidrome():
                 daemon=True,
             ).start()
             flash("✅ Navidrome sync scan started", "success")
+            logging.info("Navidrome scan process started successfully")
         except Exception as e:
+            logging.error(f"Error starting Navidrome scan: {e}", exc_info=True)
             flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
@@ -1195,13 +1205,16 @@ def scan_popularity():
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
             # Start popularity scan as a subprocess
-            cmd = [sys.executable, "popularity.py"]
+            popularity_script = os.path.join(APP_DIR, "popularity.py")
+            cmd = [sys.executable, popularity_script]
+            logging.info(f"Starting popularity scan: {' '.join(cmd)}")
             scan_process_popularity = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                bufsize=1
+                bufsize=1,
+                cwd=APP_DIR
             )
 
             threading.Thread(
@@ -1210,7 +1223,9 @@ def scan_popularity():
                 daemon=True,
             ).start()
             flash("✅ Popularity score scan started", "success")
+            logging.info("Popularity scan process started successfully")
         except Exception as e:
+            logging.error(f"Error starting popularity scan: {e}", exc_info=True)
             flash(f"❌ Error starting popularity scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
