@@ -818,10 +818,23 @@
               </a></li>
             </ul>
           </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('bookmarks') }}">
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="bookmarksDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-bookmark-star"></i> Bookmarks
             </a>
+            <ul class="dropdown-menu" aria-labelledby="bookmarksDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('bookmarks') }}">
+                <i class="bi bi-bookmark-star"></i> View All Bookmarks
+              </a></li>
+              {% if custom_bookmark_links %}
+              <li><hr class="dropdown-divider"></li>
+              {% for link in custom_bookmark_links %}
+              <li><a class="dropdown-item" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">
+                <i class="bi bi-link-45deg"></i> {{ link.title }}
+              </a></li>
+              {% endfor %}
+              {% endif %}
+            </ul>
           </li>
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('logs') }}">

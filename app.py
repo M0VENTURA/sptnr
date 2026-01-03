@@ -116,6 +116,11 @@ def _baseline_config():
             "web_url": "http://localhost:5030",
             "api_key": ""
         },
+        "bookmarks": {
+            "enabled": True,
+            "max_bookmarks": 100,
+            "custom_links": []
+        },
         "downloads": {
             "folder": "/downloads/Music"
         },
@@ -238,6 +243,17 @@ def login_required(f):
         
         return f(*args, **kwargs)
     return decorated_function
+
+
+@app.context_processor
+def inject_custom_bookmarks():
+    """Inject custom bookmark links into all templates"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        custom_links = cfg.get('bookmarks', {}).get('custom_links', [])
+        return {'custom_bookmark_links': custom_links}
+    except Exception:
+        return {'custom_bookmark_links': []}
 
 
 @app.before_request

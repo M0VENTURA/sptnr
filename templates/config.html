@@ -176,6 +176,27 @@
           <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
           <div class="form-text">Maximum number of bookmarks allowed per user</div>
         </div>
+        <div class="col-12">
+          <label class="form-label">Custom Links</label>
+          <div class="form-text mb-2">Add custom links to the Bookmarks dropdown menu</div>
+          <div id="customBookmarksList" class="mb-2">
+            {% set custom_links = config.get('bookmarks', {}).get('custom_links', []) %}
+            {% if custom_links %}
+              {% for link in custom_links %}
+              <div class="input-group mb-2 bookmark-link-item">
+                <input type="text" class="form-control bookmark-link-title" placeholder="Link Title" value="{{ link.title }}">
+                <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com" value="{{ link.url }}">
+                <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>
+              {% endfor %}
+            {% endif %}
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="addBookmarkLink()">
+            <i class="bi bi-plus-circle"></i> Add Link
+          </button>
+        </div>
       </div>
     </div>
   </div>
@@ -482,7 +503,8 @@ function buildConfigObject() {
     },
     bookmarks: {
       enabled: document.getElementById('bookmarks_enabled').checked,
-      max_bookmarks: parseInt(document.getElementById('bookmarks_max').value) || 100
+      max_bookmarks: parseInt(document.getElementById('bookmarks_max').value) || 100,
+      custom_links: getCustomBookmarkLinks()
     },
     api_integrations: {
       spotify: {
@@ -606,6 +628,38 @@ function saveRawYaml() {
     saveBtn.disabled = false;
     saveBtn.textContent = originalText;
   });
+}
+
+// Custom Bookmark Link Management Functions
+function addBookmarkLink() {
+  const container = document.getElementById('customBookmarksList');
+  const newItem = document.createElement('div');
+  newItem.className = 'input-group mb-2 bookmark-link-item';
+  newItem.innerHTML = `
+    <input type="text" class="form-control bookmark-link-title" placeholder="Link Title">
+    <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com">
+    <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+      <i class="bi bi-trash"></i>
+    </button>
+  `;
+  container.appendChild(newItem);
+}
+
+function removeBookmarkLink(button) {
+  button.closest('.bookmark-link-item').remove();
+}
+
+function getCustomBookmarkLinks() {
+  const items = document.querySelectorAll('.bookmark-link-item');
+  const links = [];
+  items.forEach(item => {
+    const title = item.querySelector('.bookmark-link-title').value.trim();
+    const url = item.querySelector('.bookmark-link-url').value.trim();
+    if (title && url) {
+      links.push({ title, url });
+    }
+  });
+  return links;
 }
 </script>
 
