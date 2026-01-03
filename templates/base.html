@@ -819,6 +819,11 @@
             </ul>
           </li>
           <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('bookmarks') }}">
+              <i class="bi bi-bookmark-star"></i> Bookmarks
+            </a>
+          </li>
+          <li class="nav-item">
             <a class="nav-link" href="{{ url_for('logs') }}">
               <i class="bi bi-file-text"></i> Logs
             </a>
@@ -990,6 +995,47 @@
       const div = document.createElement('div');
       div.textContent = text;
       return div.innerHTML;
+    }
+
+    // Bookmark functionality
+    function addBookmark(type, name, artist, album, trackId) {
+      fetch('/api/bookmarks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          type: type,
+          name: name,
+          artist: artist,
+          album: album,
+          track_id: trackId
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // Show success notification
+          if (typeof showToast === 'function') {
+            showToast('Success', 'Bookmark added successfully', 'success');
+          } else {
+            alert('Bookmark added successfully');
+          }
+        } else {
+          if (typeof showToast === 'function') {
+            showToast('Info', data.error || 'Bookmark may already exist', 'warning');
+          } else {
+            alert(data.error || 'Bookmark may already exist');
+          }
+        }
+      })
+      .catch(error => {
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to add bookmark: ' + error.message, 'error');
+        } else {
+          alert('Failed to add bookmark: ' + error.message);
+        }
+      });
     }
   </script>
 </body>
