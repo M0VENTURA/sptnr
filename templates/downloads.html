@@ -333,13 +333,14 @@ function displaySlskdResponses() {
   // Sort by number of files (descending)
   const sortedUsers = Object.values(slskdResponsesData).sort((a, b) => b.files.length - a.files.length);
   
-  sortedUsers.forEach(userData => {
+  sortedUsers.forEach((userData, index) => {
     const fileCount = userData.files.length;
     const lockedCount = userData.lockedFiles;
+    const safeId = `slskd-user-${index}`;
     
     html += `
-      <div class="slskd-user-group">
-        <div class="slskd-user-header" onclick="toggleSlskdUserFiles('${escapeHtml(userData.username)}')">
+      <div class="slskd-user-group" data-username="${escapeHtml(userData.username)}">
+        <div class="slskd-user-header" onclick="toggleSlskdUserFiles(this)" style="cursor: pointer;">
           <div class="slskd-user-info">
             <div class="slskd-username">
               <i class="bi bi-person-circle"></i> ${escapeHtml(userData.username)}
@@ -349,9 +350,9 @@ function displaySlskdResponses() {
               ${lockedCount > 0 ? ` · <i class="bi bi-lock"></i> ${lockedCount} locked` : ''}
             </div>
           </div>
-          <i class="bi bi-chevron-down slskd-chevron" id="chevron-${escapeHtml(userData.username)}"></i>
+          <i class="bi bi-chevron-down slskd-chevron" id="chevron-${safeId}"></i>
         </div>
-        <div id="files-${escapeHtml(userData.username)}" class="slskd-files-container" style="display: none;">
+        <div id="files-${safeId}" class="slskd-files-container" style="display: none;">
           <!-- Files will be inserted here -->
         </div>
       </div>
@@ -360,14 +361,25 @@ function displaySlskdResponses() {
   
   html += '</div>';
   container.innerHTML = html;
+  
+  // Attach event listeners after rendering
+  document.querySelectorAll('.slskd-user-header').forEach((header, index) => {
+    header.addEventListener('click', function(e) {
+      e.stopPropagation();
+      const userGroup = this.closest('.slskd-user-group');
+      const username = userGroup.getAttribute('data-username');
+      const safeId = `slskd-user-${index}`;
+      toggleSlskdUserFiles(username, safeId);
+    });
+  });
 }
 
-function toggleSlskdUserFiles(username) {
-  const filesDiv = document.getElementById(`files-${username}`);
-  const chevron = document.getElementById(`chevron-${username}`);
+function toggleSlskdUserFiles(username, safeId) {
+  const filesDiv = document.getElementById(`files-${safeId}`);
+  const chevron = document.getElementById(`chevron-${safeId}`);
   
   if (!filesDiv || !chevron) {
-    console.error(`Elements not found for user: ${username}`);
+    console.error(`Elements not found for user: ${username} (${safeId})`);
     return;
   }
   
@@ -387,7 +399,6 @@ function toggleSlskdUserFiles(username) {
       let filesHtml = '<div class="slskd-files-list">';
       
       userData.files.forEach((file, idx) => {
-        const btnId = `slskd-btn-${username.replace(/[^a-zA-Z0-9]/g, '_')}-${idx}`;
         filesHtml += `
           <div class="slskd-file-row" data-username="${escapeHtml(username)}" data-filename="${escapeHtml(file.filename)}" data-size="${file.size}">
             <div class="slskd-file-info">
@@ -413,7 +424,7 @@ function toggleSlskdUserFiles(username) {
                 <span class="slskd-stat-value">${file.sample_rate > 0 ? (file.sample_rate / 1000) + ' kHz' : '—'}</span>
               </span>
             </div>
-            <button class="slskd-download-btn" id="${btnId}" type="button" title="Download this file">
+            <button class="slskd-download-btn" type="button" title="Download this file">
               <i class="bi bi-download"></i>
             </button>
           </div>
