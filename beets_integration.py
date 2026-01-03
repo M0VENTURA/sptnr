@@ -8,9 +8,17 @@ import os
 import json
 import subprocess
 import logging
+import sqlite3
 from pathlib import Path
 
 logger = logging.getLogger(__name__)
+
+# Import auto-importer
+try:
+    from beets_auto_import import BeetsAutoImporter
+except ImportError:
+    BeetsAutoImporter = None
+    logger.warning("beets_auto_import module not available")
 
 
 class BeetsClient:
@@ -188,27 +196,26 @@ directory: /music
 library: /config/beets/musiclibrary.db
 
 import:
-  copy: yes
+  copy: no
   write: yes
   autotag: yes
   timid: no
+  resume: yes
+  quiet_fallback: skip
+  detail: yes
+  log: /config/beets_import.log
+
+match:
+  strong_rec_thresh: 0.04
+  medium_rec_thresh: 0.25
+
+musicbrainz:
+  enabled: yes
 
 plugins:
-  - acousticbrainz
-  - lyrics
-  - missing
   - duplicates
-
-acousticbrainz:
-  auto: no
-
-lyrics:
-  sources: genius google
-  fallback: ''
-  force: no
-
-missing:
-  album_count: yes
+  - missing
+  - info
 """
         
         try:
@@ -219,6 +226,108 @@ missing:
         except Exception as e:
             logger.error(f"Failed to create beets config: {e}")
             return False
+    
+    def auto_import_library(self, artist_path: str = None) -> dict:
+        """
+        Run auto-import on entire library or specific artist.
+        
+        Args:
+            artist_path: Optional path to specific artist folder
+            
+        Returns:
+            Dict with import results
+        """
+        if not BeetsAutoImporter:
+            return {"success": False, "error": "Auto-importer not available"}
+        
+        try:
+            importer = BeetsAutoImporter(config_path=str(self.config_path))
+            success = importer.import_and_capture(artist_path=artist_path)
+            
+            return {
+                "success": success,
+                "message": "Auto-import completed" if success else "Auto-import failed"
+            }
+        except Exception as e:
+            logger.error(f"Auto-import failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def sync_beets_metadata(self) -> dict:
+        """
+        Sync metadata from beets database to sptnr database.
+        
+        Returns:
+            Dict with sync results
+        """
+        if not BeetsAutoImporter:
+            return {"success": False, "error": "Auto-importer not available"}
+        
+        try:
+            importer = BeetsAutoImporter(config_path=str(self.config_path))
+            importer.sync_beets_to_sptnr()
+            
+            return {
+                "success": True,
+                "message": "Beets metadata synced to sptnr database"
+            }
+        except Exception as e:
+            logger.error(f"Metadata sync failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_beets_recommendations(self, track_id: str = None) -> dict:
+        """
+        Get beets/MusicBrainz recommendations for a track.
+        
+        Args:
+            track_id: Sptnr track ID
+            
+        Returns:
+            Dict with beets metadata
+        """
+        try:
+            sptnr_db = Path("/database/sptnr.db")
+            if not sptnr_db.exists():
+                return {"success": False, "error": "Sptnr database not found"}
+            
+            conn = sqlite3.connect(sptnr_db)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    beets_mbid,
+                    beets_album_mbid,
+                    beets_artist_mbid,
+                    beets_similarity,
+                    beets_album_artist,
+                    beets_year,
+                    beets_import_date,
+                    beets_path
+                FROM tracks
+                WHERE id = ?
+            """, (track_id,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    "success": True,
+                    "mbid": row['beets_mbid'],
+                    "album_mbid": row['beets_album_mbid'],
+                    "artist_mbid": row['beets_artist_mbid'],
+                    "similarity": row['beets_similarity'],
+                    "album_artist": row['beets_album_artist'],
+                    "year": row['beets_year'],
+                    "import_date": row['beets_import_date'],
+                    "path": row['beets_path']
+                }
+            else:
+                return {"success": False, "error": "No beets data for this track"}
+                
+        except Exception as e:
+            logger.error(f"Failed to get beets recommendations: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Backward-compatible module functions

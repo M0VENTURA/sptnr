@@ -44,10 +44,47 @@
 
   <!-- Import Section -->
   <div class="row mb-4">
-    <div class="col-lg-8">
+    <div class="col-lg-6">
       <div class="card">
         <div class="card-header">
-          <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Import Music</h5>
+          <h5 class="mb-0"><i class="bi bi-lightning"></i> Auto-Import Library</h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted">Auto-import entire library with MusicBrainz tagging. Captures metadata and stores recommendations in database.</p>
+          
+          <div class="mb-3">
+            <label for="autoImportArtist" class="form-label">Artist Path (Optional)</label>
+            <input 
+              type="text" 
+              class="form-control" 
+              id="autoImportArtist" 
+              placeholder="Leave empty for full library, or /music/Artist Name"
+            >
+            <small class="form-text">Import specific artist only, or leave empty for entire library</small>
+          </div>
+
+          <button type="button" class="btn btn-success btn-lg w-100 mb-2" onclick="startAutoImport()">
+            <i class="bi bi-play-fill"></i> Start Auto-Import (beet import -A)
+          </button>
+          
+          <button type="button" class="btn btn-info w-100" onclick="syncBeetsMetadata()">
+            <i class="bi bi-arrow-repeat"></i> Sync Beets Metadata to Database
+          </button>
+          
+          <div id="autoImportStatus" style="display: none; margin-top: 1rem;">
+            <div class="alert alert-info">
+              <i class="bi bi-hourglass-split"></i>
+              <span id="autoImportMessage">Starting auto-import...</span>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div class="col-lg-6">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0"><i class="bi bi-cloud-download"></i> Manual Import</h5>
         </div>
         <div class="card-body">
           <form id="beetsImportForm">
@@ -85,36 +122,12 @@
               <i class="bi bi-arrow-counterclockwise"></i> Reset
             </button>
           </form>
-        </div>
-      </div>
-    </div>
-
-    <div class="col-lg-4">
-      <div class="card">
-        <div class="card-header">
-          <h5 class="mb-0"><i class="bi bi-list-check"></i> Import Status</h5>
-        </div>
-        <div class="card-body">
-          <div id="importStatus" style="display: none;">
+          
+          <div id="importStatus" style="display: none; margin-top: 1rem;">
             <div class="alert alert-info">
               <i class="bi bi-hourglass-split"></i> 
               <span id="importMessage">Preparing import...</span>
             </div>
-          </div>
-          <div id="importSuccess" style="display: none;">
-            <div class="alert alert-success">
-              <i class="bi bi-check-circle"></i> 
-              <span id="importSuccessMessage">Import completed successfully</span>
-            </div>
-          </div>
-          <div id="importError" style="display: none;">
-            <div class="alert alert-danger">
-              <i class="bi bi-exclamation-circle"></i>
-              <span id="importErrorMessage">Error occurred</span>
-            </div>
-          </div>
-          <div id="noImportStatus" class="text-muted">
-            <small>Import status will appear here</small>
           </div>
         </div>
       </div>
@@ -295,6 +308,83 @@ function createBeetsConfig() {
   })
   .catch(e => alert('Network error: ' + e.message));
 }
+
+function startAutoImport() {
+  const artistPath = document.getElementById('autoImportArtist').value.trim();
+  
+  if (confirm(`Start auto-import${artistPath ? ' for ' + artistPath : ' for entire library'}?\n\nThis will run 'beet import -A' and capture MusicBrainz metadata.`)) {
+    document.getElementById('autoImportStatus').style.display = 'block';
+    document.getElementById('autoImportMessage').textContent = 'Starting auto-import...';
+    
+    fetch('/api/beets/auto-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist_path: artistPath || null })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('autoImportMessage').textContent = data.message + ' - Check console for progress';
+        setTimeout(() => {
+          document.getElementById('autoImportStatus').style.display = 'none';
+          loadBeetsStatus();
+        }, 5000);
+      } else {
+        document.getElementById('autoImportStatus').innerHTML = `
+          <div class="alert alert-danger">
+            <i class="bi bi-exclamation-circle"></i> ${data.error || 'Auto-import failed'}
+          </div>
+        `;
+      }
+    })
+    .catch(e => {
+      document.getElementById('autoImportStatus').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-circle"></i> Network error: ${e.message}
+        </div>
+      `;
+    });
+  }
+}
+
+function syncBeetsMetadata() {
+  if (confirm('Sync metadata from beets database to sptnr database?\n\nThis will update tracks with MusicBrainz IDs and recommendations from beets.')) {
+    document.getElementById('autoImportStatus').style.display = 'block';
+    document.getElementById('autoImportMessage').textContent = 'Syncing beets metadata...';
+    
+    fetch('/api/beets/sync-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('autoImportStatus').innerHTML = `
+          <div class="alert alert-success">
+            <i class="bi bi-check-circle"></i> ${data.message}
+          </div>
+        `;
+        setTimeout(() => {
+          document.getElementById('autoImportStatus').style.display = 'none';
+        }, 3000);
+      } else {
+        document.getElementById('autoImportStatus').innerHTML = `
+          <div class="alert alert-danger">
+            <i class="bi bi-exclamation-circle"></i> ${data.error || 'Sync failed'}
+          </div>
+        `;
+      }
+    })
+    .catch(e => {
+      document.getElementById('autoImportStatus').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-circle"></i> Network error: ${e.message}
+        </div>
+      `;
+    });
+  }
+}
+
 
 // Load status on page load
 document.addEventListener('DOMContentLoaded', function() {

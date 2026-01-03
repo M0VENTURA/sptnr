@@ -2738,6 +2738,74 @@ def beets_configure():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/beets/auto-import", methods=["POST"])
+def beets_auto_import():
+    """
+    Run beets auto-import on entire library with metadata capture.
+    Uses 'beet import -A' to auto-tag and stores MusicBrainz recommendations.
+    """
+    try:
+        data = request.json or {}
+        artist_path = data.get("artist_path")  # Optional: import specific artist only
+        
+        beets_client = _get_beets_client()
+        
+        if not beets_client.is_installed():
+            return jsonify({"error": "Beets is not installed"}), 400
+        
+        # Run auto-import in background thread
+        def run_auto_import():
+            logging.info(f"Starting beets auto-import{' for ' + artist_path if artist_path else ' (full library)'}")
+            result = beets_client.auto_import_library(artist_path=artist_path)
+            logging.info(f"Beets auto-import result: {result}")
+        
+        import_thread = threading.Thread(target=run_auto_import, daemon=True)
+        import_thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Beets auto-import started in background",
+            "artist_path": artist_path or "Full library"
+        }), 202
+        
+    except Exception as e:
+        logging.error(f"Error starting beets auto-import: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/beets/sync-metadata", methods=["POST"])
+def beets_sync_metadata():
+    """Sync metadata from beets database to sptnr database."""
+    try:
+        beets_client = _get_beets_client()
+        
+        result = beets_client.sync_beets_metadata()
+        
+        if result.get("success"):
+            return jsonify(result)
+        else:
+            return jsonify(result), 500
+            
+    except Exception as e:
+        logging.error(f"Error syncing beets metadata: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/beets/track/<track_id>/recommendations", methods=["GET"])
+def beets_track_recommendations(track_id):
+    """Get beets/MusicBrainz recommendations for a specific track."""
+    try:
+        beets_client = _get_beets_client()
+        
+        result = beets_client.get_beets_recommendations(track_id=track_id)
+        
+        return jsonify(result)
+        
+    except Exception as e:
+        logging.error(f"Error getting beets recommendations: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ============================================================================
 # SPOTIFY PLAYLIST IMPORT ROUTES
 # ============================================================================
