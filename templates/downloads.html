@@ -328,7 +328,7 @@ function pollSlskdResults() {
 function displaySlskdResponses() {
   const container = document.getElementById('slskdResults');
   
-  let html = '<div class="list-group">';
+  let html = '<div class="slskd-responses">';
   
   // Sort by number of files (descending)
   const sortedUsers = Object.values(slskdResponsesData).sort((a, b) => b.files.length - a.files.length);
@@ -338,20 +338,20 @@ function displaySlskdResponses() {
     const lockedCount = userData.lockedFiles;
     
     html += `
-      <div class="list-group-item list-group-item-action" style="cursor: pointer;" onclick="toggleSlskdUserFiles('${escapeHtml(userData.username)}')">
-        <div class="d-flex w-100 justify-content-between align-items-center">
-          <div>
-            <h6 class="mb-1">
+      <div class="slskd-user-group">
+        <div class="slskd-user-header" onclick="toggleSlskdUserFiles('${escapeHtml(userData.username)}')">
+          <div class="slskd-user-info">
+            <div class="slskd-username">
               <i class="bi bi-person-circle"></i> ${escapeHtml(userData.username)}
-            </h6>
-            <small class="text-muted">
+            </div>
+            <div class="slskd-user-meta">
               <i class="bi bi-file-earmark-music"></i> ${fileCount} file${fileCount !== 1 ? 's' : ''}
               ${lockedCount > 0 ? ` · <i class="bi bi-lock"></i> ${lockedCount} locked` : ''}
-            </small>
+            </div>
           </div>
-          <i class="bi bi-chevron-down" id="chevron-${escapeHtml(userData.username)}"></i>
+          <i class="bi bi-chevron-down slskd-chevron" id="chevron-${escapeHtml(userData.username)}"></i>
         </div>
-        <div id="files-${escapeHtml(userData.username)}" style="display: none; margin-top: 12px;">
+        <div id="files-${escapeHtml(userData.username)}" class="slskd-files-container" style="display: none;">
           <!-- Files will be inserted here -->
         </div>
       </div>
@@ -369,52 +369,53 @@ function toggleSlskdUserFiles(username) {
   if (filesDiv.style.display === 'none') {
     // Show files
     filesDiv.style.display = 'block';
-    chevron.className = 'bi bi-chevron-up';
+    chevron.className = 'bi bi-chevron-up slskd-chevron';
     
     // Populate files if not already done
     if (filesDiv.innerHTML.trim() === '') {
       const userData = slskdResponsesData[username];
-      let filesHtml = '<div class="table-responsive"><table class="table table-sm table-hover mb-0">';
-      filesHtml += `
-        <thead>
-          <tr>
-            <th>Filename</th>
-            <th class="text-center">Size</th>
-            <th class="text-center">Bitrate</th>
-            <th class="text-center">Length</th>
-            <th class="text-center">Action</th>
-          </tr>
-        </thead>
-        <tbody>
-      `;
+      let filesHtml = '<div class="slskd-files-list">';
       
       userData.files.forEach(file => {
         filesHtml += `
-          <tr>
-            <td>
-              <div class="text-truncate" style="max-width: 300px;" title="${escapeHtml(file.filename)}">
+          <div class="slskd-file-row">
+            <div class="slskd-file-info">
+              <div class="slskd-file-name" title="${escapeHtml(file.filename)}">
                 ${escapeHtml(file.filename)}
               </div>
-            </td>
-            <td class="text-center">${formatBytes(file.size)}</td>
-            <td class="text-center">${file.bitrate > 0 ? file.bitrate + ' kbps' : '—'}</td>
-            <td class="text-center">${file.length > 0 ? formatDuration(file.length) : '—'}</td>
-            <td class="text-center">
-              <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}')">
-                <i class="bi bi-download"></i>
-              </button>
-            </td>
-          </tr>
+            </div>
+            <div class="slskd-file-stats">
+              <span class="slskd-file-stat">
+                <span class="slskd-stat-label">Size</span>
+                <span class="slskd-stat-value">${formatBytes(file.size)}</span>
+              </span>
+              <span class="slskd-file-stat">
+                <span class="slskd-stat-label">Bitrate</span>
+                <span class="slskd-stat-value">${file.bitrate > 0 ? file.bitrate + ' kbps' : '—'}</span>
+              </span>
+              <span class="slskd-file-stat">
+                <span class="slskd-stat-label">Length</span>
+                <span class="slskd-stat-value">${file.length > 0 ? formatDuration(file.length) : '—'}</span>
+              </span>
+              <span class="slskd-file-stat">
+                <span class="slskd-stat-label">Sample Rate</span>
+                <span class="slskd-stat-value">${file.sample_rate > 0 ? (file.sample_rate / 1000) + ' kHz' : '—'}</span>
+              </span>
+            </div>
+            <button class="slskd-download-btn" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}', ${file.size})">
+              <i class="bi bi-download"></i>
+            </button>
+          </div>
         `;
       });
       
-      filesHtml += '</tbody></table></div>';
+      filesHtml += '</div>';
       filesDiv.innerHTML = filesHtml;
     }
   } else {
     // Hide files
     filesDiv.style.display = 'none';
-    chevron.className = 'bi bi-chevron-down';
+    chevron.className = 'bi bi-chevron-down slskd-chevron';
   }
 }
 
@@ -431,26 +432,13 @@ function showSlskdError(message) {
   }
 }
 
-function downloadSlskd(username, filename) {
+function downloadSlskd(username, filename, size) {
   if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
-  
-  // Find the file object in slskdResponsesData to get size
-  const userData = slskdResponsesData[username];
-  if (!userData) {
-    alert('❌ Error: User data not found');
-    return;
-  }
-  
-  const fileData = userData.files.find(f => f.filename === filename);
-  if (!fileData) {
-    alert('❌ Error: File data not found');
-    return;
-  }
   
   fetch('/api/slskd/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username, filename: filename, size: fileData.size })
+    body: JSON.stringify({ username: username, filename: filename, size: size || 0 })
   })
   .then(response => response.json())
   .then(data => {
@@ -598,7 +586,189 @@ window.addEventListener('beforeunload', () => {
     background-color: rgba(255, 255, 255, 0.05) !important;
 }
 
-/* Nested file tables in Soulseek results */
+/* Soulseek-style file listing */
+.slskd-responses {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.slskd-user-group {
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    overflow: hidden;
+    background-color: var(--secondary-bg);
+}
+
+.slskd-user-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 0.75rem 1rem;
+    cursor: pointer;
+    background-color: var(--secondary-bg);
+    border-bottom: 1px solid var(--border-color);
+    transition: background-color 0.15s ease;
+    user-select: none;
+}
+
+.slskd-user-header:hover {
+    background-color: rgba(255, 255, 255, 0.05);
+}
+
+.slskd-user-info {
+    display: flex;
+    flex-direction: column;
+    gap: 0.25rem;
+    flex: 1;
+}
+
+.slskd-username {
+    font-size: 0.95rem;
+    font-weight: 500;
+    color: var(--text-primary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.slskd-user-meta {
+    font-size: 0.85rem;
+    color: var(--text-secondary);
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.slskd-chevron {
+    color: var(--text-secondary);
+    transition: transform 0.2s ease;
+    font-size: 1rem;
+}
+
+.slskd-files-container {
+    background-color: rgba(0, 0, 0, 0.2);
+    border-top: 1px solid var(--border-color);
+}
+
+.slskd-files-list {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+}
+
+.slskd-file-row {
+    display: flex;
+    align-items: stretch;
+    padding: 0.75rem 1rem;
+    border-bottom: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background-color 0.1s ease;
+    gap: 1rem;
+    background-color: transparent;
+}
+
+.slskd-file-row:last-child {
+    border-bottom: none;
+}
+
+.slskd-file-row:hover {
+    background-color: rgba(255, 255, 255, 0.08);
+}
+
+.slskd-file-info {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
+}
+
+.slskd-file-name {
+    font-size: 0.9rem;
+    color: var(--text-primary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    word-break: break-all;
+    flex: 1;
+}
+
+.slskd-file-stats {
+    display: flex;
+    gap: 2rem;
+    align-items: center;
+    min-width: min-content;
+}
+
+.slskd-file-stat {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    font-size: 0.85rem;
+    gap: 0.1rem;
+}
+
+.slskd-stat-label {
+    color: var(--text-tertiary);
+    font-size: 0.75rem;
+    text-transform: uppercase;
+    letter-spacing: 0.3px;
+}
+
+.slskd-stat-value {
+    color: var(--text-primary);
+    font-weight: 500;
+    font-size: 0.9rem;
+}
+
+.slskd-download-btn {
+    padding: 0.4rem 0.6rem;
+    background-color: var(--spotify-green);
+    border: none;
+    border-radius: 4px;
+    color: white;
+    cursor: pointer;
+    font-size: 0.9rem;
+    transition: all 0.15s ease;
+    display: flex;
+    align-items: center;
+    gap: 0.3rem;
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.slskd-download-btn:hover {
+    background-color: #1db954;
+    transform: scale(1.05);
+}
+
+.slskd-download-btn:active {
+    transform: scale(0.95);
+}
+
+@media (max-width: 768px) {
+    .slskd-file-row {
+        flex-direction: column;
+        padding: 0.5rem 0.75rem;
+        gap: 0.5rem;
+    }
+    
+    .slskd-file-stats {
+        flex-wrap: wrap;
+        gap: 1rem;
+    }
+    
+    .slskd-file-stat {
+        flex-direction: row;
+        gap: 0.3rem;
+    }
+    
+    .slskd-stat-label {
+        margin-right: 0.3rem;
+    }
+}
+
+/* Nested file tables in Soulseek results - kept for backward compatibility */
 #slskdResults .table-responsive {
     background-color: rgba(0, 0, 0, 0.3) !important;
     border-radius: 4px;
