@@ -1929,7 +1929,7 @@ def api_metadata():
             else:
                 # Legacy format: try rsplit to handle albums with slashes
                 parts = identifier.rsplit('/', 1)
-                if len(parts) >= 2:
+                if len(parts) == 2:
                     artist = parts[0]
                     album = parts[1]
                 else:
