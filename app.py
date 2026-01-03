@@ -22,7 +22,7 @@ from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
 from start import create_retry_session, rate_artist, build_artist_index
 from scan_helpers import scan_artist_to_db
-from popularity import scan_popularity
+from popularity import scan_popularity as run_popularity_scan
 from api_clients.slskd import SlskdClient
 from beets_integration import _get_beets_client
 
@@ -966,7 +966,7 @@ def album_rescan(artist, album):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist)
-            scan_popularity(verbose=True, artist=artist_name)
+            run_popularity_scan(verbose=True, artist=artist_name)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -1008,7 +1008,7 @@ def scan_track_rescan(artist, album, track_id):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist, which includes the track)
-            scan_popularity(verbose=True, artist=artist_name)
+            run_popularity_scan(verbose=True, artist=artist_name)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -1266,7 +1266,7 @@ def scan_popularity():
             def run_popularity_scan_bg():
                 try:
                     logging.info("Starting popularity score scan in background")
-                    scan_popularity(verbose=False)
+                    run_popularity_scan(verbose=False)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Popularity scan completed successfully")
                 except Exception as e:
