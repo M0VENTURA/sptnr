@@ -56,16 +56,6 @@
                             <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
                             <div class="form-text">Official MusicBrainz recording ID</div>
                         </div>
-                        
-                        <div class="mb-3">
-                            <label for="suggested_mbid" class="form-label">Suggested MBID</label>
-                            <div class="input-group">
-                                <input type="text" class="form-control" id="suggested_mbid" name="suggested_mbid" value="{{ track.suggested_mbid or '' }}" readonly>
-                                <input type="number" class="form-control" id="suggested_mbid_confidence" name="suggested_mbid_confidence" 
-                                       value="{{ track.suggested_mbid_confidence or '' }}" placeholder="Confidence" step="0.01" min="0" max="1" style="max-width: 120px;" readonly>
-                            </div>
-                            <div class="form-text">Auto-suggested MBID with confidence score</div>
-                        </div>
                                                 <div class="mb-3">
                             <label for="stars" class="form-label">Rating</label>
                             <select class="form-select" id="stars" name="stars">
@@ -110,10 +100,6 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Track ID</div>
                             <div class="metadata-value monospace" style="font-size: 0.8rem; overflow-wrap: break-word;">{{ track.id }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">MBID</div>
-                            <div class="metadata-value monospace" style="font-size: 0.8rem;">{{ track.mbid or '—' }}</div>
                         </div>
                         <div class="metadata-row">
                             <div class="metadata-label">Spotify</div>
@@ -256,6 +242,16 @@
                             <div class="metadata-value">{{ track.year or '—' }}</div>
                         </div>
                         <div class="metadata-row">
+                            <div class="metadata-label">Album Artist</div>
+                            <div class="metadata-value">
+                                {% if track.album_artist %}
+                                    <a href="{{ url_for('artist_detail', name=track.album_artist) }}">{{ track.album_artist }}</a>
+                                {% else %}
+                                    —
+                                {% endif %}
+                            </div>
+                        </div>
+                        <div class="metadata-row">
                             <div class="metadata-label">Track Number</div>
                             <div class="metadata-value">{{ track.track_number or '—' }}</div>
                         </div>
@@ -263,6 +259,12 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Disc Number</div>
                             <div class="metadata-value">{{ track.disc_number }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.navidrome_rating %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Navidrome Rating</div>
+                            <div class="metadata-value">{{ track.navidrome_rating }}/5</div>
                         </div>
                         {% endif %}
                         {% if track.bpm %}
@@ -547,11 +549,7 @@
     }
 
     function applyMBID(mbid, confidence) {
-        // Populate the suggested MBID fields
-        document.getElementById('suggested_mbid').value = mbid;
-        document.getElementById('suggested_mbid_confidence').value = (confidence || 0).toFixed(2);
-        
-        // Also populate the main MBID field if it's empty
+        // Populate the main MBID field
         const mbidField = document.getElementById('mbid');
         if (!mbidField.value || confirm('Replace current MBID with this suggested one?')) {
             mbidField.value = mbid;
