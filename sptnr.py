@@ -39,6 +39,28 @@ except ValueError:
 
 SLEEP_TIME = 1.5
 
+# Additional API keys and weights
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN")
+LISTENBRAINZ_WEIGHT = float(os.getenv("LISTENBRAINZ_WEIGHT", "0.0"))
+AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.2"))
+AUDIODB_API_KEY = os.getenv("AUDIODB_API_KEY")
+
+# Placeholder config - in a full implementation this would be loaded from config.yaml
+config = {
+    "features": {
+        "clamp_min": 0.75,
+        "clamp_max": 1.25,
+        "cap_top4_pct": 0.25,
+        "known_singles": {},
+        "use_audiodb": False
+    }
+}
+
+# Global flags for sync and dry_run (set from args)
+sync = False
+dry_run = False
+
 # 📁 Cache paths (aligned with mounted volume)
 
 DATA_DIR = "data"  # Or "Data", if your host mount uses capital D
@@ -403,6 +425,13 @@ def is_discogs_single_titleaware(title, artist, token):
         return False
 
 
+# Aliases for the single detection functions (used in detect_single_status)
+_is_lastfm_single = is_lastfm_single
+_is_musicbrainz_single = is_musicbrainz_single
+_is_youtube_single = is_youtube_single
+_is_discogs_single_titleaware = is_discogs_single_titleaware
+
+
 def load_single_cache():
     if os.path.exists(SINGLE_CACHE_FILE):
         with open(SINGLE_CACHE_FILE, "r", encoding="utf-8") as f:
@@ -539,6 +568,96 @@ def detect_single_status(title, artist, cache={}, force=False,
 DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 
 
+# Stub functions for incomplete rate_artist implementation
+def is_valid_version(title, allow_live_remix=True):
+    """Check if track title is a valid version (not live/remix if not allowed)."""
+    if not allow_live_remix:
+        lower_title = title.lower()
+        # Check for live, remix, edit, acoustic, etc.
+        unwanted = ['live', 'remix', 'edit', 'acoustic', 'unplugged', 'demo', 'version']
+        return not any(word in lower_title for word in unwanted)
+    return True
+
+def fetch_artist_albums(artist_id):
+    """Stub: Fetch albums for an artist from Navidrome."""
+    # This would normally query Navidrome API
+    return []
+
+def fetch_album_tracks(album_id):
+    """Stub: Fetch tracks for an album from Navidrome."""
+    # This would normally query Navidrome API
+    return []
+
+def compute_track_score(title, artist, release_date, spotify_score, mbid, verbose=False):
+    """Stub: Compute track score from multiple sources."""
+    # This would combine Spotify, Last.fm, ListenBrainz scores
+    score = spotify_score
+    momentum = 0
+    listenbrainz_score = 0
+    return score, momentum, listenbrainz_score
+
+def get_discogs_genres(title, artist):
+    """Stub: Get genres from Discogs."""
+    return []
+
+def get_audiodb_genres(artist):
+    """Stub: Get genres from AudioDB."""
+    return []
+
+def get_musicbrainz_genres(title, artist):
+    """Stub: Get genres from MusicBrainz."""
+    return []
+
+def get_top_genres_with_navidrome(online_sources, nav_genres, title=None, album=None):
+    """Stub: Combine genres from multiple sources."""
+    all_genres = []
+    for source_genres in online_sources.values():
+        all_genres.extend(source_genres)
+    all_genres.extend(nav_genres)
+    return all_genres[:5], {}
+
+def adjust_genres(genres, artist_is_metal=False):
+    """Stub: Adjust genre list based on context."""
+    return genres
+
+def compute_adaptive_weights(tracks, base_weights, clamp, use='mad'):
+    """Stub: Compute adaptive weights for scoring sources."""
+    return base_weights
+
+def save_to_db(track_data):
+    """Stub: Save track data to database."""
+    # This would save to SQLite
+    pass
+
+def get_current_rating(track_id):
+    """Stub: Get current rating from Navidrome."""
+    # This would query Navidrome API
+    return None
+
+def set_track_rating(track_id, stars):
+    """Stub: Set track rating in Navidrome."""
+    # This would use Navidrome API
+    pass
+
+def create_playlist(name, track_ids):
+    """Stub: Create playlist in Navidrome."""
+    # This would use Navidrome API
+    pass
+
+def build_artist_index():
+    """Stub: Build artist index from Navidrome."""
+    # This would query Navidrome and save to INDEX_FILE
+    print("⚠️ build_artist_index() not implemented")
+    pass
+
+def load_artist_index():
+    """Load artist index from file."""
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist:
@@ -574,6 +693,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
     all_five_star_tracks = []
+    
+    # Load persistent single cache
+    single_cache = load_single_cache()
 
     for album in albums:
         album_name = album.get("name", "Unknown Album")
@@ -721,7 +843,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             # multi-source aggregator (Discogs/MusicBrainz/YouTube/Last.fm + known_singles)
             agg = detect_single_status(
                 title, artist_name,
-                cache={},                # use ephemeral cache here; DB persists later
+                cache=single_cache,      # use persistent cache across sessions
                 force=force,
                 youtube_api_key=youtube_key,
                 discogs_token=discogs_token,
@@ -864,6 +986,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         print(f"ℹ️ No Essential playlist created for {artist_name} (5★ tracks: {len(all_five_star_tracks)})")
 
     print(f"✅ Finished rating for artist: {artist_name}")
+    
+    # Save updated single cache to persist across sessions
+    save_single_cache(single_cache)
+    
     return rated_map
 
 def fetch_all_artists():
