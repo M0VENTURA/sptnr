@@ -473,7 +473,7 @@ def dashboard():
         cursor.execute("SELECT COUNT(*) FROM tracks")
         track_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5 OR navidrome_rating = 5")
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
         five_star_count = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
@@ -1705,7 +1705,7 @@ def api_track_count():
             total_tracks = cursor.fetchone()[0]
             
             # Also get counts with different metadata filled in
-            cursor.execute("SELECT COUNT(*) FROM tracks WHERE navidrome_rating IS NOT NULL")
+            cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars IS NOT NULL")
             navidrome_filled = cursor.fetchone()[0]
             
             cursor.execute("SELECT COUNT(*) FROM tracks WHERE spotify_score IS NOT NULL")

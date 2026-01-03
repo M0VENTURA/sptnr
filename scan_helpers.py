@@ -125,7 +125,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "mbid": t.get("mbid", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
-                    "navidrome_rating": int(t.get("userRating", 0) or 0),
+                    "stars": int(t.get("userRating", 0) or 0),
                     "duration": t.get("duration"),
                     "track_number": t.get("track"),
                     "disc_number": t.get("discNumber"),
@@ -265,7 +265,7 @@ def scan_navidrome_with_progress(verbose=False):
                 total_tracks += count
                 
                 # Count ratings
-                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND navidrome_rating > 0", (artist_name,))
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND stars > 0", (artist_name,))
                 rated_count = cursor.fetchone()[0]
                 ratings_saved += rated_count
             except Exception as e:

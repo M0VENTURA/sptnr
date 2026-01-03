@@ -449,7 +449,7 @@ def save_to_db(track_data, max_retries=3):
         "is_single","single_confidence","last_scanned",
         "mbid","suggested_mbid","suggested_mbid_confidence","single_sources",
         "is_spotify_single","spotify_total_tracks","spotify_album_type",
-        "navidrome_rating","lastfm_ratio",
+        "lastfm_ratio",
         # âœ… Audit and scoring context fields
         "discogs_single_confirmed","discogs_video_found","is_canonical_title","title_similarity_to_base",
         "album_context_live","adaptive_weight_spotify","adaptive_weight_lastfm","adaptive_weight_listenbrainz",
@@ -487,7 +487,6 @@ def save_to_db(track_data, max_retries=3):
         int(bool(track_data.get("is_spotify_single",False))),
         int(track_data.get("spotify_total_tracks",0) or 0),
         track_data.get("spotify_album_type",""),
-        int(track_data.get("navidrome_rating", 0) or 0),
         float(track_data.get("lastfm_ratio",0.0) or 0.0),
         # âœ… Audit and context values
         int(track_data.get("discogs_single_confirmed", 0) or 0),
@@ -1172,7 +1171,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         "mbid": t.get("mbid", "") or "",
                         "suggested_mbid": "",
                         "suggested_mbid_confidence": 0.0,
-                        "navidrome_rating": int(t.get("userRating", 0) or 0),
+                        "stars": int(t.get("userRating", 0) or 0),
                         "duration": t.get("duration"),
                         "track_number": t.get("track"),
                         "disc_number": t.get("discNumber"),
@@ -1343,7 +1342,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "mbid": t.get("mbid", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
-                    "navidrome_rating": int(t.get("userRating", 0) or 0),
+                    "stars": int(t.get("userRating", 0) or 0),
                     # Enhanced metadata from Navidrome for better matching
                     "duration": t.get("duration"),  # Track duration in seconds
                     "track_number": t.get("track"),  # Track number
@@ -1760,7 +1759,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "mbid": mbid or "",
                     "suggested_mbid": suggested_mbid,
                     "suggested_mbid_confidence": suggested_confidence,
-                    "navidrome_rating": int(track.get("userRating", 0) or 0),
+                    "stars": int(track.get("userRating", 0) or 0),
                     # âœ… Audit fields (populated later after single detection)
                     "discogs_single_confirmed": 0,
                     "discogs_video_found": 0,

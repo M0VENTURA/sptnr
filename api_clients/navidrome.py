@@ -138,7 +138,7 @@ class NavidromeClient:
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz
             "navidrome_genres": [track.get("genre")] if track.get("genre") else [],
-            "navidrome_rating": int(track.get("userRating", 0) or 0),
+            "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
         }
 
