@@ -122,6 +122,48 @@
     </div>
     {% endif %}
     
+    <!-- Additional Album Metadata -->
+    {% if album_data %}
+    <div class="row g-2 g-md-3 mb-4">
+        {% if album_data.total_discs and album_data.total_discs > 1 %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-disc-fill"></i> Total Discs
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.total_discs }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-music-note-list"></i> Track Count
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.track_count or 0 }}</div>
+                </div>
+            </div>
+        </div>
+        
+        {% if album_data.last_scanned %}
+        <div class="col-12 col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-clock-history"></i> Last Scanned
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.last_scanned }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    
     <!-- Genres -->
     {% if album_genres %}
     <div class="card mb-4">
