@@ -471,15 +471,15 @@
   }
   
   function manuallySelectFile(title, artist, buttonEl) {
-    // Open downloads page with search query pre-filled
+    // Open search page to browse database for this track
     const searchQuery = `${artist} ${title}`;
     const encodedQuery = encodeURIComponent(searchQuery);
     
-    // Store the query in sessionStorage for the downloads page to use
+    // Store the query in sessionStorage for the search page to use
     sessionStorage.setItem('initialSearchQuery', searchQuery);
     
-    // Open downloads page
-    window.open(`/downloads?search=${encodedQuery}`, '_blank');
+    // Open search page to browse database
+    window.open(`/search?q=${encodedQuery}`, '_blank');
     
     buttonEl.innerHTML = '<i class="bi bi-check-circle text-info"></i> Opening...';
     setTimeout(() => {

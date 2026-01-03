@@ -108,6 +108,9 @@
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
+                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
+                            <small class="d-block text-muted">Ready to scan...</small>
+                        </div>
                     </div>
                     
                     <div class="d-flex gap-2">
@@ -149,6 +152,9 @@
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
+                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
+                            <small class="d-block text-muted">Ready to scan...</small>
+                        </div>
                     </div>
                     
                     <div class="d-flex gap-2">
@@ -189,6 +195,9 @@
                         <div class="d-flex justify-content-between mb-1">
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
+                        </div>
+                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
+                            <small class="d-block text-muted">Ready to scan...</small>
                         </div>
                     </div>
                     
@@ -523,22 +532,54 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching scan progress:', error));
     }
     
+    // Update scan logs in the log containers
+    function updateScanLogsAndProgress() {
+        fetch('/api/scan-logs')
+            .then(response => response.json())
+            .then(data => {
+                // Map log types to scan types
+                const logMapping = {
+                    'navidrome': 'navidrome_scan',
+                    'popularity': 'popularity_scan',
+                    'file_paths': 'mp3_scan'
+                };
+                
+                // Update each scan type's logs
+                Object.keys(logMapping).forEach(logType => {
+                    const scanType = logMapping[logType];
+                    const logContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"] .scan-logs`);
+                    
+                    if (logContainer && data[logType]) {
+                        const logs = data[logType];
+                        if (logs.length > 0) {
+                            // Show last 5 log entries
+                            const logHtml = logs.slice(-5).map(log => 
+                                `<small class="d-block text-muted">${log}</small>`
+                            ).join('');
+                            logContainer.innerHTML = logHtml;
+                            
+                            // Auto-scroll to bottom
+                            logContainer.scrollTop = logContainer.scrollHeight;
+                        }
+                    }
+                });
+            })
+            .catch(error => console.error('Error fetching scan logs:', error));
+    }
+    
     // Initial update
     updateScanStatus();
     updateIndividualScanProgress();
-    
-    // Poll every 1 second
-    setInterval(updateIndividualScanProgress, 1000);
     updateScanLogsAndProgress();
     
-    // Refresh logs and progress every 5 seconds
-    setInterval(updateScanLogsAndProgress, 5000);
     // Poll scan status every 2 seconds
     setInterval(updateScanStatus, 2000);
     
     // Poll progress every 1 second
-    setInterval(updateScanProgress, 1000);
     setInterval(updateIndividualScanProgress, 1000);
+    
+    // Refresh logs every 3 seconds
+    setInterval(updateScanLogsAndProgress, 3000);
 });
 </script>
 {% endblock %}
