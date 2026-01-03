@@ -1112,6 +1112,12 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
       - For each track, writes a minimal `track_data` record via `save_to_db()`
       - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
     """
+    
+    def _safe_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
     print("ðŸ”Ž Scanning Navidrome library into local DB...")
     artist_map_local = build_artist_index(verbose=verbose) or {}
     if not artist_map_local:
@@ -1373,9 +1379,10 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "suggested_mbid_confidence": 0.0,
                     "stars": int(t.get("userRating", 0) or 0),
                     # Enhanced metadata from Navidrome for better matching
+                    # Normalize track/disc numbers from Navidrome (trackNumber/track, discNumber/disc)
                     "duration": t.get("duration"),  # Track duration in seconds
-                    "track_number": t.get("track"),  # Track number
-                    "disc_number": t.get("discNumber"),  # Disc number
+                    "track_number": _safe_int(t.get("trackNumber") or t.get("track")),
+                    "disc_number": _safe_int(t.get("discNumber") or t.get("disc") or 1) or 1,
                     "year": t.get("year"),  # Release year
                     "album_artist": t.get("albumArtist", ""),  # Album artist
                     "bitrate": t.get("bitRate"),  # Bitrate in kbps

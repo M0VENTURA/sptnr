@@ -129,10 +129,20 @@ class NavidromeClient:
         Returns:
             Dict with extracted metadata
         """
+        # Navidrome can expose track numbers under different keys; normalize and coerce to int when possible
+        raw_track = track.get("trackNumber") if "trackNumber" in track else track.get("track")
+        raw_disc = track.get("discNumber") if "discNumber" in track else track.get("disc")
+
+        def _safe_int(value):
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return None
+
         return {
             "duration": track.get("duration"),  # seconds
-            "track_number": track.get("track"),
-            "disc_number": track.get("discNumber"),
+            "track_number": _safe_int(raw_track),
+            "disc_number": _safe_int(raw_disc),
             "year": track.get("year"),
             "album_artist": track.get("albumArtist", ""),
             "bitrate": track.get("bitRate"),  # kbps
