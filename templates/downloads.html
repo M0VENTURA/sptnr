@@ -388,7 +388,8 @@ function toggleSlskdUserFiles(username) {
         <tbody>
       `;
       
-      userData.files.forEach(file => {
+      userData.files.forEach((file, index) => {
+        const btnId = `download-btn-${username.replace(/[^a-zA-Z0-9]/g, '_')}-${index}`;
         filesHtml += `
           <tr>
             <td>
@@ -400,7 +401,9 @@ function toggleSlskdUserFiles(username) {
             <td class="text-center">${file.bitrate > 0 ? file.bitrate + ' kbps' : '—'}</td>
             <td class="text-center">${file.length > 0 ? formatDuration(file.length) : '—'}</td>
             <td class="text-center">
-              <button class="btn btn-sm btn-success" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}')">
+              <button class="btn btn-sm btn-success slskd-download-btn" id="${btnId}" 
+                      data-username="${username}" 
+                      data-filename-index="${index}">
                 <i class="bi bi-download"></i>
               </button>
             </td>
@@ -410,6 +413,18 @@ function toggleSlskdUserFiles(username) {
       
       filesHtml += '</tbody></table></div>';
       filesDiv.innerHTML = filesHtml;
+      
+      // Attach event listeners to download buttons
+      userData.files.forEach((file, index) => {
+        const btnId = `download-btn-${username.replace(/[^a-zA-Z0-9]/g, '_')}-${index}`;
+        const btn = document.getElementById(btnId);
+        if (btn) {
+          btn.addEventListener('click', function(e) {
+            e.stopPropagation();
+            downloadSlskd(username, file.filename, file.size);
+          });
+        }
+      });
     }
   } else {
     // Hide files
@@ -431,26 +446,13 @@ function showSlskdError(message) {
   }
 }
 
-function downloadSlskd(username, filename) {
+function downloadSlskd(username, filename, size) {
   if (!username || !filename || !confirm('Download this file from Soulseek?')) return;
-  
-  // Find the file object in slskdResponsesData to get size
-  const userData = slskdResponsesData[username];
-  if (!userData) {
-    alert('❌ Error: User data not found');
-    return;
-  }
-  
-  const fileData = userData.files.find(f => f.filename === filename);
-  if (!fileData) {
-    alert('❌ Error: File data not found');
-    return;
-  }
   
   fetch('/api/slskd/download', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username: username, filename: filename, size: fileData.size })
+    body: JSON.stringify({ username: username, filename: filename, size: size || 0 })
   })
   .then(response => response.json())
   .then(data => {

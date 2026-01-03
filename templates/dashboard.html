@@ -172,6 +172,17 @@
                     <span class="scan-badge" data-scan-type="navidrome_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
                         <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
                     </span>
+                    <!-- Progress bar for Navidrome scan -->
+                    <div class="scan-progress-bar mt-2" data-scan-type="navidrome_scan" style="display: none;">
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                                 role="progressbar" style="width: 0%;" 
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.7rem;">
+                            <span class="scan-progress-text">Initializing...</span>
+                        </small>
+                    </div>
                 </div>
                 
                 <div class="position-relative">
@@ -183,6 +194,17 @@
                     <span class="scan-badge" data-scan-type="popularity_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
                         <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
                     </span>
+                    <!-- Progress bar for Popularity scan -->
+                    <div class="scan-progress-bar mt-2" data-scan-type="popularity_scan" style="display: none;">
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                                 role="progressbar" style="width: 0%;" 
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.7rem;">
+                            <span class="scan-progress-text">Initializing...</span>
+                        </small>
+                    </div>
                 </div>
                 
                 <div class="position-relative">
@@ -194,6 +216,17 @@
                     <span class="scan-badge" data-scan-type="singles_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
                         <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
                     </span>
+                    <!-- Progress bar for Singles scan -->
+                    <div class="scan-progress-bar mt-2" data-scan-type="singles_scan" style="display: none;">
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
+                                 role="progressbar" style="width: 0%;" 
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.7rem;">
+                            <span class="scan-progress-text">Initializing...</span>
+                        </small>
+                    </div>
                 </div>
                 
                 <div class="position-relative">
@@ -205,6 +238,17 @@
                     <span class="scan-badge" data-scan-type="mp3_scan" style="position: absolute; top: 5px; right: 5px; font-size: 0.6rem; display: none;">
                         <span class="badge bg-danger"><i class="bi bi-play-fill"></i> Running</span>
                     </span>
+                    <!-- Progress bar for MP3 scan -->
+                    <div class="scan-progress-bar mt-2" data-scan-type="mp3_scan" style="display: none;">
+                        <div class="progress" style="height: 8px;">
+                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
+                                 role="progressbar" style="width: 0%;" 
+                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100"></div>
+                        </div>
+                        <small class="text-muted d-block mt-1" style="font-size: 0.7rem;">
+                            <span class="scan-progress-text">Initializing...</span>
+                        </small>
+                    </div>
                 </div>
             </div>
             <div class="mt-3">
@@ -350,19 +394,92 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/scan-status')
             .then(response => response.json())
             .then(data => {
-                // Update badge visibility based on running status
+                // Update badge and progress bar visibility based on running status
                 document.querySelectorAll('.scan-badge').forEach(badge => {
                     const scanType = badge.getAttribute('data-scan-type');
                     const scanData = data[scanType];
                     
                     if (scanData && scanData.running) {
                         badge.style.display = 'block';
+                        
+                        // Show progress bar for this scan type
+                        const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${scanType}"]`);
+                        if (progressBarContainer) {
+                            progressBarContainer.style.display = 'block';
+                        }
                     } else {
                         badge.style.display = 'none';
+                        
+                        // Hide progress bar for this scan type
+                        const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${scanType}"]`);
+                        if (progressBarContainer) {
+                            progressBarContainer.style.display = 'none';
+                        }
                     }
                 });
             })
             .catch(error => console.error('Error fetching scan status:', error));
+    }
+    
+    // Poll individual scan progress every 1 second
+    function updateIndividualScanProgress() {
+        fetch('/api/scan-progress')
+            .then(response => response.json())
+            .then(data => {
+                if (!data.is_running) return;
+                
+                const scanType = data.scan_type || 'unified';
+                
+                // Map scan types to their respective progress bar elements
+                const scanTypeMapping = {
+                    'mp3_scan': 'mp3_scan',
+                    'navidrome_scan': 'navidrome_scan',
+                    'popularity_scan': 'popularity_scan',
+                    'singles_scan': 'singles_scan'
+                };
+                
+                const mappedScanType = scanTypeMapping[scanType];
+                if (!mappedScanType) return;
+                
+                const progressBarContainer = document.querySelector(`.scan-progress-bar[data-scan-type="${mappedScanType}"]`);
+                if (!progressBarContainer) return;
+                
+                const progressBar = progressBarContainer.querySelector('.progress-bar');
+                const progressText = progressBarContainer.querySelector('.scan-progress-text');
+                
+                let percent = 0;
+                let text = 'Processing...';
+                
+                // Calculate progress based on scan type
+                if (scanType === 'mp3_scan' && data.scanned_files && data.total_files) {
+                    percent = Math.round((data.scanned_files / data.total_files) * 100);
+                    text = `${data.scanned_files}/${data.total_files} files scanned`;
+                } else if (scanType === 'navidrome_scan' && data.scanned_albums && data.total_albums) {
+                    percent = Math.round((data.scanned_albums / data.total_albums) * 100);
+                    text = `${data.scanned_albums}/${data.total_albums} albums`;
+                    if (data.current_artist) {
+                        text += ` · ${data.current_artist}`;
+                    }
+                } else if (scanType === 'popularity_scan' && data.processed_artists && data.total_artists) {
+                    percent = Math.round((data.processed_artists / data.total_artists) * 100);
+                    text = `${data.processed_artists}/${data.total_artists} artists`;
+                } else if (scanType === 'singles_scan' && data.processed_artists && data.total_artists) {
+                    percent = Math.round((data.processed_artists / data.total_artists) * 100);
+                    text = `${data.processed_artists}/${data.total_artists} artists`;
+                }
+                
+                // Update progress bar
+                if (progressBar) {
+                    progressBar.style.width = percent + '%';
+                    progressBar.setAttribute('aria-valuenow', percent);
+                }
+                
+                // Update text with percentage
+                if (progressText) {
+                    progressText.textContent = `${percent}% · ${text}`;
+                }
+            })
+            .catch(error => console.error('Error fetching scan progress:', error));
     }
     
     // Poll scan progress every 1 second
@@ -459,12 +576,14 @@ document.addEventListener('DOMContentLoaded', function() {
     // Initial update
     updateScanStatus();
     updateScanProgress();
+    updateIndividualScanProgress();
     
     // Poll scan status every 2 seconds
     setInterval(updateScanStatus, 2000);
     
     // Poll progress every 1 second
     setInterval(updateScanProgress, 1000);
+    setInterval(updateIndividualScanProgress, 1000);
 });
 </script>
 {% endblock %}
