@@ -836,20 +836,16 @@ function refreshSlskdMonitor() {
         let stateClass = 'bg-secondary';
         const state = (download.state || '').toLowerCase();
         if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
-        else if (state.includes('completed')) stateClass = 'bg-success';
-        else if (state.includes('queued')) stateClass = 'bg-warning';
-        else if (state.includes('error') || state.includes('failed')) stateClass = 'bg-danger';
+        else if (state.includes('completed') || state.includes('complete')) stateClass = 'bg-success';
+        else if (state.includes('queued') || state.includes('initializing')) stateClass = 'bg-warning';
+        else if (state.includes('error') || state.includes('failed') || state.includes('cancelled')) stateClass = 'bg-danger';
 
-        // Extract filename - handle various field names from slskd API
-        const filename = download.filename || download.remoteFilename || download.file || 'Unknown';
-        
-        // Extract size and progress - may be in different fields
-        const fileSize = download.size || download.fileSize || 0;
-        const bytesTransferred = download.bytesTransferred || download.transferred || 0;
-        const progress = Math.min(100, fileSize > 0 ? Math.round((bytesTransferred / fileSize) * 100) : 0);
-        
-        // Extract speed - try multiple field names
-        const speed = download.averageSpeed || download.speed || download.downloadSpeed || 0;
+        // Use backend-normalized fields (already extracted in /api/slskd/status)
+        const filename = download.filename || 'Unknown';
+        const fileSize = download.size || 0;
+        const bytesTransferred = download.bytesTransferred || 0;
+        const progress = download.progress || 0; // Backend already calculates this
+        const speed = download.averageSpeed || 0;
         const remainingBytes = fileSize - bytesTransferred;
         const eta = speed > 0 ? Math.floor(remainingBytes / speed) : 0;
 
