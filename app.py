@@ -959,6 +959,33 @@ def scan_start():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/unified", methods=["POST"])
+def scan_unified():
+    """Start the unified scan pipeline (popularity + singles)"""
+    global scan_process
+    
+    with scan_lock:
+        if scan_process and scan_process.poll() is None:
+            flash("A scan is already running", "warning")
+            return redirect(url_for("dashboard"))
+        
+        try:
+            # Start unified scan process
+            cmd = [sys.executable, "unified_scan.py", "--verbose"]
+            scan_process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True,
+                bufsize=1
+            )
+            flash("✅ Unified scan started (popularity → singles → ratings)", "success")
+        except Exception as e:
+            flash(f"❌ Error starting unified scan: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/mp3", methods=["POST"])
 def scan_mp3():
     """Run mp3scanner to scan music folder and match files to database"""
@@ -1420,6 +1447,49 @@ def api_scan_status():
                 "name": "Single Detection",
                 "running": scan_process_singles is not None and scan_process_singles.poll() is None
             }
+        })
+
+
+@app.route("/api/scan-progress")
+def api_scan_progress():
+    """API endpoint to get detailed scan progress"""
+    try:
+        from unified_scan import get_scan_progress
+        progress = get_scan_progress()
+        
+        # If unified scan is not running, check for MP3 and Navidrome scans
+        if not progress.get("is_running", False):
+            # Check MP3 scan progress
+            mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            if os.path.exists(mp3_progress_file):
+                try:
+                    with open(mp3_progress_file, 'r') as f:
+                        mp3_progress = json.load(f)
+                        if mp3_progress.get("is_running", False):
+                            return jsonify(mp3_progress)
+                except:
+                    pass
+            
+            # Check Navidrome scan progress
+            nav_progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            if os.path.exists(nav_progress_file):
+                try:
+                    with open(nav_progress_file, 'r') as f:
+                        nav_progress = json.load(f)
+                        if nav_progress.get("is_running", False):
+                            return jsonify(nav_progress)
+                except:
+                    pass
+        
+        return jsonify(progress)
+    except Exception as e:
+        logging.error(f"Error getting scan progress: {e}")
+        return jsonify({
+            "is_running": False,
+            "percent_complete": 0,
+            "current_artist": None,
+            "current_album": None,
+            "error": str(e)
         })
 
 
