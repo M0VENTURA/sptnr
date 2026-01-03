@@ -177,6 +177,36 @@
   </div>
 </div>
 
+<!-- Replace Track Modal -->
+<div class="modal fade" id="replaceTrackModal" tabindex="-1" aria-labelledby="replaceTrackLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="replaceTrackLabel">Replace Missing Track</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="alert alert-info mb-3">
+          <small id="originalTrackInfo"></small>
+        </div>
+        <div class="mb-3">
+          <label for="replacementTrackSearch" class="form-label">Search for Replacement Track</label>
+          <div class="input-group">
+            <input type="text" class="form-control" id="replacementTrackSearch" placeholder="Search by artist, track, or album..." onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
+            <button class="btn btn-primary" type="button" onclick="searchForReplacementTrack()">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+        </div>
+        
+        <div id="replacementTrackSearchResults" style="max-height: 400px; overflow-y: auto;">
+          <p class="text-muted text-center">Enter a search query to find replacement tracks</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Error Section -->
 <div id="errorSection" style="display: none;">
   <div class="row">
@@ -376,6 +406,9 @@
             <button class="btn btn-sm btn-outline-primary" onclick="manuallySelectFile('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', this)" title="Manually select file">
               <i class="bi bi-folder"></i> Select
             </button>
+            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}')" title="Replace with different song">
+              <i class="bi bi-arrow-repeat"></i> Replace
+            </button>
           </div>
         </div>
       `).join('');
@@ -539,7 +572,20 @@
     resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
     
     try {
-      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: query })
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        resultsDiv.innerHTML = `<p class="text-danger text-center">Error: ${error}</p>`;
+        return;
+      }
+      
       const data = await response.json();
       
       if (!data.results || data.results.length === 0) {
@@ -611,6 +657,114 @@
     displayResults(currentImportData);
     
     alert(`✅ Track "${title}" added to playlist!`);
+  }
+  
+  // Replacement track modal functions
+  let replacingTrackInfo = null;
+  
+  function openReplacementTrackModal(artist, title, album) {
+    replacingTrackInfo = { artist, title, album };
+    document.getElementById('originalTrackInfo').textContent = `Replacing: ${artist} - ${title}`;
+    document.getElementById('replacementTrackSearch').value = '';
+    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center">Enter a search query to find replacement tracks</p>';
+    
+    const modal = new bootstrap.Modal(document.getElementById('replaceTrackModal'));
+    modal.show();
+  }
+  
+  async function searchForReplacementTrack() {
+    const query = document.getElementById('replacementTrackSearch').value.trim();
+    if (!query) {
+      alert('Please enter a search query');
+      return;
+    }
+    
+    const resultsDiv = document.getElementById('replacementTrackSearchResults');
+    resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
+    
+    try {
+      const response = await fetch('/api/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: query })
+      });
+      
+      if (!response.ok) {
+        const error = await response.text();
+        resultsDiv.innerHTML = `<p class="text-danger text-center">Error: ${error}</p>`;
+        return;
+      }
+      
+      const data = await response.json();
+      
+      if (!data.results || data.results.length === 0) {
+        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
+        return;
+      }
+      
+      // Filter to tracks only
+      const tracks = data.results.filter(r => r.type === 'track');
+      
+      if (tracks.length === 0) {
+        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
+        return;
+      }
+      
+      // Display tracks
+      let html = '<div style="border-top: 1px solid var(--border-color);">';
+      tracks.forEach(track => {
+        html += `
+          <div class="track-row" style="padding: 0.75rem 0; border-bottom: 1px solid var(--border-color);">
+            <div class="track-info">
+              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+              <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
+            </div>
+            <div class="track-actions">
+              <button class="btn btn-sm btn-warning" onclick="replaceSelectedTrack('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', '${escapeHtml(track.album || '')}')"
+                      title="Replace the missing track with this one">
+                <i class="bi bi-arrow-repeat"></i> Replace
+              </button>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      resultsDiv.innerHTML = html;
+    } catch (error) {
+      resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+    }
+  }
+  
+  function replaceSelectedTrack(title, artist, album) {
+    if (!currentImportData || !replacingTrackInfo) {
+      alert('No playlist data found');
+      return;
+    }
+    
+    // Find and replace the missing track in the matched_tracks list
+    const index = currentImportData.matched_tracks.findIndex(t => 
+      t.title === replacingTrackInfo.title && t.artist === replacingTrackInfo.artist
+    );
+    
+    if (index !== -1) {
+      currentImportData.matched_tracks[index] = {
+        title: title,
+        artist: artist,
+        album: album
+      };
+    }
+    
+    // Close modal
+    bootstrap.Modal.getInstance(document.getElementById('replaceTrackModal')).hide();
+    
+    // Re-display results with updated data
+    displayResults(currentImportData);
+    
+    alert(`✅ Replaced "${replacingTrackInfo.artist} - ${replacingTrackInfo.title}" with "${artist} - ${title}"`);
+    replacingTrackInfo = null;
   }
   
   function escapeHtml(text) {
