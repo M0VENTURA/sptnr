@@ -19,9 +19,10 @@
           <h5 class="mb-0"><i class="bi bi-info-circle"></i> Status</h5>
         </div>
         <div class="card-body">
-          <div id="beetsStatus" class="spinner-border" role="status">
+          <div id="beetsStatusSpinner" class="spinner-border mb-2" role="status" style="display: none;">
             <span class="visually-hidden">Loading...</span>
           </div>
+          <div id="beetsStatus"></div>
         </div>
       </div>
     </div>
@@ -32,9 +33,10 @@
           <h5 class="mb-0"><i class="bi bi-database"></i> Library Statistics</h5>
         </div>
         <div class="card-body">
-          <div id="beetsStats" class="spinner-border" role="status">
+          <div id="beetsStatsSpinner" class="spinner-border mb-2" role="status" style="display: none;">
             <span class="visually-hidden">Loading...</span>
           </div>
+          <div id="beetsStats"></div>
         </div>
       </div>
     </div>
@@ -149,6 +151,10 @@
 let beetsStatusInterval;
 
 function loadBeetsStatus() {
+  // Show spinner
+  document.getElementById('beetsStatusSpinner').style.display = 'inline-block';
+  document.getElementById('beetsStatsSpinner').style.display = 'inline-block';
+  
   fetch('/api/beets/status')
     .then(r => r.json())
     .then(data => {
@@ -182,6 +188,8 @@ function loadBeetsStatus() {
         </div>
       `;
       
+      // Hide spinner and show content
+      document.getElementById('beetsStatusSpinner').style.display = 'none';
       document.getElementById('beetsStatus').innerHTML = statusHtml;
       
       // Load stats
@@ -203,11 +211,16 @@ function loadBeetsStatus() {
         statsHtml = '<p class="text-muted">Unable to load library statistics</p>';
       }
       
+      // Hide spinner and show content
+      document.getElementById('beetsStatsSpinner').style.display = 'none';
       document.getElementById('beetsStats').innerHTML = statsHtml;
     })
     .catch(e => {
       console.error('Error loading beets status:', e);
+      document.getElementById('beetsStatusSpinner').style.display = 'none';
+      document.getElementById('beetsStatsSpinner').style.display = 'none';
       document.getElementById('beetsStatus').innerHTML = '<p class="text-danger">Error loading status</p>';
+      document.getElementById('beetsStats').innerHTML = '<p class="text-danger">Error loading statistics</p>';
     });
 }
 
