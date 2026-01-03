@@ -473,7 +473,7 @@ def dashboard():
         cursor.execute("SELECT COUNT(*) FROM tracks")
         track_count = cursor.fetchone()[0]
         
-        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5 OR navidrome_rating = 5")
         five_star_count = cursor.fetchone()[0]
         
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
