@@ -376,9 +376,10 @@ function toggleSlskdUserFiles(username) {
       const userData = slskdResponsesData[username];
       let filesHtml = '<div class="slskd-files-list">';
       
-      userData.files.forEach(file => {
+      userData.files.forEach((file, idx) => {
+        const btnId = `slskd-btn-${username.replace(/[^a-zA-Z0-9]/g, '_')}-${idx}`;
         filesHtml += `
-          <div class="slskd-file-row">
+          <div class="slskd-file-row" data-username="${escapeHtml(username)}" data-filename="${escapeHtml(file.filename)}" data-size="${file.size}">
             <div class="slskd-file-info">
               <div class="slskd-file-name" title="${escapeHtml(file.filename)}">
                 ${escapeHtml(file.filename)}
@@ -402,7 +403,7 @@ function toggleSlskdUserFiles(username) {
                 <span class="slskd-stat-value">${file.sample_rate > 0 ? (file.sample_rate / 1000) + ' kHz' : '—'}</span>
               </span>
             </div>
-            <button class="slskd-download-btn" onclick="event.stopPropagation(); downloadSlskd('${escapeHtml(username)}', '${escapeHtml(file.filename)}', ${file.size})">
+            <button class="slskd-download-btn" id="${btnId}" type="button" title="Download this file">
               <i class="bi bi-download"></i>
             </button>
           </div>
@@ -411,6 +412,19 @@ function toggleSlskdUserFiles(username) {
       
       filesHtml += '</div>';
       filesDiv.innerHTML = filesHtml;
+      
+      // Attach event listeners to download buttons after rendering
+      filesDiv.querySelectorAll('.slskd-download-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+          e.preventDefault();
+          e.stopPropagation();
+          const row = this.closest('.slskd-file-row');
+          const username = row.getAttribute('data-username');
+          const filename = row.getAttribute('data-filename');
+          const size = parseInt(row.getAttribute('data-size'), 10);
+          downloadSlskd(username, filename, size);
+        });
+      });
     }
   } else {
     // Hide files
@@ -659,10 +673,9 @@ window.addEventListener('beforeunload', () => {
 
 .slskd-file-row {
     display: flex;
-    align-items: stretch;
+    align-items: center;
     padding: 0.75rem 1rem;
     border-bottom: 1px solid var(--border-color);
-    cursor: pointer;
     transition: background-color 0.1s ease;
     gap: 1rem;
     background-color: transparent;
@@ -722,28 +735,38 @@ window.addEventListener('beforeunload', () => {
 }
 
 .slskd-download-btn {
-    padding: 0.4rem 0.6rem;
+    padding: 0.5rem 0.75rem;
     background-color: var(--spotify-green);
     border: none;
     border-radius: 4px;
     color: white;
     cursor: pointer;
     font-size: 0.9rem;
+    font-weight: 500;
     transition: all 0.15s ease;
     display: flex;
     align-items: center;
-    gap: 0.3rem;
+    justify-content: center;
+    gap: 0.4rem;
     white-space: nowrap;
     flex-shrink: 0;
+    min-width: 44px;
+    min-height: 44px;
 }
 
 .slskd-download-btn:hover {
-    background-color: #1db954;
-    transform: scale(1.05);
+    background-color: #1ed760;
+    transform: scale(1.08);
+    box-shadow: 0 2px 8px rgba(29, 185, 84, 0.3);
 }
 
 .slskd-download-btn:active {
     transform: scale(0.95);
+}
+
+.slskd-download-btn:focus {
+    outline: 2px solid var(--spotify-green);
+    outline-offset: 2px;
 }
 
 @media (max-width: 768px) {
