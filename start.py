@@ -530,6 +530,35 @@ def get_current_track_rating(track_id: str) -> int:
         return 0
 
 
+def get_current_single_detection(track_id: str) -> dict:
+    """Query the current single detection values from the database.
+    
+    Returns dict with is_single, single_confidence, and single_sources.
+    This is used to preserve user-edited single detection across rescans.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT is_single, single_confidence, single_sources FROM tracks WHERE id = ?",
+            (track_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            is_single, confidence, sources_json = row
+            sources = json.loads(sources_json) if sources_json else []
+            return {
+                "is_single": bool(is_single),
+                "single_confidence": confidence or "low",
+                "single_sources": sources
+            }
+        return {"is_single": False, "single_confidence": "low", "single_sources": []}
+    except Exception as e:
+        logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
+        return {"is_single": False, "single_confidence": "low", "single_sources": []}
+
+
 # --- Spotify API Helpers ---
 def _clean_values(values):
     """Return list of numeric values excluding None; keep zeros as informative."""
@@ -1755,11 +1784,10 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": [],
-                    "stars": 1,
+                    "stars": int(track.get("userRating", 0) or 0),
                     "mbid": mbid or "",
                     "suggested_mbid": suggested_mbid,
                     "suggested_mbid_confidence": suggested_confidence,
-                    "stars": int(track.get("userRating", 0) or 0),
                     # âœ… Audit fields (populated later after single detection)
                     "discogs_single_confirmed": 0,
                     "discogs_video_found": 0,
@@ -1829,12 +1857,39 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         low_evidence_bumps = []  # Track songs with +1★ bump from single hints
         
         for trk in album_tracks:
+            # ✅ PRESERVE USER EDITS: Fetch current single detection before scan
+            track_id = trk.get("id")
+            current_single = get_current_single_detection(track_id)
+            
+            # Store original values to detect if user manually edited
+            trk["_original_is_single"] = current_single["is_single"]
+            trk["_original_single_confidence"] = current_single["single_confidence"]
+            trk["_original_single_sources"] = current_single["single_sources"]
+            
             # Delegate all single detection to centralized function
             rate_track_single_detection(
                 trk, artist_name, album_ctx, config,
                 TITLE_SIM_THRESHOLD, COUNT_SHORT_RELEASE_AS_MATCH,
                 use_lastfm_single, verbose
             )
+            
+            # ✅ PRESERVE USER EDITS: If user manually set is_single, restore the user's value
+            auto_detected_is_single = trk.get("is_single", False)
+            if current_single["is_single"] != auto_detected_is_single:
+                # Auto-detection changed the value → user likely edited it previously
+                if current_single["is_single"]:
+                    # User had it set to True → restore it
+                    trk["is_single"] = True
+                    trk["single_confidence"] = current_single["single_confidence"]
+                    trk["single_sources"] = current_single["single_sources"]
+                    logging.info(f"✅ Preserving user-edited is_single=True for '{trk.get('title', '')}' (auto-detected as {auto_detected_is_single})")
+                    if verbose:
+                        print(f"      ✅ Preserved user edit: is_single=True for '{trk.get('title', '')}'")
+            
+            # Remove temporary tracking fields before saving to DB
+            trk.pop("_original_is_single", None)
+            trk.pop("_original_single_confidence", None)
+            trk.pop("_original_single_sources", None)
             
             # Collect low-evidence bumps for reporting
             if trk.get("stars") == 2:
