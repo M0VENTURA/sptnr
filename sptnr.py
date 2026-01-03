@@ -1291,7 +1291,19 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None, use_goo
 
 def run_perpetual_mode():
     while True:
-        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan...{RESET}")
+        print(f"{LIGHT_BLUE}🔄 Starting scheduled scan cycle...{RESET}")
+        
+        # Run MP3 metadata scan and Navidrome scan if batchrate is enabled
+        if args.batchrate:
+            try:
+                from scan_helpers import scan_mp3_metadata, scan_navidrome_with_progress
+                music_folder = os.getenv("MUSIC_FOLDER", "/music")
+                scan_mp3_metadata(music_folder, show_progress=True)
+                scan_navidrome_with_progress(verbose=args.verbose)
+            except Exception as e:
+                print(f"{LIGHT_RED}⚠️ Scan failed: {type(e).__name__} - {e}{RESET}")
+        
+        # Build artist index
         build_artist_index()
 
         resume_artist = None
@@ -1326,7 +1338,7 @@ def run_perpetual_mode():
                 resume_from=resume_artist
             )
 
-        print(f"{LIGHT_GREEN}🕒 Scan complete. Sleeping for 12 hours...{RESET}")
+        print(f"{LIGHT_GREEN}🕒 Scan cycle complete. Sleeping for 12 hours...{RESET}")
         time.sleep(12 * 60 * 60)
 
 
