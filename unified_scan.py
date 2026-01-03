@@ -26,6 +26,34 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
 
 
+def count_music_files(music_folder: str = "/music") -> int:
+    """
+    Count total music files in folder.
+    
+    Args:
+        music_folder: Root music folder path
+        
+    Returns:
+        Total count of audio files (.mp3, .flac, .ogg, .m4a, etc.)
+    """
+    audio_extensions = {'.mp3', '.flac', '.ogg', '.m4a', '.wav', '.aac', '.wma', '.opus'}
+    total = 0
+    
+    try:
+        if not os.path.isdir(music_folder):
+            logging.warning(f"Music folder not found: {music_folder}")
+            return 0
+        
+        for root, dirs, files in os.walk(music_folder):
+            for file in files:
+                if os.path.splitext(file)[1].lower() in audio_extensions:
+                    total += 1
+    except Exception as e:
+        logging.error(f"Error counting music files: {e}")
+    
+    return total
+
+
 class ScanProgress:
     """Manages scan progress state"""
     
@@ -38,6 +66,8 @@ class ScanProgress:
         self.processed_albums = 0
         self.total_tracks = 0
         self.processed_tracks = 0
+        self.total_files = 0  # Files in music folder
+        self.processed_files = 0  # Files processed
         self.scan_type = None
         self.start_time = None
         self.is_running = False
@@ -58,6 +88,8 @@ class ScanProgress:
             "processed_albums": self.processed_albums,
             "total_tracks": self.total_tracks,
             "processed_tracks": self.processed_tracks,
+            "total_files": self.total_files,
+            "processed_files": self.processed_files,
             "scan_type": self.scan_type,
             "is_running": self.is_running,
             "current_phase": self.current_phase,
@@ -66,13 +98,16 @@ class ScanProgress:
         }
     
     def _calculate_percent(self) -> float:
-        """Calculate overall completion percentage"""
-        if self.total_artists == 0:
-            return 0.0
-        # Weight: 80% for tracks processed, 20% for artists
-        track_pct = (self.processed_tracks / max(self.total_tracks, 1)) * 80
-        artist_pct = (self.processed_artists / self.total_artists) * 20
-        return min(100.0, track_pct + artist_pct)
+        """Calculate overall completion percentage based on files processed"""
+        # If we have file count, use that (more accurate)
+        if self.total_files > 0:
+            return min(100.0, (self.processed_files / self.total_files) * 100)
+        
+        # Fallback: use track count if no file count available
+        if self.total_tracks > 0:
+            return min(100.0, (self.processed_tracks / self.total_tracks) * 100)
+        
+        return 0.0
     
     def save(self):
         """Save progress to file"""
@@ -175,9 +210,13 @@ def unified_scan_pipeline(
         (artist_filter,) if artist_filter else ())
         progress.total_tracks = cursor.fetchone()['count']
         
+        # Count actual music files in folder for accurate progress
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        progress.total_files = count_music_files(music_folder)
+        
         conn.close()
         
-        logging.info(f"Processing {progress.total_artists} artists, {progress.total_tracks} total tracks")
+        logging.info(f"Processing {progress.total_artists} artists, {progress.total_tracks} total tracks, {progress.total_files} files in folder")
         progress.save()
         
         # Build artist index for ID lookups
@@ -250,6 +289,9 @@ def unified_scan_pipeline(
                 conn.close()
                 
                 progress.processed_tracks += album_track_count
+                # Increment files processed proportionally
+                if progress.total_tracks > 0:
+                    progress.processed_files = int((progress.processed_tracks / progress.total_tracks) * progress.total_files)
                 progress.processed_albums += 1
                 progress.save()
                 if progress_callback:
