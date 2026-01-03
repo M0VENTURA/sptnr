@@ -456,63 +456,67 @@ document.addEventListener('DOMContentLoaded', function() {
         fetch('/api/scan-progress')
             .then(response => response.json())
             .then(data => {
+                // Determine which scan is actually running and get its type
+                let activeScanType = null;
+                
                 if (!data.is_running) {
-                    // Clear running scans if nothing is running
-                    runningScans.clear();
-                    // Hide all progress containers
+                    // No scans running - hide all progress containers
                     document.querySelectorAll('.scan-progress-container').forEach(container => {
                         container.style.display = 'none';
                     });
+                    runningScans.clear();
                     return;
                 }
                 
-                const scanType = data.scan_type || 'unified';
+                // Detect which scan is running based on data fields present
+                if (data.processed_files !== undefined && data.total_files !== undefined) {
+                    activeScanType = 'mp3_scan';
+                } else if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
+                    activeScanType = 'navidrome_scan';
+                } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
+                    // Could be popularity or singles - check scan_type field
+                    activeScanType = data.scan_type === 'singles_scan' ? 'singles_scan' : 'popularity_scan';
+                } else {
+                    // Default based on scan_type if present
+                    const scanTypeMapping = {
+                        'mp3_scan': 'mp3_scan',
+                        'navidrome_scan': 'navidrome_scan',
+                        'popularity_scan': 'popularity_scan',
+                        'singles_scan': 'singles_scan'
+                    };
+                    activeScanType = scanTypeMapping[data.scan_type] || null;
+                }
                 
-                // Map backend scan types to card data-scan-type values
-                const scanTypeMapping = {
-                    'mp3_scan': 'mp3_scan',
-                    'navidrome_scan': 'navidrome_scan',
-                    'popularity_scan': 'popularity_scan',
-                    'singles_scan': 'singles_scan'
-                };
-                
-                const mappedScanType = scanTypeMapping[scanType];
-                if (!mappedScanType) return;
+                if (!activeScanType) return;
                 
                 // Track this scan as running
-                runningScans.add(mappedScanType);
+                runningScans.add(activeScanType);
                 
-                // Find the scan card container for this type
-                const scanCard = document.querySelector(`.scan-card-large:has([data-scan-type="${mappedScanType}"])`);
-                if (!scanCard) return;
+                // Find and update the progress container for this scan type
+                const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${activeScanType}"]`);
+                if (!progressContainer) return;
                 
-                const progressContainer = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"]`);
-                const progressBar = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .progress-bar`);
-                const progressText = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .scan-progress-text`);
-                const progressPercent = scanCard.querySelector(`.scan-progress-container[data-scan-type="${mappedScanType}"] .scan-progress-percent`);
+                const progressBar = progressContainer.querySelector('.progress-bar');
+                const progressText = progressContainer.querySelector('.scan-progress-text');
+                const progressPercent = progressContainer.querySelector('.scan-progress-percent');
                 
-                // Show progress container for this scan
-                if (progressContainer) {
-                    progressContainer.style.display = 'block';
-                }
+                // Show progress container
+                progressContainer.style.display = 'block';
                 
                 let percent = 0;
                 let text = 'Processing...';
                 
-                // Calculate progress based on scan type
-                if (scanType === 'mp3_scan' && data.processed_files && data.total_files) {
+                // Calculate progress based on data fields
+                if (activeScanType === 'mp3_scan' && data.processed_files && data.total_files) {
                     percent = Math.round((data.processed_files / data.total_files) * 100);
                     text = `${data.processed_files}/${data.total_files} files`;
-                } else if (scanType === 'navidrome_scan' && data.scanned_albums && data.total_albums) {
+                } else if (activeScanType === 'navidrome_scan' && data.scanned_albums && data.total_albums) {
                     percent = Math.round((data.scanned_albums / data.total_albums) * 100);
                     text = `${data.scanned_albums}/${data.total_albums} albums`;
                     if (data.current_artist) {
                         text += ` · ${data.current_artist}`;
                     }
-                } else if (scanType === 'popularity_scan' && data.processed_artists && data.total_artists) {
-                    percent = Math.round((data.processed_artists / data.total_artists) * 100);
-                    text = `${data.processed_artists}/${data.total_artists} artists`;
-                } else if (scanType === 'singles_scan' && data.processed_artists && data.total_artists) {
+                } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan') && data.processed_artists && data.total_artists) {
                     percent = Math.round((data.processed_artists / data.total_artists) * 100);
                     text = `${data.processed_artists}/${data.total_artists} artists`;
                 }
@@ -523,7 +527,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     progressBar.setAttribute('aria-valuenow', percent);
                 }
                 
-                // Update text with percentage
+                // Update text
                 if (progressText) {
                     progressText.textContent = text;
                 }

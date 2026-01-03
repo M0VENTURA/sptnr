@@ -7,6 +7,7 @@ Calculates popularity scores and updates database.
 import os
 import sqlite3
 import logging
+import json
 import math
 from datetime import datetime
 import sys
@@ -22,6 +23,7 @@ logging.basicConfig(
 )
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
 
 # Import from start.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -43,6 +45,21 @@ def get_db_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+def save_popularity_progress(processed_artists: int, total_artists: int):
+    """Save popularity scan progress to file"""
+    try:
+        progress_data = {
+            "is_running": True,
+            "scan_type": "popularity_scan",
+            "processed_artists": processed_artists,
+            "total_artists": total_artists,
+            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0
+        }
+        with open(POPULARITY_PROGRESS_FILE, 'w') as f:
+            json.dump(progress_data, f)
+    except Exception as e:
+        logging.error(f"Error saving popularity progress: {e}")
 
 def scan_popularity(verbose: bool = False, artist: str | None = None):
     """
@@ -93,6 +110,7 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
             if idx % 50 == 0:
                 print(f"Progress: {idx}/{len(tracks)}")
                 logging.info(f"Popularity scan progress: {idx}/{len(tracks)}")
+                save_popularity_progress(idx, len(tracks))
 
             artist_name = track['artist']
             title = track['title']

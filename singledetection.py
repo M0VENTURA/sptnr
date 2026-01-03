@@ -7,6 +7,7 @@ Uses Discogs, Last.fm, MusicBrainz and other sources to determine if a track is 
 import os
 import sqlite3
 import logging
+import json
 from datetime import datetime
 import sys
 import re
@@ -26,6 +27,7 @@ logging.basicConfig(
 )
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+SINGLES_PROGRESS_FILE = os.environ.get("SINGLES_PROGRESS_FILE", "/database/singles_scan_progress.json")
 
 # Import from start.py
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -47,6 +49,22 @@ def get_db_connection():
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def save_singles_progress(scanned_artists: int, total_artists: int):
+    """Save singles detection progress to file"""
+    try:
+        progress_data = {
+            "is_running": True,
+            "scan_type": "singles_scan",
+            "processed_artists": scanned_artists,
+            "total_artists": total_artists,
+            "percent_complete": int((scanned_artists / total_artists * 100)) if total_artists > 0 else 0
+        }
+        with open(SINGLES_PROGRESS_FILE, 'w') as f:
+            json.dump(progress_data, f)
+    except Exception as e:
+        logging.error(f"Error saving singles progress: {e}")
 
 
 # ============ DISCOGS SESSION & THROTTLING ============
@@ -507,6 +525,11 @@ def single_detection_scan(verbose: bool = False):
         conn = get_db_connection()
         cursor = conn.cursor()
         
+        # Get all distinct artists for progress tracking
+        cursor.execute("SELECT DISTINCT artist FROM tracks ORDER BY artist")
+        artists = cursor.fetchall()
+        total_artists = len(artists)
+        
         # Get all tracks
         cursor.execute("""
             SELECT id, artist, title, album
@@ -518,12 +541,23 @@ def single_detection_scan(verbose: bool = False):
         logging.info(f"Found {len(tracks)} tracks to scan for single detection")
         
         scanned_count = 0
+        current_artist_idx = 0
+        current_artist = None
         
         for track in tracks:
             track_id = track["id"]
             artist = track["artist"]
             title = track["title"]
             album = track["album"]
+            
+            # Update progress when we move to a new artist
+            if artist != current_artist:
+                current_artist = artist
+                try:
+                    current_artist_idx = next(i for i, a in enumerate(artists) if a["artist"] == artist)
+                    save_singles_progress(current_artist_idx + 1, total_artists)
+                except StopIteration:
+                    pass
             
             if verbose:
                 logging.info(f"Checking: {artist} - {title}")

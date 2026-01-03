@@ -1678,7 +1678,7 @@ def api_scan_progress():
         from unified_scan import get_scan_progress
         progress = get_scan_progress()
         
-        # If unified scan is not running, check for MP3 and Navidrome scans
+        # If unified scan is not running, check for MP3, Navidrome, Popularity, and Singles scans
         if not progress.get("is_running", False):
             # Check MP3 scan progress
             mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
@@ -1699,6 +1699,28 @@ def api_scan_progress():
                         nav_progress = json.load(f)
                         if nav_progress.get("is_running", False):
                             return jsonify(nav_progress)
+                except:
+                    pass
+            
+            # Check Popularity scan progress
+            popularity_progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+            if os.path.exists(popularity_progress_file):
+                try:
+                    with open(popularity_progress_file, 'r') as f:
+                        pop_progress = json.load(f)
+                        if pop_progress.get("is_running", False):
+                            return jsonify(pop_progress)
+                except:
+                    pass
+            
+            # Check Singles scan progress
+            singles_progress_file = os.environ.get("SINGLES_PROGRESS_FILE", "/database/singles_scan_progress.json")
+            if os.path.exists(singles_progress_file):
+                try:
+                    with open(singles_progress_file, 'r') as f:
+                        singles_progress = json.load(f)
+                        if singles_progress.get("is_running", False):
+                            return jsonify(singles_progress)
                 except:
                     pass
         
