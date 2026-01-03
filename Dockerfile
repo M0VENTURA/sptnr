@@ -14,11 +14,10 @@ WORKDIR /app
 # Copy requirements first for caching
 COPY requirements.txt /app/
 
-# Install Python deps
-# Add beautifulsoup4 here, and ensure your requirements.txt includes requests, colorama, PyYAML, etc.
+# Install Python deps including beets for music tagging
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir flask beautifulsoup4
+    pip install --no-cache-dir flask beautifulsoup4 beets
 
 # App files
 COPY . /app

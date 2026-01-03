@@ -24,6 +24,7 @@ from start import create_retry_session, rate_artist, build_artist_index
 from scan_helpers import scan_artist_to_db
 from popularity import scan_popularity
 from api_clients.slskd import SlskdClient
+from beets_integration import _get_beets_client
 
 # Configure logging for web UI
 logging.basicConfig(
@@ -2592,7 +2593,107 @@ def api_create_smart_playlist():
 
 
 # ============================================================================
-# SPOTIFY PLAYLIST IMPORT ROUTES
+# BEETS MUSIC TAGGING ROUTES
+# ============================================================================
+
+@app.route("/beets", methods=["GET"])
+def beets_page():
+    """Beets management page"""
+    try:
+        beets_client = _get_beets_client()
+        status = beets_client.get_status()
+        
+        return render_template(
+            "beets.html",
+            status=status
+        )
+    except Exception as e:
+        logging.error(f"Error loading beets page: {str(e)}")
+        flash(f"Error loading beets page: {str(e)}", "danger")
+        return redirect(url_for("dashboard"))
+
+
+@app.route("/api/beets/status", methods=["GET"])
+def beets_status():
+    """Get beets status and library info"""
+    try:
+        beets_client = _get_beets_client()
+        status = beets_client.get_status()
+        stats = beets_client.get_library_stats() if status.get("installed") else {}
+        
+        return jsonify({
+            "status": status,
+            "stats": stats
+        })
+    except Exception as e:
+        logging.error(f"Error getting beets status: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/beets/import", methods=["POST"])
+def beets_import_route():
+    """Start a beets import operation"""
+    try:
+        data = request.json or {}
+        source_path = data.get("source_path", "")
+        move = data.get("move", True)
+        
+        if not source_path:
+            return jsonify({"error": "source_path is required"}), 400
+        
+        if not os.path.exists(source_path):
+            return jsonify({"error": f"Source path does not exist: {source_path}"}), 400
+        
+        beets_client = _get_beets_client()
+        
+        if not beets_client.enabled or not beets_client.is_installed():
+            return jsonify({"error": "Beets is not installed or enabled"}), 400
+        
+        # Run import in background
+        def run_import():
+            logging.info(f"Starting beets import from {source_path}")
+            result = beets_client.import_music(source_path, move=move)
+            logging.info(f"Beets import result: {result}")
+        
+        import_thread = threading.Thread(target=run_import, daemon=True)
+        import_thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": "Beets import started in background",
+            "source_path": source_path
+        }), 202
+        
+    except Exception as e:
+        logging.error(f"Error starting beets import: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/beets/configure", methods=["POST"])
+def beets_configure():
+    """Configure beets settings"""
+    try:
+        beets_client = _get_beets_client()
+        
+        # Create default config if it doesn't exist
+        success = beets_client.create_default_config()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Beets configuration created"
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to create beets configuration"
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"Error configuring beets: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 # ============================================================================
 # SPOTIFY PLAYLIST IMPORT ROUTES
 # ============================================================================
