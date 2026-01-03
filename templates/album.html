@@ -149,6 +149,24 @@
             </div>
         </div>
         
+        {% if album_data.beets_album_mbid %} 
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-database-check"></i> MusicBrainz Release
+                    </div>
+                    <div class="h6 mb-0">
+                        <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="text-decoration-none" style="font-size: 0.75rem;">
+                            {{ album_data.beets_album_mbid[:12] }}...
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 0.65rem;"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
         {% if album_data.last_scanned %}
         <div class="col-12 col-md-6">
             <div class="card h-100">

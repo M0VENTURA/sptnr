@@ -683,7 +683,8 @@ def artist_detail(name):
             SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
             SUM(COALESCE(duration, 0)) as total_duration,
             MIN(year) as earliest_year,
-            MAX(year) as latest_year
+            MAX(year) as latest_year,
+            MAX(beets_artist_mbid) as beets_artist_mbid
         FROM tracks
         WHERE artist = ?
     """, (name,))
@@ -750,7 +751,8 @@ def album_detail(artist, album):
                 MAX(spotify_album_type) as spotify_album_type,
                 MAX(spotify_album_art_url) as spotify_album_art_url,
                 MAX(last_scanned) as last_scanned,
-                MAX(COALESCE(disc_number, 1)) as total_discs
+                MAX(COALESCE(disc_number, 1)) as total_discs,
+                MAX(beets_album_mbid) as beets_album_mbid
             FROM tracks
             WHERE artist = ? AND album = ?
         """, (artist, album))

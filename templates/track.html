@@ -222,7 +222,93 @@
                     </div>
                 </div>
                 {% endif %}
-
+                <!-- Beets Metadata (MusicBrainz Recommendations) -->
+                {% if track.beets_mbid or track.beets_similarity or track.beets_album_artist %}
+                <div class="card mb-4">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-database-check"></i> Beets Auto-Import Data
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        {% if track.beets_similarity %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Match Confidence</div>
+                            <div class="metadata-value">
+                                {% if track.beets_similarity >= 0.96 %}
+                                    <span class="badge badge-success">{{ (track.beets_similarity * 100)|round(1) }}% — Strong</span>
+                                {% elif track.beets_similarity >= 0.75 %}
+                                    <span class="badge badge-warning">{{ (track.beets_similarity * 100)|round(1) }}% — Medium</span>
+                                {% else %}
+                                    <span class="badge badge-danger">{{ (track.beets_similarity * 100)|round(1) }}% — Weak</span>
+                                {% endif %}
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_mbid %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">MusicBrainz Recording</div>
+                            <div class="metadata-value">
+                                <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary text-decoration-none">
+                                    {{ track.beets_mbid[:8] }}...
+                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
+                                </a>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_album_mbid %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">MusicBrainz Release</div>
+                            <div class="metadata-value">
+                                <a href="https://musicbrainz.org/release/{{ track.beets_album_mbid }}" target="_blank" class="text-primary text-decoration-none">
+                                    {{ track.beets_album_mbid[:8] }}...
+                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
+                                </a>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_artist_mbid %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">MusicBrainz Artist</div>
+                            <div class="metadata-value">
+                                <a href="https://musicbrainz.org/artist/{{ track.beets_artist_mbid }}" target="_blank" class="text-primary text-decoration-none">
+                                    {{ track.beets_artist_mbid[:8] }}...
+                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
+                                </a>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_album_artist %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Album Artist (Beets)</div>
+                            <div class="metadata-value">{{ track.beets_album_artist }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_year %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Year (Beets)</div>
+                            <div class="metadata-value">{{ track.beets_year }}</div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_import_date %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Import Date</div>
+                            <div class="metadata-value">
+                                <small class="text-muted">{{ track.beets_import_date }}</small>
+                            </div>
+                        </div>
+                        {% endif %}
+                        {% if track.beets_path %}
+                        <div class="metadata-row">
+                            <div class="metadata-label">Beets Path</div>
+                            <div class="metadata-value" style="font-size: 0.75rem; overflow-wrap: break-word;">
+                                <code class="text-muted">{{ track.beets_path }}</code>
+                            </div>
+                        </div>
+                        {% endif %}
+                    </div>
+                </div>
+                {% endif %}
                 <!-- Audio Metadata -->
                 <div class="card mb-4">
                     <div class="card-header">
