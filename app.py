@@ -2556,7 +2556,7 @@ def api_create_smart_playlist():
             return jsonify({"error": "Invalid file name"}), 400
         
         # Create playlists directory if it doesn't exist
-        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
         playlists_dir = os.path.join(music_folder, "Playlists")
         os.makedirs(playlists_dir, exist_ok=True)
         
@@ -2739,7 +2739,7 @@ def api_playlist_create():
         playlist_data["trackIds"] = track_ids
         
         # Create playlists directory if it doesn't exist
-        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
         playlists_dir = os.path.join(music_folder, "Playlists")
         os.makedirs(playlists_dir, exist_ok=True)
         

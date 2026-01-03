@@ -131,11 +131,9 @@
   <div class="row mb-4">
     <div class="col-12">
       <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header">
           <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
-          <button class="btn btn-sm btn-primary" onclick="searchMissingTracks()" id="searchMissingBtn" style="display: none;">
-            <i class="bi bi-cloud-download"></i> Search in Soulseek
-          </button>
+          <small class="text-secondary d-block mt-2">Use the Search or Select buttons to find and download missing tracks</small>
         </div>
         <div class="card-body">
           <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
@@ -196,6 +194,8 @@
     display: flex;
     gap: 0.5rem;
     align-items: center;
+    flex-wrap: wrap;
+    justify-content: flex-end;
   }
 
   .missing-track-badge {
@@ -205,6 +205,17 @@
     border-radius: 4px;
     font-size: 0.8rem;
     white-space: nowrap;
+  }
+  
+  .track-actions .btn {
+    padding: 0.35rem 0.6rem;
+    font-size: 0.85rem;
+    min-width: auto;
+    white-space: nowrap;
+  }
+  
+  .track-actions .btn i {
+    margin-right: 0.25rem;
   }
 </style>
 
@@ -255,9 +266,8 @@
       statusEl.classList.remove('text-secondary', 'text-danger');
       statusEl.classList.add('text-success');
       
-      // Show search button if slskd is enabled and there are missing tracks
-      if (data.missing_tracks && data.missing_tracks.length > 0 && data.slskd_enabled) {
-        document.getElementById('searchMissingBtn').style.display = 'inline-block';
+      // Store missing tracks for individual search buttons
+      if (data.missing_tracks && data.missing_tracks.length > 0) {
         missingTracksForSearch = data.missing_tracks;
       }
     } catch (error) {
@@ -328,6 +338,12 @@
           </div>
           <div class="track-actions">
             <span class="missing-track-badge">✗ Missing</span>
+            <button class="btn btn-sm btn-outline-success" onclick="searchTrackInSoulseek('${escapeHtml(track.artist + ' ' + track.title)}', this)" title="Search in Soulseek">
+              <i class="bi bi-cloud-arrow-down"></i> Search
+            </button>
+            <button class="btn btn-sm btn-outline-primary" onclick="manuallySelectFile('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', this)" title="Manually select file">
+              <i class="bi bi-folder"></i> Select
+            </button>
           </div>
         </div>
       `).join('');
@@ -419,6 +435,56 @@
       searchBtn.disabled = false;
       searchBtn.innerHTML = originalText;
     }
+  }
+  
+  async function searchTrackInSoulseek(query, buttonEl) {
+    const originalText = buttonEl.innerHTML;
+    buttonEl.disabled = true;
+    buttonEl.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    
+    try {
+      const response = await fetch('/api/slskd/search', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({ query: query.trim() })
+      });
+      
+      if (!response.ok) {
+        throw new Error('Search failed');
+      }
+      
+      const data = await response.json();
+      buttonEl.innerHTML = '<i class="bi bi-check-circle text-success"></i> Searching...';
+      buttonEl.classList.add('btn-success');
+      buttonEl.classList.remove('btn-outline-success');
+      
+      setTimeout(() => {
+        alert(`✅ Search started for: "${query}". Check the Downloads page for results!`);
+      }, 500);
+    } catch (error) {
+      alert(`❌ Error searching for track: ${error.message}`);
+      buttonEl.disabled = false;
+      buttonEl.innerHTML = originalText;
+    }
+  }
+  
+  function manuallySelectFile(title, artist, buttonEl) {
+    // Open downloads page with search query pre-filled
+    const searchQuery = `${artist} ${title}`;
+    const encodedQuery = encodeURIComponent(searchQuery);
+    
+    // Store the query in sessionStorage for the downloads page to use
+    sessionStorage.setItem('initialSearchQuery', searchQuery);
+    
+    // Open downloads page
+    window.open(`/downloads?search=${encodedQuery}`, '_blank');
+    
+    buttonEl.innerHTML = '<i class="bi bi-check-circle text-info"></i> Opening...';
+    setTimeout(() => {
+      buttonEl.innerHTML = '<i class="bi bi-folder"></i> Select';
+    }, 2000);
   }
   
   function escapeHtml(text) {
