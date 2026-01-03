@@ -114,9 +114,14 @@
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="mb-0"><i class="bi bi-check-circle-fill text-success"></i> Matched Tracks</h5>
-          <button class="btn btn-sm btn-primary" onclick="createPlaylist()" id="createPlaylistBtn">
-            <i class="bi bi-music-note-list"></i> Create Playlist
-          </button>
+          <div class="btn-group btn-group-sm" role="group">
+            <button class="btn btn-primary" onclick="openAddTrackModal()" title="Manually add a track from the database">
+              <i class="bi bi-plus-circle"></i> Add Track
+            </button>
+            <button class="btn btn-success" onclick="createPlaylist()" id="createPlaylistBtn">
+              <i class="bi bi-music-note-list"></i> Create Playlist
+            </button>
+          </div>
         </div>
         <div class="card-body">
           <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
@@ -133,12 +138,39 @@
       <div class="card">
         <div class="card-header">
           <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
-          <small class="text-secondary d-block mt-2">Use the Search or Select buttons to find and download missing tracks</small>
+          <small class="text-secondary d-block mt-2">Use the Search or Select buttons to find and download missing tracks. Or manually add tracks to the playlist.</small>
         </div>
         <div class="card-body">
           <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
             <!-- Missing tracks will be listed here -->
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Add Track to Playlist Modal -->
+<div class="modal fade" id="addTrackModal" tabindex="-1" aria-labelledby="addTrackLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="addTrackLabel">Manually Add Track to Playlist</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div class="mb-3">
+          <label for="manualTrackSearch" class="form-label">Search Database</label>
+          <div class="input-group">
+            <input type="text" class="form-control" id="manualTrackSearch" placeholder="Search by artist, track, or album..." onkeypress="if(event.key==='Enter') searchForTrack();">
+            <button class="btn btn-primary" type="button" onclick="searchForTrack()">
+              <i class="bi bi-search"></i> Search
+            </button>
+          </div>
+        </div>
+        
+        <div id="trackSearchResults" style="max-height: 400px; overflow-y: auto;">
+          <p class="text-muted text-center">Enter a search query to find tracks</p>
         </div>
       </div>
     </div>
@@ -485,6 +517,100 @@
     setTimeout(() => {
       buttonEl.innerHTML = '<i class="bi bi-folder"></i> Select';
     }, 2000);
+  }
+  
+  function openAddTrackModal() {
+    if (!currentImportData) {
+      alert('Please import a playlist first');
+      return;
+    }
+    const modal = new bootstrap.Modal(document.getElementById('addTrackModal'));
+    modal.show();
+  }
+  
+  async function searchForTrack() {
+    const query = document.getElementById('manualTrackSearch').value.trim();
+    if (!query) {
+      alert('Please enter a search query');
+      return;
+    }
+    
+    const resultsDiv = document.getElementById('trackSearchResults');
+    resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
+    
+    try {
+      const response = await fetch(`/api/search?q=${encodeURIComponent(query)}`);
+      const data = await response.json();
+      
+      if (!data.results || data.results.length === 0) {
+        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
+        return;
+      }
+      
+      // Filter to tracks only
+      const tracks = data.results.filter(r => r.type === 'track');
+      
+      if (tracks.length === 0) {
+        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
+        return;
+      }
+      
+      // Display tracks
+      let html = '<div style="border-top: 1px solid var(--border-color);">';
+      tracks.forEach(track => {
+        html += `
+          <div class="track-row" style="padding: 0.75rem 0; border-bottom: 1px solid var(--border-color);">
+            <div class="track-info">
+              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-artist">${escapeHtml(track.artist)}</div>
+              <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
+            </div>
+            <div class="track-actions">
+              <button class="btn btn-sm btn-success" onclick="addSelectedTrack('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', '${escapeHtml(track.album || '')}')"
+                      title="Add this track to the playlist">
+                <i class="bi bi-plus-circle"></i> Add
+              </button>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      resultsDiv.innerHTML = html;
+    } catch (error) {
+      resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${error.message}</div>`;
+    }
+  }
+  
+  function addSelectedTrack(title, artist, album) {
+    if (!currentImportData) {
+      alert('No playlist data found');
+      return;
+    }
+    
+    // Check if track already exists in matched tracks
+    const exists = currentImportData.matched_tracks.some(t => 
+      t.title === title && t.artist === artist
+    );
+    
+    if (exists) {
+      alert('This track is already in the playlist');
+      return;
+    }
+    
+    // Add to matched tracks
+    currentImportData.matched_tracks.push({
+      title: title,
+      artist: artist,
+      album: album
+    });
+    
+    // Close modal
+    bootstrap.Modal.getInstance(document.getElementById('addTrackModal')).hide();
+    
+    // Re-display results with updated data
+    displayResults(currentImportData);
+    
+    alert(`✅ Track "${title}" added to playlist!`);
   }
   
   function escapeHtml(text) {
