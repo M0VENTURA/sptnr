@@ -167,6 +167,23 @@ def extract_flac_metadata(file_path):
         logging.debug(f"Error reading FLAC {file_path}: {e}")
         return None
 
+def save_mp3_scan_progress(current_folder, scanned_files, total_files, matched_files):
+    """Save MP3 scan progress to JSON file"""
+    try:
+        progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+        progress = {
+            "current_folder": current_folder,
+            "scanned_files": scanned_files,
+            "total_files": total_files,
+            "matched_files": matched_files,
+            "is_running": True,
+            "scan_type": "mp3_scan"
+        }
+        with open(progress_file, 'w') as f:
+            json.dump(progress, f, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save MP3 scan progress: {e}")
+
 def scan_music_folder():
     """Scan /music folder for audio files and extract metadata"""
     logging.info(f"Starting music folder scan at {MUSIC_ROOT}")
@@ -186,6 +203,8 @@ def scan_music_folder():
         if rel_path != current_folder:
             current_folder = rel_path
             logging.info(f"🔍 Scanning folder: {rel_path} ({len(files)} files)")
+            # Save progress
+            save_mp3_scan_progress(rel_path, file_count, file_count, len(audio_files))
         
         for file in files:
             file_path = os.path.join(root, file)
@@ -194,6 +213,7 @@ def scan_music_folder():
                 file_count += 1
                 if file_count % 100 == 0:
                     logging.info(f"📊 Progress: Scanned {file_count} files so far ({len(audio_files)} with valid metadata)")
+                    save_mp3_scan_progress(current_folder, file_count, file_count, len(audio_files))
                 metadata = extract_mp3_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
@@ -205,6 +225,7 @@ def scan_music_folder():
                 file_count += 1
                 if file_count % 100 == 0:
                     logging.info(f"📊 Progress: Scanned {file_count} files so far ({len(audio_files)} with valid metadata)")
+                    save_mp3_scan_progress(current_folder, file_count, file_count, len(audio_files))
                 metadata = extract_flac_metadata(file_path)
                 if metadata:
                     key = f"{normalize_title(metadata['artist'])}|{normalize_title(metadata['album'])}|{normalize_title(metadata['title'])}"
@@ -213,6 +234,8 @@ def scan_music_folder():
                         logging.info(f"  ✓ FLAC: {metadata['artist']} - {metadata['album']} - {metadata['title']}")
     
     logging.info(f"✅ Scan complete: Found {len(audio_files)} audio files with extractable metadata from {file_count} total files")
+    # Mark scan as complete
+    save_mp3_scan_progress("Complete", file_count, file_count, len(audio_files))
     return audio_files
 
 def match_to_database(audio_files):
@@ -384,17 +407,29 @@ def scan_all_tracks():
     logging.info("MP3/FLAC Scanner Started")
     logging.info("=" * 60)
     
-    # Scan music folder
-    audio_files = scan_music_folder()
-    
-    # Match to database
-    if audio_files:
-        matched = match_to_database(audio_files)
-        logging.info(f"✅ Scan complete: {matched} tracks matched")
-    else:
-        logging.warning("⚠️ No audio files found to match")
-    
-    logging.info("=" * 60)
+    try:
+        # Mark scan as running
+        save_mp3_scan_progress("Starting...", 0, 0, 0)
+        
+        # Scan music folder
+        audio_files = scan_music_folder()
+        
+        # Match to database
+        if audio_files:
+            matched = match_to_database(audio_files)
+            logging.info(f"✅ Scan complete: {matched} tracks matched")
+        else:
+            logging.warning("⚠️ No audio files found to match")
+        
+        logging.info("=" * 60)
+    finally:
+        # Mark scan as complete
+        try:
+            progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            with open(progress_file, 'w') as f:
+                json.dump({"is_running": False, "scan_type": "mp3_scan"}, f)
+        except Exception as e:
+            logging.error(f"Failed to mark MP3 scan as complete: {e}")
 
 if __name__ == "__main__":
     scan_all_tracks()

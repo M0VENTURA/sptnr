@@ -376,38 +376,78 @@ document.addEventListener('DOMContentLoaded', function() {
                     // Show progress bar
                     container.style.display = 'block';
                     
-                    // Update progress bar
-                    const progressBar = document.getElementById('progress-bar');
-                    const percent = Math.round(data.percent_complete || 0);
-                    progressBar.style.width = percent + '%';
-                    progressBar.setAttribute('aria-valuenow', percent);
+                    const scanType = data.scan_type || 'unified';
                     
-                    // Update text
-                    document.getElementById('progress-percent').textContent = percent + '%';
-                    
-                    // Update details
-                    const artistText = data.current_artist ? 
-                        `<i class="bi bi-person"></i> ${data.current_artist}` : '';
-                    const albumText = data.current_album ? 
-                        ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
-                    document.getElementById('current-artist').innerHTML = artistText;
-                    document.getElementById('current-album').innerHTML = albumText;
-                    
-                    // Update phase
-                    let phaseText = '';
-                    if (data.current_phase === 'popularity') {
-                        phaseText = '<i class="bi bi-graph-up"></i> Detecting popularity...';
-                    } else if (data.current_phase === 'singles') {
-                        phaseText = '<i class="bi bi-music-note"></i> Detecting singles & rating...';
-                    } else if (data.current_phase === 'navidrome_update') {
-                        phaseText = '<i class="bi bi-cloud-upload"></i> Updating Navidrome...';
+                    // Handle unified scan
+                    if (scanType === 'unified') {
+                        // Update progress bar
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = Math.round(data.percent_complete || 0);
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        // Update text
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        
+                        // Update details
+                        const artistText = data.current_artist ? 
+                            `<i class="bi bi-person"></i> ${data.current_artist}` : '';
+                        const albumText = data.current_album ? 
+                            ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
+                        document.getElementById('current-artist').innerHTML = artistText;
+                        document.getElementById('current-album').innerHTML = albumText;
+                        
+                        // Update phase
+                        let phaseText = '';
+                        if (data.current_phase === 'popularity') {
+                            phaseText = '<i class="bi bi-graph-up"></i> Detecting popularity...';
+                        } else if (data.current_phase === 'singles') {
+                            phaseText = '<i class="bi bi-music-note"></i> Detecting singles & rating...';
+                        } else if (data.current_phase === 'navidrome_update') {
+                            phaseText = '<i class="bi bi-cloud-upload"></i> Updating Navidrome...';
+                        }
+                        document.getElementById('progress-phase').innerHTML = phaseText;
+                        
+                        // Update progress text
+                        const progressText = `${data.processed_artists || 0}/${data.total_artists || 0} artists, ` +
+                                           `${data.processed_tracks || 0}/${data.total_tracks || 0} tracks`;
+                        document.getElementById('progress-text').textContent = progressText;
                     }
-                    document.getElementById('progress-phase').innerHTML = phaseText;
-                    
-                    // Update progress text
-                    const progressText = `${data.processed_artists || 0}/${data.total_artists || 0} artists, ` +
-                                       `${data.processed_tracks || 0}/${data.total_tracks || 0} tracks`;
-                    document.getElementById('progress-text').textContent = progressText;
+                    // Handle MP3 scan
+                    else if (scanType === 'mp3_scan') {
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = data.scanned_files && data.total_files ? 
+                            Math.round((data.scanned_files / data.total_files) * 100) : 0;
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        document.getElementById('current-artist').innerHTML = 
+                            `<i class="bi bi-folder"></i> ${data.current_folder || 'Scanning...'}`;
+                        document.getElementById('current-album').innerHTML = '';
+                        document.getElementById('progress-phase').innerHTML = 
+                            '<i class="bi bi-disc"></i> Scanning music files...';
+                        document.getElementById('progress-text').textContent = 
+                            `${data.scanned_files || 0} files scanned, ${data.matched_files || 0} matched`;
+                    }
+                    // Handle Navidrome scan
+                    else if (scanType === 'navidrome_scan') {
+                        const progressBar = document.getElementById('progress-bar');
+                        const percent = data.scanned_albums && data.total_albums ? 
+                            Math.round((data.scanned_albums / data.total_albums) * 100) : 0;
+                        progressBar.style.width = percent + '%';
+                        progressBar.setAttribute('aria-valuenow', percent);
+                        
+                        document.getElementById('progress-percent').textContent = percent + '%';
+                        document.getElementById('current-artist').innerHTML = 
+                            `<i class="bi bi-person"></i> ${data.current_artist || 'Scanning...'}`;
+                        document.getElementById('current-album').innerHTML = 
+                            data.current_album ? ` → <i class="bi bi-disc"></i> ${data.current_album}` : '';
+                        document.getElementById('progress-phase').innerHTML = 
+                            '<i class="bi bi-cloud"></i> Importing from Navidrome...';
+                        document.getElementById('progress-text').textContent = 
+                            `${data.scanned_albums || 0}/${data.total_albums || 0} albums`;
+                    }
                 } else {
                     // Hide progress bar when not running
                     container.style.display = 'none';

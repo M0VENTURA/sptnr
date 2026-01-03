@@ -2,8 +2,28 @@
 """Helper functions for scanning and rating operations."""
 
 import logging
+import json
+import os
 from datetime import datetime
 from start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
+
+
+def save_navidrome_scan_progress(current_artist, current_album, scanned_albums, total_albums):
+    """Save Navidrome scan progress to JSON file"""
+    try:
+        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+        progress = {
+            "current_artist": current_artist,
+            "current_album": current_album,
+            "scanned_albums": scanned_albums,
+            "total_albums": total_albums,
+            "is_running": True,
+            "scan_type": "navidrome_scan"
+        }
+        with open(progress_file, 'w') as f:
+            json.dump(progress, f, indent=2)
+    except Exception as e:
+        logging.error(f"Failed to save Navidrome scan progress: {e}")
 
 
 def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False):
@@ -28,11 +48,15 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             print(f"Scanning artist: {artist_name} ({len(albums)} albums)")
             logging.info(f"Scanning artist {artist_name} ({len(albums)} albums)")
 
-        for alb in albums:
+        total_albums = len(albums)
+        for alb_idx, alb in enumerate(albums):
             album_name = alb.get("name") or ""
             album_id = alb.get("id")
             if not album_id:
                 continue
+
+            # Save progress
+            save_navidrome_scan_progress(artist_name, album_name, alb_idx, total_albums)
 
             try:
                 tracks = fetch_album_tracks(album_id)
@@ -104,3 +128,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
+    finally:
+        # Mark scan as complete for this artist
+        try:
+            progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            with open(progress_file, 'w') as f:
+                json.dump({"is_running": False, "scan_type": "navidrome_scan"}, f)
+        except Exception as e:
+            logging.error(f"Failed to mark Navidrome scan as complete: {e}")
+
