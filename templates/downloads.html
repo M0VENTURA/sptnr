@@ -167,6 +167,7 @@
                       <th class="text-center">Up Speed</th>
                       <th class="text-center">Seeds</th>
                       <th class="text-center">ETA</th>
+                      <th class="text-center">Actions</th>
                     </tr>
                   </thead>
                   <tbody id="qbitMonTableBody"></tbody>
@@ -347,6 +348,10 @@ let slskdPollInterval = null;
 let slskdResponsesData = {};
 let slskdSelected = new Map();
 let monitorInterval = null;
+let qbitMonLoaded = false;
+let slskdMonLoaded = false;
+let qbitMonInFlight = false;
+let slskdMonInFlight = false;
 
 const slskdSelectionKey = (username, filename) => `${username}||${filename}`;
 
@@ -706,7 +711,8 @@ function downloadSlskdBatch(files, label) {
 }
 
 // Download monitors
-function refreshQbitMonitor() {
+function refreshQbitMonitor(options = {}) {
+  const silent = options.silent === true;
   const loading = document.getElementById('qbitMonLoading');
   if (!loading) return; // monitor not rendered
   const errorBox = document.getElementById('qbitMonError');
@@ -716,17 +722,26 @@ function refreshQbitMonitor() {
   const tbody = document.getElementById('qbitMonTableBody');
   const countBadge = document.getElementById('qbitMonCount');
 
-  loading.style.display = 'block';
+  if (qbitMonInFlight) return;
+  qbitMonInFlight = true;
+
+  if (!qbitMonLoaded && !silent) {
+    loading.style.display = 'block';
+  }
+
   fetch('/api/qbittorrent/status')
     .then(resp => resp.json())
     .then(data => {
-      loading.style.display = 'none';
+      if (loading) loading.style.display = 'none';
+      qbitMonLoaded = true;
+
       if (data.error) {
         if (errorBox) {
           errorBox.textContent = 'Error: ' + data.error;
           errorBox.style.display = 'block';
         }
         if (results) results.style.display = 'none';
+        qbitMonInFlight = false;
         return;
       }
 
@@ -741,6 +756,7 @@ function refreshQbitMonitor() {
       if (torrents.length === 0) {
         if (empty) empty.style.display = 'block';
         if (table) table.style.display = 'none';
+        qbitMonInFlight = false;
         return;
       }
 
@@ -750,13 +766,19 @@ function refreshQbitMonitor() {
 
       torrents.forEach(torrent => {
         const row = document.createElement('tr');
-        let stateClass = 'bg-secondary';
         const state = (torrent.state || '').toLowerCase();
+        let stateClass = 'bg-secondary';
         if (state.includes('downloading')) stateClass = 'bg-primary';
         else if (state.includes('uploading') || state.includes('seeding')) stateClass = 'bg-success';
         else if (state.includes('paused')) stateClass = 'bg-warning';
         else if (state.includes('error')) stateClass = 'bg-danger';
         else if (state.includes('stalled')) stateClass = 'bg-warning';
+
+        const needsForceStart = state.includes('stalled') || state.includes('paused') || state.includes('error');
+        const hash = torrent.hash || '';
+        const actionHtml = needsForceStart && hash
+          ? `<button class="btn btn-sm btn-outline-primary" onclick="forceStartQbitTorrent('${escapeHtml(hash)}')"><i class="bi bi-lightning-charge"></i> Force start</button>`
+          : '<span class="text-muted">—</span>';
 
         row.innerHTML = `
           <td>
@@ -776,20 +798,27 @@ function refreshQbitMonitor() {
           <td class="text-center">${torrent.upspeed > 0 ? `<span class="text-success"><i class="bi bi-arrow-up"></i> ${formatBytes(torrent.upspeed)}/s</span>` : '—'}</td>
           <td class="text-center"><span class="${torrent.num_seeds > 0 ? 'text-success' : 'text-muted'}">${torrent.num_seeds} / ${torrent.num_leechs}</span></td>
           <td class="text-center">${formatETA(torrent.eta)}</td>
+          <td class="text-center">${actionHtml}</td>
         `;
         if (tbody) tbody.appendChild(row);
       });
+
+      qbitMonInFlight = false;
     })
     .catch(err => {
-      loading.style.display = 'none';
+      if (!silent && loading) {
+        loading.style.display = 'none';
+      }
       if (errorBox) {
         errorBox.textContent = 'Network error: ' + err.message;
         errorBox.style.display = 'block';
       }
+      qbitMonInFlight = false;
     });
 }
 
-function refreshSlskdMonitor() {
+function refreshSlskdMonitor(options = {}) {
+  const silent = options.silent === true;
   const loading = document.getElementById('slskdMonLoading');
   if (!loading) return; // monitor not rendered
   const errorBox = document.getElementById('slskdMonError');
@@ -799,17 +828,26 @@ function refreshSlskdMonitor() {
   const tbody = document.getElementById('slskdMonTableBody');
   const countBadge = document.getElementById('slskdMonCount');
 
-  loading.style.display = 'block';
+  if (slskdMonInFlight) return;
+  slskdMonInFlight = true;
+
+  if (!slskdMonLoaded && !silent) {
+    loading.style.display = 'block';
+  }
+
   fetch('/api/slskd/status')
     .then(resp => resp.json())
     .then(data => {
-      loading.style.display = 'none';
+      if (loading) loading.style.display = 'none';
+      slskdMonLoaded = true;
+
       if (data.error) {
         if (errorBox) {
           errorBox.textContent = 'Error: ' + data.error;
           errorBox.style.display = 'block';
         }
         if (results) results.style.display = 'none';
+        slskdMonInFlight = false;
         return;
       }
 
@@ -824,6 +862,7 @@ function refreshSlskdMonitor() {
       if (downloads.length === 0) {
         if (empty) empty.style.display = 'block';
         if (table) table.style.display = 'none';
+        slskdMonInFlight = false;
         return;
       }
 
@@ -833,8 +872,8 @@ function refreshSlskdMonitor() {
 
       downloads.forEach(download => {
         const row = document.createElement('tr');
-        let stateClass = 'bg-secondary';
         const state = (download.state || '').toLowerCase();
+        let stateClass = 'bg-secondary';
         if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
         else if (state.includes('completed') || state.includes('complete')) stateClass = 'bg-success';
         else if (state.includes('queued') || state.includes('initializing')) stateClass = 'bg-warning';
@@ -873,14 +912,37 @@ function refreshSlskdMonitor() {
         `;
         if (tbody) tbody.appendChild(row);
       });
+
+      slskdMonInFlight = false;
     })
     .catch(err => {
-      loading.style.display = 'none';
+      if (!silent && loading) {
+        loading.style.display = 'none';
+      }
       if (errorBox) {
         errorBox.textContent = 'Network error: ' + err.message;
         errorBox.style.display = 'block';
       }
+      slskdMonInFlight = false;
     });
+}
+
+function forceStartQbitTorrent(hash) {
+  if (!hash) return;
+  fetch('/api/qbittorrent/force-start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ hash })
+  })
+    .then(resp => resp.json())
+    .then(data => {
+      if (data.success) {
+        refreshQbitMonitor({ silent: true });
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to force start'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
 }
 
 function cancelSlskdDownload(username, filename, token) {
@@ -906,9 +968,9 @@ function cancelSlskdDownload(username, filename, token) {
 function startMonitorAutoRefresh() {
   if (monitorInterval) clearInterval(monitorInterval);
   monitorInterval = setInterval(() => {
-    refreshQbitMonitor();
-    refreshSlskdMonitor();
-  }, 3000);
+    refreshQbitMonitor({ silent: true });
+    refreshSlskdMonitor({ silent: true });
+  }, 5000);
 }
 
 // Utility functions

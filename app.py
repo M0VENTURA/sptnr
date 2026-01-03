@@ -1169,38 +1169,32 @@ def scan_mp3():
             db_dir = os.path.dirname(DB_PATH)
             mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
-            # Use beets auto-import instead of mp3scanner
-            beets_script = os.path.join(APP_DIR, "beets_auto_import.py")
-            if not os.path.exists(beets_script):
-                raise FileNotFoundError(f"Beets script not found: {beets_script}")
             
-            cmd = [sys.executable, beets_script]
-            logging.info(f"Starting beets scan: {' '.join(cmd)}")
-            logging.info(f"Working directory: {APP_DIR}")
-            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            # Run beets import in background thread instead of subprocess
+            def run_beets_scan_bg():
+                try:
+                    from beets_auto_import import BeetsAutoImporter
+                    logging.info("Starting Beets auto-import scan in background")
+                    importer = BeetsAutoImporter()
+                    importer.import_music()
+                    _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info("Beets scan completed successfully")
+                except Exception as e:
+                    logging.error(f"Error in Beets scan: {e}", exc_info=True)
+                    _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
             
-            # Pass environment variables to subprocess
-            env = os.environ.copy()
-            env['DB_PATH'] = DB_PATH
-            env['CONFIG_PATH'] = CONFIG_PATH
+            scan_thread = threading.Thread(target=run_beets_scan_bg, daemon=False)
+            scan_thread.start()
             
-            scan_process_mp3 = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                cwd=APP_DIR,
-                universal_newlines=True,
-                env=env
-            )
-            threading.Thread(
-                target=_monitor_process_for_progress,
-                args=(scan_process_mp3, mp3_progress_file, "mp3_scan"),
-                daemon=True,
-            ).start()
+            # Create a dummy process object for compatibility with existing code
+            scan_process_mp3 = type('obj', (object,), {
+                'poll': lambda: None if scan_thread.is_alive() else 0,
+                'wait': lambda timeout=None: scan_thread.join(timeout),
+                'pid': -1
+            })()
+            
             flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
-            logging.info("Beets scan process started successfully")
+            logging.info("Beets scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting beets import: {e}", exc_info=True)
             flash(f"❌ Error starting beets import: {str(e)}", "danger")
@@ -1210,7 +1204,7 @@ def scan_mp3():
 
 @app.route("/scan/navidrome", methods=["POST"])
 def scan_navidrome():
-    """Run Navidrome library scan using start.py"""
+    """Run Navidrome library scan in background thread"""
     global scan_process_navidrome
     
     with scan_lock:
@@ -1222,37 +1216,31 @@ def scan_navidrome():
             db_dir = os.path.dirname(DB_PATH)
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
             _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
-            start_script = os.path.join(APP_DIR, "start.py")
-            if not os.path.exists(start_script):
-                raise FileNotFoundError(f"Start script not found: {start_script}")
             
-            cmd = [sys.executable, start_script, "--batchrate", "--verbose"]
-            logging.info(f"Starting Navidrome scan: {' '.join(cmd)}")
-            logging.info(f"Working directory: {APP_DIR}")
-            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            # Run scan in background thread instead of subprocess to avoid initialization overhead
+            def run_navidrome_scan_bg():
+                try:
+                    from start import run_scan
+                    logging.info("Starting Navidrome batch rating scan in background")
+                    run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False)
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info("Navidrome scan completed successfully")
+                except Exception as e:
+                    logging.error(f"Error in Navidrome scan: {e}", exc_info=True)
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
             
-            # Pass environment variables to subprocess
-            env = os.environ.copy()
-            env['DB_PATH'] = DB_PATH
-            env['CONFIG_PATH'] = CONFIG_PATH
+            scan_thread = threading.Thread(target=run_navidrome_scan_bg, daemon=False)
+            scan_thread.start()
             
-            scan_process_navidrome = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                cwd=APP_DIR,
-                universal_newlines=True,
-                env=env
-            )
-            threading.Thread(
-                target=_monitor_process_for_progress,
-                args=(scan_process_navidrome, nav_progress_file, "navidrome_scan"),
-                daemon=True,
-            ).start()
+            # Create a dummy process object for compatibility with existing code
+            scan_process_navidrome = type('obj', (object,), {
+                'poll': lambda: None if scan_thread.is_alive() else 0,
+                'wait': lambda timeout=None: scan_thread.join(timeout),
+                'pid': -1
+            })()
+            
             flash("✅ Navidrome sync scan started", "success")
-            logging.info("Navidrome scan process started successfully")
+            logging.info("Navidrome scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting Navidrome scan: {e}", exc_info=True)
             flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
@@ -1274,39 +1262,29 @@ def scan_popularity():
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
-            # Start popularity scan as a subprocess
-            popularity_script = os.path.join(APP_DIR, "popularity.py")
-            if not os.path.exists(popularity_script):
-                raise FileNotFoundError(f"Popularity script not found: {popularity_script}")
+            # Run popularity scan in background thread instead of subprocess
+            def run_popularity_scan_bg():
+                try:
+                    logging.info("Starting popularity score scan in background")
+                    scan_popularity(verbose=False)
+                    _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info("Popularity scan completed successfully")
+                except Exception as e:
+                    logging.error(f"Error in popularity scan: {e}", exc_info=True)
+                    _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
             
-            cmd = [sys.executable, popularity_script]
-            logging.info(f"Starting popularity scan: {' '.join(cmd)}")
-            logging.info(f"Working directory: {APP_DIR}")
-            logging.info(f"DB_PATH: {DB_PATH}, CONFIG_PATH: {CONFIG_PATH}")
+            scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
+            scan_thread.start()
             
-            # Pass environment variables to subprocess
-            env = os.environ.copy()
-            env['DB_PATH'] = DB_PATH
-            env['CONFIG_PATH'] = CONFIG_PATH
+            # Create a dummy process object for compatibility with existing code
+            scan_process_popularity = type('obj', (object,), {
+                'poll': lambda: None if scan_thread.is_alive() else 0,
+                'wait': lambda timeout=None: scan_thread.join(timeout),
+                'pid': -1
+            })()
             
-            scan_process_popularity = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1,
-                cwd=APP_DIR,
-                universal_newlines=True,
-                env=env
-            )
-
-            threading.Thread(
-                target=_monitor_process_for_progress,
-                args=(scan_process_popularity, popularity_progress_file, "popularity_scan"),
-                daemon=True,
-            ).start()
             flash("✅ Popularity score scan started", "success")
-            logging.info("Popularity scan process started successfully")
+            logging.info("Popularity scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting popularity scan: {e}", exc_info=True)
             flash(f"❌ Error starting popularity scan: {str(e)}", "danger")
@@ -2297,7 +2275,50 @@ def qbit_add_torrent():
             return jsonify({"success": True, "message": "Torrent added successfully to Music category"})
         else:
             return jsonify({"error": f"Failed to add torrent: {resp.status_code}"}), 500
-            
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/qbittorrent/force-start", methods=["POST"])
+def qbit_force_start():
+    """Force-start or resume a stalled qBittorrent torrent"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {})
+
+    if not qbit_config.get("enabled"):
+        return jsonify({"error": "qBittorrent integration not enabled"}), 400
+
+    data = request.get_json(silent=True) or {}
+    torrent_hash = data.get("hash", "").strip()
+    if not torrent_hash:
+        return jsonify({"error": "hash is required"}), 400
+
+    web_url = qbit_config.get("web_url", "http://localhost:8080")
+    username = qbit_config.get("username", "")
+    password = qbit_config.get("password", "")
+
+    try:
+        import requests as req
+
+        session = req.Session()
+        login_url = f"{web_url}/api/v2/auth/login"
+        login_resp = session.post(login_url, data={"username": username, "password": password}, timeout=10)
+
+        if login_resp.text != "Ok.":
+            return jsonify({"error": "Failed to login to qBittorrent"}), 500
+
+        # Force start the torrent and resume if it was paused
+        force_url = f"{web_url}/api/v2/torrents/setForceStart"
+        force_resp = session.post(force_url, data={"hashes": torrent_hash, "value": "true"}, timeout=10)
+        if force_resp.status_code != 200:
+            return jsonify({"error": f"Failed to force start: {force_resp.status_code}"}), 500
+
+        resume_url = f"{web_url}/api/v2/torrents/resume"
+        session.post(resume_url, data={"hashes": torrent_hash}, timeout=10)
+
+        return jsonify({"success": True})
+
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
