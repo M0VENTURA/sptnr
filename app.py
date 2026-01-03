@@ -2808,12 +2808,17 @@ def slskd_status():
         
         # Get transfers
         transfers_url = f"{web_url}/api/v0/transfers/downloads"
+        logging.debug(f"slskd_status: Fetching from {transfers_url}")
         resp = req.get(transfers_url, headers=headers, timeout=10)
         
+        logging.debug(f"slskd_status: Response status {resp.status_code}")
+        
         if resp.status_code != 200:
+            logging.error(f"slskd_status: Failed to get transfers: {resp.status_code} - {resp.text[:500]}")
             return jsonify({"error": f"Failed to get transfers: {resp.status_code}"}), 500
         
         downloads_data = resp.json()
+        logging.debug(f"slskd_status: Raw response type: {type(downloads_data)}, content preview: {str(downloads_data)[:200]}")
         
         # Format downloads - handle multiple possible slskd API formats
         active_downloads = []
@@ -2829,6 +2834,8 @@ def slskd_status():
             size = file_obj.get("size") or 0
             progress = (bytes_transferred / size * 100) if size > 0 else 0
             
+            logging.debug(f"extract_file: {username} -> {filename[:50]}, state={state}, progress={progress:.1f}%")
+            
             return {
                 "username": username,
                 "filename": filename,
@@ -2843,36 +2850,42 @@ def slskd_status():
         if isinstance(downloads_data, dict):
             # Format 1: {username: {folderId: {files: []}}}
             for username, folders_or_files in downloads_data.items():
+                logging.debug(f"Processing username: {username}, type: {type(folders_or_files)}")
                 if isinstance(folders_or_files, dict):
                     for key, value in folders_or_files.items():
+                        logging.debug(f"  Processing key: {key}, type: {type(value)}")
                         # Check if this is a folder structure or direct file
                         if isinstance(value, dict) and "files" in value:
                             # Folder structure: extract files
                             files_list = value.get("files", [])
+                            logging.debug(f"    Found folder with {len(files_list)} files")
                             for file_obj in files_list:
                                 extracted = extract_file(file_obj, username)
                                 if extracted:
                                     active_downloads.append(extracted)
                         elif isinstance(value, dict):
                             # Try direct extraction (might be a file object)
+                            logging.debug(f"    Trying direct extraction of dict")
                             extracted = extract_file(value, username)
                             if extracted:
                                 active_downloads.append(extracted)
                         elif isinstance(value, list):
                             # Format 2: {username: [files]}
+                            logging.debug(f"    Found list with {len(value)} items")
                             for file_obj in value:
                                 extracted = extract_file(file_obj, username)
                                 if extracted:
                                     active_downloads.append(extracted)
         elif isinstance(downloads_data, list):
             # Format 3: [files] with username field
+            logging.debug(f"Processing list with {len(downloads_data)} items")
             for file_obj in downloads_data:
                 username = file_obj.get("username", "Unknown")
                 extracted = extract_file(file_obj, username)
                 if extracted:
                     active_downloads.append(extracted)
         
-        logging.debug(f"slskd status: found {len(active_downloads)} downloads")
+        logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
         return jsonify({"downloads": active_downloads})
         
     except Exception as e:
