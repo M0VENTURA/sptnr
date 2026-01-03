@@ -851,6 +851,7 @@ function refreshSlskdMonitor(options = {}) {
         return;
       }
 
+      console.log('slskd status response:', data);  // Debug log
       if (errorBox) errorBox.style.display = 'none';
       if (results) results.style.display = 'block';
       const downloads = data.downloads || [];

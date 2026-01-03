@@ -2777,54 +2777,43 @@ def slskd_status():
         if resp.status_code != 200:
             return jsonify({"error": f"Failed to get transfers: {resp.status_code}"}), 500
         
-        downloads = resp.json()
+        downloads_data = resp.json()
         
-        # Format downloads - handle both dict and list responses
+        # Format downloads - slskd returns dict: {username: {folder_id: {files: []}}}
         active_downloads = []
         
-        if isinstance(downloads, dict):
-            # Dictionary format: {username: [files]}
-            for username, files in downloads.items():
-                if isinstance(files, list):
-                    for file_data in files:
-                        state = file_data.get("state", "")
-                        bytes_transferred = file_data.get("bytesTransferred", 0)
-                        size = file_data.get("size", 0)
-                        progress = (bytes_transferred / size * 100) if size > 0 else 0
+        if isinstance(downloads_data, dict):
+            # Expected format: {username: {folderId: {files: [{filename, size, bytesTransferred, state, ...}]}}}
+            for username, folders in downloads_data.items():
+                if isinstance(folders, dict):
+                    for folder_id, folder_data in folders.items():
+                        # Each folder can have multiple files
+                        files_list = folder_data.get("files", []) if isinstance(folder_data, dict) else []
                         
-                        active_downloads.append({
-                            "username": username,
-                            "filename": file_data.get("filename", ""),
-                            "state": state,
-                            "progress": round(progress, 2),
-                            "bytesTransferred": bytes_transferred,
-                            "size": size,
-                            "averageSpeed": file_data.get("averageSpeed", 0),
-                            "remoteToken": file_data.get("remoteToken", "")
-                        })
-        elif isinstance(downloads, list):
-            # List format: [download objects with username field]
-            for file_data in downloads:
-                if isinstance(file_data, dict):
-                    state = file_data.get("state", "")
-                    bytes_transferred = file_data.get("bytesTransferred", 0)
-                    size = file_data.get("size", 0)
-                    progress = (bytes_transferred / size * 100) if size > 0 else 0
-                    
-                    active_downloads.append({
-                        "username": file_data.get("username", "Unknown"),
-                        "filename": file_data.get("filename", ""),
-                        "state": state,
-                        "progress": round(progress, 2),
-                        "bytesTransferred": bytes_transferred,
-                        "size": size,
-                        "averageSpeed": file_data.get("averageSpeed", 0),
-                        "remoteToken": file_data.get("remoteToken", "")
-                    })
+                        for file_obj in files_list:
+                            if isinstance(file_obj, dict):
+                                filename = file_obj.get("filename", "Unknown")
+                                # Handle both possible field names from slskd
+                                state = file_obj.get("state", "") or file_obj.get("status", "")
+                                bytes_transferred = file_obj.get("bytesTransferred", 0) or file_obj.get("bytesReceived", 0) or 0
+                                size = file_obj.get("size", 0) or 0
+                                progress = (bytes_transferred / size * 100) if size > 0 else 0
+                                
+                                active_downloads.append({
+                                    "username": username,
+                                    "filename": filename,
+                                    "state": state,
+                                    "progress": round(progress, 2),
+                                    "bytesTransferred": bytes_transferred,
+                                    "size": size,
+                                    "averageSpeed": file_obj.get("averageSpeed", 0) or 0,
+                                    "remoteToken": file_obj.get("remoteToken", "") or ""
+                                })
         
         return jsonify({"downloads": active_downloads})
         
     except Exception as e:
+        logging.error(f"Error fetching slskd status: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 
