@@ -840,25 +840,35 @@ function refreshSlskdMonitor() {
         else if (state.includes('queued')) stateClass = 'bg-warning';
         else if (state.includes('error') || state.includes('failed')) stateClass = 'bg-danger';
 
-        const remainingBytes = (download.size || 0) - (download.bytesTransferred || 0);
-        const eta = download.averageSpeed > 0 ? Math.floor(remainingBytes / download.averageSpeed) : 0;
+        // Extract filename - handle various field names from slskd API
+        const filename = download.filename || download.remoteFilename || download.file || 'Unknown';
+        
+        // Extract size and progress - may be in different fields
+        const fileSize = download.size || download.fileSize || 0;
+        const bytesTransferred = download.bytesTransferred || download.transferred || 0;
+        const progress = Math.min(100, fileSize > 0 ? Math.round((bytesTransferred / fileSize) * 100) : 0);
+        
+        // Extract speed - try multiple field names
+        const speed = download.averageSpeed || download.speed || download.downloadSpeed || 0;
+        const remainingBytes = fileSize - bytesTransferred;
+        const eta = speed > 0 ? Math.floor(remainingBytes / speed) : 0;
 
         row.innerHTML = `
           <td><strong>${escapeHtml(download.username || '')}</strong></td>
           <td>
-            <div class="text-truncate" style="max-width: 420px;" title="${escapeHtml(download.filename || '')}">
-              ${escapeHtml(download.filename || '')}
+            <div class="text-truncate" style="max-width: 420px;" title="${escapeHtml(filename)}">
+              ${escapeHtml(filename)}
             </div>
-            <small class="text-muted">${formatBytes(download.bytesTransferred || 0)} / ${formatBytes(download.size || 0)}${eta > 0 ? ` · ETA: ${formatETA(eta)}` : ''}</small>
+            <small class="text-muted">${formatBytes(bytesTransferred)} / ${formatBytes(fileSize)}${eta > 0 ? ` · ETA: ${formatETA(eta)}` : ''}</small>
           </td>
           <td class="text-center"><span class="badge ${stateClass}">${escapeHtml(download.state || '')}</span></td>
           <td class="text-center">
             <div class="progress" style="height: 20px; min-width: 100px;">
-              <div class="progress-bar ${download.progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${download.progress}%" aria-valuenow="${download.progress}" aria-valuemin="0" aria-valuemax="100">${Number(download.progress || 0).toFixed(1)}%</div>
+              <div class="progress-bar ${progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
             </div>
           </td>
-          <td class="text-center">${formatBytes(download.size || 0)}</td>
-          <td class="text-center">${download.averageSpeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(download.averageSpeed)}/s</span>` : '—'}</td>
+          <td class="text-center">${formatBytes(fileSize)}</td>
+          <td class="text-center">${speed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(speed)}/s</span>` : '—'}</td>
           <td class="text-center">
             <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username || '')}', '${escapeHtml(download.filename || '')}', '${escapeHtml(download.remoteToken || '')}')" title="Cancel download">
               <i class="bi bi-x-circle"></i>
@@ -919,6 +929,21 @@ function formatDuration(seconds) {
   const mins = Math.floor(seconds / 60);
   const secs = seconds % 60;
   return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function formatETA(seconds) {
+  if (seconds === 8640000 || seconds < 0) return '∞';
+  if (seconds === 0) return '—';
+  
+  const days = Math.floor(seconds / 86400);
+  const hours = Math.floor((seconds % 86400) / 3600);
+  const minutes = Math.floor((seconds % 3600) / 60);
+  const secs = seconds % 60;
+  
+  if (days > 0) return `${days}d ${hours}h`;
+  if (hours > 0) return `${hours}h ${minutes}m`;
+  if (minutes > 0) return `${minutes}m ${secs}s`;
+  return `${secs}s`;
 }
 
 function escapeHtml(text) {

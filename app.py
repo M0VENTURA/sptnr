@@ -1122,7 +1122,8 @@ def scan_mp3():
             return redirect(url_for("dashboard"))
         
         try:
-            mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            db_dir = os.path.dirname(DB_PATH)
+            mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             # Use beets auto-import instead of mp3scanner
             cmd = [sys.executable, "beets_auto_import.py"]
@@ -1156,7 +1157,8 @@ def scan_navidrome():
             return redirect(url_for("dashboard"))
         
         try:
-            nav_progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            db_dir = os.path.dirname(DB_PATH)
+            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
             _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
             cmd = [sys.executable, "start.py", "--batchrate", "--verbose"]
             scan_process_navidrome = subprocess.Popen(
@@ -1188,7 +1190,8 @@ def scan_popularity():
             flash("Popularity scan is already running", "warning")
             return redirect(url_for("dashboard"))
         try:
-            popularity_progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+            db_dir = os.path.dirname(DB_PATH)
+            popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
             # Start popularity scan as a subprocess
@@ -1724,8 +1727,10 @@ def api_scan_progress():
         
         # If unified scan is not running, check for MP3, Navidrome, Popularity, and Singles scans
         if not progress.get("is_running", False):
+            db_dir = os.path.dirname(DB_PATH)
+            
             # Check MP3 scan progress
-            mp3_progress_file = os.environ.get("MP3_PROGRESS_FILE", "/database/mp3_scan_progress.json")
+            mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
             if os.path.exists(mp3_progress_file):
                 try:
                     with open(mp3_progress_file, 'r') as f:
@@ -1736,7 +1741,7 @@ def api_scan_progress():
                     pass
             
             # Check Navidrome scan progress
-            nav_progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
             if os.path.exists(nav_progress_file):
                 try:
                     with open(nav_progress_file, 'r') as f:
@@ -1747,7 +1752,7 @@ def api_scan_progress():
                     pass
             
             # Check Popularity scan progress
-            popularity_progress_file = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+            popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
             if os.path.exists(popularity_progress_file):
                 try:
                     with open(popularity_progress_file, 'r') as f:
@@ -1758,7 +1763,7 @@ def api_scan_progress():
                     pass
             
             # Check Singles scan progress
-            singles_progress_file = os.environ.get("SINGLES_PROGRESS_FILE", "/database/singles_scan_progress.json")
+            singles_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
             if os.path.exists(singles_progress_file):
                 try:
                     with open(singles_progress_file, 'r') as f:
