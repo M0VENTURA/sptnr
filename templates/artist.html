@@ -185,45 +185,6 @@
     </div>
   </div>
 
-  <!-- Albums Table -->
-  <div class="card mb-4" id="missingReleasesSection">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-flag"></i> Missing Releases
-      </h5>
-      <span id="missingReleasesStatus" class="text-muted small">Click Missing to scan MusicBrainz and populate this list.</span>
-    </div>
-    <div class="card-body">
-      <div class="mb-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">Albums</h6>
-          <span class="badge bg-secondary" id="missingAlbumsCount">0</span>
-        </div>
-        <div class="row g-3" id="missingAlbumsGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
-      <div class="mb-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">EPs</h6>
-          <span class="badge bg-secondary" id="missingEpsCount">0</span>
-        </div>
-        <div class="row g-3" id="missingEpsGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
-      <div>
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">Singles</h6>
-          <span class="badge bg-secondary" id="missingSinglesCount">0</span>
-        </div>
-        <div class="row g-3" id="missingSinglesGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
-    </div>
-  </div>
-
   {% if albums and albums|length > 0 %}
     <div class="card">
       <div class="card-header">
@@ -311,6 +272,45 @@
       <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>.
     </div>
   {% endif %}
+
+  <!-- Missing Releases Section -->
+  <div class="card mb-4" id="missingReleasesSection">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-flag"></i> Missing Releases
+      </h5>
+      <span id="missingReleasesStatus" class="text-muted small">Click Missing to scan MusicBrainz and populate this list.</span>
+    </div>
+    <div class="card-body">
+      <div class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">Albums</h6>
+          <span class="badge bg-secondary" id="missingAlbumsCount">0</span>
+        </div>
+        <div class="row g-3" id="missingAlbumsGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+      <div class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">EPs</h6>
+          <span class="badge bg-secondary" id="missingEpsCount">0</span>
+        </div>
+        <div class="row g-3" id="missingEpsGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+      <div>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">Singles</h6>
+          <span class="badge bg-secondary" id="missingSinglesCount">0</span>
+        </div>
+        <div class="row g-3" id="missingSinglesGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- qBittorrent Search Modal -->
