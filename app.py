@@ -16,6 +16,7 @@ import logging
 import re
 import difflib
 import unicodedata
+import requests
 from datetime import datetime
 import copy
 import json
@@ -796,6 +797,87 @@ def artist_detail(name):
         logging.error(f"Error loading artist details: {str(e)}")
         flash(f"Error loading artist: {str(e)}", "error")
         return redirect(url_for("artists"))
+
+
+def _normalize_release_title(text: str) -> str:
+    """Normalize release titles for comparison."""
+    if not text:
+        return ""
+    text = unicodedata.normalize("NFKD", text)
+    text = "".join(c for c in text if not unicodedata.combining(c))
+    text = text.lower()
+    text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
+    text = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", text)
+    text = re.sub(r"[^a-z0-9]+", " ", text)
+    return " ".join(text.split())
+
+
+def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict]:
+    """Fetch release-groups from MusicBrainz for an artist."""
+    if not artist_name:
+        return []
+    headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+    releases: list[dict] = []
+    try:
+        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep)'
+        url = "https://musicbrainz.org/ws/2/release-group"
+        params = {"fmt": "json", "limit": limit, "query": query}
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        for rg in data.get("release-groups", []) or []:
+            releases.append({
+                "title": rg.get("title", ""),
+                "primary_type": rg.get("primary-type", ""),
+                "first_release_date": rg.get("first-release-date", ""),
+                "secondary_types": rg.get("secondary-types", []),
+            })
+    except requests.exceptions.Timeout:
+        logging.debug(f"MusicBrainz timeout fetching releases for {artist_name}")
+    except Exception as e:
+        logging.debug(f"MusicBrainz release fetch failed for {artist_name}: {e}")
+    return releases
+
+
+@app.route("/api/artist/missing-releases", methods=["GET"])
+def api_artist_missing_releases():
+    """Detect missing releases for an artist by comparing to MusicBrainz."""
+    artist = request.args.get("artist", "").strip()
+    if not artist:
+        return jsonify({"error": "Artist is required"}), 400
+
+    conn = get_db()
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT DISTINCT album FROM tracks WHERE artist = ?
+    """, (artist,))
+    existing_albums = [row[0] for row in cursor.fetchall()]
+    conn.close()
+
+    existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
+
+    mb_releases = _fetch_musicbrainz_releases(artist)
+    missing = []
+    for rg in mb_releases:
+        norm_title = _normalize_release_title(rg.get("title"))
+        if not norm_title or norm_title in existing_norm:
+            continue
+        # skip compilations/secondary types if present
+        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+        if "compilation" in secondary:
+            continue
+        missing.append({
+            "title": rg.get("title", ""),
+            "primary_type": rg.get("primary_type", ""),
+            "first_release_date": rg.get("first_release_date", "")
+        })
+
+    return jsonify({
+        "artist": artist,
+        "missing": missing,
+        "total_musicbrainz": len(mb_releases),
+        "existing_albums": existing_albums,
+    })
 
 
 @app.route("/album/<path:artist>/<path:album>")
@@ -2638,33 +2720,9 @@ def api_album_art(artist, album):
                                     )
                 except Exception as e:
                     pass  # Fall through to MP3 extraction
-        
-        # Try to extract from MP3 files
-        music_root = os.environ.get("MUSIC_ROOT", "/music")
-        try:
-            file_path = find_track_file(artist, album, "", music_root, timeout_seconds=3)
-        except:
-            file_path = None
-        
-        if file_path and os.path.exists(file_path):
-            try:
-                from mutagen.id3 import ID3
-                audio = ID3(file_path)
-                # APIC frame contains album art
-                for frame in audio.values():
-                    if frame.FrameID == 'APIC':
-                        return send_file(
-                            io.BytesIO(frame.data),
-                            mimetype=frame.mime
-                        )
-            except:
-                pass
-        
-        # Default placeholder if no art found
-        return send_file(
-            io.BytesIO(b'\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01\x08\x06\x00\x00\x00\x1f\x15\xc4\x89\x00\x00\x00\nIDATx\x9cc\x00\x01\x00\x00\x05\x00\x01\r\n-\xb4\x00\x00\x00\x00IEND\xaeB`\x82'),
-            mimetype='image/png'
-        )
+
+        # If Navidrome didn't return art, let the caller fall back to placeholders/other flows
+        return Response(status=404)
     except Exception as e:
         return {"error": str(e)}, 400
 
@@ -2906,10 +2964,24 @@ def slskd_status():
             if not isinstance(file_obj, dict):
                 return None
 
-            filename = file_obj.get("filename") or file_obj.get("name") or file_obj.get("fileName") or "Unknown"
-            state = file_obj.get("state") or file_obj.get("status") or file_obj.get("stateText") or ""
+            # Some payloads wrap the file under a 'file' or 'download' key
+            if "file" in file_obj and isinstance(file_obj["file"], dict):
+                file_obj = {**file_obj, **file_obj.get("file", {})}
+            if "download" in file_obj and isinstance(file_obj["download"], dict):
+                file_obj = {**file_obj, **file_obj.get("download", {})}
 
-            size = file_obj.get("size") or file_obj.get("totalBytes") or file_obj.get("fileSize") or 0
+            filename = file_obj.get("filename") or file_obj.get("name") or file_obj.get("fileName") or "Unknown"
+            state_raw = file_obj.get("state") or file_obj.get("status") or file_obj.get("stateText") or ""
+
+            size = (
+                file_obj.get("size")
+                or file_obj.get("totalBytes")
+                or file_obj.get("fileSize")
+                or file_obj.get("bytesTotal")
+                or 0
+            )
+            size = int(size) if size else 0
+
             bytes_transferred = (
                 file_obj.get("bytesTransferred")
                 or file_obj.get("bytesReceived")
@@ -2917,6 +2989,7 @@ def slskd_status():
                 or file_obj.get("receivedBytes")
                 or 0
             )
+            bytes_transferred = int(bytes_transferred) if bytes_transferred else 0
 
             progress_raw = file_obj.get("progress") or file_obj.get("percentComplete")
             if progress_raw is not None:
@@ -2932,6 +3005,27 @@ def slskd_status():
                 or file_obj.get("downloadSpeed")
                 or 0
             )
+            try:
+                speed = int(speed)
+            except Exception:
+                pass
+
+            # Normalize state for UI highlighting
+            state = str(state_raw or "").strip()
+            state_lower = state.lower()
+            if not state:
+                if progress >= 100:
+                    state = "Completed"
+                elif speed > 0:
+                    state = "Downloading"
+                elif bytes_transferred > 0:
+                    state = "InProgress"
+                else:
+                    state = "Queued"
+            elif state_lower in ["inprogress", "in_progress"]:
+                state = "InProgress"
+            elif state_lower.startswith("done"):
+                state = "Completed"
 
             logging.debug(f"extract_file: {username} -> {filename[:50]}, state={state}, progress={progress:.1f}%")
             
@@ -2943,7 +3037,7 @@ def slskd_status():
                 "bytesTransferred": bytes_transferred,
                 "size": size,
                 "averageSpeed": speed,
-                "remoteToken": file_obj.get("remoteToken") or file_obj.get("token") or ""
+                "remoteToken": file_obj.get("remoteToken") or file_obj.get("token") or "",
             }
         
         if isinstance(downloads_data, dict):
@@ -2976,9 +3070,17 @@ def slskd_status():
                                 if extracted:
                                     active_downloads.append(extracted)
         elif isinstance(downloads_data, list):
-            # Format 3: [files] with username field
+            # Format 3: [files] with username field or nested in 'items'
             logging.debug(f"Processing list with {len(downloads_data)} items")
             for file_obj in downloads_data:
+                if isinstance(file_obj, dict) and "items" in file_obj and isinstance(file_obj["items"], list):
+                    for item in file_obj["items"]:
+                        username = item.get("username", file_obj.get("username", "Unknown"))
+                        extracted = extract_file(item, username)
+                        if extracted:
+                            active_downloads.append(extracted)
+                    continue
+
                 username = file_obj.get("username", "Unknown")
                 extracted = extract_file(file_obj, username)
                 if extracted:

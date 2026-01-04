@@ -214,6 +214,30 @@
                         </form>
                     </div>
                 </div>
+
+                <!-- Missing Releases (MusicBrainz) -->
+                <div class="scan-card-large">
+                    <div class="d-flex align-items-center justify-content-between mb-3">
+                        <div>
+                            <h6 class="mb-1">
+                                <i class="bi bi-flag"></i> Missing Releases (MusicBrainz)
+                            </h6>
+                            <small class="text-muted" style="display: block;">Find releases not yet in your library</small>
+                        </div>
+                    </div>
+
+                    <div class="row g-2 mb-3">
+                        <div class="col-12 col-md-8">
+                            <input type="text" id="missingReleasesArtist" class="form-control" placeholder="Artist name...">
+                        </div>
+                        <div class="col-12 col-md-4 d-grid">
+                            <button type="button" class="btn btn-warning" onclick="runMissingReleasesCheck()">
+                                <i class="bi bi-search"></i> Check Missing
+                            </button>
+                        </div>
+                    </div>
+                    <div class="small text-muted" id="missingReleasesStatus">Enter an artist name to check MusicBrainz.</div>
+                </div>
             </div>
         </div>
     </div>
@@ -295,6 +319,21 @@
         <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
             <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
         </a>
+    </div>
+</div>
+
+<!-- Missing Releases Modal -->
+<div class="modal fade" id="missingReleasesModal" tabindex="-1" aria-labelledby="missingReleasesModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="missingReleasesModalLabel"><i class="bi bi-flag"></i> Missing Releases</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div id="missingReleasesList" style="max-height: 420px; overflow-y: auto;"></div>
+            </div>
+        </div>
     </div>
 </div>
 
@@ -735,5 +774,62 @@ document.addEventListener('DOMContentLoaded', function() {
     // Poll every 3 seconds (reduced from multiple intervals)
     setInterval(updateAll, 3000);
 });
+
+function runMissingReleasesCheck() {
+    const artistInput = document.getElementById('missingReleasesArtist');
+    const statusEl = document.getElementById('missingReleasesStatus');
+    const listEl = document.getElementById('missingReleasesList');
+    if (!artistInput || !statusEl || !listEl) return;
+
+    const artist = artistInput.value.trim();
+    if (!artist) {
+        statusEl.textContent = 'Please enter an artist name.';
+        return;
+    }
+
+    statusEl.textContent = 'Checking MusicBrainz...';
+    listEl.innerHTML = '';
+
+    fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artist))
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                statusEl.textContent = 'Error: ' + data.error;
+                return;
+            }
+
+            const missing = data.missing || [];
+            if (missing.length === 0) {
+                statusEl.textContent = 'All MusicBrainz releases are present in your library for this artist.';
+            } else {
+                statusEl.textContent = `${missing.length} missing release(s) found.`;
+            }
+
+            listEl.innerHTML = missing.map(item => {
+                const year = (item.first_release_date || '').slice(0, 4);
+                return `
+                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+                        <div>
+                            <div class="fw-semibold">${escapeHtml(item.title)}</div>
+                            <div class="text-muted small">${escapeHtml(item.primary_type || 'Release')}${year ? ' · ' + year : ''}</div>
+                        </div>
+                        <span class="badge bg-warning text-dark">Missing</span>
+                    </div>
+                `;
+            }).join('');
+
+            const modal = new bootstrap.Modal(document.getElementById('missingReleasesModal'));
+            modal.show();
+        })
+        .catch(err => {
+            statusEl.textContent = 'Error: ' + err.message;
+        });
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
 </script>
 {% endblock %}

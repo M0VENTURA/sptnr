@@ -26,6 +26,9 @@
       <button class="btn btn-outline-success" onclick="addBookmark('artist', '{{ artist_name }}', '{{ artist_name }}', null, null)" title="Bookmark this artist">
         <i class="bi bi-bookmark"></i> <span class="d-none d-sm-inline">Bookmark</span>
       </button>
+      <button class="btn btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+        <i class="bi bi-flag"></i> <span class="d-none d-sm-inline">Missing</span>
+      </button>
       {% if qbit_config.enabled and qbit_config.web_url %}
       <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>
@@ -271,6 +274,22 @@
   {% endif %}
 </div>
 
+<!-- Missing Releases Modal -->
+<div class="modal fade" id="missingReleasesModal" tabindex="-1" aria-labelledby="missingReleasesLabel" aria-hidden="true">
+  <div class="modal-dialog modal-lg">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="missingReleasesLabel"><i class="bi bi-flag"></i> Missing Releases</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <div id="missingReleasesStatus" class="text-muted mb-3">Checking MusicBrainz...</div>
+        <div id="missingReleasesList" style="max-height: 400px; overflow-y: auto;"></div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- qBittorrent Search Modal -->
 {% if qbit_config.enabled %}
 <div class="modal fade" id="qbitModal" tabindex="-1" aria-labelledby="qbitModalLabel" aria-hidden="true">
@@ -472,6 +491,48 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 });
+
+function checkMissingReleases(artistName) {
+  const statusEl = document.getElementById('missingReleasesStatus');
+  const listEl = document.getElementById('missingReleasesList');
+  statusEl.textContent = 'Checking MusicBrainz for missing releases...';
+  listEl.innerHTML = '';
+
+  fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error) {
+        statusEl.textContent = 'Error: ' + data.error;
+        return;
+      }
+
+      const missing = data.missing || [];
+      if (missing.length === 0) {
+        statusEl.textContent = 'All MusicBrainz releases are present in your library.';
+        return;
+      }
+
+      statusEl.textContent = `${missing.length} missing release(s) found.`;
+      listEl.innerHTML = missing.map(item => {
+        const year = (item.first_release_date || '').slice(0, 4);
+        return `
+          <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+            <div>
+              <div class="fw-semibold">${escapeHtml(item.title)}</div>
+              <div class="text-muted small">${escapeHtml(item.primary_type || 'Release')}${year ? ' · ' + year : ''}</div>
+            </div>
+            <span class="badge bg-warning text-dark">Missing</span>
+          </div>
+        `;
+      }).join('');
+    })
+    .catch(err => {
+      statusEl.textContent = 'Error: ' + err.message;
+    });
+
+  const modal = new bootstrap.Modal(document.getElementById('missingReleasesModal'));
+  modal.show();
+}
 </script>
 {% endif %}
 
