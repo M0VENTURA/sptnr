@@ -1944,27 +1944,50 @@ def api_scan_status():
     """API endpoint to get status of all scan types"""
     global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles
     
+    def is_process_running(proc):
+        """Check if a process/thread is running, handling both dict and process objects."""
+        if proc is None:
+            return False
+        if isinstance(proc, dict):
+            # Handle dict format: {'thread': thread_obj, 'type': '...'}
+            thread = proc.get('thread')
+            if thread is None:
+                return False
+            # For threads, check is_alive()
+            if hasattr(thread, 'is_alive'):
+                return thread.is_alive()
+            # For processes, check poll()
+            if hasattr(thread, 'poll'):
+                return thread.poll() is None
+            return False
+        # Direct process/thread object
+        if hasattr(proc, 'is_alive'):
+            return proc.is_alive()
+        if hasattr(proc, 'poll'):
+            return proc.poll() is None
+        return False
+    
     with scan_lock:
         return jsonify({
             "main_scan": {
                 "name": "Main Rating Scan",
-                "running": scan_process is not None and scan_process.poll() is None
+                "running": is_process_running(scan_process)
             },
             "mp3_scan": {
                 "name": "File Path Scan",
-                "running": scan_process_mp3 is not None and scan_process_mp3.poll() is None
+                "running": is_process_running(scan_process_mp3)
             },
             "navidrome_scan": {
                 "name": "Navidrome Sync",
-                "running": scan_process_navidrome is not None and scan_process_navidrome.poll() is None
+                "running": is_process_running(scan_process_navidrome)
             },
             "popularity_scan": {
                 "name": "Popularity Update",
-                "running": scan_process_popularity is not None and scan_process_popularity.poll() is None
+                "running": is_process_running(scan_process_popularity)
             },
             "singles_scan": {
                 "name": "Single Detection",
-                "running": scan_process_singles is not None and scan_process_singles.poll() is None
+                "running": is_process_running(scan_process_singles)
             }
         })
 
