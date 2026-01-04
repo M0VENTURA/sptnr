@@ -12,15 +12,26 @@ import math
 from datetime import datetime
 import sys
 
-# Setup logging
-logging.basicConfig(
-    level=logging.DEBUG,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("/config/popularity.log"),
-        logging.StreamHandler()
-    ]
-)
+# Dedicated popularity logger (no propagation to root)
+logger = logging.getLogger("popularity")
+logger.setLevel(logging.DEBUG)
+
+if not logger.handlers:
+    _pop_log_path = os.environ.get("POPULARITY_LOG_PATH", "/config/popularity.log")
+    os.makedirs(os.path.dirname(_pop_log_path), exist_ok=True)
+
+    _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
+    _file_handler = logging.FileHandler(_pop_log_path)
+    _file_handler.setFormatter(_formatter)
+
+    _stream_handler = logging.StreamHandler()
+    _stream_handler.setFormatter(_formatter)
+
+    logger.addHandler(_file_handler)
+    logger.addHandler(_stream_handler)
+
+# Prevent bubbling to the root/app logger
+logger.propagate = False
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
@@ -66,7 +77,7 @@ def save_popularity_progress(processed_artists: int, total_artists: int):
         with open(POPULARITY_PROGRESS_FILE, 'w') as f:
             json.dump(progress_data, f)
     except Exception as e:
-        logging.error(f"Error saving popularity progress: {e}")
+        logger.error(f"Error saving popularity progress: {e}")
 
 def scan_popularity(verbose: bool = False, artist: str | None = None):
     """
@@ -74,9 +85,9 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
     Updates spotify_score, lastfm_ratio, listenbrainz_score, composite score, and initial stars.
     Optionally filter by artist.
     """
-    logging.info("=" * 60)
-    logging.info("Popularity Scanner Started")
-    logging.info("=" * 60)
+    logger.info("=" * 60)
+    logger.info("Popularity Scanner Started")
+    logger.info("=" * 60)
 
     try:
         # Build filter
@@ -106,10 +117,10 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
 
         if not tracks:
             print("✅ All tracks have recent popularity data")
-            logging.info("All tracks have recent popularity data")
+            logger.info("All tracks have recent popularity data")
             return
 
-        logging.info(f"Scanning popularity for {len(tracks)} tracks" + (f" (artist={artist})" if artist else ""))
+            logger.info(f"Scanning popularity for {len(tracks)} tracks" + (f" (artist={artist})" if artist else ""))
         print(f"📊 Scanning popularity for {len(tracks)} tracks..." + (f" (artist={artist})" if artist else ""))
 
         updated_count = 0
@@ -119,7 +130,7 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
         for idx, track in enumerate(tracks, 1):
             if idx % 50 == 0:
                 print(f"Progress: {idx}/{len(tracks)}")
-                logging.info(f"Popularity scan progress: {idx}/{len(tracks)}")
+                logger.info(f"Popularity scan progress: {idx}/{len(tracks)}")
                 save_popularity_progress(idx, len(tracks))
 
             artist_name = track['artist']
@@ -132,7 +143,7 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                 # Log the previous album if we were processing one
                 if current_album is not None and album_tracks > 0:
                     log_album_scan(current_album[0], current_album[1], 'popularity', album_tracks, 'completed')
-                    logging.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+                    logger.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
                 
                 current_album = (artist_name, album_name)
                 album_tracks = 0
@@ -147,9 +158,9 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                     best_match = max(results, key=lambda r: r.get('popularity', 0))
                     spotify_score = best_match.get('popularity', 0)
                     if verbose:
-                        logging.debug(f"Spotify popularity for {title}: {spotify_score}")
+                        logger.debug(f"Spotify popularity for {title}: {spotify_score}")
             except Exception as e:
-                logging.debug(f"Spotify popularity lookup failed for {title}: {e}")
+                logger.debug(f"Spotify popularity lookup failed for {title}: {e}")
 
             # Get Last.fm ratio + raw playcount
             lastfm_ratio = track['lastfm_ratio'] or 0
@@ -160,9 +171,9 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                     lastfm_playcount = int(info['track_play'])
                     lastfm_ratio = min(100, lastfm_playcount / 10)
                     if verbose:
-                        logging.debug(f"Last.fm ratio for {title}: {lastfm_ratio} (playcount: {info['track_play']})")
+                        logger.debug(f"Last.fm ratio for {title}: {lastfm_ratio} (playcount: {info['track_play']})")
             except Exception as e:
-                logging.debug(f"Last.fm lookup failed for {title}: {e}")
+                logger.debug(f"Last.fm lookup failed for {title}: {e}")
 
             # Get ListenBrainz score
             listenbrainz_count = track['listenbrainz_score'] or 0
@@ -172,11 +183,11 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                 listenbrainz_count = score
                 if verbose or score > 0:
                     if score > 0:
-                        logging.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
+                        logger.debug(f"ListenBrainz count for {title}: {listenbrainz_count}")
                     else:
-                        logging.debug(f"ListenBrainz: No data available for {title} (MBID: {mbid_value or 'N/A'})")
+                        logger.debug(f"ListenBrainz: No data available for {title} (MBID: {mbid_value or 'N/A'})")
             except Exception as e:
-                logging.debug(f"ListenBrainz lookup failed for {title}: {e}")
+                logger.debug(f"ListenBrainz lookup failed for {title}: {e}")
 
             # Compute composite score (align with start.py scoring)
             release_date = track['spotify_release_date'] or "1992-01-01"
@@ -223,34 +234,34 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                 if verbose:
                     print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}, Score={composite_score:.3f}")
             except Exception as e:
-                logging.error(f"Failed to update track {track_id}: {e}")
+                logger.error(f"Failed to update track {track_id}: {e}")
 
         # Log the final album after the loop completes
         if current_album is not None and album_tracks > 0:
             log_album_scan(current_album[0], current_album[1], 'popularity', album_tracks, 'completed')
-            logging.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+            logger.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
 
         print(f"✅ Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
-        logging.info(f"Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
+        logger.info(f"Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
 
     except Exception as e:
-        logging.error(f"Popularity scan failed: {e}")
+        logger.error(f"Popularity scan failed: {e}")
         print(f"❌ Popularity scan failed: {e}")
         raise
 
     finally:
-        logging.info("=" * 60)
+        logger.info("=" * 60)
 
 def popularity_scan(verbose: bool = False):
     """Detect track popularity from external sources (legacy function)"""
-    logging.info("=" * 60)
-    logging.info("Popularity Scanner Started")
-    logging.info("=" * 60)
-    
+    logger.info("=" * 60)
+    logger.info("Popularity Scanner Started")
+    logger.info("=" * 60)
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         # Get all tracks that need popularity detection
         cursor.execute("""
             SELECT id, artist, title, album
@@ -258,20 +269,20 @@ def popularity_scan(verbose: bool = False):
             WHERE popularity_score IS NULL OR popularity_score = 0
             ORDER BY artist, title
         """)
-        
+
         tracks = cursor.fetchall()
-        logging.info(f"Found {len(tracks)} tracks to scan for popularity")
-        
+        logger.info(f"Found {len(tracks)} tracks to scan for popularity")
+
         scanned_count = 0
-        
+
         for track in tracks:
             track_id = track["id"]
             artist = track["artist"]
             title = track["title"]
-            
+
             if verbose:
-                logging.info(f"Scanning: {artist} - {title}")
-            
+                logger.info(f"Scanning: {artist} - {title}")
+
             # Try to get popularity from Spotify
             spotify_score = 0
             try:
@@ -284,8 +295,8 @@ def popularity_scan(verbose: bool = False):
                         spotify_score = best_match.get("popularity", 0)
             except Exception as e:
                 if verbose:
-                    logging.debug(f"Spotify lookup failed for {artist} - {title}: {e}")
-            
+                    logger.debug(f"Spotify lookup failed for {artist} - {title}: {e}")
+
             # Try to get popularity from Last.fm
             lastfm_score = 0
             try:
@@ -294,8 +305,8 @@ def popularity_scan(verbose: bool = False):
                     lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
             except Exception as e:
                 if verbose:
-                    logging.debug(f"Last.fm lookup failed for {artist} - {title}: {e}")
-            
+                    logger.debug(f"Last.fm lookup failed for {artist} - {title}: {e}")
+
             # Average the scores
             if spotify_score > 0 or lastfm_score > 0:
                 popularity_score = (spotify_score + lastfm_score) / 2.0
@@ -304,18 +315,18 @@ def popularity_scan(verbose: bool = False):
                     (popularity_score, track_id)
                 )
                 scanned_count += 1
-        
+
         conn.commit()
         conn.close()
-        
-        logging.info(f"✅ Popularity scan completed: {scanned_count} tracks updated")
-        
+
+        logger.info(f"✅ Popularity scan completed: {scanned_count} tracks updated")
+
     except Exception as e:
-        logging.error(f"❌ Popularity scan failed: {str(e)}")
+        logger.error(f"❌ Popularity scan failed: {str(e)}")
         raise
-    
+
     finally:
-        logging.info("=" * 60)
+        logger.info("=" * 60)
 
 if __name__ == "__main__":
     import argparse

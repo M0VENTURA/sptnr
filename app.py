@@ -1266,6 +1266,32 @@ def scan_popularity():
             elif hasattr(scan_process_popularity, 'is_alive') and scan_process_popularity.is_alive():
                 flash("Popularity scan is already running", "warning")
                 return redirect(url_for("dashboard"))
+
+        # Don't start popularity until Navidrome scan finishes
+        nav_running = False
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                nav_thread = scan_process_navidrome.get('thread')
+                nav_running = nav_thread is not None and nav_thread.is_alive()
+            elif hasattr(scan_process_navidrome, 'is_alive'):
+                nav_running = scan_process_navidrome.is_alive()
+            elif hasattr(scan_process_navidrome, 'poll'):
+                nav_running = scan_process_navidrome.poll() is None
+
+        if not nav_running:
+            nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+            try:
+                with open(nav_progress_file, "r", encoding="utf-8") as f:
+                    nav_state = json.load(f)
+                    nav_running = bool(nav_state.get("is_running"))
+            except FileNotFoundError:
+                nav_running = False
+            except Exception:
+                nav_running = False
+
+        if nav_running:
+            flash("Please wait for Navidrome scan to finish before starting popularity scan", "warning")
+            return redirect(url_for("dashboard"))
         
         try:
             db_dir = os.path.dirname(DB_PATH)
