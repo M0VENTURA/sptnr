@@ -59,7 +59,7 @@
                         </div>
                                                 <div class="mb-3">
                             <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
-                            <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                            <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.beets_mbid or track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
                             <div class="form-text">Official MusicBrainz recording ID</div>
                         </div>
                                                 <div class="mb-3">
