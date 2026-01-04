@@ -1,5 +1,6 @@
 # 🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm integration
 import argparse, os, sys, requests, time, random, json, logging, base64, re
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from colorama import init, Fore, Style
 from helpers import strip_parentheses, create_retry_session
@@ -13,6 +14,17 @@ LIGHT_YELLOW = Fore.YELLOW + Style.BRIGHT
 LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 BOLD = Style.BRIGHT
 RESET = Style.RESET_ALL
+
+# Helper function to parse datetime flexibly
+def parse_datetime_flexible(date_string):
+    """Parse datetime with flexible format handling for both 'T' and space separators."""
+    formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_string, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Could not parse datetime: {date_string}")
 
 # 🔐 Load environment variables
 load_dotenv()
@@ -376,7 +388,7 @@ def get_resume_artist_from_cache():
         ts = entry.get("last_scanned")
         if ts:
             try:
-                dt = datetime.strptime(ts, "%Y-%m-%dT%H:%M:%S")
+                dt = parse_datetime_flexible(ts)
                 if dt > latest_time:
                     latest_time = dt
                     latest_track_id = tid
@@ -792,7 +804,7 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
     # Skip recent scans unless forced
     if entry and not force:
         try:
-            if datetime.now() - datetime.strptime(entry["last_scanned"], "%Y-%m-%dT%H:%M:%S") < timedelta(days=7):
+            if datetime.now() - parse_datetime_flexible(entry["last_scanned"]) < timedelta(days=7):
                 return entry
         except:
             pass
@@ -1036,7 +1048,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False, use_google=F
 
             if not force and track_id in track_cache:
                 try:
-                    last = datetime.strptime(track_cache[track_id].get("last_scanned", ""), "%Y-%m-%dT%H:%M:%S")
+                    last = parse_datetime_flexible(track_cache[track_id].get("last_scanned", ""))
                     if datetime.now() - last < timedelta(days=7):
                         continue
                 except:

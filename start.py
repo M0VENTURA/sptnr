@@ -54,6 +54,17 @@ LIGHT_YELLOW = Fore.YELLOW + Style.BRIGHT
 LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 RESET = Style.RESET_ALL
 
+# Helper function to parse datetime flexibly
+def parse_datetime_flexible(date_string):
+    """Parse datetime with flexible format handling for both 'T' and space separators."""
+    formats = ["%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"]
+    for fmt in formats:
+        try:
+            return datetime.strptime(date_string, fmt)
+        except ValueError:
+            continue
+    raise ValueError(f"Could not parse datetime: {date_string}")
+
 # âœ… Load config.yaml
 
 CONFIG_PATH = "/config/config.yaml"
@@ -1610,7 +1621,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             cached_track_count = get_album_track_count_in_db(artist_name, album_name)
             if album_last_scanned and cached_track_count >= ALBUM_SKIP_MIN_TRACKS:
                 try:
-                    last_dt = datetime.strptime(album_last_scanned, "%Y-%m-%dT%H:%M:%S")
+                    last_dt = parse_datetime_flexible(album_last_scanned)
                     days_since = (datetime.now() - last_dt).days
                 except Exception:
                     days_since = 9999
@@ -2329,7 +2340,7 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
             for name, artist_info in artist_map.items():
                 needs_update = True if force else (
                     not artist_info['last_updated'] or
-                    (datetime.now() - datetime.strptime(artist_info['last_updated'], "%Y-%m-%dT%H:%M:%S")).days > 7
+                    (datetime.now() - parse_datetime_flexible(artist_info['last_updated'])).days > 7
                 )
 
                 if not needs_update:

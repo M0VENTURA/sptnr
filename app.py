@@ -5121,8 +5121,8 @@ def playlist_import():
                          slskd_enabled=slskd_enabled)
 
 
-@app.route("/api/playlist/list", methods=["GET"])
-def api_playlist_list():
+@app.route("/api/spotify/playlists", methods=["GET"])
+def api_spotify_playlists():
     """API endpoint to list user's Spotify playlists"""
     try:
         config_data, _ = _read_yaml(CONFIG_PATH)

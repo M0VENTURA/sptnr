@@ -1035,7 +1035,7 @@
     refreshBtn.disabled = true;
 
     try {
-      const response = await fetch('/api/playlist/list');
+      const response = await fetch('/api/spotify/playlists');
       const data = await response.json();
 
       if (!response.ok) {
