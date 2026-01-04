@@ -124,7 +124,7 @@ class BeetsAutoImporter:
                     "copy": False,  # Don't copy, files are already in /music
                     "write": False,  # Don't modify files (-A mode)
                     "autotag": False,  # Don't auto-tag, just import metadata
-                    "resume": True,  # Automatically resume interrupted imports
+                    "resume": "no",  # Don't try to resume - always start fresh to avoid stuck state
                     "incremental": True,  # Only import new/modified files
                     "log": str(self.config_path / "beets_import.log")
                 },
@@ -151,7 +151,7 @@ class BeetsAutoImporter:
                 "copy": False,  # Don't copy, files are already in /music
                 "write": False,  # Don't modify files (-A mode)
                 "autotag": False,  # Don't auto-tag, just import
-                "resume": True,  # Automatically resume interrupted imports
+                "resume": "no",  # Don't try to resume - always start fresh to avoid stuck state
                 "incremental": True,  # Only import new/modified files
                 "log": str(self.config_path / "beets_import.log")
             },
