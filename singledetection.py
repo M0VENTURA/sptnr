@@ -1,7 +1,11 @@
 #!/usr/bin/env python3
 """
 Single Detection Scanner - Detects which tracks are singles vs album tracks.
-Uses Discogs, Last.fm, MusicBrainz and other sources to determine if a track is a single.
+Uses Discogs, Last.fm, MusicBrainz, DuckDuckGo and other sources.
+
+Integrates:
+- single_detector.py: Advanced multi-source weighted scoring
+- ddg_searchapi_checker.py: DuckDuckGo official video detection
 """
 
 import os
@@ -9,6 +13,7 @@ import sqlite3
 import logging
 import json
 from datetime import datetime
+from typing import Optional, Dict, List
 import sys
 import re
 import time
@@ -43,12 +48,115 @@ from start import (
     create_retry_session,
 )
 
+# Import new single detection modules
+try:
+    from single_detector import decide_is_single, TrackMeta
+    SINGLE_DETECTOR_AVAILABLE = True
+except ImportError:
+    logging.warning("single_detector module not available, using legacy detection")
+    SINGLE_DETECTOR_AVAILABLE = False
+
+try:
+    from ddg_searchapi_checker import ddg_searchapi_official_video_match
+    DDG_AVAILABLE = True
+except ImportError:
+    logging.warning("ddg_searchapi_checker module not available")
+    DDG_AVAILABLE = False
+
 def get_db_connection():
     """Get database connection with WAL mode"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
+
+
+# ============================================================================
+# ADVANCED SINGLE DETECTION - Integrated from single_detector.py
+# ============================================================================
+
+def detect_single_advanced(
+    artist: str,
+    title: str,
+    album: Optional[str] = None,
+    raw_sources: Optional[dict] = None,
+    enable_ddg: bool = True,
+    label_whitelist: Optional[list] = None
+) -> dict:
+    """
+    Advanced single detection using multi-source weighted scoring.
+    
+    Integrates:
+    - single_detector.py for weighted source aggregation
+    - ddg_searchapi_checker.py for DuckDuckGo video verification
+    
+    Returns:
+        {
+            'is_single': bool,
+            'score': int,
+            'matches': int,
+            'confidence': 'low' | 'medium' | 'high',
+            'reasons': [str],
+            'source_breakdown': {source: {is_single, weight, details}}
+        }
+    """
+    if not SINGLE_DETECTOR_AVAILABLE:
+        logging.debug("single_detector not available, falling back to legacy detection")
+        return None
+    
+    try:
+        # Build metadata for the new detector
+        meta = TrackMeta(
+            artist=artist,
+            title=title,
+            album=album,
+            raw_sources=raw_sources or {}
+        )
+        
+        # Get base decision from single_detector
+        decision = decide_is_single(meta)
+        
+        # Add DuckDuckGo as last resort if enabled and available
+        if enable_ddg and DDG_AVAILABLE and not decision['is_single']:
+            label_whitelist = label_whitelist or config.get("features", {}).get("label_whitelist", [])
+            exception_artists = config.get("features", {}).get("video_exception_artists", [])
+            
+            ddg_result = ddg_searchapi_official_video_match(
+                artist=artist,
+                track_title=title,
+                label_whitelist=label_whitelist,
+                exception_artists=exception_artists
+            )
+            
+            if ddg_result.get('matched'):
+                decision['source_breakdown']['ddg_video'] = {
+                    'is_single': True,
+                    'weight': ddg_result.get('weight', 20),
+                    'details': {
+                        'source': 'ddg_video',
+                        'reason': [ddg_result.get('reason', '')],
+                        'channel': ddg_result.get('channel'),
+                        'video_title': ddg_result.get('video_title'),
+                        'video_url': ddg_result.get('video_url')
+                    }
+                }
+                # Recalculate if DDG adds weight
+                decision['source_breakdown']['ddg_video']['is_single'] = True
+        
+        # Add confidence level
+        if decision['score'] >= 150:
+            confidence = 'high'
+        elif decision['score'] >= 100:
+            confidence = 'medium'
+        else:
+            confidence = 'low'
+        
+        decision['confidence'] = confidence
+        return decision
+        
+    except Exception as e:
+        logging.error(f"Advanced single detection failed for {artist} - {title}: {e}")
+        return None
 
 
 def save_singles_progress(scanned_artists: int, total_artists: int):
