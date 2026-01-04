@@ -3048,20 +3048,136 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
         client = SlskdClient(web_url, api_key, enabled=True)
         search_id = client.search(query)
         
-        if search_id:
-            cursor.execute("""
-                UPDATE managed_downloads 
-                SET status = 'searching', external_id = ?, updated_at = CURRENT_TIMESTAMP
-                WHERE id = ?
-            """, (search_id, tracking_id))
-            conn.commit()
-        else:
+        if not search_id:
             cursor.execute("""
                 UPDATE managed_downloads 
                 SET status = 'error', error_message = 'Failed to start search', updated_at = CURRENT_TIMESTAMP
                 WHERE id = ?
             """, (tracking_id,))
             conn.commit()
+            return
+        
+        # Store search_id and update status
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'searching', external_id = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (search_id, tracking_id))
+        conn.commit()
+        
+        # Start a thread to monitor the search and download when results are available
+        def monitor_slskd_search():
+            import time
+            max_wait = 30  # Wait up to 30 seconds for results
+            start_time = time.time()
+            best_file = None
+            best_match_score = 0
+            
+            while time.time() - start_time < max_wait:
+                try:
+                    responses, state, is_complete = client.get_search_results(search_id)
+                    
+                    if responses:
+                        # Look through responses for best matching files
+                        for response in responses:
+                            if hasattr(response, 'files') and response.files:
+                                for file_info in response.files:
+                                    # Score the file based on how well it matches the query
+                                    filename = file_info.get('filename', '').lower()
+                                    query_lower = query.lower()
+                                    
+                                    # Simple scoring: count matching words
+                                    query_words = query_lower.split()
+                                    matches = sum(1 for word in query_words if word in filename)
+                                    match_score = matches / len(query_words) if query_words else 0
+                                    
+                                    # Prefer files with audio extensions
+                                    if any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
+                                        match_score *= 1.2
+                                    else:
+                                        match_score *= 0.5  # Lower score for non-audio
+                                    
+                                    if match_score > best_match_score:
+                                        best_match_score = match_score
+                                        best_file = {
+                                            'username': response.username if hasattr(response, 'username') else 'Unknown',
+                                            'filename': file_info.get('filename', ''),
+                                            'size': file_info.get('size', 0),
+                                            'match_score': match_score
+                                        }
+                    
+                    if is_complete:
+                        break
+                    
+                    time.sleep(1)
+                    
+                except Exception as e:
+                    logging.error(f"[SLSKD_MONITOR] Error monitoring search {search_id}: {e}")
+                    break
+            
+            # Download the best file found
+            if best_file and best_match_score >= 0.3:  # Minimum 30% match
+                try:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    
+                    # Start the download
+                    success = client.download_file(
+                        best_file['username'],
+                        best_file['filename'],
+                        best_file['size']
+                    )
+                    
+                    if success:
+                        cursor2.execute("""
+                            UPDATE managed_downloads 
+                            SET status = 'downloading', updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (tracking_id,))
+                        logging.info(f"[SLSKD_MONITOR] Started download: {best_file['filename']} from {best_file['username']}")
+                    else:
+                        cursor2.execute("""
+                            UPDATE managed_downloads 
+                            SET status = 'error', error_message = 'Failed to start file download', updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (tracking_id,))
+                    
+                    conn2.commit()
+                    conn2.close()
+                    
+                except Exception as e:
+                    logging.error(f"[SLSKD_MONITOR] Error downloading file: {e}")
+                    try:
+                        conn2 = get_db()
+                        cursor2 = conn2.cursor()
+                        cursor2.execute("""
+                            UPDATE managed_downloads 
+                            SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (str(e), tracking_id))
+                        conn2.commit()
+                        conn2.close()
+                    except:
+                        pass
+            else:
+                # No good matches found
+                try:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'error', error_message = 'No matching files found', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (tracking_id,))
+                    conn2.commit()
+                    conn2.close()
+                except:
+                    pass
+        
+        # Start monitoring thread
+        import threading
+        thread = threading.Thread(target=monitor_slskd_search, daemon=True)
+        thread.start()
             
     except Exception as e:
         logging.error(f"[SLSKD_INIT] Error for tracking {tracking_id}: {e}")
@@ -3088,6 +3204,10 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
             conn.commit()
             return
         
+        web_url = qbit_config.get("web_url", "http://localhost:8080")
+        username = qbit_config.get("username", "")
+        password = qbit_config.get("password", "")
+        
         # Update status to searching
         cursor.execute("""
             UPDATE managed_downloads 
@@ -3096,8 +3216,141 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
         """, (tracking_id,))
         conn.commit()
         
-        # Note: qBittorrent search would need to be implemented here
-        # For now, just mark as pending manual action
+        # Start search in qBittorrent in a background thread
+        def search_and_add_qbit():
+            try:
+                import requests as req
+                import time
+                
+                session = req.Session()
+                
+                # Login if credentials provided
+                if username and password:
+                    login_url = f"{web_url}/api/v2/auth/login"
+                    try:
+                        session.post(login_url, data={"username": username, "password": password}, timeout=5)
+                    except:
+                        pass  # May not require login
+                
+                # Start search
+                search_url = f"{web_url}/api/v2/search/start"
+                resp = session.post(search_url, data={"pattern": query, "plugins": "all", "category": "music"}, timeout=10)
+                
+                if resp.status_code not in [200, 201]:
+                    raise Exception(f"Search failed: {resp.status_code}")
+                
+                search_data = resp.json()
+                search_id = search_data.get("id")
+                
+                if not search_id:
+                    raise Exception("No search ID returned from qBittorrent")
+                
+                # Poll for results
+                best_result = None
+                for i in range(60):  # Poll for up to 30 seconds
+                    time.sleep(0.5)
+                    
+                    status_url = f"{web_url}/api/v2/search/status"
+                    status_resp = session.get(status_url, params={"id": search_id}, timeout=5)
+                    
+                    if status_resp.status_code == 200:
+                        status_data = status_resp.json()
+                        
+                        if status_data and len(status_data) > 0:
+                            # Get results
+                            results_url = f"{web_url}/api/v2/search/results"
+                            results_resp = session.get(results_url, params={"id": search_id, "limit": 100}, timeout=5)
+                            
+                            if results_resp.status_code == 200:
+                                data = results_resp.json()
+                                results = data.get("results", [])
+                                
+                                if results:
+                                    # Pick the result with best seeders
+                                    best_result = max(results, key=lambda x: x.get('nb_seeders', 0))
+                            
+                            # Check if search is done
+                            search_status = status_data[0]
+                            if search_status.get("status") == "Stopped":
+                                break
+                
+                # Stop search
+                try:
+                    stop_url = f"{web_url}/api/v2/search/stop"
+                    session.post(stop_url, data={"id": search_id}, timeout=5)
+                except:
+                    pass
+                
+                # Add the best torrent found
+                if best_result:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    
+                    try:
+                        # Add magnet link if available
+                        add_url = f"{web_url}/api/v2/torrents/add"
+                        magnet = best_result.get('magnet_uri') or best_result.get('magnet')
+                        torrent_url = best_result.get('torrent_url') or best_result.get('link')
+                        
+                        if magnet:
+                            resp = session.post(add_url, data={"urls": magnet}, timeout=10)
+                        elif torrent_url:
+                            resp = session.post(add_url, data={"urls": torrent_url}, timeout=10)
+                        else:
+                            raise Exception("No magnet link or torrent URL found")
+                        
+                        if resp.status_code in [200, 403]:  # 403 might mean already added
+                            cursor2.execute("""
+                                UPDATE managed_downloads 
+                                SET status = 'downloading', updated_at = CURRENT_TIMESTAMP
+                                WHERE id = ?
+                            """, (tracking_id,))
+                            logging.info(f"[QBIT_MONITOR] Added torrent: {best_result.get('name', 'Unknown')}")
+                        else:
+                            cursor2.execute("""
+                                UPDATE managed_downloads 
+                                SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                                WHERE id = ?
+                            """, (f"qBittorrent returned {resp.status_code}", tracking_id))
+                    except Exception as e:
+                        cursor2.execute("""
+                            UPDATE managed_downloads 
+                            SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (str(e), tracking_id))
+                    
+                    conn2.commit()
+                    conn2.close()
+                else:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'error', error_message = 'No torrent results found', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (tracking_id,))
+                    conn2.commit()
+                    conn2.close()
+                    
+            except Exception as e:
+                logging.error(f"[QBIT_MONITOR] Error: {e}")
+                try:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (str(e), tracking_id))
+                    conn2.commit()
+                    conn2.close()
+                except:
+                    pass
+        
+        # Start qBit search in a background thread
+        import threading
+        thread = threading.Thread(target=search_and_add_qbit, daemon=True)
+        thread.start()
         
     except Exception as e:
         logging.error(f"[QBIT_INIT] Error for tracking {tracking_id}: {e}")
