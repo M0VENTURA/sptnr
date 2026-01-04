@@ -1846,7 +1846,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk["_original_single_sources"] = current_single["single_sources"]
             
             # Delegate all single detection to centralized function
-            rate_track_single_detection(
+            trk = rate_track_single_detection(
                 trk, artist_name, album_ctx, config,
                 TITLE_SIM_THRESHOLD, COUNT_SHORT_RELEASE_AS_MATCH,
                 use_lastfm_single, verbose
