@@ -3084,6 +3084,11 @@ def slskd_status():
             if not isinstance(file_obj, dict):
                 return None
 
+            # Log raw file_obj for debugging first occurrence
+            if not active_downloads:
+                logging.debug(f"extract_file debug: raw file_obj keys: {file_obj.keys() if isinstance(file_obj, dict) else 'N/A'}")
+                logging.debug(f"extract_file debug: {file_obj}")
+
             # Some payloads wrap the file under a 'file' or 'download' key
             if "file" in file_obj and isinstance(file_obj["file"], dict):
                 file_obj = {**file_obj, **file_obj.get("file", {})}
