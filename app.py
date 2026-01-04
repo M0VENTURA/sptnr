@@ -2030,12 +2030,7 @@ def slskd_search():
         if not search_id:
             return jsonify({"error": "Failed to start search"}), 500
         
-        # Return search ID immediately for client-side polling
-        return jsonify({
-            "searchId": search_id,
-            "status": "searching"
-        })
-        
+        return jsonify({"searchId": search_id, "status": "searching"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -2056,7 +2051,6 @@ def slskd_search_results(search_id):
         client = SlskdClient(web_url, api_key, enabled=True)
         responses, state, is_complete = client.get_search_results(search_id)
         
-        # Flatten file results from all responses
         results = []
         for resp in responses:
             if hasattr(resp, 'files'):
@@ -2073,8 +2067,6 @@ def slskd_search_results(search_id):
                     })
         
         response_count = len(responses) if responses else 0
-        
-        # Log all results
         logging.info(f"[SLSKD] search_id={search_id}, responses={response_count}, files={len(results)}, state={state}, complete={is_complete}")
         
         if response_count == 0:
@@ -2089,12 +2081,63 @@ def slskd_search_results(search_id):
             "fileCount": len(results),
             "isComplete": is_complete
         })
-        
     except Exception as e:
         logging.error(f"[SLSKD] Error getting search results for {search_id}: {str(e)}")
         import traceback
         traceback.print_exc()
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/scan/navidrome", methods=["POST"])
+def scan_navidrome():
+    """Run Navidrome import-only scan (no popularity/singles)."""
+    global scan_process_navidrome
+    
+    with scan_lock:
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                thread = scan_process_navidrome.get('thread')
+                if thread and thread.is_alive():
+                    flash("Navidrome sync scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_navidrome, 'is_alive') and scan_process_navidrome.is_alive():
+                flash("Navidrome sync scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+        
+        try:
+            db_dir = os.path.dirname(DB_PATH)
+            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
+            _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
+            
+            def run_navidrome_import_bg():
+                try:
+                    logging.info("Starting Navidrome import-only scan (no scoring/singles)")
+                    artist_map = build_artist_index()
+                    artists = list(artist_map.items())
+                    total = len(artists)
+                    for idx, (artist_name, info) in enumerate(artists, start=1):
+                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False)
+                        _write_progress_file(
+                            nav_progress_file,
+                            "navidrome_scan",
+                            True,
+                            {"status": "running", "processed_artists": idx, "total_artists": total},
+                        )
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info("Navidrome import-only scan completed")
+                except Exception as e:
+                    logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+            
+            scan_thread = threading.Thread(target=run_navidrome_import_bg, daemon=False)
+            scan_thread.start()
+            scan_process_navidrome = {'thread': scan_thread, 'type': 'navidrome'}
+            flash("✅ Navidrome import started (metadata only)", "success")
+        except Exception as e:
+            logging.error(f"Error starting Navidrome import: {e}", exc_info=True)
+            flash(f"❌ Error starting Navidrome import: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
 
 
 @app.route("/api/slskd/download", methods=["POST"])
