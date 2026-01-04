@@ -57,6 +57,7 @@ for _child_name in [
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
+NAVIDROME_PROGRESS_FILE = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
 from popularity_helpers import (
     get_spotify_artist_id,
     search_spotify_track,
@@ -83,6 +84,18 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+
+def _navidrome_scan_running() -> bool:
+    """Return True if Navidrome scan progress file says a scan is running."""
+    try:
+        if os.path.exists(NAVIDROME_PROGRESS_FILE):
+            with open(NAVIDROME_PROGRESS_FILE, "r", encoding="utf-8") as f:
+                state = json.load(f)
+                return bool(state.get("is_running"))
+    except Exception as e:
+        logger.debug(f"Could not read Navidrome progress file: {e}")
+    return False
+
 def save_popularity_progress(processed_artists: int, total_artists: int):
     """Save popularity scan progress to file"""
     try:
@@ -104,6 +117,11 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
     Updates spotify_score, lastfm_ratio, listenbrainz_score, composite score, and initial stars.
     Optionally filter by artist.
     """
+    if _navidrome_scan_running():
+        msg = "Navidrome scan is running; skipping popularity scan until it completes"
+        logger.warning(msg)
+        print(f"⚠️ {msg}")
+        return
     logger.info("=" * 60)
     logger.info("Popularity Scanner Started")
     logger.info("=" * 60)
