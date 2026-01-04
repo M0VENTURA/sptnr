@@ -104,24 +104,16 @@ class BeetsAutoImporter:
             "library": str(self.beets_db),
             "import": {
                 "copy": False,  # Don't copy, files are already in /music
-                "write": True,  # Write tags to files
-                "autotag": True,  # Enable auto-tagging
-                "timid": False,  # Don't prompt for confirmation (auto-skip weak matches)
-                "resume": True,  # Resume interrupted imports
-                "quiet_fallback": "skip",  # Skip items with no strong match
-                "detail": True,  # Show detailed match info
-                "log": str(self.config_path / "beets_import.log"),
-                "incremental": True  # Only import new/modified files
-            },
-            "match": {
-                "strong_rec_thresh": 0.04,  # Threshold for strong recommendation
-                "medium_rec_thresh": 0.25,  # Threshold for medium recommendation
-                "ignored": ["EP", "live", "remix"]  # Patterns to ignore in matching
+                "write": False,  # Don't modify files (-A mode)
+                "autotag": False,  # Don't auto-tag, just import
+                "resume": "ask",  # Ask about resuming interrupted imports
+                "incremental": True,  # Only import new/modified files
+                "log": str(self.config_path / "beets_import.log")
             },
             "musicbrainz": {
-                "enabled": True
+                "enabled": False  # Disable MusicBrainz lookup when just importing
             },
-            "plugins": ["duplicates", "missing", "info"]
+            "plugins": ["duplicates", "info"]
         }
         
         with open(self.beets_config, 'w') as f:
@@ -153,6 +145,9 @@ class BeetsAutoImporter:
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Beets database directory: {self.beets_db.parent}")
         
+        # Ensure beets config is up-to-date
+        self.ensure_beets_config()
+        
         import_path = Path(artist_path) if artist_path else self.music_path
         logger.info(f"Import path: {import_path}")
         logger.info(f"Import path exists: {import_path.exists()}")
@@ -162,6 +157,7 @@ class BeetsAutoImporter:
         
         cmd = [
             "beet", "import",
+            "-A",  # Import without modifying files
             "-c", str(self.beets_config),  # Use our config
             "--library", str(self.beets_db),
             str(import_path)
