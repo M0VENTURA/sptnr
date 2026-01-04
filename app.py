@@ -157,6 +157,8 @@ def _start_boot_navidrome_import():
 
     Uses force=False so it only fills missing metadata, and sets the
     SPTNR_SKIP_SINGLES flag so rating/single detection cannot run during this pass.
+    
+    Resumes from the last scanned artist if available, otherwise starts from the beginning.
     """
     global scan_process_navidrome
 
@@ -170,14 +172,50 @@ def _start_boot_navidrome_import():
     def run_import():
         os.environ["SPTNR_SKIP_SINGLES"] = "1"
         progress_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+        checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
+        
         try:
             logging.info("[BOOT] Starting Navidrome import-only scan (missing-only)")
             _write_progress_file(progress_path, "navidrome_scan", True, {"status": "starting", "source": "boot"})
+            
             artist_map = build_artist_index()
             artists = list(artist_map.items())
             total = len(artists)
-            for idx, (artist_name, info) in enumerate(artists, start=1):
-                scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
+            
+            # Check if we have a checkpoint from a previous scan
+            start_idx = 0
+            last_scanned_artist = None
+            if os.path.exists(checkpoint_path):
+                try:
+                    with open(checkpoint_path, 'r') as f:
+                        checkpoint = json.load(f)
+                        last_scanned_artist = checkpoint.get("last_scanned_artist")
+                        if last_scanned_artist:
+                            # Find the index of the last scanned artist
+                            for idx, (artist_name, _) in enumerate(artists):
+                                if artist_name == last_scanned_artist:
+                                    start_idx = idx + 1  # Start from the next artist
+                                    logging.info(f"[BOOT] Resuming Navidrome scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                    break
+                except Exception as e:
+                    logging.warning(f"[BOOT] Error reading checkpoint: {e}, starting from beginning")
+            
+            # Scan remaining artists
+            for idx in range(start_idx, total):
+                artist_name, info = artists[idx]
+                scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx+1, total_artists=total)
+                
+                # Update checkpoint with the last scanned artist
+                try:
+                    with open(checkpoint_path, 'w') as f:
+                        json.dump({"last_scanned_artist": artist_name}, f)
+                except Exception as e:
+                    logging.warning(f"[BOOT] Error saving checkpoint: {e}")
+            
+            # Clear checkpoint when scan completes
+            if os.path.exists(checkpoint_path):
+                os.remove(checkpoint_path)
+            
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
             logging.info("[BOOT] Navidrome import-only scan completed")
         except Exception as e:
