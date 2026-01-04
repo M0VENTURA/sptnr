@@ -658,6 +658,17 @@ def artists():
             MAX(last_scanned) as last_updated
         FROM tracks
         GROUP BY artist
+        
+        UNION ALL
+        
+        SELECT
+            artist_name as artist,
+            0 as album_count,
+            0 as track_count,
+            last_updated
+        FROM artist_stats
+        WHERE artist_name NOT IN (SELECT DISTINCT artist FROM tracks)
+        
         ORDER BY artist COLLATE NOCASE
     """)
     artists_data = cursor.fetchall()
@@ -1313,6 +1324,16 @@ def api_add_artist():
                 logging.error(f"[ADD_ARTIST] Error inserting release {rg.get('title')}: {e}")
         
         conn.commit()
+        
+        # Create artist_stats entry if it doesn't exist (so artist appears on artists page)
+        if existing_count == 0:
+            cursor.execute("""
+                INSERT OR IGNORE INTO artist_stats 
+                (artist_name, last_updated)
+                VALUES (?, CURRENT_TIMESTAMP)
+            """, (artist_name,))
+            conn.commit()
+        
         conn.close()
         
         logging.info(f"[ADD_ARTIST] Added {added_count} missing releases for {artist_name}")
