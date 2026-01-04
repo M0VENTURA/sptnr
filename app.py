@@ -5706,9 +5706,16 @@ if __name__ == "__main__":
             if not album or not artist:
                 return jsonify({"error": "Missing album or artist"}), 400
             
+            # Get Discogs config for token
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
+            discogs_token = discogs_config.get("token", "")
+            
             # Search Discogs with multiple query strategies
             session = _get_discogs_session()
             headers = {"User-Agent": "Sptnr/1.0"}
+            if discogs_token:
+                headers["Authorization"] = f"Discogs token={discogs_token}"
             
             # Try different query formats to improve match rate
             queries = [
@@ -5719,9 +5726,13 @@ if __name__ == "__main__":
             
             results = []
             for query in queries:
+                logger = logging.getLogger('sptnr')
+                logger.debug(f"Discogs search attempt: {query}")
                 results = _discogs_search(session, headers, query, kind="release", per_page=10)
                 if results:
+                    logger.debug(f"Discogs search found {len(results)} results")
                     break
+                logger.debug(f"Discogs search with query '{query}' returned no results")
             
             if not results:
                 return jsonify({"results": [], "message": "No Discogs album matches found"}), 200
@@ -5777,6 +5788,7 @@ if __name__ == "__main__":
             updates = []
             if mbid:
                 updates.append("mbid = ?")
+                updates.append("beets_album_mbid = ?")  # Also store as beets album MBID for display
             if cover_art_url:
                 updates.append("cover_art_url = ?")
             
@@ -5787,6 +5799,7 @@ if __name__ == "__main__":
             params = []
             if mbid:
                 params.append(mbid)
+                params.append(mbid)  # Same ID for both fields
             if cover_art_url:
                 params.append(cover_art_url)
             params.extend([artist, album])
@@ -5796,9 +5809,11 @@ if __name__ == "__main__":
             conn.commit()
             conn.close()
             
+            logging.info(f"Applied MBID {mbid} to {rows_updated} tracks in {artist} - {album}")
+            
             return jsonify({
                 "success": True,
-                "message": f"Updated {rows_updated} tracks",
+                "message": f"Updated {rows_updated} tracks with MBID and cover art",
                 "rows_updated": rows_updated
             }), 200
         except Exception as e:
