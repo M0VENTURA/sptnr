@@ -86,50 +86,7 @@
                   <thead>
                     <tr>
                       <th>NAME</th>
-                      <th class="text-center">STATUS</th>
-                      <th class="text-center">PROGRESS</th>
-                      <th class="text-center">SIZE</th>
-                      <th class="text-center">DOWN SPEED</th>
-                      <th class="text-center">UP SPEED</th>
-                      <th class="text-center">SEEDS</th>
-                      <th class="text-center">ETA</th>
-                      <th class="text-center">ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody id="qbitMonTableBody"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      {% else %}
-      <div class="alert alert-warning">
-        <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
-        <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
-      </div>
-      {% endif %}
-    </div>
 
-    <!-- ==================== Soulseek Tab ==================== -->
-    <div class="tab-pane fade" id="slskdContent" role="tabpanel">
-      {% if slskd_config.enabled %}
-      <!-- Soulseek Search -->
-      <div class="card mb-4">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-search"></i> Soulseek Search
-          </h5>
-        </div>
-        <div class="card-body">
-          <div class="mb-3">
-            <div class="d-flex flex-wrap gap-2 align-items-stretch">
-              <div class="input-group flex-grow-1">
-                <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search Soulseek...">
-                <button class="btn btn-success" onclick="performSlskdSearch()">
-                  <i class="bi bi-search"></i> Search
-                </button>
-              </div>
               <button class="btn btn-outline-success" id="slskdDownloadSelected" onclick="downloadSlskdSelected()" disabled>
                 <i class="bi bi-download"></i> Download selected
               </button>
