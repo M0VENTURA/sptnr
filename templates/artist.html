@@ -20,11 +20,14 @@
       <p class="text-muted mb-0">Artist overview</p>
     </div>
     <div class="d-flex flex-column flex-sm-row gap-2 w-100 w-md-auto">
-      <button class="btn btn-outline-primary" onclick="lookupMetadata('artist', '{{ artist_name }}')">
-        <i class="bi bi-search"></i> <span class="d-none d-sm-inline">Metadata</span>
+      <button class="btn btn-outline-info" id="singlesCountBtn" onclick="showArtistSingles('{{ artist_name }}')" title="View singles for this artist">
+        <i class="bi bi-single-music"></i> <span class="d-none d-sm-inline">Singles</span> <span class="badge bg-info" id="singlesCount">0</span>
+      </button>
+      <button class="btn btn-outline-success" onclick="createEssentialPlaylist('{{ artist_name }}')" title="Create Essential Playlist based on single detection">
+        <i class="bi bi-star-fill"></i> <span class="d-none d-sm-inline">Essential</span>
       </button>
       <button class="btn btn-outline-success" onclick="addBookmark('artist', '{{ artist_name }}', '{{ artist_name }}', null, null)" title="Add to favourites">
-        <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
+        <i class="bi bi-star"></i> <span class="d-none d-sm-inline\">Favourite</span>
       </button>
       <button class="btn btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
         <i class="bi bi-flag"></i> <span class="d-none d-sm-inline">Missing</span>
@@ -47,6 +50,37 @@
     </div>
   </div>
   {% endif %}
+
+  <!-- Artist Image Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-body">
+        <div class="row g-4">
+          <!-- Artist Image -->
+          <div class="col-12 col-md-3 d-flex flex-column align-items-center">
+            <div class="position-relative mb-3" style="width: 200px; height: 200px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+              <img id="artistImage" src="{{ url_for('api_artist_image', name=artist_name) }}" 
+                   alt="{{ artist_name }}" 
+                   style="width: 100%; height: 100%; object-fit: cover;"
+                   onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
+              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openArtistImageModal('{{ artist_name }}')" title="Change artist image">
+                <i class="bi bi-pencil"></i> Change Image
+              </button>
+            </div>
+          </div>
+          <!-- Artist Bio -->
+          <div class="col-12 col-md-9">
+            <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
+            <div id="artistBio" class="text-muted" style="min-height: 150px;">
+              <p class="text-center mt-4">
+                <small>Loading artist information from MusicBrainz...</small>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
 
   <!-- Genre Display -->
   {% if genres %}
@@ -537,36 +571,63 @@ function renderMissingCategory(containerId, countId, items, emptyText) {
     return;
   }
 
+  // Sort items by year (newest first)
+  const sorted = [...items].sort((a, b) => {
+    const yearA = parseInt((a.first_release_date || '0000').slice(0, 4));
+    const yearB = parseInt((b.first_release_date || '0000').slice(0, 4));
+    return yearB - yearA;
+  });
+
   const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect width%3D%2280%22 height%3D%2280%22 fill%3D%22%232a2a2a%22/%3E%3Ctext x%3D%2250%25%22 y%3D%2250%25%22 dy%3D%22.3em%22 text-anchor%3D%22middle%22 fill%3D%22%23666%22 font-size%3D%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';
 
-  container.innerHTML = items.map(item => {
-    const year = (item.first_release_date || '').slice(0, 4);
-    const art = item.cover_art_url || fallbackArt;
-    const typeLabel = item.primary_type || item.category || 'Release';
-    return `
-      <div class="col-12 col-md-6 col-lg-4 col-xl-3">
-        <div class="missing-release-card h-100 d-flex flex-column">
-          <div class="d-flex gap-3 flex-grow-1">
-            <div class="missing-release-art">
-              <img src="${escapeHtml(art)}" alt="${escapeHtml(item.title || 'Release art')}" onerror="this.onerror=null;this.src='${fallbackArt}';">
+  // Group by year
+  const byYear = {};
+  sorted.forEach(item => {
+    const year = (item.first_release_date || '').slice(0, 4) || '????';
+    if (!byYear[year]) byYear[year] = [];
+    byYear[year].push(item);
+  });
+
+  let html = '';
+  Object.keys(byYear).sort().reverse().forEach(year => {
+    html += `<div class="col-12 mb-3"><h6 class="text-muted mb-3"><i class="bi bi-calendar"></i> ${year}</h6>`;
+    html += '<div class="row g-2">';
+    
+    byYear[year].forEach(item => {
+      const art = item.cover_art_url || fallbackArt;
+      const typeLabel = item.primary_type || item.category || 'Release';
+      html += `
+        <div class="col-12 col-sm-6 col-lg-4">
+          <div class="missing-release-card h-100 d-flex flex-column">
+            <div class="d-flex gap-3 flex-grow-1">
+              <div class="missing-release-art">
+                <img src="${escapeHtml(art)}" alt="${escapeHtml(item.title || 'Release art')}" onerror="this.onerror=null;this.src='${fallbackArt}';">
+              </div>
+              <div class="flex-grow-1">
+                <div class="fw-semibold text-break">${escapeHtml(item.title || 'Unknown')}</div>
+                <div class="text-muted small">${escapeHtml(typeLabel)}</div>
+              </div>
             </div>
-            <div class="flex-grow-1">
-              <div class="fw-semibold">${escapeHtml(item.title || 'Unknown')}</div>
-              <div class="text-muted small">${escapeHtml(typeLabel)}${year ? ' · ' + escapeHtml(year) : ''}</div>
+            <div class="mt-2 d-flex gap-2" style="flex-wrap: wrap;">
+              <button class="btn btn-sm btn-primary flex-grow-1" onclick="importMissingRelease('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
+                <i class="bi bi-download"></i> Import
+              </button>
+              <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(item.title)}')" title="Search qBittorrent">
+                <i class="bi bi-search"></i> qBit
+              </button>
+              <button class="btn btn-sm btn-secondary" onclick="openSlskdSearch('${escapeHtml(item.title)}')" title="Search Soulseek">
+                <i class="bi bi-search"></i> SLSKD
+              </button>
             </div>
-          </div>
-          <div class="mt-2 d-flex gap-2">
-            <button class="btn btn-sm btn-primary flex-grow-1" onclick="importMissingRelease('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
-              <i class="bi bi-download"></i> Import
-            </button>
-            <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(item.title)}')" title="Search qBittorrent">
-              <i class="bi bi-search"></i>
-            </button>
           </div>
         </div>
-      </div>
-    `;
-  }).join('');
+      `;
+    });
+    
+    html += '</div></div>';
+  });
+
+  container.innerHTML = html;
 }
 
 function importMissingRelease(artistName, releaseId, releaseTitle) {
@@ -668,6 +729,194 @@ function checkMissingReleases(artistName) {
       renderMissingCategory('missingEpsGrid', 'missingEpsCount', [], 'Unable to load missing EPs');
       renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', [], 'Unable to load missing singles');
     });
+}
+
+// Load artist bio on page load
+document.addEventListener('DOMContentLoaded', () => {
+  const artistName = '{{ artist_name }}';
+  loadArtistBio(artistName);
+  loadSinglesCount(artistName);
+});
+
+function loadArtistBio(artistName) {
+  const bioContainer = document.getElementById('artistBio');
+  if (!bioContainer) return;
+
+  fetch(`/api/artist/bio?name=${encodeURIComponent(artistName)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.bio && data.bio.length > 0) {
+        bioContainer.innerHTML = `<p>${escapeHtml(data.bio)}</p>`;
+        if (data.source) {
+          bioContainer.innerHTML += `<p class="small text-muted mt-2"><em>Source: ${escapeHtml(data.source)}</em></p>`;
+        }
+      } else {
+        bioContainer.innerHTML = '<p class="text-muted"><em>No biography available for this artist.</em></p>';
+      }
+    })
+    .catch(err => {
+      bioContainer.innerHTML = '<p class="text-muted"><em>Unable to load artist biography.</em></p>';
+    });
+}
+
+function loadSinglesCount(artistName) {
+  fetch(`/api/artist/singles-count?name=${encodeURIComponent(artistName)}`)
+    .then(r => r.json())
+    .then(data => {
+      const badge = document.getElementById('singlesCount');
+      if (badge && data.count !== undefined) {
+        badge.textContent = data.count;
+      }
+    })
+    .catch(err => console.error('Failed to load singles count:', err));
+}
+
+function showArtistSingles(artistName) {
+  window.location.href = `/artist/${encodeURIComponent(artistName)}/singles`;
+}
+
+function createEssentialPlaylist(artistName) {
+  if (!confirm(`Create Essential Playlist for ${artistName}?\\nThis will use single detection to pick the best tracks.`)) return;
+
+  const btn = event.target.closest('button');
+  const originalContent = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+
+  fetch('/api/artist/create-essential-playlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message}\\nPlaylist: ${data.playlist_name}`);
+        if (data.navidrome_url) {
+          if (confirm('Open playlist in Navidrome?')) {
+            window.open(data.navidrome_url, '_blank');
+          }
+        }
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to create playlist'));
+      }
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    })
+    .catch(err => {
+      alert('❌ Network error: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    });
+}
+
+function openArtistImageModal(artistName) {
+  // For now, create a simple modal for image search
+  const modalHtml = `
+    <div class="modal fade" id="artistImageModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-image"></i> Change Artist Image</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="manualImageUrl" class="form-label">Manual Image URL</label>
+              <input type="text" class="form-control" id="manualImageUrl" placeholder="https://example.com/image.jpg">
+            </div>
+            <div class="d-flex gap-2 mb-4">
+              <button class="btn btn-primary" onclick="applyManualImage('${escapeHtml(artistName)}')">
+                <i class="bi bi-check"></i> Apply URL
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'musicbrainz')">
+                <i class="bi bi-search"></i> Search MusicBrainz
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'discogs')">
+                <i class="bi bi-disc"></i> Search Discogs
+              </button>
+            </div>
+            <div id="artistImageResults"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existingModal = document.getElementById('artistImageModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('artistImageModal'));
+  modal.show();
+}
+
+function applyManualImage(artistName) {
+  const url = document.getElementById('manualImageUrl').value;
+  if (!url) {
+    alert('Please enter an image URL');
+    return;
+  }
+  applyArtistImage(artistName, url);
+}
+
+function searchArtistImages(artistName, source) {
+  const resultsDiv = document.getElementById('artistImageResults');
+  resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border"></span> Searching...</div>';
+
+  fetch(`/api/artist/search-images?name=${encodeURIComponent(artistName)}&source=${source}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error || !data.images || data.images.length === 0) {
+        resultsDiv.innerHTML = '<div class="alert alert-info">No images found</div>';
+        return;
+      }
+
+      let html = '<div class="row g-3">';
+      data.images.forEach(img => {
+        html += `
+          <div class="col-6 col-md-4">
+            <div class="card">
+              <img src="${escapeHtml(img.url)}" class="card-img-top" style="height: 200px; object-fit: cover;">
+              <div class="card-body p-2">
+                <button class="btn btn-sm btn-primary w-100" onclick="applyArtistImage('${escapeHtml(artistName)}', '${escapeHtml(img.url)}')">
+                  <i class="bi bi-check"></i> Use This
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      resultsDiv.innerHTML = html;
+    })
+    .catch(err => {
+      resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + err.message + '</div>';
+    });
+}
+
+function applyArtistImage(artistName, imageUrl) {
+  fetch('/api/artist/set-image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName, image_url: imageUrl })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('artistImage').src = imageUrl + '?t=' + Date.now();
+        bootstrap.Modal.getInstance(document.getElementById('artistImageModal'))?.hide();
+        alert('✅ Artist image updated!');
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update image'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
+}
+
+function openSlskdSearch(query) {
+  window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
 }
 </script>
 <style>
