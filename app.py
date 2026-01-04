@@ -3145,7 +3145,7 @@ def api_musicbrainz_download():
 
 
 def _initiate_slskd_download_bg(tracking_id, query):
-    """Background thread worker to initiate a Soulseek download with fresh DB connection"""
+    """Background thread worker to initiate a Soulseek search and wait for user selection"""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
         slskd_config = cfg.get("slskd", {})
@@ -3196,15 +3196,14 @@ def _initiate_slskd_download_bg(tracking_id, query):
             import time
             max_wait = 30  # Wait up to 30 seconds for results
             start_time = time.time()
-            best_file = None
-            best_match_score = 0
+            all_files = []  # Collect all results, not just the best
             
             while time.time() - start_time < max_wait:
                 try:
                     responses, state, is_complete = client.get_search_results(search_id)
                     
                     if responses:
-                        # Look through responses for best matching files
+                        # Collect all matching files with scores
                         for response in responses:
                             if hasattr(response, 'files') and response.files:
                                 for file_info in response.files:
@@ -3220,17 +3219,14 @@ def _initiate_slskd_download_bg(tracking_id, query):
                                     # Prefer files with audio extensions
                                     if any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
                                         match_score *= 1.2
-                                    else:
-                                        match_score *= 0.5  # Lower score for non-audio
                                     
-                                    if match_score > best_match_score:
-                                        best_match_score = match_score
-                                        best_file = {
+                                    if match_score >= 0.3:  # Only include files with at least 30% match
+                                        all_files.append({
                                             'username': response.username if hasattr(response, 'username') else 'Unknown',
                                             'filename': file_info.get('filename', ''),
                                             'size': file_info.get('size', 0),
                                             'match_score': match_score
-                                        }
+                                        })
                     
                     if is_complete:
                         break
@@ -3241,38 +3237,38 @@ def _initiate_slskd_download_bg(tracking_id, query):
                     logging.error(f"[SLSKD_MONITOR] Error monitoring search {search_id}: {e}")
                     break
             
-            # Download the best file found
-            if best_file and best_match_score >= 0.3:  # Minimum 30% match
+            # Save results and wait for user selection
+            if all_files:
                 try:
-                    # Start the download
-                    success = client.download_file(
-                        best_file['username'],
-                        best_file['filename'],
-                        best_file['size']
-                    )
-                    
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
                     
-                    if success:
+                    # Sort by match score (descending)
+                    all_files.sort(key=lambda x: x['match_score'], reverse=True)
+                    
+                    # Insert all results into database
+                    for file_result in all_files:
                         cursor2.execute("""
-                            UPDATE managed_downloads 
-                            SET status = 'downloading', updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """, (tracking_id,))
-                        logging.info(f"[SLSKD_MONITOR] Started download: {best_file['filename']} from {best_file['username']}")
-                    else:
-                        cursor2.execute("""
-                            UPDATE managed_downloads 
-                            SET status = 'error', error_message = 'Failed to start file download', updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """, (tracking_id,))
+                            INSERT INTO slskd_search_results 
+                            (download_id, username, filename, size, match_score)
+                            VALUES (?, ?, ?, ?, ?)
+                        """, (tracking_id, file_result['username'], file_result['filename'], 
+                              file_result['size'], file_result['match_score']))
+                    
+                    # Update status to awaiting_selection
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'awaiting_selection', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (tracking_id,))
                     
                     conn2.commit()
                     conn2.close()
                     
+                    logging.info(f"[SLSKD_MONITOR] Found {len(all_files)} results for download {tracking_id}, awaiting user selection")
+                    
                 except Exception as e:
-                    logging.error(f"[SLSKD_MONITOR] Error downloading file: {e}")
+                    logging.error(f"[SLSKD_MONITOR] Error saving results: {e}")
                     try:
                         conn2 = get_db()
                         cursor2 = conn2.cursor()
@@ -3945,6 +3941,201 @@ def api_musicbrainz_remove(download_id):
         
     except Exception as e:
         logging.error(f"[MB_REMOVE] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/search-results/<int:download_id>", methods=["GET"])
+def api_slskd_search_results(download_id):
+    """Get Soulseek search results for a download awaiting user selection"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Verify download exists and is awaiting selection
+        cursor.execute("""
+            SELECT status, method FROM managed_downloads WHERE id = ?
+        """, (download_id,))
+        
+        download = cursor.fetchone()
+        if not download:
+            conn.close()
+            return jsonify({"error": "Download not found"}), 404
+        
+        status, method = download
+        if status != "awaiting_selection" or method != "slskd":
+            conn.close()
+            return jsonify({"error": "Download is not awaiting Soulseek selection"}), 400
+        
+        # Get all search results
+        cursor.execute("""
+            SELECT id, username, filename, size, match_score
+            FROM slskd_search_results
+            WHERE download_id = ?
+            ORDER BY match_score DESC
+        """, (download_id,))
+        
+        results = cursor.fetchall()
+        conn.close()
+        
+        search_results = []
+        for row in results:
+            search_results.append({
+                "result_id": row[0],
+                "username": row[1],
+                "filename": row[2],
+                "size": row[3],
+                "match_score": row[4]
+            })
+        
+        return jsonify({"results": search_results})
+        
+    except Exception as e:
+        logging.error(f"[SLSKD_RESULTS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/download-file", methods=["POST"])
+def api_slskd_download_file():
+    """User selects a file from search results and initiates download"""
+    try:
+        data = request.json or {}
+        download_id = data.get("download_id")
+        result_id = data.get("result_id")
+        
+        if not download_id or not result_id:
+            return jsonify({"error": "Missing download_id or result_id"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get the selected result
+        cursor.execute("""
+            SELECT username, filename, size FROM slskd_search_results WHERE id = ? AND download_id = ?
+        """, (result_id, download_id))
+        
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({"error": "Result not found"}), 404
+        
+        username, filename, size = result
+        
+        # Mark this result as selected
+        cursor.execute("""
+            UPDATE slskd_search_results SET selected = 1 WHERE id = ?
+        """, (result_id,))
+        
+        # Update download status
+        cursor.execute("""
+            UPDATE managed_downloads SET status = 'initiating_download', updated_at = CURRENT_TIMESTAMP WHERE id = ?
+        """, (download_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Initiate the download in a background thread
+        def perform_slskd_download():
+            try:
+                cfg, _ = _read_yaml(CONFIG_PATH)
+                slskd_config = cfg.get("slskd", {})
+                web_url = slskd_config.get("web_url", "http://localhost:5030")
+                api_key = slskd_config.get("api_key", "")
+                
+                client = SlskdClient(web_url, api_key, enabled=True)
+                success = client.download_file(username, filename, size)
+                
+                conn2 = get_db()
+                cursor2 = conn2.cursor()
+                
+                if success:
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'downloading', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (download_id,))
+                    logging.info(f"[SLSKD_DOWNLOAD] Started download: {filename} from {username}")
+                else:
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'error', error_message = 'Failed to start file download', updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (download_id,))
+                    logging.error(f"[SLSKD_DOWNLOAD] Failed to download: {filename} from {username}")
+                
+                conn2.commit()
+                conn2.close()
+                
+            except Exception as e:
+                logging.error(f"[SLSKD_DOWNLOAD] Error: {e}")
+                try:
+                    conn2 = get_db()
+                    cursor2 = conn2.cursor()
+                    cursor2.execute("""
+                        UPDATE managed_downloads 
+                        SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE id = ?
+                    """, (str(e), download_id))
+                    conn2.commit()
+                    conn2.close()
+                except:
+                    pass
+        
+        thread = threading.Thread(target=perform_slskd_download, daemon=True)
+        thread.start()
+        
+        return jsonify({"success": True, "message": f"Download initiated for {filename}"})
+        
+    except Exception as e:
+        logging.error(f"[SLSKD_DOWNLOAD_FILE] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/search-again/<int:download_id>", methods=["POST"])
+def api_slskd_search_again(download_id):
+    """Retry search for a failed Soulseek download with a new query"""
+    try:
+        data = request.json or {}
+        new_query = data.get("query", "").strip()
+        
+        if not new_query:
+            return jsonify({"error": "Query parameter required"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get the original download
+        cursor.execute("""
+            SELECT method FROM managed_downloads WHERE id = ?
+        """, (download_id,))
+        
+        download = cursor.fetchone()
+        if not download or download[0] != "slskd":
+            conn.close()
+            return jsonify({"error": "Download not found or not a Soulseek download"}), 404
+        
+        # Clear previous search results
+        cursor.execute("""
+            DELETE FROM slskd_search_results WHERE download_id = ?
+        """, (download_id,))
+        
+        # Reset status and clear error
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'queued', error_message = NULL, external_id = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (download_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        # Reinitiate search with new query
+        thread = threading.Thread(target=_initiate_slskd_download_bg, args=(download_id, new_query), daemon=True)
+        thread.start()
+        
+        return jsonify({"success": True, "message": "New search initiated"})
+        
+    except Exception as e:
+        logging.error(f"[SLSKD_SEARCH_AGAIN] Error: {e}")
         return jsonify({"error": str(e)}), 500
 
 

@@ -168,6 +168,21 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure slskd_search_results table exists (for user-selectable Soulseek results)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS slskd_search_results (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            download_id INTEGER NOT NULL,
+            username TEXT NOT NULL,
+            filename TEXT NOT NULL,
+            size INTEGER,
+            match_score REAL,
+            selected BOOLEAN DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (download_id) REFERENCES managed_downloads(id) ON DELETE CASCADE
+        );
+    """)
+
     # ✅ Create indexes for faster lookups
     indexes = [
         ("idx_artist_stats_name", "artist_stats(artist_name)"),
@@ -185,7 +200,9 @@ def update_schema(db_path):
         ("idx_missing_releases_artist", "missing_releases(artist)"),
         ("idx_missing_releases_checked", "missing_releases(last_checked DESC)"),
         ("idx_managed_downloads_status", "managed_downloads(status)"),
-        ("idx_managed_downloads_created", "managed_downloads(created_at DESC)")
+        ("idx_managed_downloads_created", "managed_downloads(created_at DESC)"),
+        ("idx_slskd_search_results_download", "slskd_search_results(download_id)"),
+        ("idx_slskd_search_results_selected", "slskd_search_results(selected)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
