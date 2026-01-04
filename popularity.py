@@ -22,15 +22,38 @@ if not logger.handlers:
     _formatter = logging.Formatter("%(asctime)s [%(levelname)s] %(message)s")
     _file_handler = logging.FileHandler(_pop_log_path)
     _file_handler.setFormatter(_formatter)
-
-    _stream_handler = logging.StreamHandler()
-    _stream_handler.setFormatter(_formatter)
-
     logger.addHandler(_file_handler)
-    logger.addHandler(_stream_handler)
+
+    # Optional console logging (disabled by default to keep main log clean)
+    if os.environ.get("POPULARITY_LOG_STDOUT", "0") == "1":
+        _stream_handler = logging.StreamHandler()
+        _stream_handler.setFormatter(_formatter)
+        logger.addHandler(_stream_handler)
 
 # Prevent bubbling to the root/app logger
 logger.propagate = False
+
+
+def _mirror_handlers(logger_name: str):
+    """Attach popularity handlers to child loggers and stop propagation."""
+    child = logging.getLogger(logger_name)
+    child.handlers = []
+    child.setLevel(logger.level)
+    for h in logger.handlers:
+        child.addHandler(h)
+    child.propagate = False
+
+
+# Keep noisy API client logs out of the main app log
+for _child_name in [
+    "api_clients.musicbrainz",
+    "api_clients.spotify",
+    "api_clients.lastfm",
+    "api_clients.audiodb_and_listenbrainz",
+    "api_clients.discogs",
+    "api_clients",
+]:
+    _mirror_handlers(_child_name)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
