@@ -65,6 +65,7 @@ _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log"))
 
 # Global scan process tracker
 scan_process = None  # Main scan process (batchrate, force, artist-specific)

@@ -112,10 +112,26 @@ class BeetsAutoImporter:
         Returns:
             Subprocess handle
         """
+        # Check if beet command exists
+        try:
+            beet_check = subprocess.run(['which', 'beet'], capture_output=True, text=True)
+            if beet_check.returncode != 0:
+                logging.error("beet command not found! Is beets installed?")
+                raise FileNotFoundError("beet command not found")
+            logging.info(f"Found beet at: {beet_check.stdout.strip()}")
+        except Exception as e:
+            logging.error(f"Error checking for beet command: {e}")
+        
         # Ensure beets database directory exists
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
+        logging.info(f"Beets database directory: {self.beets_db.parent}")
         
         import_path = Path(artist_path) if artist_path else self.music_path
+        logging.info(f"Import path: {import_path}")
+        logging.info(f"Import path exists: {import_path.exists()}")
+        if import_path.exists():
+            file_count = sum(1 for _ in import_path.rglob('*.mp3'))
+            logging.info(f"Found {file_count} .mp3 files in import path")
         
         cmd = [
             "beet", "import",
@@ -344,18 +360,32 @@ class BeetsAutoImporter:
         self.ensure_beets_config()
         
         logging.info("Starting beets auto-import...")
-        process = self.run_import(artist_path)
+        logging.info(f"Music path: {self.music_path}")
+        logging.info(f"Config path: {self.config_path}")
+        logging.info(f"Beets config: {self.beets_config}")
+        logging.info(f"Beets DB: {self.beets_db}")
+        
+        try:
+            process = self.run_import(artist_path)
+        except Exception as e:
+            logging.error(f"Failed to start beets import process: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return False
         
         # Capture output in real-time
         import_metadata = []
         current_item = {}
+        line_count = 0
         
         for line in iter(process.stdout.readline, ''):
             if not line:
                 break
             
             line = line.strip()
+            line_count += 1
             print(line)  # Echo to console
+            logging.info(f"BEETS: {line}")  # Also log it
             
             # Parse metadata from output
             metadata = self.parse_import_output(line)
@@ -372,16 +402,30 @@ class BeetsAutoImporter:
         
         process.wait()
         
+        logging.info(f"Beets process completed with return code: {process.returncode}")
+        logging.info(f"Captured {line_count} output lines")
+        
+        if process.returncode != 0:
+            logging.error(f"Beets import failed with return code {process.returncode}")
+            return False
+        
         # Save captured metadata
         if import_metadata:
             metadata_file = self.config_path / "beets_import_metadata.json"
             with open(metadata_file, 'w') as f:
                 json.dump(import_metadata, f, indent=2)
             logging.info(f"Saved {len(import_metadata)} import records to {metadata_file}")
+        else:
+            logging.warning("No import metadata captured from beets output")
         
         # Sync beets database to sptnr
         logging.info("Syncing beets metadata to sptnr database...")
-        self.sync_beets_to_sptnr()
+        try:
+            self.sync_beets_to_sptnr()
+        except Exception as e:
+            logging.error(f"Error syncing beets to sptnr: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
         
         logging.info("Import complete!")
         return process.returncode == 0

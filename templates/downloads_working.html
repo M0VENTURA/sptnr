@@ -11,23 +11,6 @@
     <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
   </div>
 
-  <!-- Tabs -->
-  <ul class="nav nav-tabs mb-4" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
-        <i class="bi bi-cloud-download"></i> qBittorrent
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="slskdTab" data-bs-toggle="tab" data-bs-target="#slskdContent" type="button" role="tab">
-        <i class="bi bi-music-note-list"></i> Soulseek
-      </button>
-    </li>
-  </ul>
-
-  <div class="tab-content">
-    <!-- qBittorrent Tab -->
-    <div class="tab-pane fade show active" id="qbitContent" role="tabpanel">
   <div class="row g-4 mb-4">
     <!-- qBittorrent Search - Full Width -->
     {% if qbit_config.enabled %}
@@ -76,69 +59,7 @@
       </div>
     </div>
     {% endif %}
-  </div>
 
-  <!-- qBittorrent Monitor -->
-  <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-arrow-down-circle"></i> Active Downloads
-      </h5>
-      <div class="d-flex align-items-center gap-2">
-        <span class="badge bg-primary" id="qbitMonCount" style="display:none"></span>
-        <button class="btn btn-sm btn-outline-primary" onclick="refreshQbitMonitor()">
-          <i class="bi bi-arrow-clockwise"></i> Refresh
-        </button>
-      </div>
-    </div>
-    <div class="card-body">
-      {% if qbit_config.enabled %}
-      <div id="qbitMonLoading" class="text-center py-4">
-        <div class="spinner-border text-primary" role="status">
-          <span class="visually-hidden">Loading...</span>
-        </div>
-        <p class="mt-2">Loading qBittorrent torrents...</p>
-      </div>
-      <div id="qbitMonError" class="alert alert-danger" style="display:none"></div>
-      <div id="qbitMonResults" style="display:none">
-        <div id="qbitMonEmpty" class="alert alert-info" style="display:none">
-          <i class="bi bi-info-circle"></i> No active torrents
-        </div>
-        <div id="qbitMonTable" style="display:none">
-          <div class="table-responsive">
-            <table class="table table-hover mb-0">
-              <thead>
-                <tr>
-                  <th>Name</th>
-                  <th class="text-center">Status</th>
-                  <th class="text-center">Progress</th>
-                  <th class="text-center">Size</th>
-                  <th class="text-center">Down Speed</th>
-                  <th class="text-center">Up Speed</th>
-                  <th class="text-center">Seeds</th>
-                  <th class="text-center">ETA</th>
-                  <th class="text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="qbitMonTableBody"></tbody>
-            </table>
-          </div>
-        </div>
-      </div>
-      {% else %}
-      <div class="alert alert-warning mb-0">
-        <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled.
-        <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
-      </div>
-      {% endif %}
-    </div>
-  </div>
-    </div>
-    <!-- End qBittorrent Tab -->
-
-    <!-- Soulseek Tab -->
-    <div class="tab-pane fade" id="slskdContent" role="tabpanel">
-  <div class="row g-4 mb-4">
     <!-- Soulseek (slskd) Search - Full Width -->
     {% if slskd_config.enabled %}
     <div class="col-12">
@@ -199,65 +120,145 @@
     {% endif %}
   </div>
 
-  <!-- Soulseek Monitor -->
-  <div class="card">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-arrow-down-circle"></i> Active Downloads
-      </h5>
-      <div class="d-flex align-items-center gap-2">
-        <span class="badge bg-success" id="slskdMonCount" style="display:none"></span>
-        <button class="btn btn-sm btn-outline-success" onclick="refreshSlskdMonitor()">
-          <i class="bi bi-arrow-clockwise"></i> Refresh
+  <!-- Monitors Section -->
+  <hr class="my-4">
+  <div class="mb-3">
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <h2 class="h4 mb-1"><i class="bi bi-arrow-down-circle"></i> Active Downloads</h2>
+        <p class="text-muted mb-0">Monitor qBittorrent and Soulseek downloads without leaving this page.</p>
+      </div>
+      <div class="d-flex gap-2 flex-wrap">
+        {% if qbit_config.enabled %}
+        <button class="btn btn-sm btn-outline-primary" onclick="document.getElementById('qbitMonitorCard').scrollIntoView({behavior: 'smooth'})">
+          <i class="bi bi-arrow-down"></i> qBit Monitor
         </button>
+        {% endif %}
+        {% if slskd_config.enabled %}
+        <button class="btn btn-sm btn-outline-success" onclick="document.getElementById('slskdMonitorCard').scrollIntoView({behavior: 'smooth'})">
+          <i class="bi bi-arrow-down"></i> Soulseek Monitor
+        </button>
+        {% endif %}
       </div>
     </div>
-    <div class="card-body">
-      {% if slskd_config.enabled %}
-      <div id="slskdMonLoading" class="text-center py-4">
-        <div class="spinner-border text-success" role="status">
-          <span class="visually-hidden">Loading...</span>
-        </div>
-        <p class="mt-2">Loading Soulseek downloads...</p>
-      </div>
-      <div id="slskdMonError" class="alert alert-danger" style="display:none"></div>
-      <div id="slskdMonResults" style="display:none">
-        <div id="slskdMonEmpty" class="alert alert-info" style="display:none">
-          <i class="bi bi-info-circle"></i> No active downloads
-        </div>
-        <div id="slskdMonTable" style="display:none">
-          <div class="table-responsive">
-            <table class="table table-hover mb-0">
-              <thead>
-                <tr>
-                  <th>User</th>
-                  <th>Filename</th>
-                  <th class="text-center">Status</th>
-                  <th class="text-center">Progress</th>
-                  <th class="text-center">Size</th>
-                  <th class="text-center">Speed</th>
-                  <th class="text-center">Actions</th>
-                </tr>
-              </thead>
-              <tbody id="slskdMonTableBody"></tbody>
-            </table>
+  </div>
+
+  <div class="row g-4">
+    <!-- qBittorrent Monitor -->
+    <div class="col-12">
+      <div class="card" id="qbitMonitorCard">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Torrents
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary" id="qbitMonCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshQbitMonitor()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
           </div>
         </div>
+        <div class="card-body">
+          {% if qbit_config.enabled %}
+          <div id="qbitMonLoading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading qBittorrent torrents...</p>
+          </div>
+          <div id="qbitMonError" class="alert alert-danger" style="display:none"></div>
+          <div id="qbitMonResults" style="display:none">
+            <div id="qbitMonEmpty" class="alert alert-info" style="display:none">
+              <i class="bi bi-info-circle"></i> No active torrents
+            </div>
+            <div id="qbitMonTable" style="display:none">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Progress</th>
+                      <th class="text-center">Size</th>
+                      <th class="text-center">Down Speed</th>
+                      <th class="text-center">Up Speed</th>
+                      <th class="text-center">Seeds</th>
+                      <th class="text-center">ETA</th>
+                      <th class="text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="qbitMonTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% else %}
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled.
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+          {% endif %}
+        </div>
       </div>
-      {% else %}
-      <div class="alert alert-warning mb-0">
-        <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled.
-        <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+    </div>
+
+    <!-- Soulseek Monitor -->
+    <div class="col-12">
+      <div class="card" id="slskdMonitorCard">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-beamed"></i> Soulseek Downloads
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary" id="slskdMonCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshSlskdMonitor()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          {% if slskd_config.enabled %}
+          <div id="slskdMonLoading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading Soulseek downloads...</p>
+          </div>
+          <div id="slskdMonError" class="alert alert-danger" style="display:none"></div>
+          <div id="slskdMonResults" style="display:none">
+            <div id="slskdMonEmpty" class="alert alert-info" style="display:none">
+              <i class="bi bi-info-circle"></i> No active downloads
+            </div>
+            <div id="slskdMonTable" style="display:none">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>User</th>
+                      <th>Filename</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Progress</th>
+                      <th class="text-center">Size</th>
+                      <th class="text-center">Speed</th>
+                      <th class="text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="slskdMonTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% else %}
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled.
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+          {% endif %}
+        </div>
       </div>
-      {% endif %}
     </div>
   </div>
-    </div>
-    <!-- End Soulseek Tab -->
-  </div>
-  <!-- End tab-content -->
 </div>
-<!-- End container -->
 
 <script>
 // qBittorrent Search
