@@ -1500,6 +1500,11 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         because videoâ€‘only cannot set is_single=True under this policy.
     """
 
+    # Navidrome import should not trigger singles detection/rating
+    if os.environ.get("SPTNR_SKIP_SINGLES") == "1":
+        logging.info(f"Skipping singles/rating for {artist_name} (Navidrome import-only mode)")
+        return []
+
     # Import helpers from singledetection module
     from singledetection import infer_album_context
     

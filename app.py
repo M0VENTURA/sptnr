@@ -2203,6 +2203,9 @@ def scan_navidrome():
             
             def run_navidrome_import_bg():
                 try:
+                    # Ensure singles/rating pipeline stays off during Navidrome metadata-only import
+                    os.environ["SPTNR_SKIP_SINGLES"] = "1"
+
                     logging.info("Starting Navidrome import-only scan (no scoring/singles)")
                     artist_map = build_artist_index()
                     artists = list(artist_map.items())
@@ -2225,6 +2228,9 @@ def scan_navidrome():
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
                     _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                finally:
+                    # Clear skip flag so popularity/singles scans run normally elsewhere
+                    os.environ.pop("SPTNR_SKIP_SINGLES", None)
             
             scan_thread = threading.Thread(target=run_navidrome_import_bg, daemon=False)
             scan_thread.start()
