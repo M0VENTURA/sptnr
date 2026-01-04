@@ -403,7 +403,9 @@
                         <div class="metadata-row">
                             <div class="metadata-label">File Path</div>
                             <div class="metadata-value">
-                                {% if track.file_path %}
+                                {% if track.beets_path %}
+                                    <code style="font-size: 0.75rem; word-break: break-all;">{{ track.beets_path }}</code>
+                                {% elif track.file_path %}
                                     <code style="font-size: 0.75rem; word-break: break-all;">{{ track.file_path }}</code>
                                 {% else %}
                                     <span class="text-muted">Not available</span>
