@@ -81,6 +81,9 @@ scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
 scan_lock = threading.Lock()
 
+# Optional auto-import toggle (default on)
+AUTO_BOOT_ND_IMPORT = os.environ.get("SPTNR_DISABLE_BOOT_ND_IMPORT", "0") != "1"
+
 
 def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dict | None = None):
     """Persist minimal scan progress state so the dashboard can show status."""
@@ -146,6 +149,59 @@ def _monitor_process_for_progress(proc: subprocess.Popen, progress_path: str, sc
             "exit_code": -1,
             "error": str(e)
         })
+
+
+def _start_boot_navidrome_import():
+    """Start a Navidrome metadata-only import in the background on startup.
+
+    Uses force=False so it only fills missing metadata, and sets the
+    SPTNR_SKIP_SINGLES flag so rating/single detection cannot run during this pass.
+    """
+    global scan_process_navidrome
+
+    # Avoid duplicate launches if already running
+    if scan_process_navidrome and isinstance(scan_process_navidrome, dict):
+        t = scan_process_navidrome.get("thread")
+        if t and t.is_alive():
+            logging.info("Navidrome import already running; boot kickoff skipped")
+            return
+
+    def run_import():
+        os.environ["SPTNR_SKIP_SINGLES"] = "1"
+        progress_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+        try:
+            logging.info("[BOOT] Starting Navidrome import-only scan (missing-only)")
+            _write_progress_file(progress_path, "navidrome_scan", True, {"status": "starting", "source": "boot"})
+            artist_map = build_artist_index()
+            artists = list(artist_map.items())
+            total = len(artists)
+            for idx, (artist_name, info) in enumerate(artists, start=1):
+                scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False)
+                _write_progress_file(
+                    progress_path,
+                    "navidrome_scan",
+                    True,
+                    {
+                        "status": "running",
+                        "processed_artists": idx,
+                        "total_artists": total,
+                        "current_artist": artist_name,
+                        "source": "boot",
+                    },
+                )
+            _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
+            logging.info("[BOOT] Navidrome import-only scan completed")
+        except Exception as e:
+            logging.error(f"[BOOT] Error in Navidrome import-only scan: {e}", exc_info=True)
+            _write_progress_file(progress_path, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1, "source": "boot"})
+        finally:
+            os.environ.pop("SPTNR_SKIP_SINGLES", None)
+            scan_process_navidrome = None
+
+    thread = threading.Thread(target=run_import, daemon=True)
+    thread.start()
+    scan_process_navidrome = {"thread": thread, "type": "navidrome_boot"}
+    logging.info("Boot Navidrome import thread started")
 
 def _read_yaml(path):
     try:
@@ -230,6 +286,14 @@ def _baseline_config():
             "spotify_prefetch_timeout": 30,
         },
     }
+
+
+# Kick off Navidrome metadata-only import at startup (missing-only)
+if AUTO_BOOT_ND_IMPORT:
+    try:
+        _start_boot_navidrome_import()
+    except Exception as e:
+        logging.error(f"Failed to start boot Navidrome import: {e}")
 
 
 def _needs_setup(cfg=None):
