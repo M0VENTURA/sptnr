@@ -96,6 +96,49 @@ class BeetsAutoImporter:
         
         # Ensure beets database directory exists
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure beets config exists with safe defaults
+        self._create_default_config_if_missing()
+    
+    def _create_default_config_if_missing(self):
+        """Create a default beets config file if it doesn't exist or is empty."""
+        try:
+            # Check if config file exists and has content
+            if self.beets_config.exists() and self.beets_config.stat().st_size > 0:
+                # File exists and has content, try to parse it to verify it's valid
+                with open(self.beets_config, 'r') as f:
+                    content = f.read().strip()
+                    if content and content != '{}':
+                        # File has valid content, skip
+                        return
+            
+            # File doesn't exist, is empty, or is invalid - create default config
+            logger.info(f"Creating default beets config at {self.beets_config}")
+            
+            default_config = {
+                "directory": str(self.music_path),
+                "library": str(self.beets_db),
+                "import": {
+                    "copy": False,  # Don't copy, files are already in /music
+                    "write": False,  # Don't modify files (-A mode)
+                    "autotag": False,  # Don't auto-tag, just import metadata
+                    "resume": "ask",  # Ask about resuming interrupted imports
+                    "incremental": True,  # Only import new/modified files
+                    "log": str(self.config_path / "beets_import.log")
+                },
+                "musicbrainz": {
+                    "enabled": False  # Disable MusicBrainz lookup when just importing
+                },
+                "plugins": ["duplicates", "info"]
+            }
+            
+            with open(self.beets_config, 'w') as f:
+                yaml.dump(default_config, f, default_flow_style=False, sort_keys=False)
+            
+            logger.info(f"Default beets config created successfully")
+        
+        except Exception as e:
+            logger.error(f"Failed to create default beets config: {e}")
     
     def ensure_beets_config(self):
         """Create or update beets configuration for auto-import."""

@@ -2412,6 +2412,39 @@ def slskd_cancel():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/slskd/download-single", methods=["POST"])
+def slskd_download_single():
+    """Download a single track from Soulseek search results in playlist importer"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    username = request.json.get("username", "")
+    filename = request.json.get("filename", "")
+    size = request.json.get("size", 0)
+    
+    if not username or not filename:
+        return jsonify({"error": "Username and filename required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        client = SlskdClient(web_url, api_key, enabled=True)
+        success = client.download_file(username, filename, int(size))
+        
+        if success:
+            return jsonify({"success": True, "message": f"Download started for {filename}"})
+        else:
+            return jsonify({"error": "Failed to enqueue download"}), 500
+            
+    except Exception as e:
+        logging.error(f"[SLSKD] Single file download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/qbittorrent/search", methods=["POST"])
 def qbit_search():
     """Proxy endpoint for qBittorrent search API"""

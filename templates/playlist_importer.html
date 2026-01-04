@@ -589,13 +589,134 @@
       buttonEl.classList.add('btn-success');
       buttonEl.classList.remove('btn-outline-success');
       
+      // Poll for results immediately
       setTimeout(() => {
-        alert(`✅ Search started for: "${query}". Check the Downloads page for results!`);
-      }, 500);
+        pollSoulseekResults(data.searchId, query, buttonEl, originalText);
+      }, 1000);
     } catch (error) {
       alert(`❌ Error searching for track: ${error.message}`);
       buttonEl.disabled = false;
       buttonEl.innerHTML = originalText;
+    }
+  }
+
+  async function pollSoulseekResults(searchId, query, buttonEl, originalText) {
+    try {
+      const response = await fetch(`/api/slskd/search/${searchId}`);
+      if (!response.ok) throw new Error('Failed to get results');
+      
+      const data = await response.json();
+      
+      if (!data.isComplete) {
+        // Still searching, poll again after 2 seconds
+        setTimeout(() => {
+          pollSoulseekResults(searchId, query, buttonEl, originalText);
+        }, 2000);
+        return;
+      }
+      
+      // Results are complete
+      if (data.fileCount === 0) {
+        alert(`⚠️ No results found for: "${query}"`);
+        buttonEl.disabled = false;
+        buttonEl.innerHTML = originalText;
+        return;
+      }
+      
+      // Show modal with results and download options
+      showSoulseekResultsModal(data.results, query);
+      buttonEl.disabled = false;
+      buttonEl.innerHTML = originalText;
+    } catch (error) {
+      console.error('Error polling results:', error);
+      buttonEl.disabled = false;
+      buttonEl.innerHTML = originalText;
+    }
+  }
+
+  function showSoulseekResultsModal(results, query) {
+    let html = `
+      <div class="modal fade" id="soulseekResultsModal" tabindex="-1" aria-hidden="true">
+        <div class="modal-dialog modal-lg">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h5 class="modal-title">Soulseek Results for: ${escapeHtml(query)}</h5>
+              <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body" style="max-height: 500px; overflow-y: auto;">
+              <div class="list-group">
+    `;
+    
+    results.forEach((result, idx) => {
+      html += `
+        <div class="list-group-item">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">${escapeHtml(result.filename)}</h6>
+              <small class="text-muted">
+                <i class="bi bi-person"></i> ${escapeHtml(result.username)} | 
+                <i class="bi bi-file-earmark-music"></i> ${result.size_mb} MB | 
+                <i class="bi bi-speedometer"></i> ${result.bitrate || 'unknown'} bps
+              </small>
+            </div>
+            <button class="btn btn-sm btn-success" onclick="downloadSoulseekFile('${escapeHtml(result.username)}', '${escapeHtml(result.filename)}', '${escapeHtml(result.size)}')">
+              <i class="bi bi-download"></i> Download
+            </button>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += `
+              </div>
+            </div>
+            <div class="modal-footer">
+              <small class="text-muted">Found ${results.length} result(s). Downloads will appear on the Downloads page.</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    // Remove old modal if exists
+    const oldModal = document.getElementById('soulseekResultsModal');
+    if (oldModal) oldModal.remove();
+    
+    // Add new modal to body
+    document.body.insertAdjacentHTML('beforeend', html);
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('soulseekResultsModal'));
+    modal.show();
+  }
+
+  async function downloadSoulseekFile(username, filename, size) {
+    try {
+      const response = await fetch('/api/slskd/download-single', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          username: username,
+          filename: filename,
+          size: parseInt(size)
+        })
+      });
+      
+      if (!response.ok) {
+        const error = await response.json();
+        throw new Error(error.error || 'Download failed');
+      }
+      
+      const data = await response.json();
+      alert(`✅ Download started for: ${escapeHtml(filename)}`);
+      
+      // Close modal
+      const modal = bootstrap.Modal.getInstance(document.getElementById('soulseekResultsModal'));
+      if (modal) modal.hide();
+    } catch (error) {
+      alert(`❌ Error downloading: ${error.message}`);
     }
   }
   
