@@ -22,6 +22,13 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import yaml
 
+try:
+    from scan_history import log_album_scan
+except ImportError:
+    # Fallback if scan_history module not available
+    def log_album_scan(*args, **kwargs):
+        pass
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s'
@@ -32,6 +39,23 @@ DB_PATH = "/database/sptnr.db"
 BEETS_DB_PATH = "/config/beets/musiclibrary.db"
 CONFIG_PATH = "/config"
 MUSIC_PATH = "/music"
+MP3_PROGRESS_FILE = "/config/mp3_scan_progress.json"
+
+
+def save_beets_progress(processed: int, total: int):
+    """Save beets import progress to JSON file for dashboard polling."""
+    try:
+        progress_data = {
+            "is_running": True,
+            "scan_type": "beets_import",
+            "processed": processed,
+            "total": total,
+            "percent_complete": int((processed / total * 100)) if total > 0 else 0
+        }
+        with open(MP3_PROGRESS_FILE, 'w') as f:
+            json.dump(progress_data, f)
+    except Exception as e:
+        logging.error(f"Error saving beets progress: {e}")
 
 
 class BeetsAutoImporter:
@@ -204,13 +228,33 @@ class BeetsAutoImporter:
                     albums.albumartist as album_artist_credit
                 FROM items
                 LEFT JOIN albums ON items.album_id = albums.id
+                ORDER BY items.albumartist, items.album, items.title
             """)
             
             beets_tracks = beets_cursor.fetchall()
             logging.info(f"Found {len(beets_tracks)} tracks in beets database")
             
             updated_count = 0
-            for track in beets_tracks:
+            current_album = None
+            album_tracks = 0
+            
+            for idx, track in enumerate(beets_tracks, 1):
+                # Progress reporting every 50 tracks
+                if idx % 50 == 0:
+                    save_beets_progress(idx, len(beets_tracks))
+                    logging.info(f"Beets sync progress: {idx}/{len(beets_tracks)}")
+                
+                # Track album changes for scan history logging
+                album_artist = track['album_artist_credit'] or track['albumartist']
+                if current_album != (album_artist, track['album']):
+                    # Log the previous album if we were processing one
+                    if current_album is not None and album_tracks > 0:
+                        log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
+                        logging.info(f"Completed beets import for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+                    
+                    current_album = (album_artist, track['album'])
+                    album_tracks = 0
+                
                 # Try to match by path first, then by title+artist+album
                 sptnr_cursor.execute("""
                     SELECT id FROM tracks 
@@ -248,6 +292,12 @@ class BeetsAutoImporter:
                         match[0]
                     ))
                     updated_count += 1
+                    album_tracks += 1
+            
+            # Log the final album after the loop completes
+            if current_album is not None and album_tracks > 0:
+                log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
+                logging.info(f"Completed beets import for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
             
             sptnr_conn.commit()
             logging.info(f"Updated {updated_count} tracks with beets metadata")

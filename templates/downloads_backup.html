@@ -15,7 +15,7 @@
   <ul class="nav nav-tabs mb-4" role="tablist">
     <li class="nav-item" role="presentation">
       <button class="nav-link active" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
-        <i class="bi bi-cloud-download"></i> qBittorrent Torrents
+        <i class="bi bi-cloud-download"></i> qBittorrent Search
       </button>
     </li>
     <li class="nav-item" role="presentation">
@@ -26,14 +26,16 @@
   </ul>
 
   <div class="tab-content">
-    <!-- ==================== qBittorrent Tab ==================== -->
+    <!-- qBittorrent Tab -->
     <div class="tab-pane fade show active" id="qbitContent" role="tabpanel">
-      {% if qbit_config.enabled %}
-      <!-- qBittorrent Search -->
-      <div class="card mb-4">
+      <div class="row g-4 mb-4">
+    <!-- qBittorrent Search - Full Width -->
+    {% if qbit_config.enabled %}
+    <div class="col-12">
+      <div class="card">
         <div class="card-header">
           <h5 class="card-title mb-0">
-            <i class="bi bi-search"></i> qBittorrent Search
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
           </h5>
         </div>
         <div class="card-body">
@@ -56,70 +58,38 @@
           <div id="qbitResults" style="max-height: 600px; overflow-y: auto;"></div>
         </div>
       </div>
+    </div>
+    {% else %}
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Search
+          </h5>
+        </div>
+        <div class="card-body">
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+      </div>
 
-      <!-- qBittorrent Active Downloads -->
+      <!-- qBittorrent Monitor -->
       <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
           <h5 class="card-title mb-0">
             <i class="bi bi-arrow-down-circle"></i> Active Downloads
-            <span class="badge bg-primary ms-2" id="qbitMonCount" style="display:none"></span>
           </h5>
-          <button class="btn btn-sm btn-outline-primary" onclick="refreshQbitMonitor()">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-          </button>
-        </div>
-        <div class="card-body">
-          <div id="qbitMonLoading" class="text-center py-4">
-            <div class="spinner-border text-primary" role="status">
-              <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">Loading qBittorrent torrents...</p>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-primary" id="qbitMonCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshQbitMonitor()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
           </div>
-          <div id="qbitMonError" class="alert alert-danger" style="display:none"></div>
-          <div id="qbitMonResults" style="display:none">
-            <div id="qbitMonEmpty" class="alert alert-info" style="display:none">
-              <i class="bi bi-info-circle"></i> No active torrents
-            </div>
-            <div id="qbitMonTable" style="display:none">
-              <div class="table-responsive">
-                <table class="table table-hover mb-0">
-                  <thead>
-                    <tr>
-                      <th>NAME</th>
-                      <th class="text-center">STATUS</th>
-                      <th class="text-center">PROGRESS</th>
-                      <th class="text-center">SIZE</th>
-                      <th class="text-center">DOWN SPEED</th>
-                      <th class="text-center">UP SPEED</th>
-                      <th class="text-center">SEEDS</th>
-                      <th class="text-center">ETA</th>
-                      <th class="text-center">ACTIONS</th>
-                    </tr>
-                  </thead>
-                  <tbody id="qbitMonTableBody"></tbody>
-                </table>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-      {% else %}
-      <div class="alert alert-warning">
-        <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled. 
-        <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
-      </div>
-      {% endif %}
-    </div>
-
-    <!-- ==================== Soulseek Tab ==================== -->
-    <div class="tab-pane fade" id="slskdContent" role="tabpanel">
-      {% if slskd_config.enabled %}
-      <!-- Soulseek Search -->
-      <div class="card mb-4">
-        <div class="card-header">
-          <h5 class="card-title mb-0">
-            <i class="bi bi-search"></i> Soulseek Search
-          </h5>
         </div>
         <div class="card-body">
           <div class="mb-3">
@@ -152,43 +122,122 @@
           <div id="slskdResults" style="max-height: 600px; overflow-y: auto;"></div>
         </div>
       </div>
-
-      <!-- Soulseek Active Downloads -->
+    </div>
+    {% else %}
+    <div class="col-12">
       <div class="card">
-        <div class="card-header d-flex justify-content-between align-items-center">
+        <div class="card-header">
           <h5 class="card-title mb-0">
-            <i class="bi bi-arrow-down-circle"></i> Active Downloads
-            <span class="badge bg-success ms-2" id="slskdMonCount" style="display:none"></span>
+            <i class="bi bi-music-note-list"></i> Soulseek Search
           </h5>
-          <button class="btn btn-sm btn-outline-success" onclick="refreshSlskdMonitor()">
-            <i class="bi bi-arrow-clockwise"></i> Refresh
-          </button>
         </div>
         <div class="card-body">
-          <div id="slskdMonLoading" class="text-center py-4">
-            <div class="spinner-border text-success" role="status">
-              <span class="visually-hidden">Loading...</span>
-            </div>
-            <p class="mt-2">Loading Soulseek downloads...</p>
-          </div>
-          <div id="slskdMonError" class="alert alert-danger" style="display:none"></div>
-          <div id="slskdMonResults" style="display:none">
-            <div id="slskdMonEmpty" class="alert alert-info" style="display:none">
-              <i class="bi bi-info-circle"></i> No active downloads
-            </div>
-            <div id="slskdMonContent" style="display:none"></div>
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled. 
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
           </div>
         </div>
       </div>
-      {% else %}
-      <div class="alert alert-warning">
-        <i class="bi bi-exclamation-triangle"></i> Soulseek (slskd) integration is not enabled. 
-        <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Monitors Section -->
+  <hr class="my-4">
+  <div class="mb-3">
+    <div class="d-flex justify-content-between align-items-center">
+      <div>
+        <h2 class="h4 mb-1"><i class="bi bi-arrow-down-circle"></i> Active Downloads</h2>
+        <p class="text-muted mb-0">Monitor qBittorrent and Soulseek downloads without leaving this page.</p>
       </div>
-      {% endif %}
+      <div class="d-flex gap-2 flex-wrap">
+        {% if qbit_config.enabled %}
+        <button class="btn btn-sm btn-outline-primary" onclick="document.getElementById('qbitMonitorCard').scrollIntoView({behavior: 'smooth'})">
+          <i class="bi bi-arrow-down"></i> qBit Monitor
+        </button>
+        {% endif %}
+        {% if slskd_config.enabled %}
+        <button class="btn btn-sm btn-outline-success" onclick="document.getElementById('slskdMonitorCard').scrollIntoView({behavior: 'smooth'})">
+          <i class="bi bi-arrow-down"></i> Soulseek Monitor
+        </button>
+        {% endif %}
+      </div>
     </div>
   </div>
-</div>
+
+  <div class="row g-4">
+    <!-- qBittorrent Monitor -->
+    <div class="col-12">
+      <div class="card" id="qbitMonitorCard">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-cloud-download"></i> qBittorrent Torrents
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary" id="qbitMonCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshQbitMonitor()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          {% if qbit_config.enabled %}
+          <div id="qbitMonLoading" class="text-center py-4">
+            <div class="spinner-border text-primary" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading qBittorrent torrents...</p>
+          </div>
+          <div id="qbitMonError" class="alert alert-danger" style="display:none"></div>
+          <div id="qbitMonResults" style="display:none">
+            <div id="qbitMonEmpty" class="alert alert-info" style="display:none">
+              <i class="bi bi-info-circle"></i> No active torrents
+            </div>
+            <div id="qbitMonTable" style="display:none">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Name</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Progress</th>
+                      <th class="text-center">Size</th>
+                      <th class="text-center">Down Speed</th>
+                      <th class="text-center">Up Speed</th>
+                      <th class="text-center">Seeds</th>
+                      <th class="text-center">ETA</th>
+                      <th class="text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="qbitMonTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+          {% else %}
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> qBittorrent integration is not enabled.
+            <a href="{{ url_for('config_editor') }}">Configure it</a> in config.yaml.
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+
+    <!-- Soulseek Monitor -->
+    <div class="col-12">
+      <div class="card" id="slskdMonitorCard">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-music-note-beamed"></i> Soulseek Downloads
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-secondary" id="slskdMonCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshSlskdMonitor()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
         <div class="card-body">
           {% if slskd_config.enabled %}
           <div id="slskdMonLoading" class="text-center py-4">
@@ -854,113 +903,14 @@ function refreshSlskdMonitor(options = {}) {
 
       if (downloads.length === 0) {
         if (empty) empty.style.display = 'block';
-        const content = document.getElementById('slskdMonContent');
-        if (content) content.style.display = 'none';
+        if (table) table.style.display = 'none';
         slskdMonInFlight = false;
         return;
       }
 
       if (empty) empty.style.display = 'none';
-      
-      // Group by username and folder
-      const grouped = {};
-      downloads.forEach(download => {
-        const username = download.username || 'Unknown';
-        const filename = download.filename || '';
-        const pathParts = filename.split(/[\\/]/);
-        const file = pathParts.pop() || filename;
-        const folder = pathParts.length > 0 ? pathParts.join('/') : '';
-        
-        if (!grouped[username]) {
-          grouped[username] = {};
-        }
-        if (!grouped[username][folder]) {
-          grouped[username][folder] = [];
-        }
-        grouped[username][folder].push({...download, file, folder});
-      });
-      
-      // Build HTML with folder structure
-      const content = document.getElementById('slskdMonContent');
-      if (content) {
-        content.style.display = 'block';
-        let html = '<div class="slskd-download-groups">';
-        
-        Object.keys(grouped).forEach((username, userIdx) => {
-          html += `
-            <div class="slskd-user-group mb-3">
-              <div class="slskd-user-header" onclick="toggleUserGroup(${userIdx})">
-                <div>
-                  <i class="bi bi-person-circle"></i> <strong>${escapeHtml(username)}</strong>
-                  <small class="text-muted ms-2">${Object.values(grouped[username]).flat().length} file(s)</small>
-                </div>
-                <i class="bi bi-chevron-down slskd-chevron" id="chevron-user-${userIdx}"></i>
-              </div>
-              <div class="slskd-user-body" id="user-body-${userIdx}" style="display: none;">`;
-          
-          Object.keys(grouped[username]).forEach((folder, folderIdx) => {
-            const files = grouped[username][folder];
-            html += `
-              <div class="slskd-folder-group">
-                <div class="slskd-folder-header" onclick="toggleFolderGroup(${userIdx}, ${folderIdx})">
-                  <div>
-                    <i class="bi bi-folder"></i> <small>${escapeHtml(folder || '/')}</small>
-                  </div>
-                  <i class="bi bi-chevron-down slskd-chevron" id="chevron-folder-${userIdx}-${folderIdx}"></i>
-                </div>
-                <div class="slskd-folder-body" id="folder-body-${userIdx}-${folderIdx}" style="display: none;">`;
-            
-            files.forEach(download => {
-              const state = (download.state || '').toLowerCase();
-              let stateClass = 'bg-secondary';
-              if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
-              else if (state.includes('completed') || state.includes('complete')) stateClass = 'bg-success';
-              else if (state.includes('queued') || state.includes('initializing')) stateClass = 'bg-warning';
-              else if (state.includes('error') || state.includes('failed') || state.includes('cancelled')) stateClass = 'bg-danger';
-              
-              const fileSize = download.size || 0;
-              const bytesTransferred = download.bytesTransferred || 0;
-              const progress = download.progress || 0;
-              const speed = download.averageSpeed || 0;
-              
-              html += `
-                <div class="slskd-file-row">
-                  <div class="slskd-file-info">
-                    <div class="slskd-file-name">${escapeHtml(download.file)}</div>
-                  </div>
-                  <div class="slskd-file-status">
-                    <span class="badge ${stateClass}">${escapeHtml(download.state || '')}</span>
-                  </div>
-                  <div class="slskd-file-progress">
-                    <div class="progress" style="height: 20px; min-width: 100px;">
-                      <div class="progress-bar ${progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100">${progress}%</div>
-                    </div>
-                    <small class="text-muted">${formatBytes(bytesTransferred)} / ${formatBytes(fileSize)}</small>
-                  </div>
-                  <div class="slskd-file-speed">
-                    ${speed > 0 ? `<span class="text-primary">${formatBytes(speed)}/s</span>` : '—'}
-                  </div>
-                  <div class="slskd-file-actions">
-                    <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username || '')}', '${escapeHtml(download.filename || '')}', '${escapeHtml(download.remoteToken || '')}')" title="Cancel">
-                      <i class="bi bi-x-circle"></i>
-                    </button>
-                  </div>
-                </div>`;
-            });
-            
-            html += `
-                </div>
-              </div>`;
-          });
-          
-          html += `
-              </div>
-            </div>`;
-        });
-        
-        html += '</div>';
-        content.innerHTML = html;
-      }
+      if (table) table.style.display = 'block';
+      if (tbody) tbody.innerHTML = '';
 
       downloads.forEach(download => {
         const row = document.createElement('tr');
@@ -1077,28 +1027,6 @@ function cancelSlskdDownload(username, filename, token) {
 }
 
 function startMonitorAutoRefresh() {
-  // Toggle functions for Soulseek grouped display
-  function toggleUserGroup(userIdx) {
-    const body = document.getElementById(`user-body-${userIdx}`);
-    const chevron = document.getElementById(`chevron-user-${userIdx}`);
-    if (body && chevron) {
-      const shouldShow = body.style.display === 'none';
-      body.style.display = shouldShow ? 'block' : 'none';
-      chevron.classList.toggle('rotated', shouldShow);
-    }
-  }
-
-  function toggleFolderGroup(userIdx, folderIdx) {
-    const body = document.getElementById(`folder-body-${userIdx}-${folderIdx}`);
-    const chevron = document.getElementById(`chevron-folder-${userIdx}-${folderIdx}`);
-    if (body && chevron) {
-      const shouldShow = body.style.display === 'none';
-      body.style.display = shouldShow ? 'block' : 'none';
-      chevron.classList.toggle('rotated', shouldShow);
-    }
-  }
-
-  function startMonitorAutoRefresh() {
   if (monitorInterval) clearInterval(monitorInterval);
   monitorInterval = setInterval(() => {
     refreshQbitMonitor({ silent: true });
@@ -1297,37 +1225,6 @@ window.addEventListener('beforeunload', () => {
 
 .slskd-user-header:hover {
     background-color: rgba(255, 255, 255, 0.05);
-.slskd-user-body {
-  background-color: rgba(0, 0, 0, 0.15);
-}
-
-.slskd-folder-group {
-  border-bottom: 1px solid var(--border-color);
-}
-
-.slskd-folder-group:last-child {
-  border-bottom: none;
-}
-
-.slskd-folder-header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  padding: 0.5rem 1rem;
-  cursor: pointer;
-  background-color: rgba(0, 0, 0, 0.2);
-  transition: background-color 0.15s ease;
-  user-select: none;
-}
-
-.slskd-folder-header:hover {
-  background-color: rgba(255, 255, 255, 0.03);
-}
-
-.slskd-folder-body {
-  background-color: rgba(0, 0, 0, 0.1);
-}
-
 }
 
 .slskd-user-info {
@@ -1398,33 +1295,10 @@ window.addEventListener('beforeunload', () => {
 }
 
 .slskd-file-info {
-    flex: 2;
-    min-width: 150px;
-    max-width: 400px;
-  }
-
-  .slskd-file-status {
-    min-width: 100px;
-    text-align: center;
-  }
-
-  .slskd-file-progress {
-    flex: 2;
-    min-width: 150px;
+    flex: 1;
+    min-width: 0;
     display: flex;
-    flex-direction: column;
-    gap: 0.25rem;
-  }
-
-  .slskd-file-speed {
-    min-width: 100px;
-    text-align: center;
-    font-weight: 500;
-  }
-
-  .slskd-file-actions {
-    min-width: 60px;
-    text-align: center;
+    align-items: center;
 }
 
 .slskd-file-name {

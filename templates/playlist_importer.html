@@ -179,28 +179,61 @@
 
 <!-- Replace Track Modal -->
 <div class="modal fade" id="replaceTrackModal" tabindex="-1" aria-labelledby="replaceTrackLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
+  <div class="modal-dialog modal-xl">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="replaceTrackLabel">Replace Missing Track</h5>
+        <h5 class="modal-title" id="replaceTrackLabel"><i class="bi bi-arrow-repeat"></i> Swap Missing Track with Library Track</h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <div class="alert alert-info mb-3">
-          <small id="originalTrackInfo"></small>
+        <!-- Original Track Card -->
+        <div class="row mb-4">
+          <div class="col-12">
+            <div class="card border-warning">
+              <div class="card-header bg-warning bg-opacity-10">
+                <h6 class="mb-0"><i class="bi bi-music-note"></i> Original Missing Track</h6>
+              </div>
+              <div class="card-body">
+                <div id="originalTrackDisplay" class="track-row">
+                  <div class="track-info">
+                    <div class="track-title text-warning" id="originalTitle"></div>
+                    <div class="track-artist" id="originalArtist"></div>
+                    <div class="track-album" id="originalAlbum"></div>
+                  </div>
+                  <span class="badge bg-warning">Missing from Library</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
+
+        <!-- Arrow -->
+        <div class="text-center mb-4">
+          <i class="bi bi-arrow-down-circle-fill text-primary" style="font-size: 2rem;"></i>
+        </div>
+
+        <!-- Search for Replacement -->
         <div class="mb-3">
-          <label for="replacementTrackSearch" class="form-label">Search for Replacement Track</label>
+          <label for="replacementTrackSearch" class="form-label"><strong>Search Library for Replacement Track</strong></label>
           <div class="input-group">
             <input type="text" class="form-control" id="replacementTrackSearch" placeholder="Search by artist, track, or album..." onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
             <button class="btn btn-primary" type="button" onclick="searchForReplacementTrack()">
               <i class="bi bi-search"></i> Search
             </button>
           </div>
+          <small class="text-muted">Find a track from your library to replace the missing one</small>
         </div>
         
-        <div id="replacementTrackSearchResults" style="max-height: 400px; overflow-y: auto;">
-          <p class="text-muted text-center">Enter a search query to find replacement tracks</p>
+        <!-- Replacement Options Card -->
+        <div class="card border-success">
+          <div class="card-header bg-success bg-opacity-10">
+            <h6 class="mb-0"><i class="bi bi-check-circle"></i> Select Replacement from Library</h6>
+          </div>
+          <div class="card-body">
+            <div id="replacementTrackSearchResults" style="max-height: 400px; overflow-y: auto;">
+              <p class="text-muted text-center py-4">Enter a search query above to find replacement tracks from your library</p>
+            </div>
+          </div>
         </div>
       </div>
     </div>
@@ -664,9 +697,15 @@
   
   function openReplacementTrackModal(artist, title, album) {
     replacingTrackInfo = { artist, title, album };
-    document.getElementById('originalTrackInfo').textContent = `Replacing: ${artist} - ${title}`;
-    document.getElementById('replacementTrackSearch').value = '';
-    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center">Enter a search query to find replacement tracks</p>';
+    
+    // Populate original track display
+    document.getElementById('originalTitle').textContent = title;
+    document.getElementById('originalArtist').textContent = artist;
+    document.getElementById('originalAlbum').textContent = album || 'Unknown Album';
+    
+    // Pre-populate search with artist name for easier searching
+    document.getElementById('replacementTrackSearch').value = artist;
+    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center py-4">Enter a search query above to find replacement tracks from your library</p>';
     
     const modal = new bootstrap.Modal(document.getElementById('replaceTrackModal'));
     modal.show();
@@ -718,14 +757,14 @@
         html += `
           <div class="track-row" style="padding: 0.75rem 0; border-bottom: 1px solid var(--border-color);">
             <div class="track-info">
-              <div class="track-title">${escapeHtml(track.title)}</div>
+              <div class="track-title text-success">${escapeHtml(track.title)}</div>
               <div class="track-artist">${escapeHtml(track.artist)}</div>
               <div class="track-album">${escapeHtml(track.album || 'Unknown Album')}</div>
             </div>
             <div class="track-actions">
-              <button class="btn btn-sm btn-warning" onclick="replaceSelectedTrack('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', '${escapeHtml(track.album || '')}')"
-                      title="Replace the missing track with this one">
-                <i class="bi bi-arrow-repeat"></i> Replace
+              <button class="btn btn-sm btn-success" onclick="replaceSelectedTrack('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', '${escapeHtml(track.album || '')}', '${escapeHtml(track.id || '')}')"
+                      title="Swap with this track from your library">
+                <i class="bi bi-arrow-left-right"></i> Swap with This Track
               </button>
             </div>
           </div>
@@ -738,24 +777,29 @@
     }
   }
   
-  function replaceSelectedTrack(title, artist, album) {
+  function replaceSelectedTrack(title, artist, album, trackId) {
     if (!currentImportData || !replacingTrackInfo) {
       alert('No playlist data found');
       return;
     }
     
-    // Find and replace the missing track in the matched_tracks list
-    const index = currentImportData.matched_tracks.findIndex(t => 
+    // Remove the original missing track from missing_tracks array
+    const missingIndex = currentImportData.missing_tracks.findIndex(t => 
       t.title === replacingTrackInfo.title && t.artist === replacingTrackInfo.artist
     );
     
-    if (index !== -1) {
-      currentImportData.matched_tracks[index] = {
-        title: title,
-        artist: artist,
-        album: album
-      };
+    if (missingIndex !== -1) {
+      currentImportData.missing_tracks.splice(missingIndex, 1);
     }
+    
+    // Add the replacement track to matched_tracks
+    currentImportData.matched_tracks.push({
+      id: trackId,
+      title: title,
+      artist: artist,
+      album: album,
+      stars: 0
+    });
     
     // Close modal
     bootstrap.Modal.getInstance(document.getElementById('replaceTrackModal')).hide();
@@ -763,7 +807,10 @@
     // Re-display results with updated data
     displayResults(currentImportData);
     
-    alert(`✅ Replaced "${replacingTrackInfo.artist} - ${replacingTrackInfo.title}" with "${artist} - ${title}"`);
+    // Show success message with clear before/after
+    alert(`✅ Swapped Successfully!\n\n` +
+          `Removed (missing):\n"${replacingTrackInfo.artist} - ${replacingTrackInfo.title}"\n\n` +
+          `Added (from library):\n"${artist} - ${title}"`);
     replacingTrackInfo = null;
   }
   

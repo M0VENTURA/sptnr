@@ -236,6 +236,7 @@
                             <th>
                                 <i class="bi bi-disc"></i> Album
                             </th>
+                            <th>Scan Type</th>
                             <th>Last Scanned</th>
                             <th class="text-center">Actions</th>
                         </tr>
@@ -255,9 +256,21 @@
                                     {{ scan.album }}
                                 </a>
                             </td>
+                            <td data-label="Type" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Type</span>
+                                {% if scan.scan_type == 'navidrome' %}
+                                    <span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>
+                                {% elif scan.scan_type == 'popularity' %}
+                                    <span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>
+                                {% elif scan.scan_type == 'beets' %}
+                                    <span class="badge bg-info text-dark"><i class="bi bi-disc"></i> Beets</span>
+                                {% else %}
+                                    <span class="badge bg-secondary">{{ scan.scan_type }}</span>
+                                {% endif %}
+                            </td>
                             <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
                                 <span class="d-md-none text-muted fw-bold">Scanned</span>
-                                {{ scan.last_scan }}
+                                {{ scan.scan_timestamp }}
                             </td>
                             <td class="d-flex justify-content-end d-md-table-cell">
                                 <a href="{{ url_for('album_detail', artist=scan.artist, album=scan.album) }}" class="btn btn-sm btn-outline-primary">

@@ -9,6 +9,13 @@ from datetime import datetime
 from start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
 from colorama import Fore, Style
 
+try:
+    from scan_history import log_album_scan
+except ImportError:
+    # Fallback if scan_history module not available
+    def log_album_scan(*args, **kwargs):
+        pass
+
 # Color constants  
 LIGHT_RED = Fore.RED + Style.BRIGHT
 LIGHT_GREEN = Fore.GREEN + Style.BRIGHT
@@ -84,6 +91,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     print(f"   Skipping cached album: {album_name}")
                 continue
 
+            # Track the number of tracks actually processed for this album
+            album_tracks_processed = 0
+            
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
@@ -135,6 +145,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "sample_rate": t.get("samplingRate"),
                 }
                 save_to_db(td)
+                album_tracks_processed += 1
+            
+            # Log this album completion to scan_history
+            if album_tracks_processed > 0:
+                log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
+                logging.info(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
 
         if verbose:
             print(f"Artist scan complete: {artist_name}")

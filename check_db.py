@@ -120,6 +120,19 @@ def update_schema(db_path):
             UNIQUE(type, name, artist, album, track_id)
         );
     """)
+    
+    # ✅ Ensure scan_history table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS scan_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            scan_type TEXT NOT NULL,
+            scan_timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            tracks_processed INTEGER DEFAULT 0,
+            status TEXT DEFAULT 'completed'
+        );
+    """)
 
     # ✅ Create indexes for faster lookups
     indexes = [
@@ -132,7 +145,9 @@ def update_schema(db_path):
         ("idx_tracks_mbid", "tracks(mbid)"),
         ("idx_tracks_suggested_mbid", "tracks(suggested_mbid)"),
         ("idx_bookmarks_type", "bookmarks(type)"),
-        ("idx_bookmarks_created", "bookmarks(created_at)")
+        ("idx_bookmarks_created", "bookmarks(created_at)"),
+        ("idx_scan_history_timestamp", "scan_history(scan_timestamp DESC)"),
+        ("idx_scan_history_type", "scan_history(scan_type)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")

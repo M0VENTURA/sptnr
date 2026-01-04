@@ -545,17 +545,11 @@ def dashboard():
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
         singles_count = cursor.fetchone()[0]
         
-        cursor.execute("""
-            SELECT artist, album, MAX(last_scanned) as last_scan
-            FROM tracks
-            WHERE last_scanned IS NOT NULL
-            GROUP BY artist, album
-            ORDER BY last_scan DESC
-            LIMIT 10
-        """)
-        recent_scans = cursor.fetchall()
-        
         conn.close()
+        
+        # Get recent scans from scan_history table
+        from scan_history import get_recent_album_scans
+        recent_scans = get_recent_album_scans(limit=10)
         
         with scan_lock:
             web_ui_running = scan_process is not None and scan_process.poll() is None
@@ -733,11 +727,12 @@ def artist_detail(name):
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
                 SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
-                MAX(last_scanned) as last_updated
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year
             FROM tracks
             WHERE artist = ?
             GROUP BY album
-            ORDER BY album COLLATE NOCASE
+            ORDER BY album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         

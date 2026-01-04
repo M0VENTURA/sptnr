@@ -39,6 +39,13 @@ from start import (
     AGE_WEIGHT,
 )
 
+# Import scan history tracker
+try:
+    from scan_history import log_album_scan
+except ImportError:
+    def log_album_scan(*args, **kwargs):
+        pass  # Fallback if scan_history not available
+
 def get_db_connection():
     """Get database connection with WAL mode"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
@@ -106,6 +113,9 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
         print(f"📊 Scanning popularity for {len(tracks)} tracks..." + (f" (artist={artist})" if artist else ""))
 
         updated_count = 0
+        current_album = None
+        album_tracks = 0
+        
         for idx, track in enumerate(tracks, 1):
             if idx % 50 == 0:
                 print(f"Progress: {idx}/{len(tracks)}")
@@ -113,8 +123,21 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                 save_popularity_progress(idx, len(tracks))
 
             artist_name = track['artist']
+            album_name = track['album']
             title = track['title']
             track_id = track['id']
+            
+            # Track album changes to log when we finish an album
+            if current_album != (artist_name, album_name):
+                # Log the previous album if we were processing one
+                if current_album is not None and album_tracks > 0:
+                    log_album_scan(current_album[0], current_album[1], 'popularity', album_tracks, 'completed')
+                    logging.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+                
+                current_album = (artist_name, album_name)
+                album_tracks = 0
+            
+            album_tracks += 1
 
             # Get Spotify score
             spotify_score = track['spotify_score'] or 0
@@ -201,6 +224,11 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                     print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}, Score={composite_score:.3f}")
             except Exception as e:
                 logging.error(f"Failed to update track {track_id}: {e}")
+
+        # Log the final album after the loop completes
+        if current_album is not None and album_tracks > 0:
+            log_album_scan(current_album[0], current_album[1], 'popularity', album_tracks, 'completed')
+            logging.info(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
 
         print(f"✅ Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
         logging.info(f"Popularity scan complete: Updated {updated_count}/{len(tracks)} tracks")
