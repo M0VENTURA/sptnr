@@ -1201,55 +1201,6 @@ def scan_mp3():
     return redirect(url_for("dashboard"))
 
 
-@app.route("/scan/navidrome", methods=["POST"])
-def scan_navidrome():
-    """Run Navidrome library scan in background thread"""
-    global scan_process_navidrome
-    
-    with scan_lock:
-        # Check if scan is already running
-        if scan_process_navidrome is not None:
-            if isinstance(scan_process_navidrome, dict):
-                thread = scan_process_navidrome.get('thread')
-                if thread and thread.is_alive():
-                    flash("Navidrome sync scan is already running", "warning")
-                    return redirect(url_for("dashboard"))
-            elif hasattr(scan_process_navidrome, 'is_alive') and scan_process_navidrome.is_alive():
-                flash("Navidrome sync scan is already running", "warning")
-                return redirect(url_for("dashboard"))
-        
-        try:
-            db_dir = os.path.dirname(DB_PATH)
-            nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
-            _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
-            
-            # Run scan in background thread instead of subprocess to avoid initialization overhead
-            def run_navidrome_scan_bg():
-                try:
-                    from start import run_scan
-                    logging.info("Starting Navidrome batch rating scan in background")
-                    run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False)
-                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info("Navidrome scan completed successfully")
-                except Exception as e:
-                    logging.error(f"Error in Navidrome scan: {e}", exc_info=True)
-                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
-            
-            scan_thread = threading.Thread(target=run_navidrome_scan_bg, daemon=False)
-            scan_thread.start()
-            
-            # Store thread reference for tracking
-            scan_process_navidrome = {'thread': scan_thread, 'type': 'navidrome'}
-            
-            flash("✅ Navidrome sync scan started", "success")
-            logging.info("Navidrome scan thread started successfully")
-        except Exception as e:
-            logging.error(f"Error starting Navidrome scan: {e}", exc_info=True)
-            flash(f"❌ Error starting Navidrome scan: {str(e)}", "danger")
-    
-    return redirect(url_for("dashboard"))
-
-
 @app.route("/scan/popularity", methods=["POST"])
 def scan_popularity():
     """Run popularity score update from external sources"""
