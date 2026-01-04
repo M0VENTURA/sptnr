@@ -97,7 +97,7 @@
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="navidrome_scan" style="display: none; margin-bottom: 1rem;">
+                    <div class="scan-progress-container" data-scan-type="navidrome_scan" style="margin-bottom: 1rem;">
                         <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
                                  role="progressbar" style="width: 0%;" 
@@ -141,7 +141,7 @@
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="popularity_scan" style="display: none; margin-bottom: 1rem;">
+                    <div class="scan-progress-container" data-scan-type="popularity_scan" style="margin-bottom: 1rem;">
                         <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
                                  role="progressbar" style="width: 0%;" 
@@ -159,7 +159,7 @@
                     
                     <div class="d-flex gap-2">
                         <form method="POST" action="{{ url_for('scan_popularity') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-primary w-100">
+                            <button id="popularity-start-btn" type="submit" class="btn btn-primary w-100">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
@@ -185,7 +185,7 @@
                         </span>
                     </div>
                     
-                    <div class="scan-progress-container" data-scan-type="mp3_scan" style="display: none; margin-bottom: 1rem;">
+                    <div class="scan-progress-container" data-scan-type="mp3_scan" style="margin-bottom: 1rem;">
                         <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
                             <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
                                  role="progressbar" style="width: 0%;" 
@@ -219,7 +219,6 @@
     </div>
     
     <!-- Recent Scans -->
-    {% if recent_scans %}
         <div class="card mb-4">
             <div class="card-header">
                 <h5 class="card-title mb-0">
@@ -241,7 +240,7 @@
                             <th class="text-center">Actions</th>
                         </tr>
                     </thead>
-                    <tbody>
+                    <tbody id="recent-scans-body">
                         {% for scan in recent_scans %}
                         <tr class="d-flex flex-column d-md-table-row">
                             <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
@@ -278,12 +277,16 @@
                                 </a>
                             </td>
                         </tr>
+                        {% else %}
+                        <tr>
+                            <td colspan="5" class="text-center text-muted">No recent scans yet</td>
+                        </tr>
                         {% endfor %}
                     </tbody>
                 </table>
             </div>
         </div>
-    {% endif %}
+    
     
     <div class="d-flex flex-column flex-md-row gap-2">
         <a href="{{ url_for('artists') }}" class="btn btn-primary flex-grow-1">
@@ -429,20 +432,95 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
+    const initialRecentScans = {{ recent_scans|tojson|safe }} || [];
+    const recentScansBody = document.getElementById('recent-scans-body');
+    const popButton = document.getElementById('popularity-start-btn');
+    const popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
+
     // Cache previous state to avoid unnecessary DOM updates
     let previousScanStates = {};
     let previousProgress = {};
+    let lastRenderedRecentScans = JSON.stringify(initialRecentScans);
+
+    function renderRecentScans(scans) {
+        if (!recentScansBody) return;
+        if (!scans || scans.length === 0) {
+            recentScansBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
+            return;
+        }
+
+        const rows = scans.map(scan => {
+            const artistUrl = `/artist/${encodeURIComponent(scan.artist)}`;
+            const albumUrl = `/artist/${encodeURIComponent(scan.artist)}/album/${encodeURIComponent(scan.album)}`;
+            let badge = `<span class="badge bg-secondary">${scan.scan_type}</span>`;
+            if (scan.scan_type === 'navidrome') {
+                badge = '<span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>';
+            } else if (scan.scan_type === 'popularity') {
+                badge = '<span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>';
+            } else if (scan.scan_type === 'beets') {
+                badge = '<span class="badge bg-info text-dark"><i class="bi bi-disc"></i> Beets</span>';
+            }
+
+            return `
+                <tr class="d-flex flex-column d-md-table-row">
+                    <td data-label="Artist" class="d-flex justify-content-between d-md-table-cell">
+                        <span class="d-md-none text-muted fw-bold">Artist</span>
+                        <a href="${artistUrl}">${scan.artist}</a>
+                    </td>
+                    <td data-label="Album" class="d-flex justify-content-between d-md-table-cell">
+                        <span class="d-md-none text-muted fw-bold">Album</span>
+                        <a href="${albumUrl}">${scan.album}</a>
+                    </td>
+                    <td data-label="Type" class="d-flex justify-content-between d-md-table-cell">
+                        <span class="d-md-none text-muted fw-bold">Type</span>
+                        ${badge}
+                    </td>
+                    <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
+                        <span class="d-md-none text-muted fw-bold">Scanned</span>
+                        ${scan.scan_timestamp}
+                    </td>
+                    <td class="d-flex justify-content-end d-md-table-cell">
+                        <a href="${albumUrl}" class="btn btn-sm btn-outline-primary">
+                            <i class="bi bi-arrow-right"></i>
+                        </a>
+                    </td>
+                </tr>`;
+        }).join('');
+
+        recentScansBody.innerHTML = rows;
+    }
+
+    function updateRecentScans() {
+        fetch('/api/recent-scans')
+            .then(response => response.json())
+            .then(data => {
+                const payload = data.scans || [];
+                const serialized = JSON.stringify(payload);
+                if (serialized !== lastRenderedRecentScans) {
+                    lastRenderedRecentScans = serialized;
+                    renderRecentScans(payload);
+                }
+            })
+            .catch(error => console.error('Error fetching recent scans:', error));
+    }
+
+    // Render initial recent scans
+    renderRecentScans(initialRecentScans);
     
     // Poll scan status
     function updateScanStatus() {
         fetch('/api/scan-status')
             .then(response => response.json())
             .then(data => {
+                let navRunning = false;
                 // Update badge and progress container visibility based on running status
                 document.querySelectorAll('.scan-badge').forEach(badge => {
                     const scanType = badge.getAttribute('data-scan-type');
                     const scanData = data[scanType];
                     const isRunning = scanData && scanData.running;
+                    if (scanType === 'navidrome_scan') {
+                        navRunning = Boolean(isRunning);
+                    }
                     
                     // Only update if state changed
                     if (previousScanStates[scanType] !== isRunning) {
@@ -450,19 +528,22 @@ document.addEventListener('DOMContentLoaded', function() {
                         
                         if (isRunning) {
                             badge.style.display = 'block';
-                            
-                            // Show progress container for this scan type
-                            const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
-                            if (progressContainer) progressContainer.style.display = 'block';
                         } else {
                             badge.style.display = 'none';
-                            
-                            // Hide progress container for this scan type
-                            const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
-                            if (progressContainer) progressContainer.style.display = 'none';
                         }
                     }
                 });
+
+                // Disable popularity start while Navidrome is running
+                if (popButton) {
+                    if (navRunning) {
+                        popButton.disabled = true;
+                        popButton.innerHTML = '<i class="bi bi-lock"></i> Waiting for Navidrome';
+                    } else {
+                        popButton.disabled = false;
+                        popButton.innerHTML = popButtonDefaultLabel;
+                    }
+                }
             })
             .catch(error => console.error('Error fetching scan status:', error));
     }
@@ -486,24 +567,33 @@ document.addEventListener('DOMContentLoaded', function() {
                         if (scanType) {
                             const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
                             if (progressContainer) {
-                                progressContainer.style.display = 'block';
                                 const progressText = progressContainer.querySelector('.scan-progress-text');
                                 if (progressText) {
                                     const errorMsg = data.error || `Failed with exit code ${data.exit_code}`;
                                     progressText.innerHTML = `<span class="text-danger">❌ Error: ${errorMsg}</span>`;
                                 }
-                                // Hide after 10 seconds
-                                setTimeout(() => {
-                                    progressContainer.style.display = 'none';
-                                }, 10000);
                             }
                         }
-                    } else {
-                        // No scans running and no errors - hide all progress containers
-                        document.querySelectorAll('.scan-progress-container').forEach(container => {
-                            container.style.display = 'none';
-                        });
+                        runningScans.clear();
+                        return;
                     }
+
+                    // Show idle state
+                    document.querySelectorAll('.scan-progress-container').forEach(container => {
+                        const progressBar = container.querySelector('.progress-bar');
+                        const progressText = container.querySelector('.scan-progress-text');
+                        const progressPercent = container.querySelector('.scan-progress-percent');
+                        if (progressBar) {
+                            progressBar.style.width = '0%';
+                            progressBar.setAttribute('aria-valuenow', 0);
+                        }
+                        if (progressPercent) {
+                            progressPercent.textContent = '0%';
+                        }
+                        if (progressText) {
+                            progressText.textContent = 'Idle';
+                        }
+                    });
                     runningScans.clear();
                     return;
                 }
@@ -547,18 +637,27 @@ document.addEventListener('DOMContentLoaded', function() {
                 let text = 'Processing...';
                 
                 // Calculate progress based on data fields
-                if (activeScanType === 'mp3_scan' && data.processed_files && data.total_files) {
-                    percent = Math.round((data.processed_files / data.total_files) * 100);
-                    text = `${data.processed_files}/${data.total_files} files`;
-                } else if (activeScanType === 'navidrome_scan' && data.scanned_albums && data.total_albums) {
-                    percent = Math.round((data.scanned_albums / data.total_albums) * 100);
-                    text = `${data.scanned_albums}/${data.total_albums} albums`;
+                if (activeScanType === 'mp3_scan' && data.total_files !== undefined) {
+                    const processed = data.processed_files || 0;
+                    const total = data.total_files || 0;
+                    percent = total ? Math.round((processed / total) * 100) : (data.percent_complete || 0);
+                    text = total ? `${processed}/${total} files` : 'Importing files';
+                    if (data.current_item) {
+                        text += ` · ${data.current_item}`;
+                    }
+                } else if (activeScanType === 'navidrome_scan' && (data.scanned_albums !== undefined || data.processed_artists !== undefined)) {
+                    const processedAlbums = data.scanned_albums || data.processed_artists || 0;
+                    const totalAlbums = data.total_albums || data.total_artists || 0;
+                    percent = totalAlbums ? Math.round((processedAlbums / totalAlbums) * 100) : (data.percent_complete || 0);
+                    text = totalAlbums ? `${processedAlbums}/${totalAlbums} ${data.scanned_albums !== undefined ? 'albums' : 'artists'}` : 'Syncing library';
                     if (data.current_artist) {
                         text += ` · ${data.current_artist}`;
                     }
-                } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan') && data.processed_artists && data.total_artists) {
-                    percent = Math.round((data.processed_artists / data.total_artists) * 100);
-                    text = `${data.processed_artists}/${data.total_artists} artists`;
+                } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan') && data.total_artists !== undefined) {
+                    const processedArtists = data.processed_artists || 0;
+                    const totalArtists = data.total_artists || 0;
+                    percent = totalArtists ? Math.round((processedArtists / totalArtists) * 100) : (data.percent_complete || 0);
+                    text = totalArtists ? `${processedArtists}/${totalArtists} artists` : 'Processing artists';
                 }
                 
                 // Only update DOM if values changed
@@ -627,6 +726,7 @@ document.addEventListener('DOMContentLoaded', function() {
         updateScanStatus();
         updateIndividualScanProgress();
         updateScanLogsAndProgress();
+        updateRecentScans();
     }
     
     // Initial update

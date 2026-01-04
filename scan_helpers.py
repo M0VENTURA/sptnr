@@ -6,6 +6,7 @@ import json
 import os
 import time
 from datetime import datetime
+from zoneinfo import ZoneInfo
 from start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
 from colorama import Fore, Style
 
@@ -30,6 +31,15 @@ RESET = Style.RESET_ALL
 # Configuration constants
 PROGRESS_UPDATE_INTERVAL = 10  # Update progress every N items
 API_RATE_LIMIT_DELAY = 0.1  # Delay between API calls to avoid rate limiting
+LOCAL_TZ = os.environ.get("TIMEZONE") or os.environ.get("TZ") or "UTC"
+
+
+def _now_local_iso() -> str:
+    """Return ISO timestamp in configured local timezone."""
+    try:
+        return datetime.now(ZoneInfo(LOCAL_TZ)).isoformat()
+    except Exception:
+        return datetime.now().isoformat()
 
 
 def save_navidrome_scan_progress(current_artist, current_album, scanned_albums, total_albums):
@@ -160,8 +170,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    "file_path": t.get("path", ""),
-                    "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S"),
+                    # Leave file_path unset for Navidrome; beets import owns the canonical path
+                    "file_path": None,
+                    "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
                     "spotify_id": None,
@@ -196,14 +207,6 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
-    finally:
-        # Mark scan as complete for this artist
-        try:
-            progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
-            with open(progress_file, 'w') as f:
-                json.dump({"is_running": False, "scan_type": "navidrome_scan"}, f)
-        except Exception as e:
-            logging.error(f"Failed to mark Navidrome scan as complete: {e}")
 
 
 def count_mp3_files(music_folder):

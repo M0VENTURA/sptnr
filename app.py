@@ -13,6 +13,9 @@ import subprocess
 import threading
 import time
 import logging
+import re
+import difflib
+import unicodedata
 from datetime import datetime
 import copy
 import json
@@ -1179,7 +1182,7 @@ def scan_mp3():
                     from beets_auto_import import BeetsAutoImporter
                     logging.info("Starting Beets auto-import scan in background")
                     importer = BeetsAutoImporter()
-                    importer.import_music()
+                    importer.import_and_capture()
                     _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Beets scan completed successfully")
                 except Exception as e:
@@ -1281,6 +1284,32 @@ def scan_singles():
     global scan_process_singles
     
     with scan_lock:
+        # Block singles until Navidrome sync finishes
+        nav_running = False
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                nav_thread = scan_process_navidrome.get('thread')
+                nav_running = nav_thread is not None and nav_thread.is_alive()
+            elif hasattr(scan_process_navidrome, 'is_alive'):
+                nav_running = scan_process_navidrome.is_alive()
+            elif hasattr(scan_process_navidrome, 'poll'):
+                nav_running = scan_process_navidrome.poll() is None
+
+        if not nav_running:
+            nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+            try:
+                with open(nav_progress_file, "r", encoding="utf-8") as f:
+                    nav_state = json.load(f)
+                    nav_running = bool(nav_state.get("is_running"))
+            except FileNotFoundError:
+                nav_running = False
+            except Exception:
+                nav_running = False
+
+        if nav_running:
+            flash("Please wait for Navidrome scan to finish before starting singles detection", "warning")
+            return redirect(url_for("dashboard"))
+
         if scan_process_singles and scan_process_singles.poll() is None:
             flash("Single detection scan is already running", "warning")
             return redirect(url_for("dashboard"))
@@ -1777,6 +1806,19 @@ def api_scan_status():
         })
 
 
+@app.route("/api/recent-scans")
+def api_recent_scans():
+    """Return latest album scan events for dashboard refresh."""
+    try:
+        limit = request.args.get("limit", 10, type=int)
+        from scan_history import get_recent_album_scans
+        scans = get_recent_album_scans(limit=limit)
+        return jsonify({"scans": scans})
+    except Exception as e:
+        logging.error(f"Error fetching recent scans: {e}")
+        return jsonify({"scans": [], "error": str(e)}), 500
+
+
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
@@ -2072,7 +2114,12 @@ def scan_navidrome():
                             nav_progress_file,
                             "navidrome_scan",
                             True,
-                            {"status": "running", "processed_artists": idx, "total_artists": total},
+                            {
+                                "status": "running",
+                                "processed_artists": idx,
+                                "total_artists": total,
+                                "current_artist": artist_name,
+                            },
                         )
                     _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
@@ -2855,16 +2902,37 @@ def slskd_status():
         active_downloads = []
         
         def extract_file(file_obj, username="Unknown"):
-            """Extract file info from various possible slskd response formats"""
+            """Extract file info from various possible slskd response formats."""
             if not isinstance(file_obj, dict):
                 return None
-            
-            filename = file_obj.get("filename") or file_obj.get("name") or "Unknown"
-            state = file_obj.get("state") or file_obj.get("status") or ""
-            bytes_transferred = file_obj.get("bytesTransferred") or file_obj.get("bytesReceived") or 0
-            size = file_obj.get("size") or 0
-            progress = (bytes_transferred / size * 100) if size > 0 else 0
-            
+
+            filename = file_obj.get("filename") or file_obj.get("name") or file_obj.get("fileName") or "Unknown"
+            state = file_obj.get("state") or file_obj.get("status") or file_obj.get("stateText") or ""
+
+            size = file_obj.get("size") or file_obj.get("totalBytes") or file_obj.get("fileSize") or 0
+            bytes_transferred = (
+                file_obj.get("bytesTransferred")
+                or file_obj.get("bytesReceived")
+                or file_obj.get("transferred")
+                or file_obj.get("receivedBytes")
+                or 0
+            )
+
+            progress_raw = file_obj.get("progress") or file_obj.get("percentComplete")
+            if progress_raw is not None:
+                progress = progress_raw * 100 if progress_raw <= 1 else progress_raw
+                if size and not bytes_transferred:
+                    bytes_transferred = int((progress / 100.0) * size)
+            else:
+                progress = (bytes_transferred / size * 100) if size > 0 else 0
+
+            speed = (
+                file_obj.get("averageSpeed")
+                or file_obj.get("speed")
+                or file_obj.get("downloadSpeed")
+                or 0
+            )
+
             logging.debug(f"extract_file: {username} -> {filename[:50]}, state={state}, progress={progress:.1f}%")
             
             return {
@@ -2874,8 +2942,8 @@ def slskd_status():
                 "progress": round(progress, 2),
                 "bytesTransferred": bytes_transferred,
                 "size": size,
-                "averageSpeed": file_obj.get("averageSpeed") or 0,
-                "remoteToken": file_obj.get("remoteToken") or ""
+                "averageSpeed": speed,
+                "remoteToken": file_obj.get("remoteToken") or file_obj.get("token") or ""
             }
         
         if isinstance(downloads_data, dict):
@@ -2915,6 +2983,22 @@ def slskd_status():
                 extracted = extract_file(file_obj, username)
                 if extracted:
                     active_downloads.append(extracted)
+
+        # Fallback: some slskd builds expose downloads via /api/v0/downloads
+        if not active_downloads:
+            try:
+                alt_url = f"{web_url}/api/v0/downloads"
+                logging.debug(f"slskd_status: Fallback fetch from {alt_url}")
+                alt_resp = req.get(alt_url, headers=headers, timeout=10)
+                if alt_resp.status_code == 200:
+                    alt_payload = alt_resp.json() or []
+                    for item in alt_payload if isinstance(alt_payload, list) else []:
+                        username = item.get("user") or item.get("username") or "Unknown"
+                        extracted = extract_file(item, username)
+                        if extracted:
+                            active_downloads.append(extracted)
+            except Exception as alt_error:
+                logging.debug(f"slskd_status fallback failed: {alt_error}")
         
         logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
         return jsonify({"downloads": active_downloads})
@@ -3188,61 +3272,114 @@ def api_playlist_import():
         if not spotify_tracks:
             return jsonify({"error": "Playlist is empty or could not be fetched"}), 400
         
-        # Match tracks to Navidrome database
+        # Match tracks to Navidrome database with normalization + fuzzy scoring
         matched_tracks = []
         missing_tracks = []
         
         conn = get_db()
         cursor = conn.cursor()
-        
-        for spotify_track in spotify_tracks:
-            title = spotify_track.get("title", "").lower().strip()
-            artist = spotify_track.get("artist", "").lower().strip()
-            
-            if not title or not artist:
-                continue
-            
-            # Try to find exact match first
+
+        def _normalize(text: str) -> str:
+            """Lowercase, strip accents, drop version/feat tags, collapse whitespace."""
+            if not text:
+                return ""
+            # Strip accents
+            text = unicodedata.normalize("NFKD", text)
+            text = "".join(c for c in text if not unicodedata.combining(c))
+            text = text.lower()
+            # Remove bracketed suffixes (versions, mixes, remasters)
+            text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
+            # Remove common suffix words
+            text = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", text)
+            # Drop 'feat/ft'
+            text = re.sub(r"(?i)\b(feat\.?|ft\.?)\b", " ", text)
+            # Keep alnum only
+            text = re.sub(r"[^a-z0-9]+", " ", text)
+            return " ".join(text.split())
+
+        def _similarity(a: str, b: str) -> float:
+            if not a or not b:
+                return 0.0
+            return difflib.SequenceMatcher(None, a, b).ratio()
+
+        def _find_best_match(track: dict) -> tuple[dict | None, float]:
+            raw_title = (track.get("title") or "").strip()
+            raw_artist = (track.get("artist") or "").strip()
+            raw_album = (track.get("album") or "").strip()
+
+            primary_artist = raw_artist.split(",")[0].strip()
+
+            norm_title = _normalize(raw_title)
+            norm_artist = _normalize(primary_artist)
+            norm_album = _normalize(raw_album)
+
+            if not norm_title or not norm_artist:
+                return None, 0.0
+
+            # Pull a candidate set using both raw and normalized tokens
+            title_like = f"%{raw_title.lower()}%" if raw_title else "%"
+            artist_like = f"%{primary_artist.lower()}%" if primary_artist else "%"
+
             cursor.execute("""
-                SELECT id, title, artist, album, stars FROM tracks
-                WHERE LOWER(title) = ? AND LOWER(artist) = ?
-                LIMIT 1
-            """, (title, artist))
-            
-            result = cursor.fetchone()
-            
-            if result:
+                SELECT id, title, artist, album, stars
+                FROM tracks
+                WHERE LOWER(title) LIKE ? OR LOWER(artist) LIKE ?
+                LIMIT 250
+            """, (title_like, artist_like))
+            candidates = cursor.fetchall() or []
+
+            # If no candidates, widen by first token of normalized title
+            if not candidates and norm_title:
+                seed = norm_title.split(" ")[0]
+                cursor.execute("""
+                    SELECT id, title, artist, album, stars
+                    FROM tracks
+                    WHERE LOWER(title) LIKE ?
+                    LIMIT 250
+                """, (f"%{seed}%",))
+                candidates = cursor.fetchall() or []
+
+            best_row = None
+            best_score = 0.0
+
+            for row in candidates:
+                cand_title = _normalize(row["title"])
+                cand_artist = _normalize(row["artist"])
+                cand_album = _normalize(row["album"])
+
+                title_score = _similarity(norm_title, cand_title)
+                artist_score = _similarity(norm_artist, cand_artist)
+                album_score = _similarity(norm_album, cand_album) if norm_album and cand_album else 0.0
+
+                combined = (0.6 * title_score) + (0.35 * artist_score) + (0.05 * album_score)
+
+                if combined > best_score:
+                    best_score = combined
+                    best_row = row
+
+            # Accept only reasonably confident matches
+            if best_row and best_score >= 0.72:
+                return best_row, round(best_score, 3)
+            return None, round(best_score, 3)
+
+        for spotify_track in spotify_tracks:
+            match_row, confidence = _find_best_match(spotify_track)
+            if match_row:
                 matched_tracks.append({
-                    "id": result[0],
-                    "title": result[1],
-                    "artist": result[2],
-                    "album": result[3],
-                    "stars": result[4]
+                    "id": match_row["id"],
+                    "title": match_row["title"],
+                    "artist": match_row["artist"],
+                    "album": match_row["album"],
+                    "stars": match_row["stars"],
+                    "confidence": confidence
                 })
             else:
-                # Try fuzzy match - require BOTH title AND artist to partially match
-                cursor.execute("""
-                    SELECT id, title, artist, album, stars FROM tracks
-                    WHERE LOWER(title) LIKE ? AND LOWER(artist) LIKE ?
-                    ORDER BY stars DESC
-                    LIMIT 1
-                """, (f"%{title}%", f"%{artist}%"))
-                
-                result = cursor.fetchone()
-                if result:
-                    matched_tracks.append({
-                        "id": result[0],
-                        "title": result[1],
-                        "artist": result[2],
-                        "album": result[3],
-                        "stars": result[4]
-                    })
-                else:
-                    missing_tracks.append({
-                        "title": spotify_track.get("title", ""),
-                        "artist": spotify_track.get("artist", ""),
-                        "album": spotify_track.get("album", "")
-                    })
+                missing_tracks.append({
+                    "title": spotify_track.get("title", ""),
+                    "artist": spotify_track.get("artist", ""),
+                    "album": spotify_track.get("album", ""),
+                    "best_score": confidence
+                })
         
         conn.close()
         

@@ -53,23 +53,31 @@ if not logger.handlers:
 logger.propagate = False
 
 # Database connection
-DB_PATH = "/database/sptnr.db"
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 BEETS_DB_PATH = "/config/beets/musiclibrary.db"
 CONFIG_PATH = "/config"
 MUSIC_PATH = "/music"
-MP3_PROGRESS_FILE = "/config/mp3_scan_progress.json"
+MP3_PROGRESS_FILE = os.environ.get("MP3_PROGRESS_FILE", str(Path(DB_PATH).parent / "mp3_scan_progress.json"))
 
 
-def save_beets_progress(processed: int, total: int):
+def save_beets_progress(processed: int, total: int, *, status: str = "running", is_running: bool = True, current: Optional[str] = None):
     """Save beets import progress to JSON file for dashboard polling."""
     try:
         progress_data = {
-            "is_running": True,
-            "scan_type": "beets_import",
-            "processed": processed,
-            "total": total,
-            "percent_complete": int((processed / total * 100)) if total > 0 else 0
+            "is_running": is_running,
+            "scan_type": "mp3_scan",
+            "status": status,
+            "processed_files": processed,
+            "total_files": total,
+            "percent_complete": int((processed / total * 100)) if total > 0 else 0,
         }
+
+        if current:
+            progress_data["current_item"] = current
+
+        if not is_running:
+            progress_data["completed_at"] = datetime.now().isoformat()
+
         with open(MP3_PROGRESS_FILE, 'w') as f:
             json.dump(progress_data, f)
     except Exception as e:
@@ -266,17 +274,24 @@ class BeetsAutoImporter:
             """)
             
             beets_tracks = beets_cursor.fetchall()
-            logger.info(f"Found {len(beets_tracks)} tracks in beets database")
+            total_beets = len(beets_tracks)
+            logger.info(f"Found {total_beets} tracks in beets database")
+
+            # Mark progress start for the dashboard
+            save_beets_progress(0, total_beets, status="running", is_running=True)
             
             updated_count = 0
+            processed_tracks = 0
             current_album = None
             album_tracks = 0
             
             for idx, track in enumerate(beets_tracks, 1):
+                processed_tracks = idx
+
                 # Progress reporting every 50 tracks
                 if idx % 50 == 0:
-                    save_beets_progress(idx, len(beets_tracks))
-                    logger.info(f"Beets sync progress: {idx}/{len(beets_tracks)}")
+                    save_beets_progress(idx, total_beets, status="running", is_running=True, current=track['album'])
+                    logger.info(f"Beets sync progress: {idx}/{total_beets}")
                 
                 # Track album changes for scan history logging
                 album_artist = track['album_artist_credit'] or track['albumartist']
@@ -335,12 +350,19 @@ class BeetsAutoImporter:
             
             sptnr_conn.commit()
             logger.info(f"Updated {updated_count} tracks with beets metadata")
+
+            # Mark completion for dashboard
+            save_beets_progress(total_beets, total_beets, status="complete", is_running=False)
             
             beets_conn.close()
             sptnr_conn.close()
             
         except Exception as e:
             logger.error(f"Failed to sync beets metadata: {e}")
+            try:
+                save_beets_progress(processed_tracks, total_beets if 'total_beets' in locals() else 0, status="error", is_running=False)
+            except Exception:
+                pass
     
     def _ensure_beets_columns(self, cursor):
         """Ensure sptnr database has beets metadata columns."""
@@ -383,12 +405,18 @@ class BeetsAutoImporter:
         logger.info(f"Beets config: {self.beets_config}")
         logger.info(f"Beets DB: {self.beets_db}")
 
+        total_files = 0
+        if self.music_path.exists():
+            total_files = sum(1 for _ in self.music_path.rglob('*.mp3'))
+        save_beets_progress(0, total_files, status="starting", is_running=True)
+
         try:
             process = self.run_import(artist_path)
         except Exception as e:
             logger.error(f"Failed to start beets import process: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            save_beets_progress(0, total_files, status="error", is_running=False)
             return False
 
         # Capture output in real-time
@@ -423,6 +451,7 @@ class BeetsAutoImporter:
 
         if process.returncode != 0:
             logger.error(f"Beets import failed with return code {process.returncode}")
+            save_beets_progress(0, total_files, status="error", is_running=False)
             return False
 
         # Save captured metadata
@@ -442,8 +471,11 @@ class BeetsAutoImporter:
             logger.error(f"Error syncing beets to sptnr: {e}")
             import traceback
             logger.error(traceback.format_exc())
+            save_beets_progress(total_files, total_files, status="error", is_running=False)
+            return False
 
         logger.info("Import complete!")
+        save_beets_progress(total_files, total_files, status="complete", is_running=False)
         return process.returncode == 0
 
 

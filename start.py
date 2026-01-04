@@ -443,6 +443,17 @@ def save_to_db(track_data, max_retries=3):
         logging.error("Failed to acquire database connection after retries")
         return
 
+    # Preserve existing file path if the incoming payload does not provide one (Navidrome import is metadata-only)
+    incoming_path = track_data.get("file_path")
+    if not incoming_path:
+        try:
+            cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_data["id"],))
+            row = cursor.fetchone()
+            if row and row[0]:
+                track_data["file_path"] = row[0]
+        except Exception:
+            pass
+
     # Prepare multi-value fields
     genres             = ",".join(track_data.get("genres", []))
     navidrome_genres   = ",".join(track_data.get("navidrome_genres", []))

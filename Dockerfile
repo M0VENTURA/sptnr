@@ -1,12 +1,17 @@
 FROM python:3.11-slim
 
-# System deps + vim (unchanged)
-RUN apt-get update && apt-get install -y \
+ENV DEBIAN_FRONTEND=noninteractive
+ENV TZ=Australia/Melbourne
+
+# System deps + tzdata + vim
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    tzdata \
     build-essential \
     libssl-dev \
     libffi-dev \
     python3-dev \
     vim \
+    && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app

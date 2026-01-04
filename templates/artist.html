@@ -195,6 +195,7 @@
             <tr>
               <th style="width: 120px;">Art</th>
               <th>Album</th>
+              <th class="text-center">Year</th>
               <th class="text-center">Tracks</th>
               <th class="text-center">Avg ★</th>
               <th class="text-center">Singles</th>
@@ -217,6 +218,10 @@
                   <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
                     {{ album.album }}
                   </a>
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+                  {{ album.album_year or '—' }}
                 </td>
                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                   <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
