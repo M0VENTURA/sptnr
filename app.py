@@ -1475,10 +1475,9 @@ def logs():
     log_files = {
         "main": LOG_PATH,
         "webui": os.path.join(config_dir, "webui.log"),
-        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
-        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "beets": os.path.join(config_dir, "beets_import.log"),
+        "navidrome": os.path.join(config_dir, "app.log"),
         "popularity": os.path.join(config_dir, "popularity.log"),
-        "singles": os.path.join(config_dir, "singledetection.log"),
         "downloads": os.path.join(config_dir, "downloads.log"),
     }
     return render_template("logs.html", log_path=LOG_PATH, log_files=log_files)
@@ -1492,10 +1491,9 @@ def logs_stream():
     log_files = {
         "main": LOG_PATH,
         "webui": os.path.join(config_dir, "webui.log"),
-        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
-        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "beets": os.path.join(config_dir, "beets_import.log"),
+        "navidrome": os.path.join(config_dir, "app.log"),
         "popularity": os.path.join(config_dir, "popularity.log"),
-        "singles": os.path.join(config_dir, "singledetection.log"),
         "downloads": os.path.join(config_dir, "downloads.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
@@ -1526,10 +1524,9 @@ def logs_view():
     log_files = {
         "main": LOG_PATH,
         "webui": os.path.join(config_dir, "webui.log"),
-        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
-        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "beets": os.path.join(config_dir, "beets_import.log"),
+        "navidrome": os.path.join(config_dir, "app.log"),
         "popularity": os.path.join(config_dir, "popularity.log"),
-        "singles": os.path.join(config_dir, "singledetection.log"),
         "downloads": os.path.join(config_dir, "downloads.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
