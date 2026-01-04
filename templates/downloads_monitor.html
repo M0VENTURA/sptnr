@@ -140,16 +140,20 @@
 <script>
 let autoRefreshInterval = null;
 
-// Auto-refresh every 3 seconds
+// Auto-refresh every 3 seconds for qBit, 2 seconds for Soulseek (more interactive)
 function startAutoRefresh() {
   if (autoRefreshInterval) {
     clearInterval(autoRefreshInterval);
   }
   
   autoRefreshInterval = setInterval(() => {
-    if (typeof refreshQbit !== 'undefined') refreshQbit();
-    if (typeof refreshSlskd !== 'undefined') refreshSlskd();
-  }, 3000);
+    if (typeof refreshQbit !== 'undefined') {
+      refreshQbit();
+    }
+    if (typeof refreshSlskd !== 'undefined') {
+      refreshSlskd();
+    }
+  }, 2000);
 }
 
 // Stop auto-refresh when leaving page
@@ -284,9 +288,16 @@ function refreshQbit() {
 
 {% if slskd_enabled %}
 <script>
+let slskdRefreshInterval = null;
+
 function refreshSlskd() {
   fetch('/api/slskd/status')
-    .then(response => response.json())
+    .then(response => {
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}`);
+      }
+      return response.json();
+    })
     .then(data => {
       document.getElementById('slskdLoading').style.display = 'none';
       
@@ -311,66 +322,8 @@ function refreshSlskd() {
       document.getElementById('slskdEmpty').style.display = 'none';
       document.getElementById('slskdTable').style.display = 'block';
       
-      const tbody = document.getElementById('slskdTableBody');
-      tbody.innerHTML = '';
-      
-      downloads.forEach(download => {
-        const row = document.createElement('tr');
-        
-        // State badge color
-        let stateClass = 'bg-secondary';
-        const state = download.state.toLowerCase();
-        if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
-        else if (state.includes('completed')) stateClass = 'bg-success';
-        else if (state.includes('queued')) stateClass = 'bg-warning';
-        else if (state.includes('error') || state.includes('failed')) stateClass = 'bg-danger';
-        
-        // Calculate remaining bytes
-        const remainingBytes = download.size - download.bytesTransferred;
-        const eta = download.averageSpeed > 0 ? Math.floor(remainingBytes / download.averageSpeed) : 0;
-        
-        row.innerHTML = `
-          <td>
-            <strong>${escapeHtml(download.username)}</strong>
-          </td>
-          <td>
-            <div class="text-truncate" style="max-width: 400px;" title="${escapeHtml(download.filename)}">
-              ${escapeHtml(download.filename)}
-            </div>
-            <small class="text-muted">
-              ${formatBytes(download.bytesTransferred)} / ${formatBytes(download.size)}
-              ${eta > 0 ? ` · ETA: ${formatETA(eta)}` : ''}
-            </small>
-          </td>
-          <td class="text-center">
-            <span class="badge ${stateClass}">${escapeHtml(download.state)}</span>
-          </td>
-          <td class="text-center">
-            <div class="progress" style="height: 20px; min-width: 100px;">
-              <div class="progress-bar ${download.progress >= 100 ? 'bg-success' : 'bg-primary'}" 
-                   role="progressbar" 
-                   style="width: ${download.progress}%"
-                   aria-valuenow="${download.progress}" 
-                   aria-valuemin="0" 
-                   aria-valuemax="100">
-                ${download.progress.toFixed(1)}%
-              </div>
-            </div>
-          </td>
-          <td class="text-center">${formatBytes(download.size)}</td>
-          <td class="text-center">
-            ${download.averageSpeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(download.averageSpeed)}/s</span>` : '—'}
-          </td>
-          <td class="text-center">
-            <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', '${escapeHtml(download.remoteToken || '')}')" 
-                    title="Cancel download">
-              <i class="bi bi-x-circle"></i>
-            </button>
-          </td>
-        `;
-        
-        tbody.appendChild(row);
-      });
+      // Use diffing to update table without flickering
+      updateSlskdTable(downloads);
     })
     .catch(error => {
       document.getElementById('slskdLoading').style.display = 'none';
@@ -379,8 +332,100 @@ function refreshSlskd() {
     });
 }
 
+function updateSlskdTable(downloads) {
+  const tbody = document.getElementById('slskdTableBody');
+  const existingRows = new Map();
+  
+  // Map existing rows by key (username + filename)
+  tbody.querySelectorAll('tr').forEach(row => {
+    const key = row.getAttribute('data-download-key');
+    if (key) {
+      existingRows.set(key, row);
+    }
+  });
+  
+  // Update or create rows
+  downloads.forEach((download, idx) => {
+    const key = `${download.username}|${download.filename}`;
+    const row = existingRows.get(key) || document.createElement('tr');
+    
+    // Set key for future lookups
+    row.setAttribute('data-download-key', key);
+    
+    // State badge color
+    let stateClass = 'bg-secondary';
+    const state = download.state.toLowerCase();
+    if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
+    else if (state.includes('completed')) stateClass = 'bg-success';
+    else if (state.includes('queued')) stateClass = 'bg-warning';
+    else if (state.includes('error') || state.includes('failed')) stateClass = 'bg-danger';
+    
+    // Calculate remaining bytes
+    const remainingBytes = download.size - download.bytesTransferred;
+    const eta = download.averageSpeed > 0 ? Math.floor(remainingBytes / download.averageSpeed) : 0;
+    
+    row.innerHTML = `
+      <td>
+        <strong>${escapeHtml(download.username)}</strong>
+      </td>
+      <td>
+        <div class="text-truncate" style="max-width: 400px;" title="${escapeHtml(download.filename)}">
+          ${escapeHtml(download.filename)}
+        </div>
+        <small class="text-muted">
+          ${formatBytes(download.bytesTransferred)} / ${formatBytes(download.size)}
+          ${eta > 0 ? ` · ETA: ${formatETA(eta)}` : ''}
+        </small>
+      </td>
+      <td class="text-center">
+        <span class="badge ${stateClass}">${escapeHtml(download.state)}</span>
+      </td>
+      <td class="text-center">
+        <div class="progress" style="height: 20px; min-width: 100px;">
+          <div class="progress-bar ${download.progress >= 100 ? 'bg-success' : 'bg-primary'}" 
+               role="progressbar" 
+               style="width: ${download.progress}%"
+               aria-valuenow="${download.progress}" 
+               aria-valuemin="0" 
+               aria-valuemax="100">
+            ${download.progress.toFixed(1)}%
+          </div>
+        </div>
+      </td>
+      <td class="text-center">${formatBytes(download.size)}</td>
+      <td class="text-center">
+        ${download.averageSpeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(download.averageSpeed)}/s</span>` : '—'}
+      </td>
+      <td class="text-center">
+        <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', '${escapeHtml(download.remoteToken || '')}')" 
+                title="Cancel download">
+          <i class="bi bi-x-circle"></i>
+        </button>
+      </td>
+    `;
+    
+    if (!existingRows.has(key)) {
+      tbody.appendChild(row);
+    }
+  });
+  
+  // Remove rows that are no longer in the list
+  const activeKeys = new Set(downloads.map(d => `${d.username}|${d.filename}`));
+  existingRows.forEach((row, key) => {
+    if (!activeKeys.has(key)) {
+      // Fade out and remove completed/failed downloads
+      row.style.opacity = '0.5';
+      setTimeout(() => row.remove(), 500);
+    }
+  });
+}
+
 function cancelSlskdDownload(username, filename, token) {
   if (!confirm(`Cancel download of "${filename}" from ${username}?`)) return;
+  
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
   
   fetch('/api/slskd/cancel', {
     method: 'POST',
@@ -396,15 +441,29 @@ function cancelSlskdDownload(username, filename, token) {
   .then(response => response.json())
   .then(data => {
     if (data.success) {
-      alert('✅ Download cancelled');
-      refreshSlskd();
+      // Refresh immediately
+      setTimeout(() => refreshSlskd(), 500);
     } else {
       alert('❌ Error: ' + (data.error || 'Failed to cancel download'));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-x-circle"></i>';
     }
   })
   .catch(error => {
     alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-x-circle"></i>';
   });
+}
+
+// Control refresh rate
+function setSlskdRefreshRate(interval) {
+  if (slskdRefreshInterval) {
+    clearInterval(slskdRefreshInterval);
+  }
+  if (interval > 0) {
+    slskdRefreshInterval = setInterval(refreshSlskd, interval);
+  }
 }
 </script>
 {% endif %}
