@@ -2918,6 +2918,305 @@ def slskd_download_single():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/musicbrainz/search", methods=["POST"])
+def api_musicbrainz_search():
+    """Search MusicBrainz for releases"""
+    query = request.json.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "Query parameter required"}), 400
+    
+    try:
+        headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+        
+        # Search for release groups
+        url = "https://musicbrainz.org/ws/2/release-group"
+        params = {
+            "fmt": "json",
+            "limit": 50,
+            "query": query
+        }
+        
+        resp = requests.get(url, headers=headers, params=params, timeout=10)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        releases = []
+        for rg in data.get("release-groups", []) or []:
+            rg_id = rg.get("id", "")
+            primary_type = rg.get("primary-type", "")
+            artist_credit = rg.get("artist-credit", [])
+            artist_name = artist_credit[0].get("name", "Unknown") if artist_credit else "Unknown"
+            
+            # Determine category
+            category = primary_type
+            if primary_type.lower() == "ep":
+                category = "EP"
+            elif primary_type.lower() == "single":
+                category = "Single"
+            elif primary_type.lower() == "album":
+                category = "Album"
+            
+            releases.append({
+                "id": rg_id,
+                "title": rg.get("title", ""),
+                "artist": artist_name,
+                "artist-credit": artist_credit,
+                "primary_type": primary_type,
+                "first_release_date": rg.get("first-release-date", ""),
+                "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
+                "category": category
+            })
+        
+        return jsonify({"releases": releases, "total": len(releases)})
+        
+    except requests.exceptions.Timeout:
+        return jsonify({"error": "MusicBrainz request timed out"}), 504
+    except Exception as e:
+        logging.error(f"[MB_SEARCH] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/download", methods=["POST"])
+def api_musicbrainz_download():
+    """Initiate a managed download from MusicBrainz release"""
+    data = request.json or {}
+    release_id = data.get("release_id", "").strip()
+    release_title = data.get("release_title", "").strip()
+    artist = data.get("artist", "").strip()
+    method = data.get("method", "").strip().lower()
+    
+    if not all([release_id, release_title, artist, method]):
+        return jsonify({"error": "Missing required parameters"}), 400
+    
+    if method not in ["slskd", "qbittorrent"]:
+        return jsonify({"error": "Invalid method. Use 'slskd' or 'qbittorrent'"}), 400
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Create search query
+        download_query = f"{artist} {release_title}"
+        
+        # Insert into managed_downloads table
+        cursor.execute("""
+            INSERT INTO managed_downloads 
+            (release_id, release_title, artist, method, status, download_query, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'queued', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, (release_id, release_title, artist, method, download_query))
+        
+        tracking_id = cursor.lastrowid
+        conn.commit()
+        
+        # Immediately initiate the download based on method
+        if method == "slskd":
+            _initiate_slskd_download(tracking_id, download_query, cursor, conn)
+        elif method == "qbittorrent":
+            _initiate_qbit_download(tracking_id, download_query, cursor, conn)
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "tracking_id": tracking_id,
+            "message": f"Download queued for {release_title}"
+        })
+        
+    except Exception as e:
+        logging.error(f"[MB_DOWNLOAD] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+def _initiate_slskd_download(tracking_id, query, cursor, conn):
+    """Helper to initiate a Soulseek download"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        slskd_config = cfg.get("slskd", {})
+        
+        if not slskd_config.get("enabled"):
+            cursor.execute("""
+                UPDATE managed_downloads 
+                SET status = 'error', error_message = 'Soulseek not enabled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (tracking_id,))
+            conn.commit()
+            return
+        
+        web_url = slskd_config.get("web_url", "http://localhost:5030")
+        api_key = slskd_config.get("api_key", "")
+        
+        client = SlskdClient(web_url, api_key, enabled=True)
+        search_id = client.search(query)
+        
+        if search_id:
+            cursor.execute("""
+                UPDATE managed_downloads 
+                SET status = 'searching', external_id = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (search_id, tracking_id))
+            conn.commit()
+        else:
+            cursor.execute("""
+                UPDATE managed_downloads 
+                SET status = 'error', error_message = 'Failed to start search', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (tracking_id,))
+            conn.commit()
+            
+    except Exception as e:
+        logging.error(f"[SLSKD_INIT] Error for tracking {tracking_id}: {e}")
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (str(e), tracking_id))
+        conn.commit()
+
+
+def _initiate_qbit_download(tracking_id, query, cursor, conn):
+    """Helper to initiate a qBittorrent download"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        qbit_config = cfg.get("qbittorrent", {})
+        
+        if not qbit_config.get("enabled"):
+            cursor.execute("""
+                UPDATE managed_downloads 
+                SET status = 'error', error_message = 'qBittorrent not enabled', updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (tracking_id,))
+            conn.commit()
+            return
+        
+        # Update status to searching
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'searching', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (tracking_id,))
+        conn.commit()
+        
+        # Note: qBittorrent search would need to be implemented here
+        # For now, just mark as pending manual action
+        
+    except Exception as e:
+        logging.error(f"[QBIT_INIT] Error for tracking {tracking_id}: {e}")
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (str(e), tracking_id))
+        conn.commit()
+
+
+@app.route("/api/musicbrainz/downloads", methods=["GET"])
+def api_musicbrainz_downloads():
+    """Get all managed downloads"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, release_id, release_title, artist, method, status, 
+                   external_id, error_message, created_at, updated_at, completed_at
+            FROM managed_downloads
+            WHERE status != 'removed'
+            ORDER BY created_at DESC
+            LIMIT 100
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        downloads = []
+        for row in rows:
+            downloads.append({
+                "id": row[0],
+                "release_id": row[1],
+                "release_title": row[2],
+                "artist": row[3],
+                "method": row[4],
+                "status": row[5],
+                "external_id": row[6],
+                "error_message": row[7],
+                "created_at": row[8],
+                "updated_at": row[9],
+                "completed_at": row[10]
+            })
+        
+        return jsonify({"downloads": downloads})
+        
+    except Exception as e:
+        logging.error(f"[MB_DOWNLOADS] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/download/<int:download_id>/retry", methods=["POST"])
+def api_musicbrainz_retry(download_id):
+    """Retry a failed download"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT release_id, release_title, artist, method, download_query
+            FROM managed_downloads
+            WHERE id = ?
+        """, (download_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Download not found"}), 404
+        
+        _, _, _, method, download_query = row
+        
+        # Reset status to queued and clear error
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'queued', error_message = NULL, external_id = NULL, updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (download_id,))
+        conn.commit()
+        
+        # Reinitiate download
+        if method == "slskd":
+            _initiate_slskd_download(download_id, download_query, cursor, conn)
+        elif method == "qbittorrent":
+            _initiate_qbit_download(download_id, download_query, cursor, conn)
+        
+        conn.close()
+        
+        return jsonify({"success": True, "message": "Download retry initiated"})
+        
+    except Exception as e:
+        logging.error(f"[MB_RETRY] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/download/<int:download_id>", methods=["DELETE"])
+def api_musicbrainz_remove(download_id):
+    """Remove a download from the list"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE managed_downloads 
+            SET status = 'removed', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (download_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True})
+        
+    except Exception as e:
+        logging.error(f"[MB_REMOVE] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/qbittorrent/search", methods=["POST"])
 def qbit_search():
     """Proxy endpoint for qBittorrent search API"""

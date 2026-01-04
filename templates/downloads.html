@@ -23,6 +23,11 @@
         <i class="bi bi-music-note-list"></i> Soulseek
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="mbTab" data-bs-toggle="tab" data-bs-target="#mbContent" type="button" role="tab">
+        <i class="bi bi-disc"></i> MusicBrainz
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
@@ -254,6 +259,92 @@
   </div>
     </div>
     <!-- End Soulseek Tab -->
+
+    <!-- MusicBrainz Tab -->
+    <div class="tab-pane fade" id="mbContent" role="tabpanel">
+      <div class="row g-4 mb-4">
+        <!-- MusicBrainz Search -->
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-disc"></i> MusicBrainz Release Search
+              </h5>
+            </div>
+            <div class="card-body">
+              <p class="text-muted small mb-3">
+                Search for releases on MusicBrainz and download them via Soulseek or qBittorrent
+              </p>
+              <div class="mb-3">
+                <div class="input-group">
+                  <input type="text" class="form-control" id="mbSearchInput" placeholder="Search artist or release..." onkeypress="if(event.key==='Enter') performMbSearch()">
+                  <button class="btn btn-info" onclick="performMbSearch()">
+                    <i class="bi bi-search"></i> Search
+                  </button>
+                </div>
+              </div>
+              
+              <div id="mbLoading" class="text-center py-4" style="display: none;">
+                <div class="spinner-border text-info" role="status">
+                  <span class="visually-hidden">Searching...</span>
+                </div>
+                <p class="mt-2">Searching MusicBrainz...</p>
+              </div>
+              
+              <div id="mbResults"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- MusicBrainz Managed Downloads -->
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-list-check"></i> Managed Downloads
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-info" id="mbDownloadCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-info" onclick="refreshMbDownloads()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div id="mbDownloadsLoading" class="text-center py-4">
+            <div class="spinner-border text-info" role="status">
+              <span class="visually-hidden">Loading...</span>
+            </div>
+            <p class="mt-2">Loading downloads...</p>
+          </div>
+          <div id="mbDownloadsError" class="alert alert-danger" style="display:none"></div>
+          <div id="mbDownloadsResults" style="display:none">
+            <div id="mbDownloadsEmpty" class="alert alert-info" style="display:none">
+              <i class="bi bi-info-circle"></i> No active downloads. Search for releases above to get started.
+            </div>
+            <div id="mbDownloadsTable" style="display:none">
+              <div class="table-responsive">
+                <table class="table table-hover mb-0">
+                  <thead>
+                    <tr>
+                      <th>Release</th>
+                      <th>Artist</th>
+                      <th class="text-center">Method</th>
+                      <th class="text-center">Status</th>
+                      <th class="text-center">Added</th>
+                      <th class="text-center">Actions</th>
+                    </tr>
+                  </thead>
+                  <tbody id="mbDownloadsTableBody"></tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End MusicBrainz Tab -->
+
   </div>
   <!-- End tab-content -->
 </div>
@@ -1394,5 +1485,279 @@ window.addEventListener('beforeunload', () => {
     padding: 0.4rem;
 }
 </style>
+
+<script>
+// ===== MusicBrainz Search & Download Management =====
+
+let mbDownloadRefreshInterval = null;
+
+function performMbSearch() {
+    const query = document.getElementById('mbSearchInput').value.trim();
+    if (!query) return;
+    
+    document.getElementById('mbLoading').style.display = 'block';
+    document.getElementById('mbResults').innerHTML = '';
+    
+    fetch('/api/musicbrainz/search', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ query: query })
+    })
+    .then(response => response.json())
+    .then(data => {
+        document.getElementById('mbLoading').style.display = 'none';
+        
+        if (data.error) {
+            document.getElementById('mbResults').innerHTML = `
+                <div class="alert alert-danger">
+                    <i class="bi bi-exclamation-triangle"></i> ${data.error}
+                </div>
+            `;
+            return;
+        }
+        
+        const releases = data.releases || [];
+        
+        if (releases.length === 0) {
+            document.getElementById('mbResults').innerHTML = `
+                <div class="alert alert-info">
+                    <i class="bi bi-info-circle"></i> No releases found for "${query}"
+                </div>
+            `;
+            return;
+        }
+        
+        let html = '<div class="list-group">';
+        releases.forEach((release, index) => {
+            const coverArt = release.cover_art_url || 'https://via.placeholder.com/100x100?text=No+Art';
+            const releaseDate = release.first_release_date || 'Unknown';
+            const category = release.category || release.primary_type || 'Release';
+            const artist = release.artist || release['artist-credit']?.[0]?.name || 'Unknown Artist';
+            
+            html += `
+                <div class="list-group-item">
+                    <div class="d-flex gap-3 align-items-start">
+                        <img src="${coverArt}" class="rounded" style="width: 80px; height: 80px; object-fit: cover;" alt="${release.title}">
+                        <div class="flex-grow-1">
+                            <h6 class="mb-1">${release.title}</h6>
+                            <p class="mb-1 text-muted small">${artist}</p>
+                            <div class="d-flex gap-2 align-items-center mb-2">
+                                <span class="badge bg-secondary">${category}</span>
+                                <span class="text-muted small">${releaseDate}</span>
+                            </div>
+                        </div>
+                        <div class="btn-group" role="group">
+                            <button class="btn btn-sm btn-success" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'slskd')" title="Download via Soulseek">
+                                <i class="bi bi-music-note-list"></i> Soulseek
+                            </button>
+                            <button class="btn btn-sm btn-primary" onclick="downloadMbRelease('${release.id}', '${escapeHtml(release.title)}', '${escapeHtml(artist)}', 'qbittorrent')" title="Download via qBittorrent">
+                                <i class="bi bi-cloud-download"></i> qBittorrent
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            `;
+        });
+        html += '</div>';
+        
+        document.getElementById('mbResults').innerHTML = html;
+    })
+    .catch(error => {
+        document.getElementById('mbLoading').style.display = 'none';
+        document.getElementById('mbResults').innerHTML = `
+            <div class="alert alert-danger">
+                <i class="bi bi-exclamation-triangle"></i> Error: ${error.message}
+            </div>
+        `;
+    });
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+function downloadMbRelease(releaseId, releaseTitle, artist, method) {
+    if (!confirm(`Download "${releaseTitle}" by ${artist} via ${method}?`)) {
+        return;
+    }
+    
+    fetch('/api/musicbrainz/download', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            release_id: releaseId,
+            release_title: releaseTitle,
+            artist: artist,
+            method: method
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            alert('Error: ' + data.error);
+        } else {
+            alert(`Download queued: ${releaseTitle}\nTracking ID: ${data.tracking_id || 'N/A'}`);
+            // Refresh downloads list
+            setTimeout(refreshMbDownloads, 1000);
+        }
+    })
+    .catch(error => {
+        alert('Error initiating download: ' + error.message);
+    });
+}
+
+function refreshMbDownloads() {
+    const loadingEl = document.getElementById('mbDownloadsLoading');
+    const errorEl = document.getElementById('mbDownloadsError');
+    const resultsEl = document.getElementById('mbDownloadsResults');
+    const emptyEl = document.getElementById('mbDownloadsEmpty');
+    const tableEl = document.getElementById('mbDownloadsTable');
+    const tableBody = document.getElementById('mbDownloadsTableBody');
+    const countBadge = document.getElementById('mbDownloadCount');
+    
+    loadingEl.style.display = 'block';
+    errorEl.style.display = 'none';
+    resultsEl.style.display = 'none';
+    
+    fetch('/api/musicbrainz/downloads')
+    .then(response => response.json())
+    .then(data => {
+        loadingEl.style.display = 'none';
+        resultsEl.style.display = 'block';
+        
+        if (data.error) {
+            errorEl.textContent = data.error;
+            errorEl.style.display = 'block';
+            return;
+        }
+        
+        const downloads = data.downloads || [];
+        
+        if (downloads.length === 0) {
+            emptyEl.style.display = 'block';
+            tableEl.style.display = 'none';
+            countBadge.style.display = 'none';
+            return;
+        }
+        
+        emptyEl.style.display = 'none';
+        tableEl.style.display = 'block';
+        countBadge.textContent = downloads.length;
+        countBadge.style.display = 'inline-block';
+        
+        let html = '';
+        downloads.forEach(dl => {
+            const statusBadge = getStatusBadge(dl.status);
+            const canRetry = ['failed', 'error', 'timeout'].includes(dl.status.toLowerCase());
+            const canRemove = ['completed', 'failed', 'error', 'cancelled'].includes(dl.status.toLowerCase());
+            
+            html += `
+                <tr>
+                    <td><strong>${dl.release_title}</strong></td>
+                    <td>${dl.artist}</td>
+                    <td class="text-center">
+                        <span class="badge ${dl.method === 'slskd' ? 'bg-success' : 'bg-primary'}">
+                            ${dl.method === 'slskd' ? 'Soulseek' : 'qBittorrent'}
+                        </span>
+                    </td>
+                    <td class="text-center">${statusBadge}</td>
+                    <td class="text-center text-muted small">${formatTimestamp(dl.created_at)}</td>
+                    <td class="text-center">
+                        <div class="btn-group btn-group-sm">
+                            ${canRetry ? `<button class="btn btn-outline-warning" onclick="retryMbDownload('${dl.id}')" title="Retry"><i class="bi bi-arrow-clockwise"></i></button>` : ''}
+                            ${canRemove ? `<button class="btn btn-outline-danger" onclick="removeMbDownload('${dl.id}')" title="Remove"><i class="bi bi-trash"></i></button>` : ''}
+                        </div>
+                    </td>
+                </tr>
+            `;
+        });
+        
+        tableBody.innerHTML = html;
+    })
+    .catch(error => {
+        loadingEl.style.display = 'none';
+        errorEl.textContent = 'Error loading downloads: ' + error.message;
+        errorEl.style.display = 'block';
+    });
+}
+
+function getStatusBadge(status) {
+    const s = status.toLowerCase();
+    if (s === 'completed') return '<span class="badge bg-success"><i class="bi bi-check-circle"></i> Completed</span>';
+    if (s === 'downloading' || s === 'in_progress') return '<span class="badge bg-info"><i class="bi bi-download"></i> Downloading</span>';
+    if (s === 'queued' || s === 'pending') return '<span class="badge bg-secondary"><i class="bi bi-clock"></i> Queued</span>';
+    if (s === 'failed' || s === 'error') return '<span class="badge bg-danger"><i class="bi bi-x-circle"></i> Failed</span>';
+    if (s === 'searching') return '<span class="badge bg-warning"><i class="bi bi-search"></i> Searching</span>';
+    return `<span class="badge bg-secondary">${status}</span>`;
+}
+
+function formatTimestamp(timestamp) {
+    if (!timestamp) return 'N/A';
+    const date = new Date(timestamp);
+    return date.toLocaleString();
+}
+
+function retryMbDownload(downloadId) {
+    if (!confirm('Retry this download?')) return;
+    
+    fetch(`/api/musicbrainz/download/${downloadId}/retry`, {
+        method: 'POST'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            alert('Download retry initiated');
+            refreshMbDownloads();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        alert('Error retrying download: ' + error.message);
+    });
+}
+
+function removeMbDownload(downloadId) {
+    if (!confirm('Remove this download from the list?')) return;
+    
+    fetch(`/api/musicbrainz/download/${downloadId}`, {
+        method: 'DELETE'
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.success) {
+            refreshMbDownloads();
+        } else {
+            alert('Error: ' + (data.error || 'Unknown error'));
+        }
+    })
+    .catch(error => {
+        alert('Error removing download: ' + error.message);
+    });
+}
+
+// Auto-refresh downloads when MB tab is active
+document.addEventListener('DOMContentLoaded', function() {
+    const mbTab = document.getElementById('mbTab');
+    if (mbTab) {
+        mbTab.addEventListener('shown.bs.tab', function() {
+            refreshMbDownloads();
+            // Start auto-refresh every 5 seconds
+            if (mbDownloadRefreshInterval) clearInterval(mbDownloadRefreshInterval);
+            mbDownloadRefreshInterval = setInterval(refreshMbDownloads, 5000);
+        });
+        
+        mbTab.addEventListener('hidden.bs.tab', function() {
+            // Stop auto-refresh when leaving tab
+            if (mbDownloadRefreshInterval) {
+                clearInterval(mbDownloadRefreshInterval);
+                mbDownloadRefreshInterval = null;
+            }
+        });
+    }
+});
+</script>
 
 {% endblock %}

@@ -150,6 +150,24 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure managed_downloads table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS managed_downloads (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            release_id TEXT NOT NULL,
+            release_title TEXT NOT NULL,
+            artist TEXT NOT NULL,
+            method TEXT NOT NULL,
+            status TEXT DEFAULT 'queued',
+            download_query TEXT,
+            external_id TEXT,
+            error_message TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        );
+    """)
+
     # ✅ Create indexes for faster lookups
     indexes = [
         ("idx_artist_stats_name", "artist_stats(artist_name)"),
@@ -165,7 +183,9 @@ def update_schema(db_path):
         ("idx_scan_history_timestamp", "scan_history(scan_timestamp DESC)"),
         ("idx_scan_history_type", "scan_history(scan_type)"),
         ("idx_missing_releases_artist", "missing_releases(artist)"),
-        ("idx_missing_releases_checked", "missing_releases(last_checked DESC)")
+        ("idx_missing_releases_checked", "missing_releases(last_checked DESC)"),
+        ("idx_managed_downloads_status", "managed_downloads(status)"),
+        ("idx_managed_downloads_created", "managed_downloads(created_at DESC)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
