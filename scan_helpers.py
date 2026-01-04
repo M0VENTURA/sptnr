@@ -50,16 +50,33 @@ def save_navidrome_scan_progress(current_artist, current_album, scanned_albums, 
 def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False):
     """Scan a single artist from Navidrome and persist tracks to DB."""
     try:
-        # Prefetch cached track IDs for this artist
+        # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
         existing_album_tracks: dict[str, set[str]] = {}
+        albums_needing_reimport: set[str] = set()  # Track albums with missing fields
+        
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("SELECT album, id FROM tracks WHERE artist = ?", (artist_name,))
-            for alb_name, tid in cursor.fetchall():
+            
+            # Critical fields that should be imported from Navidrome
+            critical_fields = ['duration', 'track_number', 'year', 'file_path']
+            
+            # Get existing tracks and check for missing fields
+            cursor.execute(f"SELECT album, id, {', '.join(critical_fields)} FROM tracks WHERE artist = ?", (artist_name,))
+            for row in cursor.fetchall():
+                alb_name = row[0]
+                tid = row[1]
                 existing_track_ids.add(tid)
                 existing_album_tracks.setdefault(alb_name, set()).add(tid)
+                
+                # Check if any critical field is missing (NULL or empty)
+                field_values = row[2:]
+                if any(val is None or val == '' or val == 0 for val in field_values):
+                    albums_needing_reimport.add(alb_name)
+                    if verbose:
+                        logging.info(f"Album '{alb_name}' flagged for re-import due to missing fields")
+            
             conn.close()
         except Exception as e:
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
@@ -86,10 +103,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 tracks = []
 
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
-            if not force and tracks and len(cached_ids_for_album) >= len(tracks):
+            
+            # Skip album only if it's already cached AND doesn't need re-import due to missing fields
+            album_needs_reimport = album_name in albums_needing_reimport
+            if not force and not album_needs_reimport and tracks and len(cached_ids_for_album) >= len(tracks):
                 if verbose:
                     print(f"   Skipping cached album: {album_name}")
                 continue
+            
+            if album_needs_reimport and verbose:
+                print(f"   Re-importing album with missing fields: {album_name}")
 
             # Track the number of tracks actually processed for this album
             album_tracks_processed = 0
