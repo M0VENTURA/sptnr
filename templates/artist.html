@@ -12,7 +12,7 @@
     </ol>
   </nav>
 
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+  {% if qbit_config.enabled %}
     <div class="flex-grow-1">
       <h1 class="h2 mb-2">
         <i class="bi bi-person-music"></i> {{ artist_name }}
@@ -185,6 +185,44 @@
   </div>
 
   <!-- Albums Table -->
+  <div class="card mb-4" id="missingReleasesSection">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-flag"></i> Missing Releases
+      </h5>
+      <span id="missingReleasesStatus" class="text-muted small">Click Missing to scan MusicBrainz and populate this list.</span>
+    </div>
+    <div class="card-body">
+      <div class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">Albums</h6>
+          <span class="badge bg-secondary" id="missingAlbumsCount">0</span>
+        </div>
+        <div class="row g-3" id="missingAlbumsGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+      <div class="mb-4">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">EPs</h6>
+          <span class="badge bg-secondary" id="missingEpsCount">0</span>
+        </div>
+        <div class="row g-3" id="missingEpsGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+      <div>
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <h6 class="mb-0">Singles</h6>
+          <span class="badge bg-secondary" id="missingSinglesCount">0</span>
+        </div>
+        <div class="row g-3" id="missingSinglesGrid">
+          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   {% if albums and albums|length > 0 %}
     <div class="card">
       <div class="card-header">
@@ -274,22 +312,6 @@
   {% endif %}
 </div>
 
-<!-- Missing Releases Modal -->
-<div class="modal fade" id="missingReleasesModal" tabindex="-1" aria-labelledby="missingReleasesLabel" aria-hidden="true">
-  <div class="modal-dialog modal-lg">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="missingReleasesLabel"><i class="bi bi-flag"></i> Missing Releases</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-      </div>
-      <div class="modal-body">
-        <div id="missingReleasesStatus" class="text-muted mb-3">Checking MusicBrainz...</div>
-        <div id="missingReleasesList" style="max-height: 400px; overflow-y: auto;"></div>
-      </div>
-    </div>
-  </div>
-</div>
-
 <!-- qBittorrent Search Modal -->
 {% if qbit_config.enabled %}
 <div class="modal fade" id="qbitModal" tabindex="-1" aria-labelledby="qbitModalLabel" aria-hidden="true">
@@ -324,6 +346,7 @@
     </div>
   </div>
 </div>
+{% endif %}
 
 <script>
 function openQbitSearch(artistName) {
@@ -492,52 +515,119 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
+function setMissingGridLoading() {
+  ['missingAlbumsGrid', 'missingEpsGrid', 'missingSinglesGrid'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) {
+      el.innerHTML = '<div class="col-12 text-center text-muted"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
+    }
+  });
+}
+
+function renderMissingCategory(containerId, countId, items, emptyText) {
+  const container = document.getElementById(containerId);
+  const countBadge = document.getElementById(countId);
+  if (!container || !countBadge) return;
+
+  countBadge.textContent = items.length;
+
+  if (!items.length) {
+    container.innerHTML = `<div class="col-12 text-muted small">${emptyText}</div>`;
+    return;
+  }
+
+  const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect width%3D%2280%22 height%3D%2280%22 fill%3D%22%232a2a2a%22/%3E%3Ctext x%3D%2250%25%22 y%3D%2250%25%22 dy%3D%22.3em%22 text-anchor%3D%22middle%22 fill%3D%22%23666%22 font-size%3D%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';
+
+  container.innerHTML = items.map(item => {
+    const year = (item.first_release_date || '').slice(0, 4);
+    const art = item.cover_art_url || fallbackArt;
+    const typeLabel = item.primary_type || item.category || 'Release';
+    return `
+      <div class="col-12 col-md-6 col-lg-4 col-xl-3">
+        <div class="missing-release-card h-100">
+          <div class="d-flex gap-3">
+            <div class="missing-release-art">
+              <img src="${escapeHtml(art)}" alt="${escapeHtml(item.title || 'Release art')}" onerror="this.onerror=null;this.src='${fallbackArt}';">
+            </div>
+            <div class="flex-grow-1">
+              <div class="fw-semibold">${escapeHtml(item.title || 'Unknown')}</div>
+              <div class="text-muted small">${escapeHtml(typeLabel)}${year ? ' · ' + escapeHtml(year) : ''}</div>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join('');
+}
+
 function checkMissingReleases(artistName) {
   const statusEl = document.getElementById('missingReleasesStatus');
-  const listEl = document.getElementById('missingReleasesList');
-  statusEl.textContent = 'Checking MusicBrainz for missing releases...';
-  listEl.innerHTML = '';
+  const section = document.getElementById('missingReleasesSection');
+  if (section) {
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+
+  if (statusEl) {
+    statusEl.textContent = 'Checking MusicBrainz for missing releases...';
+  }
+
+  setMissingGridLoading();
 
   fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
     .then(r => r.json())
     .then(data => {
       if (data.error) {
-        statusEl.textContent = 'Error: ' + data.error;
+        if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+        renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', [], 'Unable to load missing albums');
+        renderMissingCategory('missingEpsGrid', 'missingEpsCount', [], 'Unable to load missing EPs');
+        renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', [], 'Unable to load missing singles');
         return;
       }
 
       const missing = data.missing || [];
-      if (missing.length === 0) {
-        statusEl.textContent = 'All MusicBrainz releases are present in your library.';
-        return;
+      if (statusEl) {
+        statusEl.textContent = missing.length ? `${missing.length} missing release(s) found.` : 'All MusicBrainz releases are present in your library.';
       }
 
-      statusEl.textContent = `${missing.length} missing release(s) found.`;
-      listEl.innerHTML = missing.map(item => {
-        const year = (item.first_release_date || '').slice(0, 4);
-        return `
-          <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-            <div>
-              <div class="fw-semibold">${escapeHtml(item.title)}</div>
-              <div class="text-muted small">${escapeHtml(item.primary_type || 'Release')}${year ? ' · ' + year : ''}</div>
-            </div>
-            <span class="badge bg-warning text-dark">Missing</span>
-          </div>
-        `;
-      }).join('');
+      const grouped = { Album: [], EP: [], Single: [] };
+      missing.forEach(item => {
+        const category = item.category || item.primary_type || 'Album';
+        if (category.toLowerCase() === 'ep') grouped.EP.push(item);
+        else if (category.toLowerCase() === 'single') grouped.Single.push(item);
+        else grouped.Album.push(item);
+      });
+
+      renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', grouped.Album, 'No missing albums');
+      renderMissingCategory('missingEpsGrid', 'missingEpsCount', grouped.EP, 'No missing EPs');
+      renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', grouped.Single, 'No missing singles');
     })
     .catch(err => {
-      statusEl.textContent = 'Error: ' + err.message;
+      if (statusEl) statusEl.textContent = 'Error: ' + err.message;
+      renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', [], 'Unable to load missing albums');
+      renderMissingCategory('missingEpsGrid', 'missingEpsCount', [], 'Unable to load missing EPs');
+      renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', [], 'Unable to load missing singles');
     });
-
-  const modal = new bootstrap.Modal(document.getElementById('missingReleasesModal'));
-  modal.show();
 }
 </script>
-{% endif %}
-
 <style>
 /* Dark theme improvements for artist page */
+
+.missing-release-card {
+  background-color: var(--primary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.missing-release-art img {
+  width: 80px;
+  height: 80px;
+  border-radius: 0.35rem;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+  background-color: #2a2a2a;
+}
 
 /* Fix outline buttons visibility on dark theme */
 .btn-outline-primary {

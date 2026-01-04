@@ -17,6 +17,8 @@ import re
 import difflib
 import unicodedata
 import requests
+import hashlib
+import secrets
 from datetime import datetime
 import copy
 import json
@@ -737,7 +739,7 @@ def artist_detail(name):
             FROM tracks
             WHERE artist = ?
             GROUP BY album
-            ORDER BY album_year DESC, album COLLATE NOCASE
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
@@ -819,18 +821,22 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
     releases: list[dict] = []
     try:
-        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep)'
+        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
         url = "https://musicbrainz.org/ws/2/release-group"
         params = {"fmt": "json", "limit": limit, "query": query}
         resp = requests.get(url, headers=headers, params=params, timeout=10)
         resp.raise_for_status()
         data = resp.json()
         for rg in data.get("release-groups", []) or []:
+            rg_id = rg.get("id", "")
+            primary_type = rg.get("primary-type", "")
             releases.append({
+                "id": rg_id,
                 "title": rg.get("title", ""),
-                "primary_type": rg.get("primary-type", ""),
+                "primary_type": primary_type,
                 "first_release_date": rg.get("first-release-date", ""),
                 "secondary_types": rg.get("secondary-types", []),
+                "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
             })
     except requests.exceptions.Timeout:
         logging.debug(f"MusicBrainz timeout fetching releases for {artist_name}")
@@ -866,10 +872,21 @@ def api_artist_missing_releases():
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
         if "compilation" in secondary:
             continue
+        primary_type = (rg.get("primary_type") or "").lower()
+        category = "Album"
+        if primary_type == "ep":
+            category = "EP"
+        elif primary_type == "single" or "single" in secondary:
+            category = "Single"
+
         missing.append({
+            "id": rg.get("id", ""),
             "title": rg.get("title", ""),
             "primary_type": rg.get("primary_type", ""),
-            "first_release_date": rg.get("first_release_date", "")
+            "first_release_date": rg.get("first_release_date", ""),
+            "secondary_types": rg.get("secondary_types", []),
+            "cover_art_url": rg.get("cover_art_url", ""),
+            "category": category,
         })
 
     return jsonify({
@@ -3986,56 +4003,132 @@ if __name__ == "__main__":
     def api_playlist_search_songs():
         """Search for songs in library"""
         try:
-            data = request.get_json()
-            query = data.get("query", "").strip()
+            data = request.get_json() or {}
+            raw_query = (data.get("query") or "").strip()
+            artist = (data.get("artist") or "").strip()
+            title = (data.get("title") or "").strip()
+            album = (data.get("album") or "").strip()
+
+            # Build a combined query string so Navidrome search remains happy
+            search_terms = [t for t in [title, artist, album, raw_query] if t]
+            query = " ".join(search_terms).strip()
             
             if not query or len(query) < 2:
                 return jsonify({"error": "Query too short"}), 400
             
             cfg, _ = _read_yaml(CONFIG_PATH)
-            navidrome_config = cfg.get("navidrome", {})
-            base_url = navidrome_config.get("base_url", "http://localhost:4533")
-            user = navidrome_config.get("user", "admin")
-            password = navidrome_config.get("pass", "")
-            
+            nav_users = cfg.get("navidrome_users") or []
+            if not nav_users:
+                nav = cfg.get("navidrome", {}) or {}
+                if nav.get("base_url"):
+                    nav_users = [nav]
+
+            base_url = None
+            user = None
+            password = None
+            if nav_users:
+                nd = nav_users[0]
+                base_url = nd.get("base_url") or nd.get("url") or "http://localhost:4533"
+                user = nd.get("user") or nd.get("username") or "admin"
+                password = nd.get("pass") or nd.get("password") or ""
+            else:
+                base_url = "http://localhost:4533"
+                user = "admin"
+                password = ""
+
             import requests as req
-            
-            # Search using password directly (simpler than token auth for search)
-            search_response = req.get(
-                f"{base_url}/rest/search3.view",
-                params={
-                    "u": user, 
-                    "p": password, 
-                    "c": "sptnr", 
-                    "f": "json",
-                    "v": "1.16.0",
-                    "query": query,
-                    "songCount": 50
-                },
-                timeout=10
-            )
-            
-            response_data = search_response.json()
-            if response_data.get("subsonic-response", {}).get("status") != "ok":
-                error_msg = response_data.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
-                return jsonify({"error": f"Navidrome API error: {error_msg}"}), 500
-            
-            search_data = response_data.get("subsonic-response", {}).get("searchResult3", {})
-            songs = search_data.get("song", [])
-            
-            if not isinstance(songs, list):
-                songs = [songs] if songs else []
-            
+
+            # Build token auth if password available
+            params = {
+                "u": user,
+                "c": "sptnr",
+                "f": "json",
+                "v": "1.16.0",
+                "query": query,
+                "songCount": 50,
+            }
+
+            if password:
+                salt = secrets.token_hex(8)
+                token = hashlib.md5((password + salt).encode()).hexdigest()
+                params.update({"t": token, "s": salt})
+            else:
+                params["p"] = ""  # empty password to satisfy API
+
             results = []
-            for song in songs[:50]:
-                results.append({
-                    "id": song.get("id"),
-                    "title": song.get("title", "Unknown"),
-                    "artist": song.get("artist", "Unknown"),
-                    "album": song.get("album", "Unknown"),
-                    "duration": song.get("duration", 0)
-                })
-            
+
+            try:
+                search_response = req.get(
+                    f"{base_url.rstrip('/')}/rest/search3.view",
+                    params=params,
+                    timeout=10,
+                )
+
+                response_data = search_response.json()
+                if response_data.get("subsonic-response", {}).get("status") == "ok":
+                    search_data = response_data.get("subsonic-response", {}).get("searchResult3", {})
+                    songs = search_data.get("song", [])
+                    if not isinstance(songs, list):
+                        songs = [songs] if songs else []
+                    for song in songs[:50]:
+                        results.append({
+                            "id": song.get("id"),
+                            "title": song.get("title", "Unknown"),
+                            "artist": song.get("artist", "Unknown"),
+                            "album": song.get("album", "Unknown"),
+                            "duration": song.get("duration", 0)
+                        })
+            except Exception as nav_err:
+                logging.debug(f"Navidrome search failed, will fallback to local DB: {nav_err}")
+
+            # Fallback: search local sptnr DB if Navidrome returned nothing
+            if not results:
+                try:
+                    conn = get_db()
+                    cursor = conn.cursor()
+
+                    where_clauses = []
+                    params = []
+
+                    if title:
+                        where_clauses.append("LOWER(title) LIKE ?")
+                        params.append(f"%{title.lower()}%")
+                    if artist:
+                        where_clauses.append("LOWER(artist) LIKE ?")
+                        params.append(f"%{artist.lower()}%")
+                    if album:
+                        where_clauses.append("LOWER(album) LIKE ?")
+                        params.append(f"%{album.lower()}%")
+
+                    if not where_clauses:
+                        pattern = f"%{query.lower()}%"
+                        where_clauses.append("(LOWER(title) LIKE ? OR LOWER(artist) LIKE ? OR LOWER(album) LIKE ?)")
+                        params.extend([pattern, pattern, pattern])
+
+                    where_sql = " AND ".join(where_clauses)
+
+                    cursor.execute(
+                        f"""
+                        SELECT id, title, artist, album, duration
+                        FROM tracks
+                        WHERE {where_sql}
+                        ORDER BY stars DESC NULLS LAST, title COLLATE NOCASE
+                        LIMIT 50
+                        """,
+                        tuple(params),
+                    )
+                    for row in cursor.fetchall() or []:
+                        results.append({
+                            "id": row[0],
+                            "title": row[1],
+                            "artist": row[2],
+                            "album": row[3],
+                            "duration": row[4] or 0,
+                        })
+                    conn.close()
+                except Exception as db_err:
+                    logging.error(f"Local DB search failed: {db_err}")
+
             return jsonify({"songs": results}), 200
         except Exception as e:
             logging.error(f"Error searching songs: {e}", exc_info=True)

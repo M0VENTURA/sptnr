@@ -124,6 +124,7 @@
           </div>
         </div>
         <div class="card-body">
+          <p class="text-secondary small mb-3">Create Playlist uses the Navidrome API (no M3U export) and includes only the tracks shown below.</p>
           <div id="matchedTracksContainer" style="max-height: 500px; overflow-y: auto;">
             <!-- Matched tracks will be listed here -->
           </div>
@@ -214,14 +215,24 @@
 
         <!-- Search for Replacement -->
         <div class="mb-3">
-          <label for="replacementTrackSearch" class="form-label"><strong>Search Library for Replacement Track</strong></label>
-          <div class="input-group">
-            <input type="text" class="form-control" id="replacementTrackSearch" placeholder="Search by artist, track, or album..." onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
+          <label class="form-label"><strong>Search Library for Replacement Track</strong></label>
+          <div class="row g-2">
+            <div class="col-12 col-md-4">
+              <input type="text" class="form-control" id="replacementArtistInput" placeholder="Artist" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
+            </div>
+            <div class="col-12 col-md-4">
+              <input type="text" class="form-control" id="replacementTitleInput" placeholder="Title" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
+            </div>
+            <div class="col-12 col-md-4">
+              <input type="text" class="form-control" id="replacementAlbumInput" placeholder="Album (optional)" onkeypress="if(event.key==='Enter') searchForReplacementTrack();">
+            </div>
+          </div>
+          <div class="mt-2 d-flex justify-content-between align-items-center flex-wrap gap-2">
+            <small class="text-muted">Provide artist/title to narrow matches; album is optional.</small>
             <button class="btn btn-primary" type="button" onclick="searchForReplacementTrack()">
               <i class="bi bi-search"></i> Search
             </button>
           </div>
-          <small class="text-muted">Find a track from your library to replace the missing one</small>
         </div>
         
         <!-- Replacement Options Card -->
@@ -723,18 +734,24 @@
     document.getElementById('originalArtist').textContent = artist;
     document.getElementById('originalAlbum').textContent = album || 'Unknown Album';
     
-    // Pre-populate search with artist name for easier searching
-    document.getElementById('replacementTrackSearch').value = artist;
-    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center py-4">Enter a search query above to find replacement tracks from your library</p>';
+    // Pre-populate search fields for easier searching
+    document.getElementById('replacementArtistInput').value = artist || '';
+    document.getElementById('replacementTitleInput').value = title || '';
+    document.getElementById('replacementAlbumInput').value = album || '';
+    document.getElementById('replacementTrackSearchResults').innerHTML = '<p class="text-muted text-center py-4">Enter artist/title above to find replacement tracks from your library</p>';
     
     const modal = new bootstrap.Modal(document.getElementById('replaceTrackModal'));
     modal.show();
   }
   
   async function searchForReplacementTrack() {
-    const query = document.getElementById('replacementTrackSearch').value.trim();
-    if (!query) {
-      alert('Please enter a search query');
+    const artist = document.getElementById('replacementArtistInput').value.trim();
+    const title = document.getElementById('replacementTitleInput').value.trim();
+    const album = document.getElementById('replacementAlbumInput').value.trim();
+
+    const combined = [artist, title, album].filter(Boolean).join(' ').trim();
+    if (!combined) {
+      alert('Please provide at least one search field');
       return;
     }
     
@@ -742,12 +759,12 @@
     resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border spinner-border-sm"></span> Searching...</div>';
     
     try {
-      const response = await fetch('/api/search', {
+      const response = await fetch('/api/playlist/search-songs', {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json'
         },
-        body: JSON.stringify({ query: query })
+        body: JSON.stringify({ query: combined, artist, title, album })
       });
       
       if (!response.ok) {
@@ -757,16 +774,10 @@
       }
       
       const data = await response.json();
-      
-      if (!data.results || data.results.length === 0) {
-        resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
-        return;
-      }
-      
-      // Filter to tracks only
-      const tracks = data.results.filter(r => r.type === 'track');
-      
-      if (tracks.length === 0) {
+
+      const tracks = data.songs || [];
+
+      if (!tracks || tracks.length === 0) {
         resultsDiv.innerHTML = '<p class="text-muted text-center">No tracks found</p>';
         return;
       }
