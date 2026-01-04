@@ -231,12 +231,13 @@ plugins:
             logger.error(f"Failed to create beets config: {e}")
             return False
     
-    def auto_import_library(self, artist_path: str = None) -> dict:
+    def auto_import_library(self, artist_path: str = None, skip_existing: bool = False) -> dict:
         """
         Run auto-import on entire library or specific artist.
         
         Args:
             artist_path: Optional path to specific artist folder
+            skip_existing: If True, skip artists already in beets database
             
         Returns:
             Dict with import results
@@ -246,11 +247,12 @@ plugins:
         
         try:
             importer = BeetsAutoImporter(config_path=str(self.config_path))
-            success = importer.import_and_capture(artist_path=artist_path)
+            success = importer.import_and_capture(artist_path=artist_path, skip_existing=skip_existing)
             
             return {
                 "success": success,
-                "message": "Auto-import completed" if success else "Auto-import failed"
+                "message": "Auto-import completed" if success else "Auto-import failed",
+                "skip_existing_enabled": skip_existing
             }
         except Exception as e:
             logger.error(f"Auto-import failed: {e}")

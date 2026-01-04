@@ -166,12 +166,39 @@ class BeetsAutoImporter:
         
         logger.info(f"Created beets config at {self.beets_config}")
     
-    def run_import(self, artist_path: Optional[str] = None) -> subprocess.Popen:
+    def get_artists_in_beets(self) -> set:
+        """
+        Get set of artist names already in beets database.
+        
+        Returns:
+            Set of artist names
+        """
+        try:
+            beets_conn = sqlite3.connect(str(self.beets_db))
+            beets_cursor = beets_conn.cursor()
+            
+            beets_cursor.execute("""
+                SELECT DISTINCT items.artist 
+                FROM items
+                ORDER BY items.artist
+            """)
+            
+            artists = {row[0] for row in beets_cursor.fetchall() if row[0]}
+            beets_conn.close()
+            
+            logger.info(f"Found {len(artists)} artists in beets database")
+            return artists
+        except Exception as e:
+            logger.error(f"Failed to get artists from beets: {e}")
+            return set()
+
+    def run_import(self, artist_path: Optional[str] = None, skip_existing: bool = False) -> subprocess.Popen:
         """
         Run beets import with auto-tagging.
         
         Args:
             artist_path: Optional specific artist folder to import
+            skip_existing: If True, skip artists already in beets database
             
         Returns:
             Subprocess handle
@@ -193,7 +220,63 @@ class BeetsAutoImporter:
         # Ensure beets config is up-to-date
         self.ensure_beets_config()
         
-        import_path = Path(artist_path) if artist_path else self.music_path
+        # Determine import path
+        if artist_path:
+            import_path = Path(artist_path)
+        else:
+            import_path = self.music_path
+        
+        # Filter out existing artists if requested
+        if skip_existing and not artist_path:
+            logger.info("Skip-existing enabled: filtering out artists already in beets...")
+            existing_artists = self.get_artists_in_beets()
+            
+            if existing_artists:
+                # Get subdirectories in music_path (artist folders)
+                artist_folders = [d for d in import_path.iterdir() if d.is_dir()]
+                filtered_folders = [d for d in artist_folders if d.name not in existing_artists]
+                
+                skipped = len(artist_folders) - len(filtered_folders)
+                logger.info(f"Found {len(existing_artists)} existing artists")
+                logger.info(f"Skipping {skipped} artist(s) already in beets")
+                logger.info(f"Will import {len(filtered_folders)} new/updated artist folder(s)")
+                
+                # Create temporary list of folders to import
+                if not filtered_folders:
+                    logger.warning("All artists already in beets database. Nothing to import.")
+                    # Return a dummy process that does nothing
+                    process = subprocess.Popen(['echo', 'No new artists to import'], 
+                                              stdout=subprocess.PIPE, 
+                                              stderr=subprocess.STDOUT,
+                                              text=True)
+                    return process
+                
+                # Import only filtered folders one by one
+                for folder in filtered_folders:
+                    logger.info(f"Importing new artist: {folder.name}")
+                    cmd = [
+                        "beet", "import",
+                        "-A",  # Import without modifying files
+                        "-c", str(self.beets_config),  # Use our config
+                        "--library", str(self.beets_db),
+                        str(folder)
+                    ]
+                    logger.info(f"Running: {' '.join(cmd)}")
+                    
+                    # Run sequentially for new artists
+                    process = subprocess.Popen(
+                        cmd,
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        text=True,
+                        bufsize=1,
+                        universal_newlines=True
+                    )
+                    process.wait()
+                
+                # Return final process (won't be used much in this flow)
+                return process
+        
         logger.info(f"Import path: {import_path}")
         logger.info(f"Import path exists: {import_path.exists()}")
         if import_path.exists():
@@ -447,12 +530,13 @@ class BeetsAutoImporter:
                 except Exception as e:
                     logger.warning(f"Could not add column {col_name}: {e}")
     
-    def import_and_capture(self, artist_path: Optional[str] = None):
+    def import_and_capture(self, artist_path: Optional[str] = None, skip_existing: bool = False):
         """
         Run full import with live output capture and metadata sync.
         
         Args:
             artist_path: Optional specific artist folder to import
+            skip_existing: If True, skip artists already in beets database
         """
         self.ensure_beets_config()
         
@@ -461,6 +545,7 @@ class BeetsAutoImporter:
         logger.info(f"Config path: {self.config_path}")
         logger.info(f"Beets config: {self.beets_config}")
         logger.info(f"Beets DB: {self.beets_db}")
+        logger.info(f"Skip existing artists: {skip_existing}")
 
         total_files = 0
         if self.music_path.exists():
@@ -468,7 +553,7 @@ class BeetsAutoImporter:
         save_beets_progress(0, total_files, status="starting", is_running=True)
 
         try:
-            process = self.run_import(artist_path)
+            process = self.run_import(artist_path, skip_existing=skip_existing)
         except Exception as e:
             logger.error(f"Failed to start beets import process: {e}")
             import traceback

@@ -5138,7 +5138,8 @@ def beets_auto_import():
         # Run auto-import in background thread
         def run_auto_import():
             logging.info(f"Starting beets auto-import{' for ' + artist_path if artist_path else ' (full library)'}")
-            result = beets_client.auto_import_library(artist_path=artist_path)
+            skip_existing = data.get("skip_existing", False)
+            result = beets_client.auto_import_library(artist_path=artist_path, skip_existing=skip_existing)
             logging.info(f"Beets auto-import result: {result}")
         
         import_thread = threading.Thread(target=run_auto_import, daemon=True)
