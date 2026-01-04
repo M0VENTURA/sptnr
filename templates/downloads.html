@@ -28,6 +28,11 @@
         <i class="bi bi-disc"></i> MusicBrainz
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab">
+        <i class="bi bi-heart"></i> Last.fm Recommendations
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
@@ -344,6 +349,74 @@
       </div>
     </div>
     <!-- End MusicBrainz Tab -->
+
+    <!-- Last.fm Recommendations Tab -->
+    <div class="tab-pane fade" id="lastfmContent" role="tabpanel">
+      <div class="row g-4 mb-4">
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-heart"></i> Last.fm Recommendations
+              </h5>
+              <button class="btn btn-sm btn-outline-primary" onclick="loadLastfmRecommendations()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+              </button>
+            </div>
+            <div class="card-body">
+              <div id="lastfmLoading" class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Loading recommendations from Last.fm...</p>
+              </div>
+              
+              <div id="lastfmError" class="alert alert-warning" style="display: none;">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span id="lastfmErrorText">Unable to load recommendations. Make sure Last.fm is configured.</span>
+              </div>
+
+              <!-- Tabs for recommendation types -->
+              <ul class="nav nav-tabs mb-3" id="lastfmTabs" role="tablist" style="display: none;">
+                <li class="nav-item" role="presentation">
+                  <button class="nav-link active" id="lastfmArtistsTab" data-bs-toggle="tab" data-bs-target="#lastfmArtistsContent" type="button" role="tab">
+                    <i class="bi bi-person"></i> Artists
+                  </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                  <button class="nav-link" id="lastfmAlbumsTab" data-bs-toggle="tab" data-bs-target="#lastfmAlbumsContent" type="button" role="tab">
+                    <i class="bi bi-disc"></i> Albums
+                  </button>
+                </li>
+                <li class="nav-item" role="presentation">
+                  <button class="nav-link" id="lastfmTracksTab" data-bs-toggle="tab" data-bs-target="#lastfmTracksContent" type="button" role="tab">
+                    <i class="bi bi-music-note"></i> Tracks
+                  </button>
+                </li>
+              </ul>
+
+              <div class="tab-content" id="lastfmTabContent" style="display: none;">
+                <!-- Artists -->
+                <div class="tab-pane fade show active" id="lastfmArtistsContent" role="tabpanel">
+                  <div class="row g-3" id="lastfmArtistsGrid"></div>
+                </div>
+                
+                <!-- Albums -->
+                <div class="tab-pane fade" id="lastfmAlbumsContent" role="tabpanel">
+                  <div class="row g-3" id="lastfmAlbumsGrid"></div>
+                </div>
+                
+                <!-- Tracks -->
+                <div class="tab-pane fade" id="lastfmTracksContent" role="tabpanel">
+                  <div class="row g-3" id="lastfmTracksGrid"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Last.fm Recommendations Tab -->
 
   </div>
   <!-- End tab-content -->
@@ -1906,7 +1979,172 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+    
+    // Load Last.fm recommendations when tab is shown
+    const lastfmTab = document.getElementById('lastfmTab');
+    if (lastfmTab) {
+        lastfmTab.addEventListener('shown.bs.tab', function() {
+            loadLastfmRecommendations();
+        });
+    }
 });
+
+// Last.fm Recommendations Functions
+async function loadLastfmRecommendations() {
+  const loading = document.getElementById('lastfmLoading');
+  const error = document.getElementById('lastfmError');
+  const tabsContainer = document.getElementById('lastfmTabs');
+  const tabContent = document.getElementById('lastfmTabContent');
+  
+  loading.style.display = 'block';
+  error.style.display = 'none';
+  tabsContainer.style.display = 'none';
+  tabContent.style.display = 'none';
+  
+  try {
+    const response = await fetch('/api/lastfm/recommendations');
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load recommendations');
+    }
+    
+    const recommendations = data.recommendations || {};
+    
+    // Display artists
+    displayLastfmArtists(recommendations.artists || []);
+    
+    // Display albums
+    displayLastfmAlbums(recommendations.albums || []);
+    
+    // Display tracks
+    displayLastfmTracks(recommendations.tracks || []);
+    
+    loading.style.display = 'none';
+    tabsContainer.style.display = 'flex';
+    tabContent.style.display = 'block';
+    
+  } catch (err) {
+    loading.style.display = 'none';
+    error.style.display = 'block';
+    document.getElementById('lastfmErrorText').textContent = err.message || 'Unable to load recommendations';
+  }
+}
+
+function displayLastfmArtists(artists) {
+  const grid = document.getElementById('lastfmArtistsGrid');
+  grid.innerHTML = '';
+  
+  if (artists.length === 0) {
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No artist recommendations available.</div></div>';
+    return;
+  }
+  
+  artists.forEach(artist => {
+    const card = document.createElement('div');
+    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+    card.innerHTML = `
+      <div class="card h-100 recommendation-card">
+        ${artist.image ? `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-person" style="font-size: 3rem; color: white;"></i></div>`}
+        <div class="card-body d-flex flex-column">
+          <h6 class="card-title text-truncate">${escapeHtml(artist.name)}</h6>
+          <small class="text-muted mb-2">${artist.listeners ? `${parseInt(artist.listeners).toLocaleString()} listeners` : 'Artist'}</small>
+          <small class="text-muted text-truncate" title="${escapeHtml(artist.url)}">Playcount: ${artist.playcount || 0}</small>
+          <div class="mt-auto pt-2">
+            <button class="btn btn-sm btn-primary w-100" onclick="downloadArtist('${escapeHtml(artist.name)}')">
+              <i class="bi bi-download"></i> Download
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function displayLastfmAlbums(albums) {
+  const grid = document.getElementById('lastfmAlbumsGrid');
+  grid.innerHTML = '';
+  
+  if (albums.length === 0) {
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No album recommendations available.</div></div>';
+    return;
+  }
+  
+  albums.forEach(album => {
+    const card = document.createElement('div');
+    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+    card.innerHTML = `
+      <div class="card h-100 recommendation-card">
+        ${album.image ? `<img src="${escapeHtml(album.image)}" class="card-img-top" alt="${escapeHtml(album.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-disc" style="font-size: 3rem; color: white;"></i></div>`}
+        <div class="card-body d-flex flex-column">
+          <h6 class="card-title text-truncate">${escapeHtml(album.name)}</h6>
+          <small class="text-muted mb-2">${escapeHtml(album.artist || 'Unknown Artist')}</small>
+          <small class="text-muted text-truncate">Playcount: ${album.playcount || 0}</small>
+          <div class="mt-auto pt-2">
+            <button class="btn btn-sm btn-primary w-100" onclick="downloadAlbum('${escapeHtml(album.artist)}', '${escapeHtml(album.name)}')">
+              <i class="bi bi-download"></i> Download
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function displayLastfmTracks(tracks) {
+  const grid = document.getElementById('lastfmTracksGrid');
+  grid.innerHTML = '';
+  
+  if (tracks.length === 0) {
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No track recommendations available.</div></div>';
+    return;
+  }
+  
+  tracks.forEach(track => {
+    const card = document.createElement('div');
+    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+    card.innerHTML = `
+      <div class="card h-100 recommendation-card">
+        ${track.image ? `<img src="${escapeHtml(track.image)}" class="card-img-top" alt="${escapeHtml(track.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-music-note" style="font-size: 3rem; color: white;"></i></div>`}
+        <div class="card-body d-flex flex-column">
+          <h6 class="card-title text-truncate">${escapeHtml(track.name)}</h6>
+          <small class="text-muted mb-2">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+          <small class="text-muted text-truncate">Playcount: ${track.playcount || 0}</small>
+          <div class="mt-auto pt-2">
+            <button class="btn btn-sm btn-primary w-100" onclick="downloadTrack('${escapeHtml(track.artist)}', '${escapeHtml(track.name)}')">
+              <i class="bi bi-download"></i> Download
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+    grid.appendChild(card);
+  });
+}
+
+function downloadArtist(artist) {
+  // Trigger qBittorrent or Soulseek search for artist
+  document.getElementById('qbitSearchInput').value = artist;
+  performQbitSearch();
+}
+
+function downloadAlbum(artist, album) {
+  // Trigger Soulseek search for album
+  document.getElementById('slskdSearchInput').value = `${artist} ${album}`;
+  // Switch to Soulseek tab
+  document.getElementById('slskdTab').click();
+  setTimeout(() => performSlskdSearch(), 300);
+}
+
+function downloadTrack(artist, track) {
+  // Trigger Soulseek search for track
+  document.getElementById('slskdSearchInput').value = `${artist} ${track}`;
+  // Switch to Soulseek tab
+  document.getElementById('slskdTab').click();
+  setTimeout(() => performSlskdSearch(), 300);
+}
 </script>
 
 <!-- Modal for Soulseek search results -->

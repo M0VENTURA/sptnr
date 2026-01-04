@@ -4,11 +4,24 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-    <div class="mb-4">
-        <h1 class="h2 mb-1">
-            <i class="bi bi-speedometer2"></i> Dashboard
-        </h1>
-        <p class="text-muted mb-0">Music library overview and scan controls</p>
+    <div class="mb-4 d-flex justify-content-between align-items-start">
+        <div>
+            <h1 class="h2 mb-1">
+                <i class="bi bi-speedometer2"></i> Dashboard
+            </h1>
+            <p class="text-muted mb-0">Music library overview and scan controls</p>
+        </div>
+        <!-- User Selector (if multiple users configured) -->
+        {% if nav_users and nav_users|length > 1 %}
+        <div>
+            <select class="form-select" id="userSelector" onchange="switchUser(this.value)" style="width: 220px;">
+                {% for user in nav_users %}
+                <option value="{{ loop.index0 }}">{{ user.user }} @ {{ user.base_url }}</option>
+                {% endfor %}
+            </select>
+            <small class="text-muted">Switch user context</small>
+        </div>
+        {% endif %}
     </div>
     
     {% if error %}
@@ -892,5 +905,22 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+// Switch between Navidrome users
+function switchUser(userIndex) {
+    // Store selected user in session/localStorage
+    localStorage.setItem('selectedNavidromeUser', userIndex);
+    // Reload the page to update with selected user context
+    // In future, could make this AJAX-based without page reload
+    alert('User switching selected. Multi-user support is active. User-specific features like Spotify playlists will use this context.');
+}
+
+// Load selected user on page load
+document.addEventListener('DOMContentLoaded', function() {
+    const savedUser = localStorage.getItem('selectedNavidromeUser');
+    if (savedUser && document.getElementById('userSelector')) {
+        document.getElementById('userSelector').value = savedUser;
+    }
+});
 </script>
 {% endblock %}

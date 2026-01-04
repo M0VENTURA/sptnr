@@ -658,6 +658,13 @@ def dashboard():
         
         scan_running = web_ui_running or background_running
         
+        # Get Navidrome users from config
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        nav_users_list = cfg.get("navidrome_users", [])
+        if not nav_users_list and cfg.get("navidrome"):
+            # Single user mode - convert to list format for consistency
+            nav_users_list = [cfg.get("navidrome")]
+        
         return render_template("dashboard.html",
                              artist_count=artist_count,
                              album_count=album_count,
@@ -665,7 +672,8 @@ def dashboard():
                              five_star_count=five_star_count,
                              singles_count=singles_count,
                              recent_scans=recent_scans,
-                             scan_running=scan_running)
+                             scan_running=scan_running,
+                             nav_users=nav_users_list)
     except Exception as e:
         logging.error(f"Dashboard error: {e}")
         import traceback
@@ -679,6 +687,7 @@ def dashboard():
                              singles_count=0,
                              recent_scans=[],
                              scan_running=False,
+                             nav_users=[],
                              error=str(e))
 
 
@@ -4646,6 +4655,29 @@ def api_downloads_process_one():
             }), 400
     except Exception as e:
         return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/lastfm/recommendations", methods=["GET"])
+def api_lastfm_recommendations():
+    """Get Last.fm recommendations"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+        
+        if not lastfm_config.get("enabled"):
+            return jsonify({"error": "Last.fm not enabled"}), 400
+        
+        api_key = lastfm_config.get("api_key", "")
+        if not api_key:
+            return jsonify({"error": "Last.fm API key not configured"}), 400
+        
+        from api_clients.lastfm import get_lastfm_recommendations
+        recommendations = get_lastfm_recommendations(api_key)
+        
+        return jsonify({"recommendations": recommendations})
+    except Exception as e:
+        logging.error(f"Last.fm recommendations error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/downloads-manager")
