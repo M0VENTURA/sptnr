@@ -3199,10 +3199,10 @@ def api_playlist_import():
                     "stars": result[4]
                 })
             else:
-                # Try fuzzy match
+                # Try fuzzy match - require BOTH title AND artist to partially match
                 cursor.execute("""
                     SELECT id, title, artist, album, stars FROM tracks
-                    WHERE LOWER(title) LIKE ? OR LOWER(artist) LIKE ?
+                    WHERE LOWER(title) LIKE ? AND LOWER(artist) LIKE ?
                     ORDER BY stars DESC
                     LIMIT 1
                 """, (f"%{title}%", f"%{artist}%"))
@@ -3740,30 +3740,27 @@ if __name__ == "__main__":
             
             import requests as req
             
-            # Authenticate
-            auth_response = req.post(
-                f"{base_url}/rest/authenticate.view",
-                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
-                timeout=10
-            )
-            token = auth_response.json()["subsonic-response"]["token"]
-            
-            # Search
+            # Search using password directly (simpler than token auth for search)
             search_response = req.get(
                 f"{base_url}/rest/search3.view",
                 params={
                     "u": user, 
-                    "t": token, 
-                    "s": "salt", 
+                    "p": password, 
                     "c": "sptnr", 
                     "f": "json",
+                    "v": "1.16.0",
                     "query": query,
                     "songCount": 50
                 },
                 timeout=10
             )
             
-            search_data = search_response.json().get("subsonic-response", {}).get("searchResult3", {})
+            response_data = search_response.json()
+            if response_data.get("subsonic-response", {}).get("status") != "ok":
+                error_msg = response_data.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
+                return jsonify({"error": f"Navidrome API error: {error_msg}"}), 500
+            
+            search_data = response_data.get("subsonic-response", {}).get("searchResult3", {})
             songs = search_data.get("song", [])
             
             if not isinstance(songs, list):
