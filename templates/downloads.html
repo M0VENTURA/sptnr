@@ -1533,6 +1533,10 @@ function performMbSearch() {
             const releaseDate = release.first_release_date || 'Unknown';
             const category = release.category || release.primary_type || 'Release';
             const artist = release.artist || release['artist-credit']?.[0]?.name || 'Unknown Artist';
+            const source = release.source || 'musicbrainz';
+            const sourceBadge = source === 'local' 
+                ? '<span class="badge bg-success"><i class="bi bi-database"></i> Cached</span>'
+                : '<span class="badge bg-info"><i class="bi bi-cloud"></i> MusicBrainz</span>';
             
             html += `
                 <div class="list-group-item">
@@ -1543,6 +1547,7 @@ function performMbSearch() {
                             <p class="mb-1 text-muted small">${artist}</p>
                             <div class="d-flex gap-2 align-items-center mb-2">
                                 <span class="badge bg-secondary">${category}</span>
+                                ${sourceBadge}
                                 <span class="text-muted small">${releaseDate}</span>
                             </div>
                         </div>

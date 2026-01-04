@@ -2920,57 +2920,114 @@ def slskd_download_single():
 
 @app.route("/api/musicbrainz/search", methods=["POST"])
 def api_musicbrainz_search():
-    """Search MusicBrainz for releases"""
+    """Search MusicBrainz for releases + local cached missing releases"""
     query = request.json.get("query", "").strip()
     if not query:
         return jsonify({"error": "Query parameter required"}), 400
     
     try:
-        headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
-        
-        # Search for release groups
-        url = "https://musicbrainz.org/ws/2/release-group"
-        params = {
-            "fmt": "json",
-            "limit": 50,
-            "query": query
-        }
-        
-        resp = requests.get(url, headers=headers, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        
         releases = []
-        for rg in data.get("release-groups", []) or []:
-            rg_id = rg.get("id", "")
-            primary_type = rg.get("primary-type", "")
-            artist_credit = rg.get("artist-credit", [])
-            artist_name = artist_credit[0].get("name", "Unknown") if artist_credit else "Unknown"
+        seen_ids = set()  # Track IDs to avoid duplicates
+        
+        # First, search local database for matching artists with missing releases
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
             
-            # Determine category
-            category = primary_type
-            if primary_type.lower() == "ep":
-                category = "EP"
-            elif primary_type.lower() == "single":
-                category = "Single"
-            elif primary_type.lower() == "album":
-                category = "Album"
+            # Search for artists matching the query
+            query_pattern = f"%{query}%"
+            cursor.execute("""
+                SELECT DISTINCT artist, release_id, title, primary_type, first_release_date, cover_art_url, category
+                FROM missing_releases
+                WHERE artist LIKE ? OR title LIKE ?
+                ORDER BY artist, first_release_date DESC
+                LIMIT 50
+            """, (query_pattern, query_pattern))
             
-            releases.append({
-                "id": rg_id,
-                "title": rg.get("title", ""),
-                "artist": artist_name,
-                "artist-credit": artist_credit,
-                "primary_type": primary_type,
-                "first_release_date": rg.get("first-release-date", ""),
-                "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
-                "category": category
-            })
+            local_results = cursor.fetchall()
+            conn.close()
+            
+            # Add local results
+            for row in local_results:
+                artist, release_id, title, primary_type, first_release_date, cover_art_url, category = row
+                
+                # Create unique ID to check for duplicates
+                result_id = f"{artist}_{release_id}"
+                if result_id not in seen_ids:
+                    seen_ids.add(result_id)
+                    releases.append({
+                        "id": release_id,
+                        "title": title,
+                        "artist": artist,
+                        "artist-credit": [{"name": artist}],
+                        "primary_type": primary_type,
+                        "first_release_date": first_release_date,
+                        "cover_art_url": cover_art_url,
+                        "category": category,
+                        "source": "local"
+                    })
+        except Exception as e:
+            logging.warning(f"[MB_SEARCH] Error searching local database: {e}")
+        
+        # Then search MusicBrainz
+        try:
+            headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+            
+            # Search for release groups
+            url = "https://musicbrainz.org/ws/2/release-group"
+            params = {
+                "fmt": "json",
+                "limit": 50,
+                "query": query
+            }
+            
+            resp = requests.get(url, headers=headers, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            for rg in data.get("release-groups", []) or []:
+                rg_id = rg.get("id", "")
+                primary_type = rg.get("primary-type", "")
+                artist_credit = rg.get("artist-credit", [])
+                artist_name = artist_credit[0].get("name", "Unknown") if artist_credit else "Unknown"
+                
+                # Check if we already have this from local DB
+                result_id = f"{artist_name}_{rg_id}"
+                if result_id in seen_ids:
+                    continue
+                
+                seen_ids.add(result_id)
+                
+                # Determine category
+                category = primary_type
+                if primary_type.lower() == "ep":
+                    category = "EP"
+                elif primary_type.lower() == "single":
+                    category = "Single"
+                elif primary_type.lower() == "album":
+                    category = "Album"
+                
+                releases.append({
+                    "id": rg_id,
+                    "title": rg.get("title", ""),
+                    "artist": artist_name,
+                    "artist-credit": artist_credit,
+                    "primary_type": primary_type,
+                    "first_release_date": rg.get("first-release-date", ""),
+                    "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
+                    "category": category,
+                    "source": "musicbrainz"
+                })
+        except requests.exceptions.Timeout:
+            logging.warning("[MB_SEARCH] MusicBrainz request timed out")
+        except Exception as e:
+            logging.error(f"[MB_SEARCH] MusicBrainz search error: {e}")
+        
+        # Sort by artist and release date
+        releases.sort(key=lambda x: (x.get("artist", "").lower(), x.get("first_release_date", "")), reverse=True)
         
         return jsonify({"releases": releases, "total": len(releases)})
         
-    except requests.exceptions.Timeout:
-        return jsonify({"error": "MusicBrainz request timed out"}), 504
     except Exception as e:
         logging.error(f"[MB_SEARCH] Error: {e}")
         return jsonify({"error": str(e)}), 500
