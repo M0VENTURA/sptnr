@@ -24,10 +24,12 @@ import yaml
 
 try:
     from scan_history import log_album_scan
-except ImportError:
+except ImportError as e:
     # Fallback if scan_history module not available
+    logger = logging.getLogger(__name__)
+    logger.warning(f"scan_history module import failed: {e}, using fallback")
     def log_album_scan(*args, **kwargs):
-        pass
+        logger.warning(f"log_album_scan called but module not available: args={args}, kwargs={kwargs}")
 
 BEETS_LOG_PATH = os.environ.get("BEETS_LOG_PATH", "/config/beets_import.log")
 
@@ -337,8 +339,11 @@ class BeetsAutoImporter:
                 if current_album != (album_artist, track['album']):
                     # Log the previous album if we were processing one
                     if current_album is not None and album_tracks > 0:
-                        log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
-                        logger.info(f"Completed beets import for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+                        try:
+                            log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
+                            logger.info(f"Logged beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
+                        except Exception as e:
+                            logger.error(f"Failed to log album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
                     
                     current_album = (album_artist, track['album'])
                     album_tracks = 0
@@ -394,8 +399,11 @@ class BeetsAutoImporter:
             
             # Log the final album after the loop completes
             if current_album is not None and album_tracks > 0:
-                log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
-                logger.info(f"Completed beets import for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
+                try:
+                    log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
+                    logger.info(f"Logged final beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
+                except Exception as e:
+                    logger.error(f"Failed to log final album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
             
             sptnr_conn.commit()
             logger.info(f"Updated {updated_count} tracks with beets metadata")
