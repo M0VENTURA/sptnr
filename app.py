@@ -3097,161 +3097,83 @@ def slskd_status():
             return jsonify({"error": f"Failed to get transfers: {resp.status_code}"}), 500
         
         downloads_data = resp.json()
-        logging.debug(f"slskd_status: Raw response type: {type(downloads_data)}, content preview: {str(downloads_data)[:200]}")
+        logging.debug(f"slskd_status: Response is list: {isinstance(downloads_data, list)}, count: {len(downloads_data) if isinstance(downloads_data, list) else 'N/A'}")
         
-        # Format downloads - handle multiple possible slskd API formats
+        # Format downloads - slskd API returns array of UserResponse objects
+        # Structure: [{ "username": "...", "directories": [{ "directory": "...", "files": [...] }] }]
         active_downloads = []
         
-        def extract_file(file_obj, username="Unknown"):
-            """Extract file info from various possible slskd response formats."""
-            if not isinstance(file_obj, dict):
-                return None
-
-            # Log raw file_obj for debugging first occurrence
-            if not active_downloads:
-                logging.debug(f"extract_file debug: raw file_obj keys: {file_obj.keys() if isinstance(file_obj, dict) else 'N/A'}")
-                logging.debug(f"extract_file debug: {file_obj}")
-
-            # Some payloads wrap the file under a 'file' or 'download' key
-            if "file" in file_obj and isinstance(file_obj["file"], dict):
-                file_obj = {**file_obj, **file_obj.get("file", {})}
-            if "download" in file_obj and isinstance(file_obj["download"], dict):
-                file_obj = {**file_obj, **file_obj.get("download", {})}
-
-            filename = file_obj.get("filename") or file_obj.get("name") or file_obj.get("fileName") or "Unknown"
-            state_raw = file_obj.get("state") or file_obj.get("status") or file_obj.get("stateText") or ""
-
-            size = (
-                file_obj.get("size")
-                or file_obj.get("totalBytes")
-                or file_obj.get("fileSize")
-                or file_obj.get("bytesTotal")
-                or 0
-            )
-            size = int(size) if size else 0
-
-            bytes_transferred = (
-                file_obj.get("bytesTransferred")
-                or file_obj.get("bytesReceived")
-                or file_obj.get("transferred")
-                or file_obj.get("receivedBytes")
-                or 0
-            )
-            bytes_transferred = int(bytes_transferred) if bytes_transferred else 0
-
-            progress_raw = file_obj.get("progress") or file_obj.get("percentComplete")
-            if progress_raw is not None:
-                progress = progress_raw * 100 if progress_raw <= 1 else progress_raw
-                if size and not bytes_transferred:
-                    bytes_transferred = int((progress / 100.0) * size)
-            else:
-                progress = (bytes_transferred / size * 100) if size > 0 else 0
-
-            speed = (
-                file_obj.get("averageSpeed")
-                or file_obj.get("speed")
-                or file_obj.get("downloadSpeed")
-                or 0
-            )
-            try:
-                speed = int(speed)
-            except Exception:
-                pass
-
-            # Normalize state for UI highlighting
-            state = str(state_raw or "").strip()
-            state_lower = state.lower()
-            if not state:
-                if progress >= 100:
-                    state = "Completed"
-                elif speed > 0:
-                    state = "Downloading"
-                elif bytes_transferred > 0:
-                    state = "InProgress"
-                else:
-                    state = "Queued"
-            elif state_lower in ["inprogress", "in_progress"]:
-                state = "InProgress"
-            elif state_lower.startswith("done"):
-                state = "Completed"
-
-            logging.debug(f"extract_file: {username} -> {filename[:50]}, state={state}, progress={progress:.1f}%")
-            
-            return {
-                "username": username,
-                "filename": filename,
-                "state": state,
-                "progress": round(progress, 2),
-                "bytesTransferred": bytes_transferred,
-                "size": size,
-                "averageSpeed": speed,
-                "remoteToken": file_obj.get("remoteToken") or file_obj.get("token") or "",
-            }
-        
-        if isinstance(downloads_data, dict):
-            # Format 1: {username: {folderId: {files: []}}}
-            for username, folders_or_files in downloads_data.items():
-                logging.debug(f"Processing username: {username}, type: {type(folders_or_files)}")
-                if isinstance(folders_or_files, dict):
-                    for key, value in folders_or_files.items():
-                        logging.debug(f"  Processing key: {key}, type: {type(value)}")
-                        # Check if this is a folder structure or direct file
-                        if isinstance(value, dict) and "files" in value:
-                            # Folder structure: extract files
-                            files_list = value.get("files", [])
-                            logging.debug(f"    Found folder with {len(files_list)} files")
-                            for file_obj in files_list:
-                                extracted = extract_file(file_obj, username)
-                                if extracted:
-                                    active_downloads.append(extracted)
-                        elif isinstance(value, dict):
-                            # Try direct extraction (might be a file object)
-                            logging.debug(f"    Trying direct extraction of dict")
-                            extracted = extract_file(value, username)
-                            if extracted:
-                                active_downloads.append(extracted)
-                        elif isinstance(value, list):
-                            # Format 2: {username: [files]}
-                            logging.debug(f"    Found list with {len(value)} items")
-                            for file_obj in value:
-                                extracted = extract_file(file_obj, username)
-                                if extracted:
-                                    active_downloads.append(extracted)
-        elif isinstance(downloads_data, list):
-            # Format 3: [files] with username field or nested in 'items'
-            logging.debug(f"Processing list with {len(downloads_data)} items")
-            for file_obj in downloads_data:
-                if isinstance(file_obj, dict) and "items" in file_obj and isinstance(file_obj["items"], list):
-                    for item in file_obj["items"]:
-                        username = item.get("username", file_obj.get("username", "Unknown"))
-                        extracted = extract_file(item, username)
-                        if extracted:
-                            active_downloads.append(extracted)
+        if isinstance(downloads_data, list):
+            # Correct format: array of user objects with nested directories and files
+            for user_obj in downloads_data:
+                if not isinstance(user_obj, dict):
                     continue
-
-                username = file_obj.get("username", "Unknown")
-                extracted = extract_file(file_obj, username)
-                if extracted:
-                    active_downloads.append(extracted)
-
-        # Fallback: some slskd builds expose downloads via /api/v0/downloads
-        if not active_downloads:
-            try:
-                alt_url = f"{web_url}/api/v0/downloads"
-                logging.debug(f"slskd_status: Fallback fetch from {alt_url}")
-                alt_resp = req.get(alt_url, headers=headers, timeout=10)
-                if alt_resp.status_code == 200:
-                    alt_payload = alt_resp.json() or []
-                    for item in alt_payload if isinstance(alt_payload, list) else []:
-                        username = item.get("user") or item.get("username") or "Unknown"
-                        extracted = extract_file(item, username)
-                        if extracted:
-                            active_downloads.append(extracted)
-            except Exception as alt_error:
-                logging.debug(f"slskd_status fallback failed: {alt_error}")
+                
+                username = user_obj.get("username", "Unknown")
+                directories = user_obj.get("directories", [])
+                
+                if not isinstance(directories, list):
+                    continue
+                
+                # Iterate through directories for this user
+                for dir_obj in directories:
+                    if not isinstance(dir_obj, dict):
+                        continue
+                    
+                    files = dir_obj.get("files", [])
+                    if not isinstance(files, list):
+                        continue
+                    
+                    # Process each file
+                    for file_obj in files:
+                        if not isinstance(file_obj, dict):
+                            continue
+                        
+                        filename = file_obj.get("filename", "Unknown")
+                        size = int(file_obj.get("size", 0))
+                        bytes_transferred = int(file_obj.get("bytesTransferred", 0))
+                        percent_complete = int(file_obj.get("percentComplete", 0))
+                        
+                        # Normalize state
+                        state_raw = file_obj.get("state", "")
+                        state_lower = str(state_raw).lower()
+                        
+                        if "completed" in state_lower and "succeeded" in state_lower:
+                            state = "Completed"
+                        elif "completed" in state_lower and ("errored" in state_lower or "failed" in state_lower):
+                            state = "Failed"
+                        elif "completed" in state_lower and "cancelled" in state_lower:
+                            state = "Cancelled"
+                        elif "inprogress" in state_lower:
+                            state = "Downloading"
+                        elif "queued" in state_lower:
+                            state = "Queued"
+                        elif "initializing" in state_lower:
+                            state = "Initializing"
+                        else:
+                            state = state_raw or "Unknown"
+                        
+                        average_speed = int(file_obj.get("averageSpeed", 0))
+                        
+                        logging.debug(f"slskd download: {username} -> {filename[:60]}, state={state}, progress={percent_complete}%, size={size}")
+                        
+                        active_downloads.append({
+                            "username": username,
+                            "filename": filename,
+                            "state": state,
+                            "progress": percent_complete,
+                            "bytesTransferred": bytes_transferred,
+                            "size": size,
+                            "averageSpeed": average_speed,
+                            "remoteToken": file_obj.get("id", ""),
+                        })
         
         logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
         return jsonify({"downloads": active_downloads})
+        
+    except Exception as e:
+        logging.error(f"Error fetching slskd status: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
         
     except Exception as e:
         logging.error(f"Error fetching slskd status: {e}", exc_info=True)
