@@ -1471,9 +1471,15 @@ def logout():
 @app.route("/logs")
 def logs():
     """View logs"""
+    config_dir = os.path.dirname(CONFIG_PATH)
     log_files = {
-        "app": LOG_PATH,
-        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
+        "main": LOG_PATH,
+        "webui": os.path.join(config_dir, "webui.log"),
+        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
+        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "popularity": os.path.join(config_dir, "popularity.log"),
+        "singles": os.path.join(config_dir, "singledetection.log"),
+        "downloads": os.path.join(config_dir, "downloads.log"),
     }
     return render_template("logs.html", log_path=LOG_PATH, log_files=log_files)
 
@@ -1481,10 +1487,16 @@ def logs():
 @app.route("/logs/stream")
 def logs_stream():
     """Stream log file in real-time"""
-    log_type = request.args.get("type", "app")
+    log_type = request.args.get("type", "main")
+    config_dir = os.path.dirname(CONFIG_PATH)
     log_files = {
-        "app": LOG_PATH,
-        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
+        "main": LOG_PATH,
+        "webui": os.path.join(config_dir, "webui.log"),
+        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
+        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "popularity": os.path.join(config_dir, "popularity.log"),
+        "singles": os.path.join(config_dir, "singledetection.log"),
+        "downloads": os.path.join(config_dir, "downloads.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
     
@@ -1508,11 +1520,17 @@ def logs_stream():
 @app.route("/logs/view")
 def logs_view():
     """View last N lines of log"""
-    log_type = request.args.get("type", "app")
+    log_type = request.args.get("type", "main")
     lines = request.args.get("lines", 500, type=int)
+    config_dir = os.path.dirname(CONFIG_PATH)
     log_files = {
-        "app": LOG_PATH,
-        "debug": os.path.join(os.path.dirname(CONFIG_PATH), "debug.log"),
+        "main": LOG_PATH,
+        "webui": os.path.join(config_dir, "webui.log"),
+        "mp3scanner": os.path.join(config_dir, "mp3scanner.log"),
+        "navidrome": os.path.join(config_dir, "sptnr.log"),
+        "popularity": os.path.join(config_dir, "popularity.log"),
+        "singles": os.path.join(config_dir, "singledetection.log"),
+        "downloads": os.path.join(config_dir, "downloads.log"),
     }
     log_path = log_files.get(log_type, LOG_PATH)
     try:
