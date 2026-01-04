@@ -185,6 +185,24 @@
         </div>
         {% endif %}
         
+        {% if album_data.discogs_album_id %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-disc-fill"></i> Discogs Release
+                    </div>
+                    <div class="h6 mb-0">
+                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="text-decoration-none" style="font-size: 0.75rem;">
+                            {{ album_data.discogs_album_id }}
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 0.65rem;"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
         {% if album_data.last_scanned %}
         <div class="col-12 col-md-6">
             <div class="card h-100">
@@ -598,19 +616,33 @@
             results.forEach(result => {
                 const genres = (result.genre || []).join(', ');
                 const styles = (result.style || []).join(', ');
+                const confidencePercent = result.confidence ? (result.confidence * 100).toFixed(1) : 0;
+                const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
+                
                 html += `
                     <div class="list-group-item">
-                        <div class="card-body">
-                            <h6>${result.title}</h6>
+                        <div style="padding: 1rem;">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div>
+                                    <h6 class="mb-1">${result.title}</h6>
+                                </div>
+                                <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
+                            </div>
                             <p class="text-muted mb-2" style="font-size: 0.85rem;">
                                 <strong>Year:</strong> ${result.year || '—'}<br>
-                                <strong>Format:</strong> ${(result.format || []).join(', ') || '—'}
+                                <strong>Format:</strong> ${(result.format || []).join(', ') || '—'}<br>
+                                ${result.discogs_id ? '<strong>Discogs ID:</strong> ' + result.discogs_id + '<br>' : ''}
                             </p>
                             ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
                             ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
-                            <button class="btn btn-sm btn-primary" onclick="applyAlbumGenres('${genres}')">
-                                <i class="bi bi-check-circle"></i> Apply Genres
-                            </button>
+                            <div class="gap-2">
+                                ${result.discogs_id ? `<button class="btn btn-sm btn-primary" onclick="applyAlbumDiscogsID('${result.discogs_id}')">
+                                    <i class="bi bi-check-circle"></i> Apply Discogs ID
+                                </button>` : ''}
+                                <button class="btn btn-sm btn-outline-primary" onclick="applyAlbumGenres('${genres.replace(/'/g, "\\'")}')">
+                                    <i class="bi bi-check-circle"></i> Apply Genres
+                                </button>
+                            </div>
                         </div>
                     </div>
                 `;
@@ -637,6 +669,31 @@
         .then(data => {
             if (data.success) {
                 alert('✅ Applied MusicBrainz metadata to album!');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
+    function applyAlbumDiscogsID(discogsID) {
+        // Update all tracks in this album with the Discogs ID
+        fetch('/api/album/apply-discogs-id', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: "{{ artist_name }}", 
+                album: "{{ album_name }}",
+                discogs_id: discogsID
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Applied Discogs ID to album!');
                 location.reload();
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to apply'));

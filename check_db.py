@@ -20,7 +20,7 @@ required_columns = {
     "spotify_genres": "TEXT",
     "lastfm_tags": "TEXT",
     "discogs_genres": "TEXT",
-    "audiodb_genres": "TEXT",
+    "discogs_album_id": "TEXT",
     "musicbrainz_genres": "TEXT",
     "spotify_album": "TEXT",
     "spotify_artist": "TEXT",

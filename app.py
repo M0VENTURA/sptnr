@@ -1456,7 +1456,8 @@ def album_detail(artist, album):
                     MAX(spotify_album_art_url) as spotify_album_art_url,
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
-                    MAX(beets_album_mbid) as beets_album_mbid
+                    MAX(beets_album_mbid) as beets_album_mbid,
+                    MAX(discogs_album_id) as discogs_album_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -1472,7 +1473,8 @@ def album_detail(artist, album):
                     MAX(spotify_album_art_url) as spotify_album_art_url,
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
-                    NULL as beets_album_mbid
+                    NULL as beets_album_mbid,
+                    NULL as discogs_album_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -5632,7 +5634,7 @@ if __name__ == "__main__":
                     "https://musicbrainz.org/ws/2/release-group",
                     params={"query": query, "fmt": "json", "limit": 10},
                     headers=headers,
-                    timeout=10
+                    timeout=15
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -5694,6 +5696,7 @@ if __name__ == "__main__":
         """Lookup album on Discogs for better metadata and genres"""
         try:
             from singledetection import _discogs_search, _get_discogs_session
+            import difflib
             
             data = request.get_json()
             album = data.get("album", "")
@@ -5702,28 +5705,50 @@ if __name__ == "__main__":
             if not album or not artist:
                 return jsonify({"error": "Missing album or artist"}), 400
             
-            # Search Discogs
+            # Search Discogs with multiple query strategies
             session = _get_discogs_session()
             headers = {"User-Agent": "Sptnr/1.0"}
-            query = f"{artist} {album}"
             
-            results = _discogs_search(session, headers, query, kind="release", per_page=5)
+            # Try different query formats to improve match rate
+            queries = [
+                f"{artist} {album}",  # Full query
+                f'artist:"{artist}" release:"{album}"',  # Structured query
+                f'{artist} "{album}"',  # Quoted album
+            ]
+            
+            results = []
+            for query in queries:
+                results = _discogs_search(session, headers, query, kind="release", per_page=10)
+                if results:
+                    break
             
             if not results:
                 return jsonify({"results": [], "message": "No Discogs album matches found"}), 200
             
-            # Format results
+            # Format results with similarity scoring
             formatted_results = []
-            for result in results[:5]:
+            for result in results[:10]:
+                result_title = result.get("title", "Unknown")
+                # Calculate similarity to improve ordering
+                title_sim = difflib.SequenceMatcher(None, album.lower(), result_title.lower()).ratio()
+                artist_part = result_title.split("-")[0] if "-" in result_title else result_title
+                artist_sim = difflib.SequenceMatcher(None, artist.lower(), artist_part.lower()).ratio()
+                overall_conf = (title_sim * 0.7 + artist_sim * 0.3)
+                
                 formatted_results.append({
-                    "title": result.get("title", "Unknown"),
+                    "title": result_title,
                     "year": result.get("year", ""),
                     "genre": result.get("genre", []),
                     "style": result.get("style", []),
                     "format": result.get("format", []),
                     "url": result.get("resource_url", ""),
+                    "discogs_id": result.get("id", ""),
+                    "confidence": round(overall_conf, 3),
                     "source": "discogs"
                 })
+            
+            # Sort by confidence
+            formatted_results.sort(key=lambda x: x["confidence"], reverse=True)
             
             return jsonify({"results": formatted_results}), 200
         except Exception as e:
@@ -5778,6 +5803,40 @@ if __name__ == "__main__":
         except Exception as e:
             logger = logging.getLogger('sptnr')
             logger.error(f"Apply MBID error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/album/apply-discogs-id", methods=["POST"])
+    def api_album_apply_discogs_id():
+        """Apply Discogs ID to all tracks in an album"""
+        try:
+            data = request.get_json()
+            artist = data.get("artist", "")
+            album = data.get("album", "")
+            discogs_id = data.get("discogs_id", "")
+            
+            if not artist or not album or not discogs_id:
+                return jsonify({"error": "Missing required fields"}), 400
+            
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Update all tracks in this album with Discogs ID
+            cursor.execute(
+                "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
+                (discogs_id, artist, album)
+            )
+            rows_updated = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                "success": True,
+                "message": f"Updated {rows_updated} tracks with Discogs ID",
+                "rows_updated": rows_updated
+            }), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"Apply Discogs ID error: {e}")
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/track/musicbrainz", methods=["POST"])
