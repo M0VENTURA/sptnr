@@ -5545,39 +5545,6 @@ if __name__ == "__main__":
         print(traceback.format_exc())
     
     # API endpoints for metadata lookups
-    @app.route("/api/track/musicbrainz", methods=["POST"])
-    def api_track_musicbrainz_lookup():
-        """Lookup track on MusicBrainz for better metadata"""
-        try:
-            from api_clients.musicbrainz import MusicBrainzClient
-            
-            data = request.get_json()
-            title = data.get("title", "")
-            artist = data.get("artist", "")
-            
-            if not title or not artist:
-                return jsonify({"error": "Missing title or artist"}), 400
-            
-            # Get suggested MBID using the client
-            mb_client = MusicBrainzClient(enabled=True)
-            mbid, confidence = mb_client.get_suggested_mbid(title, artist, limit=5)
-            
-            if not mbid:
-                return jsonify({"results": [], "message": "No MusicBrainz matches found"}), 200
-            
-            # Return MBID and confidence
-            return jsonify({
-                "results": [{
-                    "mbid": mbid,
-                    "confidence": confidence,
-                    "source": "musicbrainz"
-                }]
-            }), 200
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"MusicBrainz lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-
     @app.route("/api/track/discogs", methods=["POST"])
     def api_track_discogs_lookup():
         """Lookup track on Discogs for better metadata and genres"""
