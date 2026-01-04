@@ -1531,17 +1531,34 @@ def album_detail(artist, album):
         
         conn.close()
         
+        # Get qBittorrent and slskd config
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+        slskd_config = cfg.get("slskd", {"enabled": False})
+        
         return render_template("album.html",
                              artist_name=artist,
                              album_name=album,
                              tracks=tracks_data,
                              tracks_by_disc=tracks_by_disc,
                              album_data=album_data,
-                             album_genres=sorted(list(album_genres)))
+                             album_genres=sorted(list(album_genres)),
+                             qbit_config=qbit_config,
+                             slskd_config=slskd_config)
     except Exception as e:
         import traceback
         logging.error(f"Error loading album {artist}/{album}: {e}")
         logging.error(traceback.format_exc())
+        
+        # Get config even for error page
+        try:
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+            slskd_config = cfg.get("slskd", {"enabled": False})
+        except:
+            qbit_config = {"enabled": False, "web_url": "http://localhost:8080"}
+            slskd_config = {"enabled": False}
+        
         return render_template("album.html",
                              artist_name=artist,
                              album_name=album,
@@ -1549,6 +1566,8 @@ def album_detail(artist, album):
                              tracks_by_disc={},
                              album_data=None,
                              album_genres=[],
+                             qbit_config=qbit_config,
+                             slskd_config=slskd_config,
                              error=f"Error loading album: {str(e)}")
 
 
