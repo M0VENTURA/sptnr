@@ -79,6 +79,7 @@ scan_process_mp3 = None  # MP3 scanner process
 scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
+scan_process_missing_releases = None  # Missing releases scan process
 scan_lock = threading.Lock()
 
 # Optional auto-import toggle (default on)
@@ -1047,6 +1048,191 @@ def api_import_release():
         return jsonify({"error": f"MusicBrainz API error: {e.response.status_code}"}), 500
     except Exception as e:
         logging.error(f"[IMPORT] Error importing release: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/scan-all-missing-releases", methods=["POST"])
+def api_scan_all_missing_releases():
+    """Scan all artists in database for missing releases and cache results."""
+    global scan_process_missing_releases
+    
+    # Check if already running
+    if scan_process_missing_releases and isinstance(scan_process_missing_releases, dict):
+        thread = scan_process_missing_releases.get('thread')
+        if thread and thread.is_alive():
+            return jsonify({"error": "Missing releases scan already running"}), 400
+    
+    def run_missing_releases_scan():
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Get all distinct artists from tracks table
+            cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL AND artist != '' ORDER BY artist")
+            artists = [row[0] for row in cursor.fetchall()]
+            total_artists = len(artists)
+            
+            logging.info(f"[MISSING_RELEASES] Starting scan for {total_artists} artists")
+            
+            # Clear old missing releases data
+            cursor.execute("DELETE FROM missing_releases")
+            conn.commit()
+            
+            processed = 0
+            total_missing = 0
+            
+            for artist_name in artists:
+                try:
+                    processed += 1
+                    
+                    # Update progress file
+                    progress_data = {
+                        "is_running": True,
+                        "scan_type": "missing_releases_scan",
+                        "current_artist": artist_name,
+                        "processed_artists": processed,
+                        "total_artists": total_artists,
+                        "total_missing_found": total_missing,
+                        "percent_complete": int((processed / total_artists * 100)) if total_artists > 0 else 0
+                    }
+                    
+                    progress_file = os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json")
+                    with open(progress_file, 'w') as f:
+                        json.dump(progress_data, f)
+                    
+                    # Get existing albums for this artist
+                    cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
+                    existing_albums = [row[0] for row in cursor.fetchall()]
+                    existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
+                    
+                    # Fetch MusicBrainz releases
+                    mb_releases = _fetch_musicbrainz_releases(artist_name)
+                    
+                    # Check for missing releases
+                    for rg in mb_releases:
+                        norm_title = _normalize_release_title(rg.get("title"))
+                        if not norm_title or norm_title in existing_norm:
+                            continue
+                        
+                        # Skip compilations
+                        secondary = [s.lower() for s in rg.get("secondary_types") or []]
+                        if "compilation" in secondary:
+                            continue
+                        
+                        primary_type = (rg.get("primary_type") or "").lower()
+                        category = "Album"
+                        if primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single" or "single" in secondary:
+                            category = "Single"
+                        
+                        # Insert missing release into database
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO missing_releases 
+                            (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (
+                            artist_name,
+                            rg.get("id", ""),
+                            rg.get("title", ""),
+                            rg.get("primary_type", ""),
+                            rg.get("first_release_date", ""),
+                            rg.get("cover_art_url", ""),
+                            category
+                        ))
+                        total_missing += 1
+                    
+                    conn.commit()
+                    
+                    # Rate limiting
+                    time.sleep(1.1)  # MusicBrainz rate limit: 1 request per second
+                    
+                except Exception as e:
+                    logging.error(f"[MISSING_RELEASES] Error scanning {artist_name}: {e}")
+                    continue
+            
+            # Write final progress
+            progress_data = {
+                "is_running": False,
+                "scan_type": "missing_releases_scan",
+                "processed_artists": total_artists,
+                "total_artists": total_artists,
+                "total_missing_found": total_missing,
+                "percent_complete": 100,
+                "status": "complete"
+            }
+            with open(progress_file, 'w') as f:
+                json.dump(progress_data, f)
+            
+            conn.close()
+            logging.info(f"[MISSING_RELEASES] Scan complete. Found {total_missing} missing releases across {total_artists} artists")
+            
+        except Exception as e:
+            logging.error(f"[MISSING_RELEASES] Scan failed: {e}", exc_info=True)
+            progress_data = {
+                "is_running": False,
+                "scan_type": "missing_releases_scan",
+                "status": "error",
+                "error": str(e)
+            }
+            try:
+                with open(progress_file, 'w') as f:
+                    json.dump(progress_data, f)
+            except:
+                pass
+    
+    # Start scan in background thread
+    scan_thread = threading.Thread(target=run_missing_releases_scan, daemon=False)
+    scan_thread.start()
+    scan_process_missing_releases = {'thread': scan_thread, 'type': 'missing_releases'}
+    
+    return jsonify({
+        "success": True,
+        "message": "Missing releases scan started"
+    })
+
+
+@app.route("/api/artist/cached-missing-releases", methods=["GET"])
+def api_cached_missing_releases():
+    """Get cached missing releases for an artist from the database."""
+    artist = request.args.get("artist", "").strip()
+    if not artist:
+        return jsonify({"error": "Artist is required"}), 400
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked
+            FROM missing_releases
+            WHERE artist = ?
+            ORDER BY first_release_date DESC
+        """, (artist,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        missing = []
+        for row in rows:
+            missing.append({
+                "id": row[0],
+                "title": row[1],
+                "primary_type": row[2],
+                "first_release_date": row[3],
+                "cover_art_url": row[4],
+                "category": row[5],
+                "last_checked": row[6]
+            })
+        
+        return jsonify({
+            "artist": artist,
+            "missing": missing,
+            "from_cache": True
+        })
+        
+    except Exception as e:
+        logging.error(f"[MISSING_RELEASES] Error fetching cached data: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -2031,7 +2217,7 @@ def api_stats():
 @app.route("/api/scan-status")
 def api_scan_status():
     """API endpoint to get status of all scan types"""
-    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles
+    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
     
     def is_process_running(proc):
         """Check if a process/thread is running, handling both dict and process objects."""
@@ -2077,6 +2263,10 @@ def api_scan_status():
             "singles_scan": {
                 "name": "Single Detection",
                 "running": is_process_running(scan_process_singles)
+            },
+            "missing_releases_scan": {
+                "name": "Missing Releases Scan",
+                "running": is_process_running(scan_process_missing_releases)
             }
         })
 
@@ -2146,6 +2336,17 @@ def api_scan_progress():
                         singles_progress = json.load(f)
                         if singles_progress.get("is_running", False):
                             return jsonify(singles_progress)
+                except:
+                    pass
+            
+            # Check Missing Releases scan progress
+            missing_releases_progress_file = os.path.join(db_dir, "missing_releases_scan_progress.json")
+            if os.path.exists(missing_releases_progress_file):
+                try:
+                    with open(missing_releases_progress_file, 'r') as f:
+                        missing_releases_progress = json.load(f)
+                        if missing_releases_progress.get("is_running", False):
+                            return jsonify(missing_releases_progress)
                 except:
                     pass
         

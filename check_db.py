@@ -133,6 +133,22 @@ def update_schema(db_path):
             status TEXT DEFAULT 'completed'
         );
     """)
+    
+    # ✅ Ensure missing_releases table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS missing_releases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist TEXT NOT NULL,
+            release_id TEXT NOT NULL,
+            title TEXT NOT NULL,
+            primary_type TEXT,
+            first_release_date TEXT,
+            cover_art_url TEXT,
+            category TEXT,
+            last_checked TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(artist, release_id)
+        );
+    """)
 
     # ✅ Create indexes for faster lookups
     indexes = [
@@ -147,7 +163,9 @@ def update_schema(db_path):
         ("idx_bookmarks_type", "bookmarks(type)"),
         ("idx_bookmarks_created", "bookmarks(created_at)"),
         ("idx_scan_history_timestamp", "scan_history(scan_timestamp DESC)"),
-        ("idx_scan_history_type", "scan_history(scan_type)")
+        ("idx_scan_history_type", "scan_history(scan_type)"),
+        ("idx_missing_releases_artist", "missing_releases(artist)"),
+        ("idx_missing_releases_checked", "missing_releases(last_checked DESC)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")

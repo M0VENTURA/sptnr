@@ -617,13 +617,24 @@ function checkMissingReleases(artistName) {
   }
 
   if (statusEl) {
-    statusEl.textContent = 'Checking MusicBrainz for missing releases...';
+    statusEl.textContent = 'Loading missing releases...';
   }
 
   setMissingGridLoading();
 
-  fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
+  // First try to load from cache
+  fetch('/api/artist/cached-missing-releases?artist=' + encodeURIComponent(artistName))
     .then(r => r.json())
+    .then(data => {
+      if (data.error || !data.missing || data.missing.length === 0) {
+        // If no cached data, fall back to live MusicBrainz check
+        if (statusEl) statusEl.textContent = 'No cached data found. Checking MusicBrainz...';
+        
+        return fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
+          .then(r => r.json());
+      }
+      return data;
+    })
     .then(data => {
       if (data.error) {
         if (statusEl) statusEl.textContent = 'Error: ' + data.error;
@@ -635,7 +646,8 @@ function checkMissingReleases(artistName) {
 
       const missing = data.missing || [];
       if (statusEl) {
-        statusEl.textContent = missing.length ? `${missing.length} missing release(s) found.` : 'All MusicBrainz releases are present in your library.';
+        const cacheMsg = data.from_cache ? ' (from cache)' : '';
+        statusEl.textContent = missing.length ? `${missing.length} missing release(s) found${cacheMsg}.` : 'All MusicBrainz releases are present in your library.';
       }
 
       const grouped = { Album: [], EP: [], Single: [] };
