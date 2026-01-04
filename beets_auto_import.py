@@ -343,6 +343,11 @@ class BeetsAutoImporter:
                     current_album = (album_artist, track['album'])
                     album_tracks = 0
                 
+                # Decode path if it's bytes for matching
+                track_path = track['path']
+                if isinstance(track_path, bytes):
+                    track_path = track_path.decode('utf-8', errors='replace')
+                
                 # Try to match by path first, then by title+artist+album
                 sptnr_cursor.execute("""
                     SELECT id FROM tracks 
@@ -350,7 +355,7 @@ class BeetsAutoImporter:
                     OR (title = ? AND artist = ? AND album = ?)
                     LIMIT 1
                 """, (
-                    track['path'],
+                    track_path,
                     track['title'],
                     track['artist'],
                     track['album']
@@ -358,6 +363,11 @@ class BeetsAutoImporter:
                 
                 match = sptnr_cursor.fetchone()
                 if match:
+                    # Decode path if it's bytes
+                    beets_path = track['path']
+                    if isinstance(beets_path, bytes):
+                        beets_path = beets_path.decode('utf-8', errors='replace')
+                    
                     # Update sptnr track with beets metadata
                     sptnr_cursor.execute("""
                         UPDATE tracks SET
@@ -376,7 +386,7 @@ class BeetsAutoImporter:
                         track['album_artist_credit'] or track['albumartist'],
                         track['year'],
                         datetime.fromtimestamp(track['added']).strftime('%Y-%m-%dT%H:%M:%S') if track['added'] else None,
-                        track['path'],
+                        beets_path,
                         match[0]
                     ))
                     updated_count += 1
