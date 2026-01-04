@@ -211,6 +211,7 @@
                     <tr>
                         <th style="width: 3rem;">#</th>
                         <th>Title</th>
+                        <th class="text-center" style="width: 5rem;">Duration</th>
                         <th class="text-center" style="width: 4rem;">★</th>
                         <th class="text-center d-none d-lg-table-cell">Single</th>
                         <th class="text-center d-none d-lg-table-cell">Conf</th>
@@ -223,7 +224,7 @@
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary">
-                                <td colspan="7" style="padding: 0.75rem 0.5rem;">
+                                <td colspan="8" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
                                     </strong>
@@ -247,6 +248,16 @@
                                     <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
                                         {{ track.title }}
                                     </a>
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
+                                    {% if track.duration %}
+                                        {% set mins = (track.duration / 60)|int %}
+                                        {% set secs = (track.duration % 60)|int %}
+                                        {{ mins }}:{{ "%02d"|format(secs) }}
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
                                 </td>
                                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                                     <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
@@ -312,6 +323,16 @@
                                 <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
                                     {{ track.title }}
                                 </a>
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
+                                {% if track.duration %}
+                                    {% set mins = (track.duration / 60)|int %}
+                                    {% set secs = (track.duration % 60)|int %}
+                                    {{ mins }}:{{ "%02d"|format(secs) }}
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell text-center">
                                 <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
