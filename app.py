@@ -1236,6 +1236,101 @@ def api_cached_missing_releases():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/artist/add", methods=["POST"])
+def api_add_artist():
+    """Manually add an artist and fetch all their releases from MusicBrainz."""
+    data = request.json or {}
+    artist_name = data.get("artist", "").strip()
+    
+    if not artist_name:
+        return jsonify({"error": "Artist name is required"}), 400
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Check if artist already exists in tracks
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
+        existing_count = cursor.fetchone()[0]
+        
+        # Fetch all releases from MusicBrainz
+        logging.info(f"[ADD_ARTIST] Fetching MusicBrainz releases for: {artist_name}")
+        mb_releases = _fetch_musicbrainz_releases(artist_name, limit=200)
+        
+        if not mb_releases:
+            conn.close()
+            return jsonify({
+                "error": f"No releases found on MusicBrainz for artist: {artist_name}",
+                "artist": artist_name,
+                "releases_found": 0
+            }), 404
+        
+        # Get existing albums if artist exists
+        existing_norm = set()
+        if existing_count > 0:
+            cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
+            existing_albums = [row[0] for row in cursor.fetchall()]
+            existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
+        
+        # Add all releases to missing_releases table
+        added_count = 0
+        for rg in mb_releases:
+            # Check if already exists in library
+            norm_title = _normalize_release_title(rg.get("title"))
+            if norm_title and norm_title in existing_norm:
+                continue
+            
+            # Skip compilations
+            secondary = [s.lower() for s in rg.get("secondary_types") or []]
+            if "compilation" in secondary:
+                continue
+            
+            # Determine category
+            primary_type = (rg.get("primary_type") or "").lower()
+            category = "Album"
+            if primary_type == "ep":
+                category = "EP"
+            elif primary_type == "single" or "single" in secondary:
+                category = "Single"
+            
+            # Insert into missing_releases
+            try:
+                cursor.execute("""
+                    INSERT OR REPLACE INTO missing_releases 
+                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                """, (
+                    artist_name,
+                    rg.get("id", ""),
+                    rg.get("title", ""),
+                    rg.get("primary_type", ""),
+                    rg.get("first_release_date", ""),
+                    rg.get("cover_art_url", ""),
+                    category
+                ))
+                added_count += 1
+            except Exception as e:
+                logging.error(f"[ADD_ARTIST] Error inserting release {rg.get('title')}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"[ADD_ARTIST] Added {added_count} missing releases for {artist_name}")
+        
+        return jsonify({
+            "success": True,
+            "artist": artist_name,
+            "releases_found": len(mb_releases),
+            "added_to_missing": added_count,
+            "already_in_library": len(existing_norm),
+            "artist_exists": existing_count > 0
+        })
+        
+    except Exception as e:
+        logging.error(f"[ADD_ARTIST] Error adding artist {artist_name}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/album/<path:artist>/<path:album>")
 def album_detail(artist, album):
     """View album details and tracks"""
