@@ -10,7 +10,6 @@ import logging
 import json
 import math
 from datetime import datetime
-import sys
 
 # Dedicated popularity logger (no propagation to root)
 logger = logging.getLogger("popularity")
@@ -35,10 +34,7 @@ logger.propagate = False
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
-
-# Import from start.py
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from start import (
+from popularity_helpers import (
     get_spotify_artist_id,
     search_spotify_track,
     get_lastfm_track_info,

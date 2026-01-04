@@ -127,6 +127,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 if not track_id:
                     continue
 
+                # Normalize numeric fields from Navidrome payload
+                def _safe_int(val):
+                    try:
+                        return int(val)
+                    except (TypeError, ValueError):
+                        return None
+
+                raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
+                raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
+
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -159,14 +169,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "is_single": False,
                     "single_confidence": "low",
                     "single_sources": [],
-                    "stars": 0,
                     "mbid": t.get("mbid", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
                     "stars": int(t.get("userRating", 0) or 0),
                     "duration": t.get("duration"),
-                    "track_number": t.get("track"),
-                    "disc_number": t.get("discNumber"),
+                    "track_number": _safe_int(raw_track),
+                    "disc_number": _safe_int(raw_disc),
                     "year": t.get("year"),
                     "album_artist": t.get("albumArtist", ""),
                     "bitrate": t.get("bitRate"),

@@ -6,7 +6,6 @@ import os
 import sys
 import time
 import logging
-import base64
 import re
 import sqlite3
 import math
@@ -32,6 +31,19 @@ from api_clients.lastfm import LastFmClient
 from api_clients.musicbrainz import MusicBrainzClient
 from api_clients.discogs import DiscogsClient
 from api_clients.audiodb_and_listenbrainz import ListenBrainzClient, AudioDbClient
+from popularity_helpers import (
+    configure_popularity_helpers,
+    get_spotify_artist_id,
+    get_spotify_artist_single_track_ids,
+    search_spotify_track,
+    get_lastfm_track_info,
+    get_listenbrainz_score,
+    score_by_age,
+    SPOTIFY_WEIGHT,
+    LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
+    AGE_WEIGHT,
+)
 
 # ðŸŽ¨ Colorama setup
 init(autoreset=True)
@@ -344,12 +356,6 @@ GOOGLE_CSE_ID = api.get("google", {}).get("cse_id", "") if GOOGLE_ENABLED else "
 YOUTUBE_ENABLED = api.get("youtube", {}).get("enabled", False)
 YOUTUBE_API_KEY = api.get("youtube", {}).get("api_key", "") if YOUTUBE_ENABLED else ""
 
-# Weights
-SPOTIFY_WEIGHT = config["weights"]["spotify"]
-LASTFM_WEIGHT = config["weights"]["lastfm"]
-LISTENBRAINZ_WEIGHT = config["weights"]["listenbrainz"]
-AGE_WEIGHT = config["weights"]["age"]
-
 # Database path
 DB_PATH = config["database"]["path"]
 
@@ -369,6 +375,14 @@ musicbrainz_client = MusicBrainzClient(enabled=MUSICBRAINZ_ENABLED)
 discogs_client = DiscogsClient(DISCOGS_TOKEN, enabled=DISCOGS_ENABLED)
 audiodb_client = AudioDbClient(AUDIODB_API_KEY, enabled=AUDIODB_ENABLED)
 listenbrainz_client = ListenBrainzClient(enabled=LISTENBRAINZ_ENABLED)
+
+# Configure shared popularity helpers with live clients and current config
+configure_popularity_helpers(
+    spotify_client=spotify_client,
+    lastfm_client=lastfm_client,
+    listenbrainz_client=listenbrainz_client,
+    config=config,
+)
 
 # âœ… Compatibility check for OpenSubsonic extensions
 def get_supported_extensions():
@@ -446,6 +460,7 @@ def save_to_db(track_data, max_retries=3):
         "discogs_genres","audiodb_genres","musicbrainz_genres",
         "spotify_album","spotify_artist","spotify_popularity","spotify_release_date","spotify_album_art_url",
         "lastfm_track_playcount","lastfm_artist_playcount","file_path",
+        "duration","track_number","disc_number","year","album_artist","bitrate","sample_rate",
         "is_single","single_confidence","last_scanned",
         "mbid","suggested_mbid","suggested_mbid_confidence","single_sources",
         "is_spotify_single","spotify_total_tracks","spotify_album_type",
@@ -477,6 +492,13 @@ def save_to_db(track_data, max_retries=3):
         int(track_data.get("lastfm_track_playcount",0) or 0),
         int(track_data.get("lastfm_artist_playcount",0) or 0),
         track_data.get("file_path",""),
+        track_data.get("duration"),
+        track_data.get("track_number"),
+        track_data.get("disc_number"),
+        track_data.get("year"),
+        track_data.get("album_artist",""),
+        track_data.get("bitrate"),
+        track_data.get("sample_rate"),
         int(bool(track_data.get("is_single",False))),
         track_data.get("single_confidence",""),
         track_data.get("last_scanned",""),
@@ -650,73 +672,7 @@ def compute_adaptive_weights(album_tracks, base_weights, clamp=(0.25, 1.75), use
     adapted = {k: adapted[k] / total for k in adapted}
     return adapted
 
-# --- REPLACEMENT: cached token helper ---
-_spotify_token = None
-_spotify_token_exp = 0  # epoch seconds when token expires
 
-def get_spotify_token():
-    """
-    Retrieve and cache Spotify API token using Client Credentials.
-    Refreshes automatically when near expiry.
-    """
-    global _spotify_token, _spotify_token_exp
-
-    # Return cached token if still valid (refresh 60s before expiry)
-    if _spotify_token and time.time() < (_spotify_token_exp - 60):
-        return _spotify_token
-
-    auth_str = f"{SPOTIFY_CLIENT_ID}:{SPOTIFY_CLIENT_SECRET}"
-    headers = {
-        "Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(),
-        "Content-Type": "application/x-www-form-urlencoded"
-    }
-    data = {"grant_type": "client_credentials"}
-
-    try:
-        res = requests.post("https://accounts.spotify.com/api/token", headers=headers, data=data, timeout=10)
-        res.raise_for_status()
-        payload = res.json()
-        _spotify_token = payload["access_token"]
-        _spotify_token_exp = time.time() + int(payload.get("expires_in", 3600))
-        return _spotify_token
-    except Exception as e:
-        logging.error(f"Spotify Token Error: {e}")
-        sys.exit(1)
-
-def _spotify_headers():
-    return {"Authorization": f"Bearer {get_spotify_token()}"}
-
-# --- Spotify call hygiene: global session with retries/backoff ---
-_spotify_session = None
-_spotify_lock = threading.Lock()
-
-def _get_spotify_session():
-    """Shared requests.Session with sensible retries/backoff for Spotify APIs."""
-    global _spotify_session
-    with _spotify_lock:
-        if _spotify_session is None:
-            _spotify_session = create_retry_session(user_agent=_DEF_USER_AGENT, retries=5, backoff=1.2)
-        return _spotify_session
-
-# --- Spotify caches for artist lookups & singles ---
-_SPOTIFY_ARTIST_ID_CACHE: dict[str, str] = {}
-_SPOTIFY_ARTIST_SINGLES_CACHE: dict[str, set[str]] = {}
-
-# --- Spotify API wrappers (now using SpotifyClient) ---
-
-def get_spotify_artist_id(artist_name: str) -> str | None:
-    """Search for the artist and cache ID (wrapper using SpotifyClient)."""
-    return spotify_client.get_artist_id(artist_name)
-
-def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
-    """
-    Fetch all track IDs from single releases for an artist (wrapper using SpotifyClient).
-    """
-    return spotify_client.get_artist_singles(artist_id)
-
-def search_spotify_track(title, artist, album=None):
-    """Search for a track on Spotify with fallback queries (wrapper using SpotifyClient)."""
-    return spotify_client.search_track(title, artist, album)
 
 def select_best_spotify_match(results, track_title, album_context: dict | None = None):
     """
