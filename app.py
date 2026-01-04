@@ -2183,16 +2183,26 @@ def logs_view():
 
 @app.route("/bookmarks")
 def bookmarks():
-    """View all bookmarks"""
+    """View all bookmarks (favourites)"""
     try:
+        filter_type = request.args.get('filter', None)
+        
         conn = get_db()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT id, type, name, artist, album, track_id, created_at
-            FROM bookmarks
-            ORDER BY created_at DESC
-        """)
+        if filter_type:
+            cursor.execute("""
+                SELECT id, type, name, artist, album, track_id, created_at
+                FROM bookmarks
+                WHERE type = ?
+                ORDER BY created_at DESC
+            """, (filter_type,))
+        else:
+            cursor.execute("""
+                SELECT id, type, name, artist, album, track_id, created_at
+                FROM bookmarks
+                ORDER BY created_at DESC
+            """)
         
         bookmarks_data = []
         for row in cursor.fetchall():
@@ -2208,10 +2218,15 @@ def bookmarks():
         
         conn.close()
         
-        return render_template("bookmarks.html", bookmarks=bookmarks_data)
+        return render_template("bookmarks.html", 
+                             bookmarks=bookmarks_data,
+                             filter_type=filter_type)
     except Exception as e:
         logging.error(f"Error loading bookmarks: {e}")
-        return render_template("bookmarks.html", bookmarks=[], error=str(e))
+        return render_template("bookmarks.html", 
+                             bookmarks=[], 
+                             filter_type=None,
+                             error=str(e))
 
 
 @app.route("/api/bookmarks", methods=["GET", "POST"])

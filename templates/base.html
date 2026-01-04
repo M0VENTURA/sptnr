@@ -999,10 +999,18 @@
               <i class="bi bi-search"></i> Search
             </a>
           </li>
-          <li class="nav-item">
-            <a class="nav-link" href="{{ url_for('artists') }}">
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="artistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-people"></i> Artists
             </a>
+            <ul class="dropdown-menu" aria-labelledby="artistsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('artists') }}">
+                <i class="bi bi-people"></i> All Artists
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('bookmarks') }}?filter=artist">
+                <i class="bi bi-star-fill"></i> Favourite Artists
+              </a></li>
+            </ul>
           </li>
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="downloadsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
@@ -1033,24 +1041,20 @@
               </a></li>
             </ul>
           </li>
+          {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}
           <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="bookmarksDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
               <i class="bi bi-bookmark-star"></i> Bookmarks
             </a>
             <ul class="dropdown-menu" aria-labelledby="bookmarksDropdown">
-              <li><a class="dropdown-item" href="{{ url_for('bookmarks') }}">
-                <i class="bi bi-bookmark-star"></i> View All Bookmarks
-              </a></li>
-              {% if custom_bookmark_links %}
-              <li><hr class="dropdown-divider"></li>
               {% for link in custom_bookmark_links %}
               <li><a class="dropdown-item" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">
                 <i class="bi bi-link-45deg"></i> {{ link.title }}
               </a></li>
               {% endfor %}
-              {% endif %}
             </ul>
           </li>
+          {% endif %}
           <li class="nav-item">
             <a class="nav-link" href="{{ url_for('beets_page') }}">
               <i class="bi bi-music-note"></i> Beets Tagger

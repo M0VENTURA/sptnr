@@ -1,12 +1,30 @@
 {% extends "base.html" %}
-{% block title %}Bookmarks · Sptnr{% endblock %}
+{% block title %}{% if filter_type %}Favourite {{ filter_type.capitalize() }}s{% else %}Favourites{% endif %} · Sptnr{% endblock %}
 {% block content %}
 <div class="container-fluid py-3 py-md-4">
   <div class="row mb-3">
     <div class="col-12 col-md-auto">
-      <h1 class="h3 mb-2"><i class="bi bi-bookmark-star"></i> Bookmarks</h1>
+      <h1 class="h3 mb-2">
+        <i class="bi bi-star-fill"></i> 
+        {% if filter_type == 'artist' %}
+          Favourite Artists
+        {% elif filter_type == 'album' %}
+          Favourite Albums
+        {% elif filter_type == 'track' %}
+          Favourite Tracks
+        {% else %}
+          Favourites
+        {% endif %}
+      </h1>
       <p class="text-muted mb-0">Quick access to your favorite artists, albums, and tracks</p>
     </div>
+    {% if filter_type %}
+    <div class="col-12 col-md-auto ms-auto">
+      <a href="{{ url_for('bookmarks') }}" class="btn btn-outline-secondary">
+        <i class="bi bi-star"></i> View All Favourites
+      </a>
+    </div>
+    {% endif %}
   </div>
 
   {% if bookmarks and bookmarks|length > 0 %}
