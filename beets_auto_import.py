@@ -106,11 +106,12 @@ class BeetsAutoImporter:
                 "copy": False,  # Don't copy, files are already in /music
                 "write": True,  # Write tags to files
                 "autotag": True,  # Enable auto-tagging
-                "timid": False,  # Don't prompt for confirmation
+                "timid": False,  # Don't prompt for confirmation (auto-skip weak matches)
                 "resume": True,  # Resume interrupted imports
                 "quiet_fallback": "skip",  # Skip items with no strong match
                 "detail": True,  # Show detailed match info
-                "log": str(self.config_path / "beets_import.log")
+                "log": str(self.config_path / "beets_import.log"),
+                "incremental": True  # Only import new/modified files
             },
             "match": {
                 "strong_rec_thresh": 0.04,  # Threshold for strong recommendation
@@ -161,7 +162,6 @@ class BeetsAutoImporter:
         
         cmd = [
             "beet", "import",
-            "-A",  # Auto-tag without prompts
             "-c", str(self.beets_config),  # Use our config
             "--library", str(self.beets_db),
             str(import_path)
