@@ -269,6 +269,18 @@
     flex: 1;
   }
 
+  .split-col {
+    flex: 1;
+    min-width: 220px;
+  }
+
+  .track-label {
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 0.25rem;
+  }
+
   .track-title {
     font-weight: 600;
     color: var(--spotify-green);
@@ -402,18 +414,29 @@
       coverageEl.classList.add('bg-danger');
     }
     
-    // Display matched tracks
+    // Display matched tracks (side-by-side playlist vs local)
     const matchedContainer = document.getElementById('matchedTracksContainer');
     if (matchedCount > 0) {
-      matchedContainer.innerHTML = data.matched_tracks.map(track => `
+      matchedContainer.innerHTML = data.matched_tracks.map((track, idx) => `
         <div class="track-row">
-          <div class="track-info">
+          <div class="track-info split-col">
+            <div class="track-label text-secondary">Playlist Track</div>
             <div class="track-title">${escapeHtml(track.title)}</div>
             <div class="track-artist">${escapeHtml(track.artist)}</div>
             <div class="track-album">${escapeHtml(track.album)}</div>
           </div>
+          <div class="track-info split-col border-start ps-3">
+            <div class="track-label text-success">Matched in Library</div>
+            <div class="track-title text-success">${escapeHtml(track.title)}</div>
+            <div class="track-artist">${escapeHtml(track.artist)}</div>
+            <div class="track-album">${escapeHtml(track.album)}</div>
+            ${track.stars !== undefined ? `<div class="text-muted small">Rating: ${track.stars || 0}★</div>` : ''}
+          </div>
           <div class="track-actions">
             <span class="badge bg-success">✓ Found</span>
+            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}', 'matched', ${idx})" title="Replace with a different local track">
+              <i class="bi bi-arrow-repeat"></i> Replace
+            </button>
           </div>
         </div>
       `).join('');
@@ -436,10 +459,7 @@
             <button class="btn btn-sm btn-outline-success" onclick="searchTrackInSoulseek('${escapeHtml(track.artist + ' ' + track.title)}', this)" title="Search in Soulseek">
               <i class="bi bi-cloud-arrow-down"></i> Search
             </button>
-            <button class="btn btn-sm btn-outline-primary" onclick="manuallySelectFile('${escapeHtml(track.title)}', '${escapeHtml(track.artist)}', this)" title="Manually select file">
-              <i class="bi bi-folder"></i> Select
-            </button>
-            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}')" title="Replace with different song">
+            <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}', 'missing', ${idx})" title="Replace with different song">
               <i class="bi bi-arrow-repeat"></i> Replace
             </button>
           </div>
@@ -695,8 +715,8 @@
   // Replacement track modal functions
   let replacingTrackInfo = null;
   
-  function openReplacementTrackModal(artist, title, album) {
-    replacingTrackInfo = { artist, title, album };
+  function openReplacementTrackModal(artist, title, album, source = 'missing', sourceIndex = null) {
+    replacingTrackInfo = { artist, title, album, source, sourceIndex };
     
     // Populate original track display
     document.getElementById('originalTitle').textContent = title;
@@ -782,24 +802,35 @@
       alert('No playlist data found');
       return;
     }
-    
-    // Remove the original missing track from missing_tracks array
-    const missingIndex = currentImportData.missing_tracks.findIndex(t => 
-      t.title === replacingTrackInfo.title && t.artist === replacingTrackInfo.artist
-    );
-    
-    if (missingIndex !== -1) {
-      currentImportData.missing_tracks.splice(missingIndex, 1);
+
+    const { source, sourceIndex } = replacingTrackInfo;
+
+    if (source === 'missing') {
+      const missingIndex = currentImportData.missing_tracks.findIndex((t, idx) => 
+        idx === sourceIndex || (t.title === replacingTrackInfo.title && t.artist === replacingTrackInfo.artist)
+      );
+      if (missingIndex !== -1) {
+        currentImportData.missing_tracks.splice(missingIndex, 1);
+      }
     }
-    
-    // Add the replacement track to matched_tracks
-    currentImportData.matched_tracks.push({
-      id: trackId,
-      title: title,
-      artist: artist,
-      album: album,
-      stars: 0
-    });
+
+    if (source === 'matched' && sourceIndex !== null && currentImportData.matched_tracks[sourceIndex]) {
+      currentImportData.matched_tracks[sourceIndex] = {
+        id: trackId,
+        title,
+        artist,
+        album,
+        stars: 0
+      };
+    } else {
+      currentImportData.matched_tracks.push({
+        id: trackId,
+        title,
+        artist,
+        album,
+        stars: 0
+      });
+    }
     
     // Close modal
     bootstrap.Modal.getInstance(document.getElementById('replaceTrackModal')).hide();
@@ -808,9 +839,9 @@
     displayResults(currentImportData);
     
     // Show success message with clear before/after
-    alert(`✅ Swapped Successfully!\n\n` +
-          `Removed (missing):\n"${replacingTrackInfo.artist} - ${replacingTrackInfo.title}"\n\n` +
-          `Added (from library):\n"${artist} - ${title}"`);
+        alert(`✅ Swapped Successfully!\n\n` +
+          `Playlist track: "${replacingTrackInfo.artist} - ${replacingTrackInfo.title}"\n` +
+          `Now using library track: "${artist} - ${title}"`);
     replacingTrackInfo = null;
   }
   
