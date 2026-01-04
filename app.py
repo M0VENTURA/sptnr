@@ -2412,6 +2412,82 @@ def slskd_cancel():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/slskd/retry", methods=["POST"])
+def slskd_retry():
+    """Retry a failed Soulseek download"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    username = request.json.get("username", "")
+    filename = request.json.get("filename", "")
+    size = request.json.get("size", 0)
+    
+    if not username or not filename:
+        return jsonify({"error": "Username and filename required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import requests as req_module
+        
+        # First cancel the existing download
+        headers = {"X-API-Key": api_key} if api_key else {}
+        cancel_url = f"{web_url}/api/v0/transfers/downloads/{username}/{filename}"
+        req_module.delete(cancel_url, headers=headers, timeout=10)
+        
+        # Then re-queue it
+        client = SlskdClient(web_url, api_key, enabled=True)
+        success = client.download_file(username, filename, int(size))
+        
+        if success:
+            return jsonify({"success": True, "message": f"Download retry queued for {filename}"})
+        else:
+            return jsonify({"error": "Failed to re-queue download"}), 500
+            
+    except Exception as e:
+        logging.error(f"[SLSKD] Retry download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/slskd/search-again", methods=["POST"])
+def slskd_search_again():
+    """Search for a file again to find alternative sources"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    filename = request.json.get("filename", "")
+    
+    if not filename:
+        return jsonify({"error": "Filename required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        client = SlskdClient(web_url, api_key, enabled=True)
+        search_id = client.start_search(filename)
+        
+        if search_id:
+            return jsonify({
+                "success": True,
+                "message": f"Searching for '{filename}'",
+                "search_id": search_id
+            })
+        else:
+            return jsonify({"error": "Failed to start search"}), 500
+            
+    except Exception as e:
+        logging.error(f"[SLSKD] Search again error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/slskd/download-single", methods=["POST"])
 def slskd_download_single():
     """Download a single track from Soulseek search results in playlist importer"""

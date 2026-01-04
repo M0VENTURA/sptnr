@@ -397,10 +397,21 @@ function updateSlskdTable(downloads) {
         ${download.averageSpeed > 0 ? `<span class="text-primary"><i class="bi bi-arrow-down"></i> ${formatBytes(download.averageSpeed)}/s</span>` : '—'}
       </td>
       <td class="text-center">
-        <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', '${escapeHtml(download.remoteToken || '')}')" 
-                title="Cancel download">
-          <i class="bi bi-x-circle"></i>
-        </button>
+        <div class="btn-group btn-group-sm" role="group">
+          ${(download.state.toLowerCase().includes('error') || download.state.toLowerCase().includes('failed') || download.state.toLowerCase().includes('timedout') || download.state.toLowerCase().includes('aborted')) ? 
+            `<button class="btn btn-sm btn-warning" onclick="retrySlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', ${download.size})" 
+                    title="Retry download">
+              <i class="bi bi-arrow-repeat"></i>
+            </button>
+            <button class="btn btn-sm btn-info" onclick="searchAgainSlskd('${escapeHtml(download.filename)}')" 
+                    title="Search again for alternative sources">
+              <i class="bi bi-search"></i>
+            </button>` : ''}
+          <button class="btn btn-sm btn-danger" onclick="cancelSlskdDownload('${escapeHtml(download.username)}', '${escapeHtml(download.filename)}', '${escapeHtml(download.remoteToken || '')}')" 
+                  title="Cancel download">
+            <i class="bi bi-x-circle"></i>
+          </button>
+        </div>
       </td>
     `;
     
@@ -453,6 +464,78 @@ function cancelSlskdDownload(username, filename, token) {
     alert('❌ Network error: ' + error.message);
     btn.disabled = false;
     btn.innerHTML = '<i class="bi bi-x-circle"></i>';
+  });
+}
+
+function retrySlskdDownload(username, filename, size) {
+  if (!confirm(`Retry download of "${filename}" from ${username}?`)) return;
+  
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  fetch('/api/slskd/retry', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ 
+      username: username, 
+      filename: filename,
+      size: size
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ ' + (data.message || 'Download retry queued'));
+      // Refresh immediately
+      setTimeout(() => refreshSlskd(), 500);
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to retry download'));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-repeat"></i>';
+  });
+}
+
+function searchAgainSlskd(filename) {
+  const btn = event.target.closest('button');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  fetch('/api/slskd/search-again', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ 
+      filename: filename
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Searching for alternative sources...\n\nSearch ID: ' + data.search_id);
+      // Redirect to downloads page to see search results
+      setTimeout(() => {
+        window.location.href = '/downloads?search_id=' + data.search_id;
+      }, 500);
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to start search'));
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-search"></i>';
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-search"></i>';
   });
 }
 
