@@ -11,10 +11,13 @@ from colorama import Fore, Style
 
 try:
     from scan_history import log_album_scan
-except ImportError:
+    _scan_history_available = True
+except ImportError as e:
     # Fallback if scan_history module not available
+    logging.warning(f"scan_history module not available: {e}")
+    _scan_history_available = False
     def log_album_scan(*args, **kwargs):
-        pass
+        logging.debug(f"log_album_scan called but scan_history not available: {args}")
 
 # Color constants  
 LIGHT_RED = Fore.RED + Style.BRIGHT
@@ -109,6 +112,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if not force and not album_needs_reimport and tracks and len(cached_ids_for_album) >= len(tracks):
                 if verbose:
                     print(f"   Skipping cached album: {album_name}")
+                # Still log skipped albums to scan history
+                log_album_scan(artist_name, album_name, 'navidrome', len(cached_ids_for_album), 'skipped')
                 continue
             
             if album_needs_reimport and verbose:
@@ -172,6 +177,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             
             # Log this album completion to scan_history
             if album_tracks_processed > 0:
+                logging.info(f"Logging to scan_history: {artist_name} - {album_name} ({album_tracks_processed} tracks)")
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
                 logging.info(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
 

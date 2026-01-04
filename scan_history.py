@@ -22,6 +22,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
         tracks_processed: Number of tracks processed
         status: Status of the scan ('completed', 'error', 'skipped')
     """
+    logging.info(f"log_album_scan called: {artist} - {album}, type={scan_type}, tracks={tracks_processed}, status={status}")
     try:
         conn = sqlite3.connect(DB_PATH, timeout=30.0)
         conn.execute("PRAGMA journal_mode=WAL")
@@ -58,9 +59,11 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
         conn.commit()
         conn.close()
         
-        logging.debug(f"Logged {scan_type} scan for {artist} - {album}")
+        logging.info(f"Successfully logged {scan_type} scan for {artist} - {album} to scan_history")
     except Exception as e:
         logging.error(f"Error logging album scan: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
 
 def get_recent_album_scans(limit: int = 10):
     """

@@ -1873,7 +1873,7 @@ def api_scan_logs():
     import re
     
     log_files = {
-        "navidrome": os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"),
+        "navidrome": LOG_PATH,  # Navidrome scans log to main app log
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
         "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
         # Beets auto-import now drives the file-path scan; read its log instead of the old mp3scanner log
