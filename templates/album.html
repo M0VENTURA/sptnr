@@ -42,6 +42,23 @@
             <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
                 <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
             </button>
+            <div class="btn-group" role="group">
+                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
+                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    {% if qbit_config.enabled %}
+                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                        <i class="bi bi-cloud-download"></i> Search qBittorrent
+                    </a></li>
+                    {% endif %}
+                    {% if slskd_config.enabled %}
+                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
+                    </a></li>
+                    {% endif %}
+                </ul>
+            </div>
             <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
                 <button class="btn btn-warning" type="submit" title="Full scan: Navidrome + Popularity + Singles">
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album</span>
@@ -589,5 +606,13 @@
     function applyAlbumGenres(genres) {
         alert('Applied Discogs Genres: ' + genres);
     }
-</script>
+    function openQbitSearchAlbum(artist, album) {
+        const query = `${artist} ${album}`;
+        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+    }
+
+    function openSlskdSearchAlbum(artist, album) {
+        const query = `${artist} ${album}`;
+        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+    }</script>
 {% endblock %}

@@ -26,7 +26,7 @@ import io
 from functools import wraps
 from check_db import update_schema
 from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
-from start import create_retry_session, rate_artist, build_artist_index
+from start import create_retry_session, rate_artist, build_artist_index, save_to_db
 from scan_helpers import scan_artist_to_db
 from popularity import scan_popularity as run_popularity_scan
 from api_clients.slskd import SlskdClient
@@ -947,6 +947,107 @@ def api_artist_missing_releases():
         "total_musicbrainz": len(mb_releases),
         "existing_albums": existing_albums,
     })
+
+
+@app.route("/api/artist/import-release", methods=["POST"])
+def api_import_release():
+    """Import a MusicBrainz release with full tracklisting to the database."""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    release_id = data.get("release_id", "").strip()
+    title = data.get("title", "").strip()
+    
+    if not artist or not release_id or not title:
+        return jsonify({"error": "Artist, release_id, and title are required"}), 400
+    
+    try:
+        # Fetch release details from MusicBrainz including media and recordings
+        mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
+        headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
+        response = requests.get(
+            mb_url,
+            params={
+                "fmt": "json",
+                "inc": "recordings+artist-relations+release-groups"
+            },
+            headers=headers,
+            timeout=15
+        )
+        response.raise_for_status()
+        release_data = response.json()
+        
+        if not release_data:
+            return jsonify({"error": "Release not found on MusicBrainz"}), 404
+        
+        # Extract media and tracks
+        media = release_data.get("media", [])
+        if not media:
+            return jsonify({"error": "Release has no media/tracks"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        imported_count = 0
+        
+        # Get year from release-date
+        year = release_data.get("date", "")
+        if year:
+            year = year[:4]
+        
+        # Process each track from all media (discs)
+        for disc_idx, disc in enumerate(media, start=1):
+            disc_number = disc.get("position", disc_idx)
+            tracks_list = disc.get("tracks", [])
+            
+            for track_idx, track in enumerate(tracks_list, start=1):
+                recording = track.get("recording", {})
+                track_title = recording.get("title") or track.get("title") or "Unknown"
+                duration = recording.get("length")
+                mbid = recording.get("id", "")
+                
+                # Build track record
+                track_record = {
+                    "id": recording.get("id", f"{release_id}_{disc_number}_{track_idx}"),
+                    "title": track_title,
+                    "artist": artist,
+                    "album": title,
+                    "track_number": track_idx,
+                    "disc_number": disc_number,
+                    "duration": duration,
+                    "year": year,
+                    "mbid": mbid,
+                    "score": 0.0,
+                    "spotify_score": 0,
+                    "lastfm_score": 0,
+                    "listenbrainz_score": 0,
+                    "age_score": 0,
+                    "genres": [],
+                    "file_path": None,
+                    "stars": 0,
+                    "last_scanned": datetime.now().isoformat(),
+                }
+                
+                # Insert or update track in database
+                save_to_db(track_record)
+                imported_count += 1
+        
+        conn.close()
+        
+        logging.info(f"[IMPORT] Imported {imported_count} tracks from '{title}' by {artist} (MB ID: {release_id})")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Imported {imported_count} tracks from '{title}'",
+            "tracks_imported": imported_count,
+            "artist": artist,
+            "album": title
+        })
+        
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"[IMPORT] MusicBrainz API error: {e}")
+        return jsonify({"error": f"MusicBrainz API error: {e.response.status_code}"}), 500
+    except Exception as e:
+        logging.error(f"[IMPORT] Error importing release: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/album/<path:artist>/<path:album>")

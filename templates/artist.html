@@ -14,7 +14,7 @@
 
   {% if qbit_config.enabled %}
     <div class="flex-grow-1">
-      <h1 class="h2 mb-2">
+      <h1 class="h2 mb-2" data-artist-name="{{ artist_name }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
       </h1>
       <p class="text-muted mb-0">Artist overview</p>
@@ -545,8 +545,8 @@ function renderMissingCategory(containerId, countId, items, emptyText) {
     const typeLabel = item.primary_type || item.category || 'Release';
     return `
       <div class="col-12 col-md-6 col-lg-4 col-xl-3">
-        <div class="missing-release-card h-100">
-          <div class="d-flex gap-3">
+        <div class="missing-release-card h-100 d-flex flex-column">
+          <div class="d-flex gap-3 flex-grow-1">
             <div class="missing-release-art">
               <img src="${escapeHtml(art)}" alt="${escapeHtml(item.title || 'Release art')}" onerror="this.onerror=null;this.src='${fallbackArt}';">
             </div>
@@ -555,10 +555,58 @@ function renderMissingCategory(containerId, countId, items, emptyText) {
               <div class="text-muted small">${escapeHtml(typeLabel)}${year ? ' · ' + escapeHtml(year) : ''}</div>
             </div>
           </div>
+          <div class="mt-2 d-flex gap-2">
+            <button class="btn btn-sm btn-primary flex-grow-1" onclick="importMissingRelease('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
+              <i class="bi bi-download"></i> Import
+            </button>
+            <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(item.title)}')" title="Search qBittorrent">
+              <i class="bi bi-search"></i>
+            </button>
+          </div>
         </div>
       </div>
     `;
   }).join('');
+}
+
+function importMissingRelease(artistName, releaseId, releaseTitle) {
+  if (!confirm(`Import all tracks from "${releaseTitle}"?`)) return;
+  
+  const btn = event.target.closest('button');
+  const originalContent = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  fetch('/api/artist/import-release', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      artist: artistName,
+      release_id: releaseId,
+      title: releaseTitle
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert(`✅ ${data.message}`);
+      // Refresh the page to show imported album
+      setTimeout(() => {
+        location.reload();
+      }, 1000);
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to import'));
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = originalContent;
+  });
 }
 
 function checkMissingReleases(artistName) {
