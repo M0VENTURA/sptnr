@@ -508,7 +508,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
         const rows = scans.map(scan => {
             const artistUrl = `/artist/${encodeURIComponent(scan.artist)}`;
-            const albumUrl = `/artist/${encodeURIComponent(scan.artist)}/album/${encodeURIComponent(scan.album)}`;
+            const albumUrl = `/album/${encodeURIComponent(scan.artist)}/${encodeURIComponent(scan.album)}`;
             let badge = `<span class="badge bg-secondary">${scan.scan_type}</span>`;
             if (scan.scan_type === 'navidrome') {
                 badge = '<span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>';
