@@ -5089,6 +5089,35 @@ def playlist_import():
                          slskd_enabled=slskd_enabled)
 
 
+@app.route("/api/playlist/list", methods=["GET"])
+def api_playlist_list():
+    """API endpoint to list user's Spotify playlists"""
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+        
+        if not spotify_config.get("enabled"):
+            return jsonify({"error": "Spotify not enabled"}), 400
+        
+        # Get Spotify credentials
+        client_id = spotify_config.get("client_id", "")
+        client_secret = spotify_config.get("client_secret", "")
+        
+        if not client_id or not client_secret:
+            return jsonify({"error": "Spotify credentials not configured"}), 400
+        
+        try:
+            from api_clients.spotify import get_spotify_user_playlists
+            playlists = get_spotify_user_playlists(client_id, client_secret)
+            return jsonify({"playlists": playlists})
+        except Exception as e:
+            logging.error(f"Failed to fetch Spotify playlists: {e}")
+            return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        logging.error(f"Playlist list error: {str(e)}")
+        return jsonify({"error": "Failed to fetch playlists"}), 500
+
+
 @app.route("/api/playlist/import", methods=["POST"])
 def api_playlist_import():
     """API endpoint to import a Spotify playlist and match to Navidrome database"""

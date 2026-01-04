@@ -66,6 +66,42 @@
   </div>
 </div>
 
+<!-- Your Spotify Playlists Section -->
+<div class="row mb-4">
+  <div class="col-12">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+          <i class="bi bi-spotify"></i> Your Spotify Playlists
+        </h5>
+        <button class="btn btn-sm btn-outline-secondary" id="refreshPlaylistsBtn" onclick="loadSpotifyPlaylists()">
+          <i class="bi bi-arrow-clockwise"></i> Refresh
+        </button>
+      </div>
+      <div class="card-body">
+        <div id="playlistsLoading" class="text-center text-muted py-4">
+          <div class="spinner-border spinner-border-sm me-2" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+          Loading your Spotify playlists...
+        </div>
+        <div id="playlistsContainer" style="display: none;">
+          <div class="row g-3" id="playlistsGrid">
+            <!-- Playlists will be inserted here -->
+          </div>
+        </div>
+        <div id="playlistsError" style="display: none;" class="alert alert-warning">
+          <i class="bi bi-exclamation-triangle"></i>
+          <span id="playlistsErrorText">Unable to load playlists. Make sure Spotify is configured.</span>
+        </div>
+        <div id="playlistsEmpty" style="display: none;" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No playlists found in your Spotify account.
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
 <!-- Results Section -->
 <div id="resultsSection" style="display: none;">
   <!-- Summary Cards -->
@@ -982,6 +1018,93 @@
     div.textContent = text;
     return div.innerHTML;
   }
+
+  // Load Spotify playlists on page load
+  async function loadSpotifyPlaylists() {
+    const container = document.getElementById('playlistsContainer');
+    const loading = document.getElementById('playlistsLoading');
+    const error = document.getElementById('playlistsError');
+    const empty = document.getElementById('playlistsEmpty');
+    const grid = document.getElementById('playlistsGrid');
+    const refreshBtn = document.getElementById('refreshPlaylistsBtn');
+
+    loading.style.display = 'block';
+    container.style.display = 'none';
+    error.style.display = 'none';
+    empty.style.display = 'none';
+    refreshBtn.disabled = true;
+
+    try {
+      const response = await fetch('/api/playlist/list');
+      const data = await response.json();
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Failed to load playlists');
+      }
+
+      const playlists = data.playlists || [];
+
+      if (playlists.length === 0) {
+        loading.style.display = 'none';
+        empty.style.display = 'block';
+        return;
+      }
+
+      // Build playlist cards
+      grid.innerHTML = '';
+      playlists.forEach(playlist => {
+        const card = document.createElement('div');
+        card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+        card.innerHTML = `
+          <div class="card h-100 playlist-card">
+            ${playlist.image_url ? `<img src="${escapeHtml(playlist.image_url)}" class="card-img-top" alt="${escapeHtml(playlist.name)}" style="height: 150px; object-fit: cover;">` : `<div class="card-img-top bg-secondary" style="height: 150px; display: flex; align-items: center; justify-content: center;"><i class="bi bi-music-note" style="font-size: 2rem; color: white;"></i></div>`}
+            <div class="card-body d-flex flex-column">
+              <h6 class="card-title text-truncate" title="${escapeHtml(playlist.name)}">${escapeHtml(playlist.name)}</h6>
+              ${playlist.owner ? `<small class="text-muted">by ${escapeHtml(playlist.owner)}</small>` : ''}
+              <small class="text-muted mt-2">
+                <i class="bi bi-music-note-list"></i> ${playlist.track_count} track${playlist.track_count !== 1 ? 's' : ''}
+              </small>
+              ${playlist.description ? `<small class="text-muted mt-2 text-truncate" title="${escapeHtml(playlist.description)}">${escapeHtml(playlist.description)}</small>` : ''}
+              <button class="btn btn-sm btn-primary mt-auto" onclick="importPlaylistFromSpotify('${escapeHtml(playlist.id)}', '${escapeHtml(playlist.name)}')">
+                <i class="bi bi-download"></i> Import
+              </button>
+            </div>
+          </div>
+        `;
+        grid.appendChild(card);
+      });
+
+      loading.style.display = 'none';
+      container.style.display = 'block';
+    } catch (err) {
+      loading.style.display = 'none';
+      error.style.display = 'block';
+      document.getElementById('playlistsErrorText').textContent = err.message || 'Unable to load playlists. Make sure Spotify is configured.';
+    } finally {
+      refreshBtn.disabled = false;
+    }
+  }
+
+  // Import a playlist by clicking the quick import button
+  function importPlaylistFromSpotify(playlistId, playlistName) {
+    // Set the URL field to the Spotify playlist link
+    document.getElementById('spotifyUrl').value = `https://open.spotify.com/playlist/${playlistId}`;
+    
+    // Set the playlist name
+    document.getElementById('playlistName').value = playlistName;
+    
+    // Scroll to the form
+    document.getElementById('spotifyUrl').scrollIntoView({ behavior: 'smooth', block: 'center' });
+    
+    // Focus and highlight the form
+    document.getElementById('spotifyUrl').focus();
+    document.getElementById('spotifyUrl').select();
+  }
+
+  // Load playlists when page loads
+  document.addEventListener('DOMContentLoaded', function() {
+    loadSpotifyPlaylists();
+  });
 </script>
 
 {% endblock %}

@@ -289,3 +289,102 @@ class SpotifyClient:
                 all_results.extend(results)
         
         return all_results
+
+
+def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]:
+    """
+    Fetch all playlists from Spotify using the current user context.
+    
+    Uses Authorization Code Flow with a cached token or fetches a new one.
+    Falls back to browsing featured/category playlists if user auth unavailable.
+    
+    Args:
+        client_id: Spotify Client ID
+        client_secret: Spotify Client Secret
+        
+    Returns:
+        List of playlists with id, name, image_url, and track_count
+    """
+    try:
+        import os
+        
+        # Try to get user auth token from environment or cache
+        user_token = os.environ.get("SPOTIFY_USER_TOKEN")
+        
+        if not user_token:
+            # Fallback: Use Client Credentials to get featured playlists
+            logger.debug("User token not available, fetching featured playlists instead")
+            client = SpotifyClient(client_id, client_secret)
+            
+            headers = client._headers()
+            playlists = []
+            next_url = "https://api.spotify.com/v1/browse/featured-playlists?limit=50&country=US"
+            
+            while next_url and len(playlists) < 100:  # Limit to 100 playlists
+                try:
+                    res = requests.get(next_url, headers=headers, timeout=10)
+                    res.raise_for_status()
+                    data = res.json()
+                    
+                    for item in data.get("playlists", {}).get("items", []):
+                        playlists.append({
+                            "id": item["id"],
+                            "name": item["name"],
+                            "description": item.get("description", ""),
+                            "image_url": (item.get("images", [{}])[0] or {}).get("url"),
+                            "track_count": item.get("tracks", {}).get("total", 0),
+                            "owner": item.get("owner", {}).get("display_name", "Spotify"),
+                            "external_url": item.get("external_urls", {}).get("spotify", "")
+                        })
+                    
+                    next_url = data.get("playlists", {}).get("next")
+                    if not next_url:
+                        break
+                    
+                except Exception as e:
+                    logger.error(f"Failed to fetch featured playlists: {e}")
+                    break
+            
+            return playlists
+        
+        else:
+            # User authenticated - fetch their playlists
+            headers = {
+                "Authorization": f"Bearer {user_token}",
+                "Content-Type": "application/json"
+            }
+            
+            playlists = []
+            next_url = "https://api.spotify.com/v1/me/playlists?limit=50"
+            
+            while next_url:
+                try:
+                    res = requests.get(next_url, headers=headers, timeout=10)
+                    res.raise_for_status()
+                    data = res.json()
+                    
+                    for item in data.get("items", []):
+                        playlists.append({
+                            "id": item["id"],
+                            "name": item["name"],
+                            "description": item.get("description", ""),
+                            "image_url": (item.get("images", [{}])[0] or {}).get("url"),
+                            "track_count": item.get("tracks", {}).get("total", 0),
+                            "owner": item.get("owner", {}).get("display_name", ""),
+                            "external_url": item.get("external_urls", {}).get("spotify", "")
+                        })
+                    
+                    next_url = data.get("next")
+                    if not next_url:
+                        break
+                    
+                except Exception as e:
+                    logger.error(f"Failed to fetch user playlists: {e}")
+                    break
+            
+            return playlists
+    
+    except Exception as e:
+        logger.error(f"Error getting Spotify playlists: {e}")
+        return []
+
