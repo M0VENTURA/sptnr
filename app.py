@@ -1166,10 +1166,25 @@ def api_scan_all_missing_releases():
                     # Fetch MusicBrainz releases
                     mb_releases = _fetch_musicbrainz_releases(artist_name)
                     
-                    # Check for missing releases
+                    # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
                         norm_title = _normalize_release_title(rg.get("title"))
-                        if not norm_title or norm_title in existing_norm:
+                        cover_art_url = rg.get("cover_art_url", "")
+                        
+                        # If album exists, update its cover art
+                        if norm_title and norm_title in existing_norm:
+                            if cover_art_url:
+                                # Update cover_art_url for all tracks in this album
+                                original_album = next((a for a in existing_albums if _normalize_release_title(a) == norm_title), None)
+                                if original_album:
+                                    cursor.execute("""
+                                        UPDATE tracks 
+                                        SET cover_art_url = ?
+                                        WHERE artist = ? AND album = ?
+                                    """, (cover_art_url, artist_name, original_album))
+                            continue
+                        
+                        if not norm_title:
                             continue
                         
                         # Skip compilations
@@ -1195,7 +1210,7 @@ def api_scan_all_missing_releases():
                             rg.get("title", ""),
                             rg.get("primary_type", ""),
                             rg.get("first_release_date", ""),
-                            rg.get("cover_art_url", ""),
+                            cover_art_url,
                             category
                         ))
                         total_missing += 1
@@ -4486,9 +4501,42 @@ def api_metadata():
 
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
-    """Get album art from Navidrome or MP3 files"""
+    """Get album art from database, Navidrome, or MP3 files"""
     try:
-        # First try to get from Navidrome
+        from urllib.parse import unquote
+        artist = unquote(artist)
+        album = unquote(album)
+        
+        # First, check if we have cover_art_url in database
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT cover_art_url FROM tracks 
+                WHERE artist = ? AND album = ? 
+                AND cover_art_url IS NOT NULL 
+                LIMIT 1
+            """, (artist, album))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result and result[0]:
+                cover_art_url = result[0]
+                # Fetch and return the image from MusicBrainz
+                try:
+                    import requests
+                    resp = requests.get(cover_art_url, timeout=10)
+                    if resp.status_code == 200:
+                        return send_file(
+                            io.BytesIO(resp.content),
+                            mimetype='image/jpeg'
+                        )
+                except:
+                    pass  # Fall through to other methods
+        except:
+            pass
+        
+        # Try to get from Navidrome
         cfg, _ = _read_yaml(CONFIG_PATH)
         nav_users = cfg.get("navidrome_users", [])
         if not nav_users:
@@ -5565,10 +5613,8 @@ if __name__ == "__main__":
 
     @app.route("/api/album/musicbrainz", methods=["POST"])
     def api_album_musicbrainz_lookup():
-        """Lookup album on MusicBrainz for better metadata"""
+        """Lookup album on MusicBrainz for multiple matches (Picard-style)"""
         try:
-            from api_clients.musicbrainz import MusicBrainzClient
-            
             data = request.get_json()
             album = data.get("album", "")
             artist = data.get("artist", "")
@@ -5576,20 +5622,67 @@ if __name__ == "__main__":
             if not album or not artist:
                 return jsonify({"error": "Missing album or artist"}), 400
             
-            # Get suggested MBID using the client
-            mb_client = MusicBrainzClient(enabled=True)
-            mbid, confidence = mb_client.get_suggested_mbid(album, artist, limit=5)
+            # Search MusicBrainz for release groups
+            query = f'release:"{album}" AND artist:"{artist}"'
+            headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
             
-            if not mbid:
-                return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
-            
-            return jsonify({
-                "results": [{
-                    "mbid": mbid,
-                    "confidence": confidence,
-                    "source": "musicbrainz"
-                }]
-            }), 200
+            try:
+                resp = requests.get(
+                    "https://musicbrainz.org/ws/2/release-group",
+                    params={"query": query, "fmt": "json", "limit": 10},
+                    headers=headers,
+                    timeout=10
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                release_groups = data.get("release-groups", []) or []
+                
+                if not release_groups:
+                    return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
+                
+                # Format results with similarity scores
+                import difflib
+                results = []
+                for rg in release_groups:
+                    rg_id = rg.get("id", "")
+                    rg_title = rg.get("title", "")
+                    primary_type = rg.get("primary-type", "Album")
+                    first_release = rg.get("first-release-date", "")
+                    
+                    # Get artist credit
+                    artist_credit = rg.get("artist-credit", [])
+                    rg_artist = artist_credit[0].get("name", "") if artist_credit else ""
+                    
+                    # Calculate similarity scores
+                    title_similarity = difflib.SequenceMatcher(None, album.lower(), rg_title.lower()).ratio()
+                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rg_artist.lower()).ratio()
+                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+                    
+                    # Get cover art URL
+                    cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250" if rg_id else ""
+                    
+                    results.append({
+                        "mbid": rg_id,
+                        "title": rg_title,
+                        "artist": rg_artist,
+                        "primary_type": primary_type,
+                        "first_release_date": first_release,
+                        "cover_art_url": cover_art_url,
+                        "confidence": round(overall_confidence, 3),
+                        "title_similarity": round(title_similarity, 3),
+                        "artist_similarity": round(artist_similarity, 3),
+                        "source": "musicbrainz"
+                    })
+                
+                # Sort by confidence
+                results.sort(key=lambda x: x["confidence"], reverse=True)
+                
+                return jsonify({"results": results[:10]}), 200
+            except Exception as e:
+                logger = logging.getLogger('sptnr')
+                logger.error(f"MusicBrainz lookup error: {e}")
+                return jsonify({"error": str(e)}), 500
+                
         except Exception as e:
             logger = logging.getLogger('sptnr')
             logger.error(f"MusicBrainz album lookup error: {e}")
@@ -5635,6 +5728,136 @@ if __name__ == "__main__":
         except Exception as e:
             logger = logging.getLogger('sptnr')
             logger.error(f"Discogs lookup error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/album/apply-mbid", methods=["POST"])
+    def api_album_apply_mbid():
+        """Apply MusicBrainz ID and cover art to all tracks in an album"""
+        try:
+            data = request.get_json()
+            artist = data.get("artist", "")
+            album = data.get("album", "")
+            mbid = data.get("mbid", "")
+            cover_art_url = data.get("cover_art_url", "")
+            
+            if not artist or not album:
+                return jsonify({"error": "Missing artist or album"}), 400
+            
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Update all tracks in this album with MBID and cover art
+            updates = []
+            if mbid:
+                updates.append("mbid = ?")
+            if cover_art_url:
+                updates.append("cover_art_url = ?")
+            
+            if not updates:
+                return jsonify({"error": "No data to update"}), 400
+            
+            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
+            params = []
+            if mbid:
+                params.append(mbid)
+            if cover_art_url:
+                params.append(cover_art_url)
+            params.extend([artist, album])
+            
+            cursor.execute(query, params)
+            rows_updated = cursor.rowcount
+            conn.commit()
+            conn.close()
+            
+            return jsonify({
+                "success": True,
+                "message": f"Updated {rows_updated} tracks",
+                "rows_updated": rows_updated
+            }), 200
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"Apply MBID error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/track/musicbrainz", methods=["POST"])
+    def api_track_musicbrainz_lookup():
+        """Lookup track on MusicBrainz for multiple matches (Picard-style)"""
+        try:
+            data = request.get_json()
+            title = data.get("title", "")
+            artist = data.get("artist", "")
+            
+            if not title or not artist:
+                return jsonify({"error": "Missing title or artist"}), 400
+            
+            # Search MusicBrainz for recordings
+            query = f'recording:"{title}" AND artist:"{artist}"'
+            headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+            
+            try:
+                resp = requests.get(
+                    "https://musicbrainz.org/ws/2/recording",
+                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
+                    headers=headers,
+                    timeout=10
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                recordings = data.get("recordings", []) or []
+                
+                if not recordings:
+                    return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
+                
+                # Format results with similarity scores
+                import difflib
+                results = []
+                for rec in recordings:
+                    rec_id = rec.get("id", "")
+                    rec_title = rec.get("title", "")
+                    rec_length = rec.get("length", 0)  # in milliseconds
+                    
+                    # Get artist credit
+                    artist_credit = rec.get("artist-credit", [])
+                    rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
+                    
+                    # Get releases (albums this appears on)
+                    releases = rec.get("releases", []) or []
+                    release_list = []
+                    for rel in releases[:5]:
+                        release_list.append({
+                            "id": rel.get("id", ""),
+                            "title": rel.get("title", "")
+                        })
+                    
+                    # Calculate similarity scores
+                    title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
+                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
+                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+                    
+                    results.append({
+                        "mbid": rec_id,
+                        "title": rec_title,
+                        "artist": rec_artist,
+                        "length": rec_length,
+                        "releases": release_list,
+                        "confidence": round(overall_confidence, 3),
+                        "title_similarity": round(title_similarity, 3),
+                        "artist_similarity": round(artist_similarity, 3),
+                        "source": "musicbrainz"
+                    })
+                
+                # Sort by confidence
+                results.sort(key=lambda x: x["confidence"], reverse=True)
+                
+                return jsonify({"results": results[:10]}), 200
+            except Exception as e:
+                logger = logging.getLogger('sptnr')
+                logger.error(f"MusicBrainz lookup error: {e}")
+                return jsonify({"error": str(e)}), 500
+                
+        except Exception as e:
+            logger = logging.getLogger('sptnr')
+            logger.error(f"MusicBrainz track lookup error: {e}")
             return jsonify({"error": str(e)}), 500
 
     # ==========================================================================

@@ -555,20 +555,41 @@
             return;
         }
         
-        let html = '';
+        let html = '<div class="list-group">';
         if (source === 'musicbrainz') {
             results.forEach(result => {
+                const confidencePercent = (result.confidence * 100).toFixed(1);
+                const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
+                const year = (result.first_release_date || '').slice(0, 4);
+                
                 html += `
-                    <div class="card">
-                        <div class="card-body">
-                            <h6>MusicBrainz Match</h6>
-                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
-                                <strong>MBID:</strong> <code>${result.mbid}</code><br>
-                                <strong>Confidence:</strong> ${(result.confidence * 100).toFixed(1)}%
-                            </p>
-                            <button class="btn btn-sm btn-primary" onclick="applyAlbumMBID('${result.mbid}')">
-                                <i class="bi bi-check-circle"></i> Apply MBID
-                            </button>
+                    <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem;">
+                        <div class="d-flex gap-3">
+                            ${result.cover_art_url ? `
+                                <img src="${result.cover_art_url}" 
+                                     alt="${result.title}" 
+                                     style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px;"
+                                     onerror="this.style.display='none'">
+                            ` : ''}
+                            <div class="flex-grow-1">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <h6 class="mb-1">${result.title}</h6>
+                                        <small class="text-muted">by ${result.artist}</small>
+                                    </div>
+                                    <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
+                                </div>
+                                <div class="small text-muted mb-2">
+                                    <span class="badge bg-info me-1">${result.primary_type || 'Album'}</span>
+                                    ${year ? `<span class="badge bg-secondary">${year}</span>` : ''}
+                                </div>
+                                <div class="small text-muted mb-2">
+                                    <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
+                                </div>
+                                <button class="btn btn-sm btn-primary" onclick="applyAlbumMBID('${result.mbid}', '${result.title}', '${result.cover_art_url || ''}')">
+                                    <i class="bi bi-check-circle"></i> Select This Match
+                                </button>
+                            </div>
                         </div>
                     </div>
                 `;
@@ -578,7 +599,7 @@
                 const genres = (result.genre || []).join(', ');
                 const styles = (result.style || []).join(', ');
                 html += `
-                    <div class="card mb-2">
+                    <div class="list-group-item">
                         <div class="card-body">
                             <h6>${result.title}</h6>
                             <p class="text-muted mb-2" style="font-size: 0.85rem;">
@@ -595,12 +616,35 @@
                 `;
             });
         }
+        html += '</div>';
         
         resultsDiv.innerHTML = html;
     }
 
-    function applyAlbumMBID(mbid) {
-        alert('Applied Album MBID: ' + mbid);
+    function applyAlbumMBID(mbid, title, coverArtUrl) {
+        // Update all tracks in this album with the MBID and cover art
+        fetch('/api/album/apply-mbid', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: "{{ artist_name }}", 
+                album: "{{ album_name }}",
+                mbid: mbid,
+                cover_art_url: coverArtUrl
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Applied MusicBrainz metadata to album!');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
     }
 
     function applyAlbumGenres(genres) {

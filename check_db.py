@@ -68,7 +68,8 @@ required_columns = {
     "isrc": "TEXT",                         # International Standard Recording Code
     "composer": "TEXT",                     # Composer/songwriter
     "comment": "TEXT",                      # Comment field from file
-    "lyrics": "TEXT"                        # Song lyrics if embedded
+    "lyrics": "TEXT",                       # Song lyrics if embedded
+    "cover_art_url": "TEXT"                 # Album cover art URL from MusicBrainz
 }
 
 def update_schema(db_path):

@@ -76,7 +76,12 @@
                         </div>
                                                 <div class="mb-3">
                             <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
-                            <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.beets_mbid or track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.beets_mbid or track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                                <button class="btn btn-outline-primary" type="button" onclick="lookupTrackMusicBrainz()">
+                                    <i class="bi bi-search"></i> Find
+                                </button>
+                            </div>
                             <div class="form-text">Official MusicBrainz recording ID</div>
                         </div>
                                                 <div class="mb-3">
@@ -767,6 +772,110 @@ function openSlskdSearchTrack(artist, title) {
     const query = `${artist} ${title}`;
     window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
 }
-</script>
 
-{% endblock %}
+function lookupTrackMusicBrainz() {
+    const title = document.getElementById('title').value;
+    const artist = document.getElementById('artist').value;
+    
+    if (!title || !artist) {
+        alert('Please enter both title and artist');
+        return;
+    }
+    
+    // Create modal if it doesn't exist
+    let modal = document.getElementById('trackMBLookupModal');
+    if (!modal) {
+        const modalHTML = `
+            <div class="modal fade" id="trackMBLookupModal" tabindex="-1">
+                <div class="modal-dialog modal-lg modal-dialog-scrollable">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">MusicBrainz Track Lookup</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body" id="trackMBLookupResults">
+                            <div class="spinner-border" role="status">
+                                <span class="visually-hidden">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        document.body.insertAdjacentHTML('beforeend', modalHTML);
+        modal = document.getElementById('trackMBLookupModal');
+    }
+    
+    const resultsDiv = document.getElementById('trackMBLookupResults');
+    resultsDiv.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+    
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    
+    fetch('/api/track/musicbrainz', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ title: title, artist: artist })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+            return;
+        }
+        displayTrackMBResults(data.results);
+    })
+    .catch(error => {
+        resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+    });
+}
+
+function displayTrackMBResults(results) {
+    const resultsDiv = document.getElementById('trackMBLookupResults');
+    
+    if (!results || results.length === 0) {
+        resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+        return;
+    }
+    
+    let html = '<div class="list-group">';
+    results.forEach(result => {
+        const confidencePercent = (result.confidence * 100).toFixed(1);
+        const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
+        const duration = result.length ? Math.floor(result.length / 60000) + ':' + String(Math.floor((result.length % 60000) / 1000)).padStart(2, '0') : '';
+        
+        html += `
+            <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem;">
+                <div class="d-flex justify-content-between align-items-start mb-2">
+                    <div>
+                        <h6 class="mb-1">${result.title}</h6>
+                        <small class="text-muted">by ${result.artist}</small>
+                    </div>
+                    <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
+                </div>
+                ${result.releases && result.releases.length > 0 ? `
+                    <div class="small text-muted mb-2">
+                        <strong>Appears on:</strong> ${result.releases.slice(0, 3).map(r => r.title).join(', ')}
+                    </div>
+                ` : ''}
+                ${duration ? `<div class="small text-muted mb-2"><strong>Duration:</strong> ${duration}</div>` : ''}
+                <div class="small text-muted mb-2">
+                    <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
+                </div>
+                <button class="btn btn-sm btn-primary" onclick="applyTrackMBID('${result.mbid}', '${result.title}')">
+                    <i class="bi bi-check-circle"></i> Select This Match
+                </button>
+            </div>
+        `;
+    });
+    html += '</div>';
+    
+    resultsDiv.innerHTML = html;
+}
+
+function applyTrackMBID(mbid, title) {
+    document.getElementById('mbid').value = mbid;
+    const modal = bootstrap.Modal.getInstance(document.getElementById('trackMBLookupModal'));
+    modal.hide();
+    alert('✅ MBID applied! Remember to save your changes.');
+}
