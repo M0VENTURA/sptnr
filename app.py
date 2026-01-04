@@ -176,19 +176,7 @@ def _start_boot_navidrome_import():
             artists = list(artist_map.items())
             total = len(artists)
             for idx, (artist_name, info) in enumerate(artists, start=1):
-                scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False)
-                _write_progress_file(
-                    progress_path,
-                    "navidrome_scan",
-                    True,
-                    {
-                        "status": "running",
-                        "processed_artists": idx,
-                        "total_artists": total,
-                        "current_artist": artist_name,
-                        "source": "boot",
-                    },
-                )
+                scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
             _write_progress_file(progress_path, "navidrome_scan", False, {"status": "complete", "exit_code": 0, "source": "boot"})
             logging.info("[BOOT] Navidrome import-only scan completed")
         except Exception as e:
@@ -2298,18 +2286,7 @@ def scan_navidrome():
                     artists = list(artist_map.items())
                     total = len(artists)
                     for idx, (artist_name, info) in enumerate(artists, start=1):
-                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False)
-                        _write_progress_file(
-                            nav_progress_file,
-                            "navidrome_scan",
-                            True,
-                            {
-                                "status": "running",
-                                "processed_artists": idx,
-                                "total_artists": total,
-                                "current_artist": artist_name,
-                            },
-                        )
+                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
                     _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
                 except Exception as e:

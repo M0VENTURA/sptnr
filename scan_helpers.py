@@ -42,17 +42,17 @@ def _now_local_iso() -> str:
         return datetime.now().isoformat()
 
 
-def save_navidrome_scan_progress(current_artist, current_album, scanned_albums, total_albums):
-    """Save Navidrome scan progress to JSON file"""
+def save_navidrome_scan_progress(current_artist, processed_artists, total_artists):
+    """Save Navidrome scan progress to JSON file (using artist list for progress tracking)"""
     try:
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
         progress = {
             "current_artist": current_artist,
-            "current_album": current_album,
-            "scanned_albums": scanned_albums,
-            "total_albums": total_albums,
+            "processed_artists": processed_artists,
+            "total_artists": total_artists,
             "is_running": True,
-            "scan_type": "navidrome_scan"
+            "scan_type": "navidrome_scan",
+            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0
         }
         with open(progress_file, 'w') as f:
             json.dump(progress, f, indent=2)
@@ -60,8 +60,17 @@ def save_navidrome_scan_progress(current_artist, current_album, scanned_albums, 
         logging.error(f"Failed to save Navidrome scan progress: {e}")
 
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False):
-    """Scan a single artist from Navidrome and persist tracks to DB."""
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, processed_artists: int = 0, total_artists: int = 0):
+    """Scan a single artist from Navidrome and persist tracks to DB.
+    
+    Args:
+        artist_name: Name of the artist to scan
+        artist_id: Navidrome ID of the artist
+        verbose: Enable verbose logging
+        force: Force re-import even if cached
+        processed_artists: Current artist index (1-based) for progress tracking
+        total_artists: Total number of artists for progress tracking
+    """
     try:
         # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
@@ -99,15 +108,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             print(f"Scanning artist: {artist_name} ({len(albums)} albums)")
             logging.info(f"Scanning artist {artist_name} ({len(albums)} albums)")
 
+        # Save artist-level progress
+        if total_artists > 0:
+            save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
+
         total_albums = len(albums)
         for alb_idx, alb in enumerate(albums):
             album_name = alb.get("name") or ""
             album_id = alb.get("id")
             if not album_id:
                 continue
-
-            # Save progress
-            save_navidrome_scan_progress(artist_name, album_name, alb_idx, total_albums)
 
             try:
                 tracks = fetch_album_tracks(album_id)
