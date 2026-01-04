@@ -86,7 +86,7 @@ function startStream() {
         .then(response => response.json())
         .then(data => {
             const logOutput = document.getElementById('logOutput');
-            logOutput.textContent = data.lines.join('');
+            logOutput.textContent = data.lines.join('\n');
             logOutput.scrollTop = logOutput.scrollHeight;
         });
     
@@ -97,7 +97,8 @@ function startStream() {
         if (isPaused) return; // Don't update if paused
         
         const logOutput = document.getElementById('logOutput');
-        logOutput.textContent += event.data;
+        const line = event.data.endsWith('\n') ? event.data : event.data + '\n';
+        logOutput.textContent += line;
         logOutput.scrollTop = logOutput.scrollHeight;
     };
     
