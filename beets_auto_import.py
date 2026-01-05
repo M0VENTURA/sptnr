@@ -532,6 +532,7 @@ class BeetsAutoImporter:
                             beets_year = ?,
                             beets_import_date = ?,
                             beets_path = ?,
+                            file_path = ?,
                             album_folder = ?
                         WHERE id = ?
                     """, (
@@ -542,6 +543,7 @@ class BeetsAutoImporter:
                         track['year'],
                         datetime.fromtimestamp(track['added']).strftime('%Y-%m-%dT%H:%M:%S') if track['added'] else None,
                         beets_path,
+                        beets_path,  # Also set file_path to match beets_path for display
                         album_folder,
                         match[0]
                     ))
