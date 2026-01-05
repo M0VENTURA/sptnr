@@ -22,9 +22,14 @@ function loadEnvVars() {
     Object.entries(vars).forEach(([key, value]) => {
       const col = document.createElement('div');
       col.className = 'col-12 col-md-6';
+      let help = '';
+      if (["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"].includes(key)) {
+        help = `<div class='form-text'>PostgreSQL connection (${key.replace('PG_', '').toLowerCase()})</div>`;
+      }
       col.innerHTML = `
         <label class="form-label">${key}</label>
         <input type="text" class="form-control monospace" name="${key}" value="${value || ''}" autocomplete="off">
+        ${help}
       `;
       container.appendChild(col);
     });

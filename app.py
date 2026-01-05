@@ -1,3 +1,30 @@
+import re
+# --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
+# List of all environment variables used in the project (compiled from codebase)
+ALL_ENV_VARS = [
+    "SECRET_KEY", "CONFIG_PATH", "DB_PATH", "LOG_PATH", "APP_DIR", "SPTNR_DISABLE_BOOT_ND_IMPORT", "SPTNR_SKIP_SINGLES",
+    "MUSIC_ROOT", "MUSIC_FOLDER", "DOWNLOADS_DIR", "POPULARITY_LOG_PATH", "POPULARITY_LOG_STDOUT", "POPULARITY_PROGRESS_FILE",
+    "NAVIDROME_PROGRESS_FILE", "SINGLES_PROGRESS_FILE", "PROGRESS_FILE", "TIMEZONE", "TZ", "SPOTIFY_USER_TOKEN",
+    "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "LISTENBRAINZ_WEIGHT", "AGE_WEIGHT",
+    "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
+    "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
+    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY",
+    "PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"
+]
+
+def get_all_env_vars():
+    # Return a dict of all relevant env vars and their current values
+    return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
+
+# ...existing code...
+
+# Place these routes after app = Flask(__name__)
+
+@app.route("/config/env", methods=["GET"])
+def config_env_vars():
+    """Return all relevant environment variables and their current values as JSON."""
+    return jsonify(get_all_env_vars())
+
 @app.route("/config/env", methods=["POST"])
 def config_env_vars_post():
     """Update environment variables from config page."""
@@ -11,27 +38,6 @@ def config_env_vars_post():
         return jsonify({"success": True, "updated": changed})
     except Exception as e:
         return jsonify({"success": False, "error": str(e)}), 400
-import re
-# --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
-# List of all environment variables used in the project (compiled from codebase)
-ALL_ENV_VARS = [
-    "SECRET_KEY", "CONFIG_PATH", "DB_PATH", "LOG_PATH", "APP_DIR", "SPTNR_DISABLE_BOOT_ND_IMPORT", "SPTNR_SKIP_SINGLES",
-    "MUSIC_ROOT", "MUSIC_FOLDER", "DOWNLOADS_DIR", "POPULARITY_LOG_PATH", "POPULARITY_LOG_STDOUT", "POPULARITY_PROGRESS_FILE",
-    "NAVIDROME_PROGRESS_FILE", "SINGLES_PROGRESS_FILE", "PROGRESS_FILE", "TIMEZONE", "TZ", "SPOTIFY_USER_TOKEN",
-    "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "LISTENBRAINZ_WEIGHT", "AGE_WEIGHT",
-    "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
-    "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
-    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY"
-]
-
-def get_all_env_vars():
-    # Return a dict of all relevant env vars and their current values
-    return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
-
-@app.route("/config/env", methods=["GET"])
-def config_env_vars():
-    """Return all relevant environment variables and their current values as JSON."""
-    return jsonify(get_all_env_vars())
 #!/usr/bin/env python3
 """
 Sptnr Web UI - Flask application for managing music ratings and scans
@@ -39,6 +45,8 @@ Sptnr Web UI - Flask application for managing music ratings and scans
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
 import sqlite3
+import psycopg2
+import psycopg2.extras
 from contextlib import closing
 import yaml
 import os
@@ -80,12 +88,20 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
-# Paths
+
+# Database connection settings
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 LOG_PATH = os.environ.get("LOG_PATH", "/config/app.log")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(APP_DIR, "config", "config.yaml")
+
+# PostgreSQL connection info from environment
+PG_HOST = os.environ.get("PG_HOST", "")
+PG_PORT = os.environ.get("PG_PORT", "5432")
+PG_USER = os.environ.get("PG_USER", "")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
+PG_DATABASE = os.environ.get("PG_DATABASE", "")
 
 # Ensure expected log files exist so the log viewer doesn't 404
 def _ensure_log_file(path: str):
@@ -492,25 +508,36 @@ def enforce_setup_wizard():
 # Track if schema has been updated this session
 _schema_updated = False
 
+
 def get_db():
-    """Get database connection with WAL mode for better concurrency"""
+    """Get a database connection (PostgreSQL if configured, else SQLite)."""
     global _schema_updated
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-    
-    # Ensure schema is up-to-date (only once per session)
-    if not _schema_updated:
-        try:
-            update_schema(DB_PATH)
-            _schema_updated = True
-        except Exception as e:
-            print(f"⚠️ Database schema update warning: {e}")
-    
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    if PG_HOST and PG_USER and PG_DATABASE:
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host=PG_HOST,
+            port=PG_PORT,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            dbname=PG_DATABASE,
+            cursor_factory=psycopg2.extras.RealDictCursor
+        )
+        return conn
+    else:
+        # Fallback to SQLite
+        db_dir = os.path.dirname(DB_PATH)
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        if not _schema_updated:
+            try:
+                update_schema(DB_PATH)
+                _schema_updated = True
+            except Exception as e:
+                print(f"⚠️ Database schema update warning: {e}")
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        return conn
 
 
 @app.route("/setup", methods=["GET", "POST"])
