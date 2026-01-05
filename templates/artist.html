@@ -32,6 +32,9 @@
       <button class="btn btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
         <i class="bi bi-flag"></i> <span class="d-none d-sm-inline">Missing</span>
       </button>
+      <button class="btn btn-outline-warning" onclick="updateArtistAlbumsWithBeets('{{ artist_name }}')" title="Update all albums with beets (write tags and organize files)">
+        <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
+      </button>
       {% if qbit_config.enabled and qbit_config.web_url %}
       <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>

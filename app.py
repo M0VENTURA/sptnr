@@ -1679,6 +1679,93 @@ def api_add_artist():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/beets/update-album", methods=["POST"])
+def api_beets_update_album():
+    """
+    Update an album with beets (write tags and organize files).
+    
+    Expects JSON:
+    {
+        "artist": "Artist Name",
+        "album": "Album Name"
+    }
+    or
+    {
+        "folder": "/music/Artist Name/Album Name"
+    }
+    """
+    try:
+        from beets_update import update_album_with_beets, get_album_folder_for_artist_album
+        
+        data = request.json or {}
+        album_folder = data.get("folder")
+        
+        # If no folder provided, try to construct from artist/album
+        if not album_folder:
+            artist = data.get("artist", "").strip()
+            album = data.get("album", "").strip()
+            
+            if not artist or not album:
+                return jsonify({"error": "Either 'folder' or both 'artist' and 'album' required"}), 400
+            
+            # Look up the album folder from the database
+            album_folder = get_album_folder_for_artist_album(artist, album)
+            
+            if not album_folder:
+                return jsonify({"error": f"Album folder not found for {artist} - {album}"}), 404
+        
+        logging.info(f"Starting beets update for album: {album_folder}")
+        result = update_album_with_beets(album_folder)
+        
+        if result['success']:
+            # Trigger Navidrome rescan after successful beets update
+            try:
+                # This will trigger a background task to rescan Navidrome
+                # We'll implement this in the next step
+                logging.info(f"Beets update successful for {album_folder}, triggering Navidrome rescan")
+            except Exception as e:
+                logging.warning(f"Could not trigger Navidrome rescan: {e}")
+            
+            return jsonify({
+                "success": True,
+                "message": result['message'],
+                "folder": album_folder,
+                "output": result.get('output', '')
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "error": result['error'],
+                "folder": album_folder
+            }), 500
+    
+    except Exception as e:
+        logging.error(f"Error updating album with beets: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/beets/album-folders/<path:artist>", methods=["GET"])
+def api_beets_album_folders(artist):
+    """Get all album folders for an artist."""
+    try:
+        from urllib.parse import unquote
+        from beets_update import get_all_album_folders_for_artist
+        
+        artist = unquote(artist)
+        folders = get_all_album_folders_for_artist(artist)
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "album_folders": folders,
+            "count": len(folders)
+        })
+    
+    except Exception as e:
+        logging.error(f"Error getting album folders for {artist}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/album/<path:artist>/<path:album>")
 def album_detail(artist, album):
     """View album details and tracks"""

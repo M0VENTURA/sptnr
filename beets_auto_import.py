@@ -92,15 +92,99 @@ class BeetsAutoImporter:
     def __init__(self, music_path: str = MUSIC_PATH, config_path: str = CONFIG_PATH):
         self.music_path = Path(music_path)
         self.config_path = Path(config_path)
-        self.beets_config = self.config_path / "beetsconfig.yaml"
+        self.beets_config_readonly = self.config_path / "read_config.yml"  # Read-only import config
+        self.beets_config_update = self.config_path / "update_config.yml"  # Update/write config
+        self.beets_config = self.beets_config_readonly  # Default to read-only
         self.beets_db = Path(BEETS_DB_PATH)
         self.sptnr_db = Path(DB_PATH)
         
         # Ensure beets database directory exists
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
         
-        # Ensure beets config exists with safe defaults
-        self._create_default_config_if_missing()
+        # Ensure beets configs exist with safe defaults
+        self._create_default_configs_if_missing()
+    
+    def _create_default_configs_if_missing(self):
+        """Create default beets config files if they don't exist."""
+        # Read-only config for importing
+        self._create_config_file(self.beets_config_readonly, readonly=True)
+        # Update config for writing tags and organizing files
+        self._create_config_file(self.beets_config_update, readonly=False)
+    
+    def _create_config_file(self, config_path: Path, readonly: bool = True):
+        """Create a beets config file if it doesn't exist or is empty."""
+        try:
+            # Check if config file exists and has content
+            if config_path.exists() and config_path.stat().st_size > 0:
+                with open(config_path, 'r') as f:
+                    content = f.read().strip()
+                    if content and content != '{}':
+                        # File has valid content, skip
+                        return
+            
+            logger.info(f"Creating beets config at {config_path} (readonly={readonly})")
+            
+            if readonly:
+                config = {
+                    "directory": str(self.music_path),
+                    "library": str(self.beets_db),
+                    "import": {
+                        "autotag": True,
+                        "copy": False,
+                        "write": False,
+                        "incremental": True,
+                        "log": str(self.config_path / "beets_import.log"),
+                        "resume": "no",
+                        "quiet": False
+                    },
+                    "musicbrainz": {
+                        "enabled": True
+                    },
+                    "plugins": ["duplicates", "info"]
+                }
+            else:
+                config = {
+                    "directory": str(self.music_path),
+                    "library": str(self.beets_db),
+                    "import": {
+                        "autotag": True,
+                        "copy": False,
+                        "write": True,
+                        "incremental": True,
+                        "resume": "no",
+                        "quiet": False
+                    },
+                    "musicbrainz": {
+                        "enabled": True
+                    },
+                    "item_fields": {
+                        "disc_and_track": "u'%d%02d' % (disc, track)"
+                    },
+                    "paths": {
+                        "default": "$albumartist/$year - $album/$disc_and_track. $artist - $title",
+                        "comp": "Various Artists/$year - $album/$disc_and_track. $artist - $title",
+                        "albumtype:soundtrack": "Soundtrack/$year - $album/$disc_and_track. $artist - $title",
+                        "singleton": "$artist/$year - $title/$track. $artist - $title"
+                    },
+                    "convert": {
+                        "auto": False,
+                        "copy": True,
+                        "format": "mp3",
+                        "bitrate": 320,
+                        "threads": 2,
+                        "dest": "/music/mp3",
+                        "never_convert_lossy": True
+                    },
+                    "plugins": ["duplicates", "info", "convert"]
+                }
+            
+            with open(config_path, 'w') as f:
+                yaml.dump(config, f, default_flow_style=False, sort_keys=False)
+            
+            logger.info(f"Config created successfully at {config_path}")
+        
+        except Exception as e:
+            logger.error(f"Failed to create beets config at {config_path}: {e}")
     
     def _create_default_config_if_missing(self):
         """Create a default beets config file if it doesn't exist or is empty."""
@@ -142,29 +226,20 @@ class BeetsAutoImporter:
         except Exception as e:
             logger.error(f"Failed to create default beets config: {e}")
     
-    def ensure_beets_config(self):
-        """Create or update beets configuration for auto-import."""
-        config = {
-            "directory": str(self.music_path),
-            "library": str(self.beets_db),
-            "import": {
-                "copy": False,  # Don't copy, files are already in /music
-                "write": False,  # Don't modify files (-A mode)
-                "autotag": False,  # Don't auto-tag, just import
-                "resume": "no",  # Don't try to resume - always start fresh to avoid stuck state
-                "incremental": True,  # Only import new/modified files
-                "log": str(self.config_path / "beets_import.log")
-            },
-            "musicbrainz": {
-                "enabled": False  # Disable MusicBrainz lookup when just importing
-            },
-            "plugins": ["duplicates", "info"]
-        }
+    def ensure_beets_config(self, use_update: bool = False):
+        """
+        Ensure beets configuration is up-to-date.
         
-        with open(self.beets_config, 'w') as f:
-            yaml.dump(config, f, default_flow_style=False)
+        Args:
+            use_update: If True, use update_config.yml (write mode); otherwise use read_config.yml
+        """
+        config_file = self.beets_config_update if use_update else self.beets_config_readonly
+        self.beets_config = config_file
         
-        logger.info(f"Created beets config at {self.beets_config}")
+        if not config_file.exists():
+            self._create_config_file(config_file, readonly=not use_update)
+        
+        logger.info(f"Using beets config: {config_file} (readonly={not use_update})")
     
     def get_artists_in_beets(self) -> set:
         """
@@ -217,8 +292,8 @@ class BeetsAutoImporter:
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
         logger.info(f"Beets database directory: {self.beets_db.parent}")
         
-        # Ensure beets config is up-to-date
-        self.ensure_beets_config()
+        # Ensure beets config is up-to-date (use read-only config for import by default)
+        self.ensure_beets_config(use_update=False)
         
         # Determine import path
         if artist_path:
@@ -470,6 +545,10 @@ class BeetsAutoImporter:
                     if isinstance(beets_path, bytes):
                         beets_path = beets_path.decode('utf-8', errors='replace')
                     
+                    # Extract album folder path (parent directory of the track file)
+                    # This is used for selective updates via beets
+                    album_folder = str(Path(beets_path).parent)
+                    
                     # Update sptnr track with beets metadata
                     # Use album_release_group_id from albums table (not items.mb_albumid)
                     sptnr_cursor.execute("""
@@ -480,7 +559,8 @@ class BeetsAutoImporter:
                             beets_album_artist = ?,
                             beets_year = ?,
                             beets_import_date = ?,
-                            beets_path = ?
+                            beets_path = ?,
+                            album_folder = ?
                         WHERE id = ?
                     """, (
                         track['mb_trackid'],
@@ -490,6 +570,7 @@ class BeetsAutoImporter:
                         track['year'],
                         datetime.fromtimestamp(track['added']).strftime('%Y-%m-%dT%H:%M:%S') if track['added'] else None,
                         beets_path,
+                        album_folder,
                         match[0]
                     ))
                     updated_count += 1

@@ -1,0 +1,43 @@
+# Update Beets Configuration for Tag Writing and File Organization
+# Used for updating tags and reorganizing files based on metadata
+# Command: beet -c /config/update_config.yml move path:ALBUM_FOLDER
+
+directory: /music
+library: /config/beets/musiclibrary.db
+
+import:
+  autotag: true
+  copy: false
+  write: true            # Write tags to files
+  incremental: true
+  resume: no
+  quiet: no
+
+musicbrainz:
+  enabled: true
+
+plugins:
+  - duplicates
+  - info
+  - convert
+
+# Custom field for disc_track format (DD##)
+item_fields:
+  disc_and_track: u'%d%02d' % (disc, track)
+
+# File organization paths
+paths:
+  default: $albumartist/$year - $album/$disc_and_track. $artist - $title
+  comp: Various Artists/$year - $album/$disc_and_track. $artist - $title
+  albumtype:soundtrack: Soundtrack/$year - $album/$disc_and_track. $artist - $title
+  singleton: $artist/$year - $title/$track. $artist - $title
+
+# Convert to MP3 (if needed)
+convert:
+  auto: no               # Don't auto-convert on import
+  copy: yes
+  format: mp3
+  bitrate: 320
+  threads: 2
+  dest: /music/mp3
+  never_convert_lossy: yes

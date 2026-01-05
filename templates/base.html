@@ -1274,6 +1274,145 @@
         }
       });
     }
+
+    // Beets update functions
+    function updateAlbumWithBeets(artist, album) {
+      const confirmed = confirm(`Update "${album}" by "${artist}" with beets?\n\nThis will:\n1. Write metadata tags to files\n2. Reorganize files based on metadata\n3. Trigger Navidrome rescan`);
+      
+      if (!confirmed) return;
+      
+      const btn = event.target.closest('button');
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Updating...';
+      btn.disabled = true;
+      
+      fetch('/api/beets/update-album', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          artist: artist,
+          album: album
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          btn.innerHTML = '<i class="bi bi-check-circle"></i> Updated!';
+          btn.classList.remove('btn-outline-warning');
+          btn.classList.add('btn-success');
+          
+          if (typeof showToast === 'function') {
+            showToast('Success', `Album updated with beets: ${data.message}`, 'success');
+          } else {
+            alert('Album updated successfully!');
+          }
+          
+          // Reload page after 2 seconds to show updated info
+          setTimeout(() => {
+            location.reload();
+          }, 2000);
+        } else {
+          btn.innerHTML = originalText;
+          btn.disabled = false;
+          
+          if (typeof showToast === 'function') {
+            showToast('Error', `Failed to update album: ${data.error}`, 'error');
+          } else {
+            alert('Error: ' + data.error);
+          }
+        }
+      })
+      .catch(error => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to update album: ' + error.message, 'error');
+        } else {
+          alert('Error: ' + error.message);
+        }
+      });
+    }
+
+    function updateArtistAlbumsWithBeets(artist) {
+      const confirmed = confirm(`Update all albums by "${artist}" with beets?\n\nThis will update all albums for this artist:\n1. Write metadata tags to files\n2. Reorganize files based on metadata\n3. Trigger Navidrome rescan\n\nThis may take some time...`);
+      
+      if (!confirmed) return;
+      
+      // Get all albums for this artist first
+      fetch(`/api/beets/album-folders/${encodeURIComponent(artist)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.album_folders && data.album_folders.length > 0) {
+          const folders = data.album_folders;
+          const btn = event.target.closest('button');
+          const originalText = btn.innerHTML;
+          
+          btn.innerHTML = `<i class="bi bi-hourglass-split"></i> Updating ${folders.length} album(s)...`;
+          btn.disabled = true;
+          
+          // Update albums sequentially
+          updateAlbumsSequentially(folders, 0, () => {
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Complete!';
+            btn.classList.remove('btn-outline-warning');
+            btn.classList.add('btn-success');
+            
+            if (typeof showToast === 'function') {
+              showToast('Success', `Updated ${folders.length} album(s)`, 'success');
+            }
+            
+            setTimeout(() => {
+              location.reload();
+            }, 2000);
+          });
+        } else {
+          if (typeof showToast === 'function') {
+            showToast('Info', 'No albums found with folder information', 'info');
+          } else {
+            alert('No albums found with folder information');
+          }
+        }
+      })
+      .catch(error => {
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to get album folders: ' + error.message, 'error');
+        } else {
+          alert('Error: ' + error.message);
+        }
+      });
+    }
+
+    function updateAlbumsSequentially(folders, index, onComplete) {
+      if (index >= folders.length) {
+        onComplete();
+        return;
+      }
+      
+      const folder = folders[index];
+      
+      fetch('/api/beets/update-album', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          folder: folder
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        console.log(`Updated album ${index + 1}/${folders.length}: ${folder}`);
+        // Continue to next album
+        updateAlbumsSequentially(folders, index + 1, onComplete);
+      })
+      .catch(error => {
+        console.error(`Error updating ${folder}:`, error);
+        // Continue anyway
+        updateAlbumsSequentially(folders, index + 1, onComplete);
+      });
+    }
   </script>
 </body>
 </html>
