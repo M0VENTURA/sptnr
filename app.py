@@ -1619,6 +1619,121 @@ def api_artist_set_image():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/album/search-art")
+def api_album_search_art():
+    """Search for album art on MusicBrainz or Discogs"""
+    artist_name = request.args.get("artist", "").strip()
+    album_name = request.args.get("album", "").strip()
+    source = request.args.get("source", "musicbrainz").strip()
+    
+    if not artist_name or not album_name:
+        return jsonify({"error": "Artist and album name required"}), 400
+    
+    logger = logging.getLogger('sptnr')
+    try:
+        images = []
+        
+        if source == "musicbrainz":
+            # Search for release-group
+            search_url = "https://musicbrainz.org/ws/2/release-group"
+            params = {"query": f'release:"{album_name}" AND artist:"{artist_name}"', "fmt": "json", "limit": 10}
+            headers = {"User-Agent": "sptnr-web/1.0"}
+            
+            resp = requests.get(search_url, params=params, headers=headers, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            for rg in data.get("release-groups", [])[:10]:
+                rg_id = rg.get("id")
+                if rg_id:
+                    # Try to get album art from CAA
+                    image_url = f"https://coverartarchive.org/release-group/{rg_id}/front-500"
+                    images.append({
+                        "url": image_url,
+                        "source": "MusicBrainz CAA",
+                        "title": rg.get("title", ""),
+                        "artist": rg.get("artist-credit", [{}])[0].get("name", "") if rg.get("artist-credit") else ""
+                    })
+        
+        elif source == "discogs":
+            # Search Discogs for release
+            from singledetection import _discogs_search, _get_discogs_session
+            from helpers import _read_yaml
+            
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
+            discogs_token = discogs_config.get("token", "")
+            
+            session = _get_discogs_session()
+            headers = {"User-Agent": "Sptnr/1.0"}
+            if discogs_token:
+                headers["Authorization"] = f"Discogs token={discogs_token}"
+            
+            # Search with album and artist
+            query = f"{artist_name} {album_name}"
+            results = _discogs_search(session, headers, query, kind="release", per_page=10)
+            
+            for result in results[:10]:
+                if result.get("cover_image"):
+                    images.append({
+                        "url": result["cover_image"],
+                        "source": "Discogs",
+                        "title": result.get("title", ""),
+                        "artist": ", ".join([a.get("name", "") for a in result.get("artists", [])])
+                    })
+        
+        logger.info(f"Album art search for '{artist_name} - {album_name}' via {source}: {len(images)} images found")
+        return jsonify({"images": images})
+        
+    except Exception as e:
+        logger.error(f"Error searching album art: {e}")
+        return jsonify({"error": str(e), "images": []}), 500
+
+
+@app.route("/api/album/set-art", methods=["POST"])
+def api_album_set_art():
+    """Set custom album art"""
+    data = request.json or {}
+    artist_name = data.get("artist", "").strip()
+    album_name = data.get("album", "").strip()
+    image_url = data.get("image_url", "").strip()
+    
+    if not artist_name or not album_name or not image_url:
+        return jsonify({"error": "Artist, album name, and image URL required"}), 400
+    
+    logger = logging.getLogger('sptnr')
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Create album_art table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS album_art (
+                artist_name TEXT NOT NULL,
+                album_name TEXT NOT NULL,
+                image_url TEXT NOT NULL,
+                updated_at TEXT NOT NULL,
+                PRIMARY KEY (artist_name, album_name)
+            )
+        """)
+        
+        # Insert or update
+        cursor.execute("""
+            INSERT OR REPLACE INTO album_art (artist_name, album_name, image_url, updated_at)
+            VALUES (?, ?, ?, ?)
+        """, (artist_name, album_name, image_url, datetime.now().isoformat()))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Album art updated for '{artist_name} - {album_name}': {image_url}")
+        return jsonify({"success": True, "message": "Album art updated"})
+        
+    except Exception as e:
+        logger.error(f"Error setting album art: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/artist/add", methods=["POST"])
 def api_add_artist():
     """Manually add an artist and fetch all their releases from MusicBrainz."""
@@ -5032,13 +5147,38 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
 
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
-    """Get album art from database, Navidrome, MusicBrainz, or Discogs"""
+    """Get album art from custom table, database, Navidrome, MusicBrainz, or Discogs"""
     try:
         from urllib.parse import unquote
         artist = unquote(artist)
         album = unquote(album)
         
-        # 1. First, check if we have cover_art_url in database
+        # 0. First, check custom album_art table
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT image_url FROM album_art 
+                WHERE artist_name = ? AND album_name = ?
+            """, (artist, album))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result and result[0]:
+                custom_url = result[0]
+                try:
+                    resp = requests.get(custom_url, timeout=5)
+                    if resp.status_code == 200:
+                        return send_file(
+                            io.BytesIO(resp.content),
+                            mimetype='image/jpeg'
+                        )
+                except:
+                    pass  # Fall through to other methods
+        except:
+            pass
+        
+        # 1. Check if we have cover_art_url in database
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -6123,7 +6263,9 @@ if __name__ == "__main__":
 
     @app.route("/api/album/musicbrainz", methods=["POST"])
     def api_album_musicbrainz_lookup():
-        """Lookup album on MusicBrainz for multiple matches (Picard-style)"""
+        """Lookup album on MusicBrainz for multiple matches (Picard-style) with retry logic"""
+        import time
+        logger = logging.getLogger('sptnr')
         try:
             data = request.get_json()
             album = data.get("album", "")
@@ -6132,66 +6274,86 @@ if __name__ == "__main__":
             if not album or not artist:
                 return jsonify({"error": "Missing album or artist"}), 400
             
-            # Search MusicBrainz for release groups
+            # Search MusicBrainz for release groups with retry
             query = f'release:"{album}" AND artist:"{artist}"'
             headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
             
-            try:
-                resp = requests.get(
-                    "https://musicbrainz.org/ws/2/release-group",
-                    params={"query": query, "fmt": "json", "limit": 10},
-                    headers=headers,
-                    timeout=15
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                release_groups = data.get("release-groups", []) or []
+            max_retries = 3
+            retry_delay = 1.0
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    resp = requests.get(
+                        "https://musicbrainz.org/ws/2/release-group",
+                        params={"query": query, "fmt": "json", "limit": 10},
+                        headers=headers,
+                        timeout=5
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    release_groups = data.get("release-groups", []) or []
+                    break  # Success, exit retry loop
+                except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                    last_error = e
+                    if attempt < max_retries - 1:
+                        logger.warning(f"MusicBrainz album lookup attempt {attempt + 1} failed: {e}, retrying...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error(f"MusicBrainz album lookup failed after {max_retries} retries: {e}")
+                        return jsonify({
+                            "error": f"MusicBrainz connection failed after {max_retries} retries. Try Discogs instead.",
+                            "results": []
+                        }), 503
+                except requests.exceptions.RequestException as e:
+                    logger.error(f"MusicBrainz request error: {e}")
+                    return jsonify({"error": str(e), "results": []}), 500
+            else:
+                # Fell through without break - should not happen
+                release_groups = []
+            
+            if not release_groups:
+                return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
+            
+            # Format results with similarity scores
+            import difflib
+            results = []
+            for rg in release_groups:
+                rg_id = rg.get("id", "")
+                rg_title = rg.get("title", "")
+                primary_type = rg.get("primary-type", "Album")
+                first_release = rg.get("first-release-date", "")
                 
-                if not release_groups:
-                    return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
+                # Get artist credit
+                artist_credit = rg.get("artist-credit", [])
+                rg_artist = artist_credit[0].get("name", "") if artist_credit else ""
                 
-                # Format results with similarity scores
-                import difflib
-                results = []
-                for rg in release_groups:
-                    rg_id = rg.get("id", "")
-                    rg_title = rg.get("title", "")
-                    primary_type = rg.get("primary-type", "Album")
-                    first_release = rg.get("first-release-date", "")
-                    
-                    # Get artist credit
-                    artist_credit = rg.get("artist-credit", [])
-                    rg_artist = artist_credit[0].get("name", "") if artist_credit else ""
-                    
-                    # Calculate similarity scores
-                    title_similarity = difflib.SequenceMatcher(None, album.lower(), rg_title.lower()).ratio()
-                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rg_artist.lower()).ratio()
-                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
-                    
-                    # Get cover art URL
-                    cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250" if rg_id else ""
-                    
-                    results.append({
-                        "mbid": rg_id,
-                        "title": rg_title,
-                        "artist": rg_artist,
-                        "primary_type": primary_type,
-                        "first_release_date": first_release,
-                        "cover_art_url": cover_art_url,
-                        "confidence": round(overall_confidence, 3),
-                        "title_similarity": round(title_similarity, 3),
-                        "artist_similarity": round(artist_similarity, 3),
-                        "source": "musicbrainz"
-                    })
+                # Calculate similarity scores
+                title_similarity = difflib.SequenceMatcher(None, album.lower(), rg_title.lower()).ratio()
+                artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rg_artist.lower()).ratio()
+                overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
                 
-                # Sort by confidence
-                results.sort(key=lambda x: x["confidence"], reverse=True)
+                # Get cover art URL
+                cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250" if rg_id else ""
                 
-                return jsonify({"results": results[:10]}), 200
-            except Exception as e:
-                logger = logging.getLogger('sptnr')
-                logger.error(f"MusicBrainz lookup error: {e}")
-                return jsonify({"error": str(e)}), 500
+                results.append({
+                    "mbid": rg_id,
+                    "title": rg_title,
+                    "artist": rg_artist,
+                    "primary_type": primary_type,
+                    "first_release_date": first_release,
+                    "cover_art_url": cover_art_url,
+                    "confidence": round(overall_confidence, 3),
+                    "title_similarity": round(title_similarity, 3),
+                    "artist_similarity": round(artist_similarity, 3),
+                    "source": "musicbrainz"
+                })
+            
+            # Sort by confidence
+            results.sort(key=lambda x: x["confidence"], reverse=True)
+            
+            return jsonify({"results": results[:10]}), 200
                 
         except Exception as e:
             logger = logging.getLogger('sptnr')

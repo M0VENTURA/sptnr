@@ -17,12 +17,15 @@
         <div class="flex-grow-1">
             <div class="d-flex gap-3">
                 <!-- Album Art -->
-                <div class="d-none d-md-block">
-                    <img src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                <div class="d-none d-md-block position-relative">
+                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
                          alt="{{ album_name }}" 
                          class="img-thumbnail" 
                          style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
                          onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%232a2a2a%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2214%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
+                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal('{{ artist_name }}', '{{ album_name }}')" title="Change album art">
+                        <i class="bi bi-pencil"></i> Change Art
+                    </button>
                 </div>
                 <div>
                     <h1 class="h2 mb-2">
@@ -715,5 +718,132 @@
     function openSlskdSearchAlbum(artist, album) {
         const query = `${artist} ${album}`;
         window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
-    }</script>
+    }
+
+    function openAlbumArtModal(artistName, albumName) {
+        const modalHtml = `
+            <div class="modal fade" id="albumArtModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-image"></i> Change Album Art</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="manualAlbumArtUrl" class="form-label">Manual Image URL</label>
+                                <input type="text" class="form-control" id="manualAlbumArtUrl" placeholder="https://example.com/album-art.jpg">
+                            </div>
+                            <div class="d-flex gap-2 mb-4">
+                                <button class="btn btn-primary" onclick="applyManualAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
+                                    <i class="bi bi-check"></i> Apply URL
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'musicbrainz')">
+                                    <i class="bi bi-search"></i> Search MusicBrainz
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'discogs')">
+                                    <i class="bi bi-disc"></i> Search Discogs
+                                </button>
+                            </div>
+                            <div id="albumArtResults"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('albumArtModal');
+        if (existingModal) existingModal.remove();
+        
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        const modal = new bootstrap.Modal(document.getElementById('albumArtModal'));
+        modal.show();
+    }
+
+    function applyManualAlbumArt(artistName, albumName) {
+        const url = document.getElementById('manualAlbumArtUrl').value;
+        if (!url) {
+            alert('Please enter an image URL');
+            return;
+        }
+        applyAlbumArt(artistName, albumName, url);
+    }
+
+    function searchAlbumArt(artistName, albumName, source) {
+        const resultsDiv = document.getElementById('albumArtResults');
+        resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border"></span> Searching...</div>';
+
+        fetch(`/api/album/search-art?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}&source=${source}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.error || !data.images || data.images.length === 0) {
+                    resultsDiv.innerHTML = '<div class="alert alert-info">No album art found</div>';
+                    return;
+                }
+
+                let html = '<div class="row g-3">';
+                data.images.forEach(img => {
+                    html += `
+                        <div class="col-6 col-md-4">
+                            <div class="card">
+                                <img src="${escapeHtml(img.url)}" class="card-img-top" style="height: 200px; object-fit: cover;" 
+                                     onerror="this.parentElement.parentElement.style.display='none'">
+                                <div class="card-body p-2">
+                                    <small class="text-muted d-block mb-1">${escapeHtml(img.title || '')} - ${escapeHtml(img.artist || '')}</small>
+                                    <button class="btn btn-sm btn-primary w-100" onclick="applyAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', '${escapeHtml(img.url)}')">
+                                        <i class="bi bi-check"></i> Use This
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                resultsDiv.innerHTML = html;
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtml(error.message)}</div>`;
+            });
+    }
+
+    function applyAlbumArt(artistName, albumName, imageUrl) {
+        fetch('/api/album/set-art', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: artistName, 
+                album: albumName,
+                image_url: imageUrl
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Close modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('albumArtModal'));
+                if (modal) modal.hide();
+                
+                // Reload album art with cache busting
+                const img = document.getElementById('albumArtImage');
+                if (img) {
+                    img.src = img.src.split('?')[0] + '?t=' + Date.now();
+                }
+                
+                alert('✅ Album art updated successfully!');
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update album art'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+</script>
 {% endblock %}
