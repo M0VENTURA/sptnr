@@ -1526,7 +1526,7 @@ def api_artist_image():
 
 @app.route("/api/artist/search-images")
 def api_artist_search_images():
-    """Search for artist images on MusicBrainz or Discogs"""
+    """Search for artist images on MusicBrainz, Discogs, or Spotify"""
     artist_name = request.args.get("name", "").strip()
     source = request.args.get("source", "musicbrainz").strip()
     
@@ -1573,10 +1573,30 @@ def api_artist_search_images():
                 if result.get("thumb"):
                     images.append({"url": result["thumb"], "source": "Discogs"})
         
+        elif source == "spotify":
+            # Search Spotify for artist
+            from api_clients.spotify import SpotifyClient
+            from helpers import _read_yaml
+            
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            spotify = SpotifyClient(config_data)
+            
+            if spotify.sp:
+                results = spotify.sp.search(q=f'artist:{artist_name}', type='artist', limit=5)
+                
+                for artist in results.get('artists', {}).get('items', []):
+                    artist_images = artist.get('images', [])
+                    if artist_images:
+                        # Get the medium-sized image (usually index 1)
+                        img_url = artist_images[1]['url'] if len(artist_images) > 1 else artist_images[0]['url']
+                        images.append({"url": img_url, "source": "Spotify"})
+        
         return jsonify({"images": images})
         
     except Exception as e:
         logging.error(f"Error searching artist images: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return jsonify({"error": str(e), "images": []}), 500
 
 
@@ -1621,7 +1641,7 @@ def api_artist_set_image():
 
 @app.route("/api/album/search-art")
 def api_album_search_art():
-    """Search for album art on MusicBrainz or Discogs"""
+    """Search for album art on MusicBrainz, Discogs, or Spotify"""
     artist_name = request.args.get("artist", "").strip()
     album_name = request.args.get("album", "").strip()
     source = request.args.get("source", "musicbrainz").strip()
@@ -1682,11 +1702,37 @@ def api_album_search_art():
                         "artist": ", ".join([a.get("name", "") for a in result.get("artists", [])])
                     })
         
+        elif source == "spotify":
+            # Search Spotify for album
+            from api_clients.spotify import SpotifyClient
+            from helpers import _read_yaml
+            
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            spotify = SpotifyClient(config_data)
+            
+            if spotify.sp:
+                query = f"album:{album_name} artist:{artist_name}"
+                results = spotify.sp.search(q=query, type='album', limit=10)
+                
+                for album in results.get('albums', {}).get('items', []):
+                    album_images = album.get('images', [])
+                    if album_images:
+                        # Get the medium-sized image (usually index 1)
+                        img_url = album_images[1]['url'] if len(album_images) > 1 else album_images[0]['url']
+                        images.append({
+                            "url": img_url,
+                            "source": "Spotify",
+                            "title": album.get('name', ''),
+                            "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
+                        })
+        
         logger.info(f"Album art search for '{artist_name} - {album_name}' via {source}: {len(images)} images found")
         return jsonify({"images": images})
         
     except Exception as e:
         logger.error(f"Error searching album art: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return jsonify({"error": str(e), "images": []}), 500
 
 
@@ -2173,47 +2219,57 @@ def scan_track_rescan(artist, album, track_id):
 @app.route("/track/<track_id>")
 def track_detail(track_id):
     """View and edit track details"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT * FROM tracks WHERE id = ?", (track_id,))
-    track = cursor.fetchone()
-    
-    # Get recommended genres from other tracks with similar titles or artists
-    recommended_genres = []
-    if track:
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT * FROM tracks WHERE id = ?", (track_id,))
+        track = cursor.fetchone()
+        
+        if not track:
+            conn.close()
+            flash("Track not found", "error")
+            return redirect(url_for("dashboard"))
+        
         # Convert Row to dict to ensure all columns are accessible
         track = dict(track)
         
         # Ensure beets columns exist (for backward compatibility)
         beets_columns = ['beets_mbid', 'beets_similarity', 'beets_album_mbid', 
-                        'beets_artist_mbid', 'beets_album_artist']
+                        'beets_artist_mbid', 'beets_album_artist', 'beets_year',
+                        'beets_import_date', 'beets_path', 'album_folder']
         for col in beets_columns:
             if col not in track:
                 track[col] = None
         
-        artist_name = track['artist']
-        cursor.execute("""
-            SELECT genres FROM tracks 
-            WHERE artist = ? AND genres IS NOT NULL AND genres != ''
-            LIMIT 10
-        """, (artist_name,))
-        genre_rows = cursor.fetchall()
-        genre_set = set()
-        for row in genre_rows:
-            if row['genres']:
-                # Parse comma-separated genres
-                genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
-                genre_set.update(genres)
-        recommended_genres = sorted(list(genre_set))
+        # Get recommended genres from other tracks with similar titles or artists
+        recommended_genres = []
+        artist_name = track.get('artist', '')
+        if artist_name:
+            cursor.execute("""
+                SELECT genres FROM tracks 
+                WHERE artist = ? AND genres IS NOT NULL AND genres != ''
+                LIMIT 10
+            """, (artist_name,))
+            genre_rows = cursor.fetchall()
+            genre_set = set()
+            for row in genre_rows:
+                if row['genres']:
+                    # Parse comma-separated genres
+                    genres = [g.strip() for g in row['genres'].split(',') if g.strip()]
+                    genre_set.update(genres)
+            recommended_genres = sorted(list(genre_set))
+        
+        conn.close()
+        
+        return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id)
     
-    conn.close()
-    
-    if not track:
-        flash("Track not found", "error")
+    except Exception as e:
+        logging.error(f"Error loading track {track_id}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        flash(f"Error loading track: {str(e)}", "error")
         return redirect(url_for("dashboard"))
-    
-    return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id)
 
 
 @app.route("/track/<track_id>/edit", methods=["POST"])

@@ -371,10 +371,9 @@ class BeetsAutoImporter:
             logger.info(f"Found {file_count} .mp3 files in import path")
         
         cmd = [
-            "beet", "import",
-            "-A",  # Import without modifying files
+            "beet",
             "-c", str(self.beets_config),  # Use our config
-            "--library", str(self.beets_db),
+            "import",
             str(import_path)
         ]
         

@@ -23,7 +23,7 @@
                          class="img-thumbnail" 
                          style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
                          onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%232a2a2a%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2214%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
-                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal('{{ artist_name }}', '{{ album_name }}')" title="Change album art">
+                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
                         <i class="bi bi-pencil"></i> Change Art
                     </button>
                 </div>
@@ -720,7 +720,10 @@
         window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
     }
 
-    function openAlbumArtModal(artistName, albumName) {
+    function openAlbumArtModal() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        
         const modalHtml = `
             <div class="modal fade" id="albumArtModal" tabindex="-1">
                 <div class="modal-dialog modal-lg">
@@ -734,15 +737,18 @@
                                 <label for="manualAlbumArtUrl" class="form-label">Manual Image URL</label>
                                 <input type="text" class="form-control" id="manualAlbumArtUrl" placeholder="https://example.com/album-art.jpg">
                             </div>
-                            <div class="d-flex gap-2 mb-4">
+                            <div class="d-flex gap-2 mb-4 flex-wrap">
                                 <button class="btn btn-primary" onclick="applyManualAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
                                     <i class="bi bi-check"></i> Apply URL
                                 </button>
                                 <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'musicbrainz')">
-                                    <i class="bi bi-search"></i> Search MusicBrainz
+                                    <i class="bi bi-search"></i> MusicBrainz
                                 </button>
                                 <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'discogs')">
-                                    <i class="bi bi-disc"></i> Search Discogs
+                                    <i class="bi bi-disc"></i> Discogs
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'spotify')">
+                                    <i class="bi bi-spotify"></i> Spotify
                                 </button>
                             </div>
                             <div id="albumArtResults"></div>

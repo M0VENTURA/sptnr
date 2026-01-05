@@ -828,15 +828,18 @@ function openArtistImageModal(artistName) {
               <label for="manualImageUrl" class="form-label">Manual Image URL</label>
               <input type="text" class="form-control" id="manualImageUrl" placeholder="https://example.com/image.jpg">
             </div>
-            <div class="d-flex gap-2 mb-4">
+            <div class="d-flex gap-2 mb-4 flex-wrap">
               <button class="btn btn-primary" onclick="applyManualImage('${escapeHtml(artistName)}')">
                 <i class="bi bi-check"></i> Apply URL
               </button>
               <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'musicbrainz')">
-                <i class="bi bi-search"></i> Search MusicBrainz
+                <i class="bi bi-search"></i> MusicBrainz
               </button>
               <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'discogs')">
-                <i class="bi bi-disc"></i> Search Discogs
+                <i class="bi bi-disc"></i> Discogs
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'spotify')">
+                <i class="bi bi-spotify"></i> Spotify
               </button>
             </div>
             <div id="artistImageResults"></div>
