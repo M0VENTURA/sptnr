@@ -5855,7 +5855,176 @@ def beets_page():
         return redirect(url_for("dashboard"))
 
 
-@app.route("/api/beets/status", methods=["GET"])
+@app.route("/metadata-compare", methods=["GET"])
+def metadata_compare():
+    """Metadata comparison page - compare Navidrome vs Beets album data"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get album mismatches (where Navidrome and Beets data differ)
+        cursor.execute("""
+            SELECT DISTINCT 
+                album,
+                artist,
+                year,
+                beets_year,
+                navidrome_genres,
+                musicbrainz_genres,
+                COUNT(*) as track_count
+            FROM tracks
+            WHERE beets_album_mbid IS NOT NULL
+            GROUP BY album, artist
+            ORDER BY artist, album
+        """)
+        
+        albums = cursor.fetchall()
+        album_comparisons = []
+        
+        for album_row in albums:
+            album = album_row[0]
+            artist = album_row[1]
+            nav_year = album_row[2]
+            beets_year = album_row[3]
+            nav_genres = album_row[4]
+            beets_genres = album_row[5]
+            track_count = album_row[6]
+            
+            # Check for mismatches
+            has_mismatch = (
+                (nav_year != beets_year) or
+                (nav_genres != beets_genres)
+            )
+            
+            if has_mismatch:
+                album_comparisons.append({
+                    "album": album,
+                    "artist": artist,
+                    "navidrome": {
+                        "year": nav_year,
+                        "genres": nav_genres.split(",") if nav_genres else []
+                    },
+                    "beets": {
+                        "year": beets_year,
+                        "genres": beets_genres.split(",") if beets_genres else []
+                    },
+                    "track_count": track_count
+                })
+        
+        conn.close()
+        
+        return render_template(
+            "metadata_compare.html",
+            album_comparisons=album_comparisons
+        )
+    except Exception as e:
+        logging.error(f"Error loading metadata comparison: {str(e)}")
+        flash(f"Error loading metadata comparison: {str(e)}", "danger")
+        return redirect(url_for("dashboard"))
+
+
+@app.route("/api/metadata-compare/search-musicbrainz", methods=["POST"])
+def search_musicbrainz_for_album():
+    """Search MusicBrainz for album matches"""
+    try:
+        data = request.json or {}
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        
+        # Import MusicBrainz client
+        from api_clients.musicbrainz import MusicBrainzClient
+        mb_client = MusicBrainzClient()
+        
+        # Search for releases
+        results = mb_client.search_releases(artist, album)
+        
+        return jsonify({
+            "success": True,
+            "results": results
+        })
+    except Exception as e:
+        logging.error(f"MusicBrainz search error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/metadata-compare/accept-navidrome", methods=["POST"])
+def accept_navidrome_data():
+    """Accept Navidrome data and lock it from being overwritten by Beets"""
+    try:
+        data = request.json or {}
+        album = data.get("album", "")
+        artist = data.get("artist", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Mark all tracks in this album as locked from Beets overwrites
+        cursor.execute("""
+            UPDATE tracks 
+            SET metadata_locked = 1
+            WHERE artist = ? AND album = ?
+        """, (artist, album))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Navidrome data locked for {artist} - {album}"
+        })
+    except Exception as e:
+        logging.error(f"Error accepting Navidrome data: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/metadata-compare/apply-musicbrainz", methods=["POST"])
+def apply_musicbrainz_data():
+    """Apply MusicBrainz data to an album"""
+    try:
+        data = request.json or {}
+        album = data.get("album", "")
+        artist = data.get("artist", "")
+        mb_data = data.get("mb_data", {})
+        
+        if not artist or not album or not mb_data:
+            return jsonify({"error": "Artist, album, and MusicBrainz data required"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update tracks with MusicBrainz data
+        cursor.execute("""
+            UPDATE tracks 
+            SET 
+                year = ?,
+                musicbrainz_genres = ?
+            WHERE artist = ? AND album = ?
+        """, (
+            mb_data.get("year"),
+            ",".join(mb_data.get("genres", [])),
+            artist,
+            album
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Applied MusicBrainz data to {artist} - {album}"
+        })
+    except Exception as e:
+        logging.error(f"Error applying MusicBrainz data: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+
 def beets_status():
     """Get beets status and library info"""
     try:
