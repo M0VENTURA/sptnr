@@ -81,7 +81,15 @@ required_columns = {
     "beets_similarity": "REAL",               # Beets match similarity (0-1)
     "beets_album_mbid": "TEXT",               # Album MBID from beets
     "beets_artist_mbid": "TEXT",              # Artist MBID from beets
-    "beets_album_artist": "TEXT"              # Album artist from beets
+    "beets_album_artist": "TEXT",             # Album artist from beets
+    # ✅ Per-source single detection results (cached to avoid repeated API calls)
+    "source_discogs_single": "INTEGER",       # 1 if Discogs API returned explicit single
+    "source_discogs_video": "INTEGER",        # 1 if Discogs official video found
+    "source_spotify_single": "INTEGER",       # 1 if Spotify marked as single
+    "source_musicbrainz_single": "INTEGER",   # 1 if MusicBrainz reports single
+    "source_lastfm_single": "INTEGER",        # 1 if Last.fm reports single
+    "source_short_release": "INTEGER",        # 1 if album has 2 or fewer tracks
+    "source_detection_date": "TEXT"           # When these source detections were last checked
 }
 
 # ✅ Define columns for the artists table

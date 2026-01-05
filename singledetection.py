@@ -787,6 +787,76 @@ def single_detection_scan(verbose: bool = False):
         logging.info("=" * 60)
 
 
+def get_cached_source_detections(track_id: str) -> dict:
+    """
+    Retrieve cached per-source single detection results from database.
+    Returns dict with source names as keys and boolean values (or None if not cached).
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT source_discogs_single, source_discogs_video, source_spotify_single,
+                      source_musicbrainz_single, source_lastfm_single, source_short_release,
+                      source_detection_date FROM tracks WHERE id = ?""",
+            (track_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row:
+            return {
+                "discogs_single": row["source_discogs_single"],
+                "discogs_video": row["source_discogs_video"],
+                "spotify_single": row["source_spotify_single"],
+                "musicbrainz_single": row["source_musicbrainz_single"],
+                "lastfm_single": row["source_lastfm_single"],
+                "short_release": row["source_short_release"],
+                "detection_date": row["source_detection_date"]
+            }
+        return {}
+    except Exception as e:
+        logging.debug(f"Could not get cached detection results for {track_id}: {e}")
+        return {}
+
+
+def save_source_detections(track_id: str, source_results: dict) -> None:
+    """
+    Save per-source single detection results to database for caching.
+    source_results should have keys: discogs_single, discogs_video, spotify_single, 
+    musicbrainz_single, lastfm_single, short_release (all boolean or None)
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE tracks SET 
+                source_discogs_single = ?,
+                source_discogs_video = ?,
+                source_spotify_single = ?,
+                source_musicbrainz_single = ?,
+                source_lastfm_single = ?,
+                source_short_release = ?,
+                source_detection_date = ?
+            WHERE id = ?""",
+            (
+                source_results.get("discogs_single"),
+                source_results.get("discogs_video"),
+                source_results.get("spotify_single"),
+                source_results.get("musicbrainz_single"),
+                source_results.get("lastfm_single"),
+                source_results.get("short_release"),
+                datetime.now().isoformat(),
+                track_id
+            )
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.debug(f"Could not save detection results for {track_id}: {e}")
+
+
 def rate_track_single_detection(
     track: dict,
     artist_name: str,
@@ -835,6 +905,13 @@ def rate_track_single_detection(
     track['is_canonical_title'] = 1 if canonical else 0
     track['title_similarity_to_base'] = sim_to_base
     
+    # ✅ Get track ID for caching detection results
+    track_id = track.get("id", "")
+    
+    # ✅ Try to get cached source detection results
+    cached_sources = get_cached_source_detections(track_id) if track_id else {}
+    source_results = {}  # Will store results for caching
+    
     spotify_matched = bool(track.get("is_spotify_single"))
     tot = track.get("spotify_total_tracks")
     short_release = (tot is not None and tot > 0 and tot <= 2)
@@ -855,25 +932,36 @@ def rate_track_single_detection(
         if hints:
             logging.info(f"💡 Initial hints: {', '.join(hints)}")
     
-    # --- Discogs Single (hard stop) ---
+    # --- Discogs Single (hard stop) - Check cache first ---
     discogs_single_hit = False
-    try:
+    if "discogs_single" in cached_sources and cached_sources["discogs_single"] is not None:
+        # Use cached result
+        discogs_single_hit = bool(cached_sources["discogs_single"])
+        source_results["discogs_single"] = discogs_single_hit
         if verbose:
-            logging.info("🔍 Checking Discogs single...")
-        logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
-        if DISCOGS_ENABLED and DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
-            sources.add("discogs")
-            discogs_single_hit = True
-            track['discogs_single_confirmed'] = 1
-            logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
+            logging.info(f"🔍 Discogs single: {discogs_single_hit} (cached)")
+    else:
+        # Check online and cache the result
+        try:
             if verbose:
-                logging.info("✅ Discogs single FOUND")
-        else:
-            logging.debug(f"Discogs single not detected for '{title}'")
-            if verbose and DISCOGS_ENABLED:
-                logging.info("❌ Discogs single not found")
-    except Exception as e:
-        logging.exception(f"is_discogs_single failed for '{title}': {e}")
+                logging.info("🔍 Checking Discogs single (online)...")
+            logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
+            if DISCOGS_ENABLED and DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
+                sources.add("discogs")
+                discogs_single_hit = True
+                track['discogs_single_confirmed'] = 1
+                source_results["discogs_single"] = True
+                logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
+                if verbose:
+                    logging.info("✅ Discogs single FOUND")
+            else:
+                source_results["discogs_single"] = False
+                logging.debug(f"Discogs single not detected for '{title}'")
+                if verbose and DISCOGS_ENABLED:
+                    logging.info("❌ Discogs single not found")
+        except Exception as e:
+            logging.exception(f"is_discogs_single failed for '{title}': {e}")
+            source_results["discogs_single"] = None
     
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
         track["is_single"] = True
@@ -883,32 +971,46 @@ def rate_track_single_detection(
         logging.info(f"Single CONFIRMED (Discogs): '{title}' → 5★")
         if verbose:
             logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Discogs single (sources: {', '.join(sorted(sources))})")
+        if track_id:
+            save_source_detections(track_id, source_results)
         return track
     
-    # --- Discogs Official Video ---
+    # --- Discogs Official Video - Check cache first ---
     discogs_video_hit = False
-    try:
-        if DISCOGS_ENABLED and DISCOGS_TOKEN:
-            if verbose:
-                logging.info("🎬 Checking Discogs official video...")
-            logging.debug(f"Searching Discogs for official video for '{title}' by '{artist_name}'")
-            dv = discogs_official_video_signal(
-                title, artist_name,
-                discogs_token=DISCOGS_TOKEN,
-                album_context=album_ctx,
-                permissive_fallback=CONTEXT_FALLBACK_STUDIO,
-            )
-            logging.debug(f"Discogs video check result for '{title}': {dv}")
-            if dv.get("match"):
-                sources.add("discogs_video")
-                discogs_video_hit = True
-                track['discogs_video_found'] = 1
+    if "discogs_video" in cached_sources and cached_sources["discogs_video"] is not None:
+        # Use cached result
+        discogs_video_hit = bool(cached_sources["discogs_video"])
+        source_results["discogs_video"] = discogs_video_hit
+        if verbose:
+            logging.info(f"🎬 Discogs video: {discogs_video_hit} (cached)")
+    else:
+        # Check online and cache the result
+        try:
+            if DISCOGS_ENABLED and DISCOGS_TOKEN:
                 if verbose:
-                    logging.info("✅ Discogs official video FOUND")
-            elif verbose:
-                logging.info("❌ Discogs official video not found")
-    except Exception as e:
-        logging.exception(f"discogs_official_video_signal failed for '{title}': {e}")
+                    logging.info("🎬 Checking Discogs official video (online)...")
+                logging.debug(f"Searching Discogs for official video for '{title}' by '{artist_name}'")
+                dv = discogs_official_video_signal(
+                    title, artist_name,
+                    discogs_token=DISCOGS_TOKEN,
+                    album_context=album_ctx,
+                    permissive_fallback=CONTEXT_FALLBACK_STUDIO,
+                )
+                logging.debug(f"Discogs video check result for '{title}': {dv}")
+                if dv.get("match"):
+                    sources.add("discogs_video")
+                    discogs_video_hit = True
+                    track['discogs_video_found'] = 1
+                    source_results["discogs_video"] = True
+                    if verbose:
+                        logging.info("✅ Discogs official video FOUND")
+                else:
+                    source_results["discogs_video"] = False
+                    if verbose:
+                        logging.info("❌ Discogs official video not found")
+        except Exception as e:
+            logging.exception(f"discogs_official_video_signal failed for '{title}': {e}")
+            source_results["discogs_video"] = None
     
     # Paired hard stop: Spotify + Official Video both match → 5★
     if (discogs_video_hit and spotify_matched) and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
@@ -919,6 +1021,8 @@ def rate_track_single_detection(
         logging.info(f"Single CONFIRMED (Spotify + Video): '{title}' → 5★")
         if verbose:
             logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Spotify + Discogs video (sources: {', '.join(sorted(sources))})")
+        if track_id:
+            save_source_detections(track_id, source_results)
         return track
     
     # --- If neither Spotify nor Video match → not a single ---
@@ -929,35 +1033,63 @@ def rate_track_single_detection(
         logging.debug(f"No single hint (Spotify/Video) for '{title}' → not checking further")
         if verbose:
             logging.info("⭕ No Spotify/Video hints - skipping further checks")
+        if track_id:
+            save_source_detections(track_id, source_results)
         return track
     
     # Add corroborative sources
     if verbose:
         logging.info("🔍 Checking additional sources (MusicBrainz, Last.fm)...")
     
-    try:
-        logging.debug(f"Checking MusicBrainz single for '{title}' by '{artist_name}'")
-        if is_musicbrainz_single(title, artist_name):
+    # --- MusicBrainz - Check cache first ---
+    if "musicbrainz_single" in cached_sources and cached_sources["musicbrainz_single"] is not None:
+        mb_single = bool(cached_sources["musicbrainz_single"])
+        source_results["musicbrainz_single"] = mb_single
+        if mb_single:
             sources.add("musicbrainz")
-            logging.debug(f"MusicBrainz reports single for '{title}'")
-            if verbose:
-                logging.info("✅ MusicBrainz single FOUND")
-        elif verbose and MUSICBRAINZ_ENABLED:
-            logging.info("❌ MusicBrainz single not found")
-    except Exception as e:
-        logging.exception(f"MusicBrainz single check failed for '{title}': {e}")
+        if verbose:
+            logging.info(f"🔍 MusicBrainz: {mb_single} (cached)")
+    else:
+        try:
+            logging.debug(f"Checking MusicBrainz single for '{title}' by '{artist_name}' (online)")
+            if is_musicbrainz_single(title, artist_name):
+                sources.add("musicbrainz")
+                source_results["musicbrainz_single"] = True
+                logging.debug(f"MusicBrainz reports single for '{title}'")
+                if verbose:
+                    logging.info("✅ MusicBrainz single FOUND")
+            else:
+                source_results["musicbrainz_single"] = False
+                if verbose and MUSICBRAINZ_ENABLED:
+                    logging.info("❌ MusicBrainz single not found")
+        except Exception as e:
+            logging.exception(f"MusicBrainz single check failed for '{title}': {e}")
+            source_results["musicbrainz_single"] = None
     
-    try:
-        logging.debug(f"Checking Last.fm single for '{title}' by '{artist_name}' (enabled={use_lastfm_single})")
-        if use_lastfm_single and is_lastfm_single(title, artist_name):
+    # --- Last.fm - Check cache first ---
+    if "lastfm_single" in cached_sources and cached_sources["lastfm_single"] is not None:
+        lfm_single = bool(cached_sources["lastfm_single"])
+        source_results["lastfm_single"] = lfm_single
+        if lfm_single:
             sources.add("lastfm")
-            logging.debug(f"Last.fm reports single for '{title}'")
-            if verbose:
-                logging.info("✅ Last.fm single FOUND")
-        elif verbose and use_lastfm_single:
-            logging.info("❌ Last.fm single not found")
-    except Exception as e:
-        logging.exception(f"Last.fm single check failed for '{title}': {e}")
+        if verbose:
+            logging.info(f"💿 Last.fm: {lfm_single} (cached)")
+    else:
+        try:
+            logging.debug(f"Checking Last.fm single for '{title}' by '{artist_name}' (online, enabled={use_lastfm_single})")
+            if use_lastfm_single and is_lastfm_single(title, artist_name):
+                sources.add("lastfm")
+                source_results["lastfm_single"] = True
+                logging.debug(f"Last.fm reports single for '{title}'")
+                if verbose:
+                    logging.info("✅ Last.fm single FOUND")
+            else:
+                source_results["lastfm_single"] = False
+                if verbose and use_lastfm_single:
+                    logging.info("❌ Last.fm single not found")
+        except Exception as e:
+            logging.exception(f"Last.fm single check failed for '{title}': {e}")
+            source_results["lastfm_single"] = None
     
     # Count matches toward 5★ confirmation
     match_pool = {"spotify", "discogs_video", "musicbrainz", "lastfm"}
@@ -1003,6 +1135,10 @@ def rate_track_single_detection(
                 logging.debug(f"Stored {len(lb_tags)} ListenBrainz genre tags for '{title}'")
         except Exception as e:
             logging.debug(f"Failed to fetch/store ListenBrainz tags for '{title}': {e}")
+    
+    # ✅ Save per-source detection results for caching
+    if track_id:
+        save_source_detections(track_id, source_results)
     
     return track
 
