@@ -404,8 +404,10 @@
                                         <span class="text-muted">—</span>
                                     {% endif %}
                                 </td>
-                                <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.file_path or 'Not available' }}">
-                                    {% if track.file_path %}
+                                <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.beets_path or track.file_path or 'Not available' }}">
+                                    {% if track.beets_path %}
+                                        <span class="text-muted" style="font-size: 0.75rem;">{{ track.beets_path }}</span>
+                                    {% elif track.file_path %}
                                         <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
                                     {% else %}
                                         <span class="text-muted">—</span>
@@ -479,8 +481,10 @@
                                     <span class="text-muted">—</span>
                                 {% endif %}
                             </td>
-                            <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.file_path or 'Not available' }}">
-                                {% if track.file_path %}
+                            <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.beets_path or track.file_path or 'Not available' }}">
+                                {% if track.beets_path %}
+                                    <span class="text-muted" style="font-size: 0.75rem;">{{ track.beets_path }}</span>
+                                {% elif track.file_path %}
                                     <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
                                 {% else %}
                                     <span class="text-muted">—</span>
