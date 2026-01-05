@@ -659,6 +659,7 @@ def single_detection_scan(verbose: bool = False):
     
     try:
         conn = get_db_connection()
+        conn.row_factory = sqlite3.Row  # Enable dictionary-like access
         cursor = conn.cursor()
         
         # Get all distinct artists for progress tracking
@@ -666,9 +667,9 @@ def single_detection_scan(verbose: bool = False):
         artists = cursor.fetchall()
         total_artists = len(artists)
         
-        # Get all tracks
+        # Get all tracks with current single detection state (for user edit preservation)
         cursor.execute("""
-            SELECT id, artist, title, album
+            SELECT id, artist, title, album, is_single, single_source, single_confidence
             FROM tracks
             ORDER BY artist, title
         """)
@@ -685,6 +686,9 @@ def single_detection_scan(verbose: bool = False):
             artist = track["artist"]
             title = track["title"]
             album = track["album"]
+            previous_is_single = track["is_single"]  # Current DB value
+            previous_source = track["single_source"]
+            previous_confidence = track["single_confidence"]
             
             # Update progress when we move to a new artist
             if artist != current_artist:
@@ -755,6 +759,16 @@ def single_detection_scan(verbose: bool = False):
                 except Exception as e:
                     if verbose:
                         logging.debug(f"Secondary lookup failed: {e}")
+            
+            # PRESERVE USER EDITS: If user manually set is_single=True, don't override it
+            if not is_single and previous_is_single:
+                # Auto-detection says NOT a single, but user previously marked it as one
+                # This indicates user edit → preserve the user's choice
+                is_single = previous_is_single
+                single_source = previous_source
+                confidence = previous_confidence
+                if verbose:
+                    logging.debug(f"  ✅ Preserving user-edited is_single=True for '{title}'")
             
             # Update database with retry logic
             for retry in range(3):
