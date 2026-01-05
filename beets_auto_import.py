@@ -23,14 +23,30 @@ from datetime import datetime
 from typing import Optional, Dict, List
 import yaml
 
+_scan_history_available = True
 try:
-    from scan_history import log_album_scan
+    from scan_history import log_album_scan as _log_album_scan_impl
 except ImportError as e:
     # Fallback if scan_history module not available
-    logger = logging.getLogger(__name__)
-    logger.warning(f"scan_history module import failed: {e}, using fallback")
-    def log_album_scan(*args, **kwargs):
-        logger.warning(f"log_album_scan called but module not available: args={args}, kwargs={kwargs}")
+    _scan_history_available = False
+    def _log_album_scan_impl(*args, **kwargs):
+        pass  # Silently ignore if scan_history not available
+
+def log_album_scan(*args, **kwargs):
+    """Wrapper around scan_history.log_album_scan with error handling."""
+    try:
+        if not _scan_history_available:
+            # Import will be attempted each time until it succeeds (for dev/testing)
+            try:
+                from scan_history import log_album_scan as _impl
+                _impl(*args, **kwargs)
+            except ImportError:
+                pass  # Silently fail if module not available
+        else:
+            _log_album_scan_impl(*args, **kwargs)
+    except Exception as e:
+        # Log the error but don't raise - we don't want scan history failures to break imports
+        logging.error(f"Error calling log_album_scan: {e}", exc_info=True)
 
 BEETS_LOG_PATH = os.environ.get("BEETS_LOG_PATH", "/config/beets_import.log")
 
@@ -406,6 +422,7 @@ class BeetsAutoImporter:
             return
         
         logger.info("Syncing beets metadata to sptnr database...")
+        logger.info("This process logs individual album scans to scan_history table")
         
         try:
             # Connect to both databases
@@ -612,6 +629,13 @@ class BeetsAutoImporter:
         logger.info("="*80 + "\n")
         
         save_beets_progress(0, total_files, status="starting", is_running=True)
+        
+        # Log a scan_history entry at the start to show beets import is running
+        try:
+            log_album_scan("Beets", "Import", "beets", 0, "started")
+            logger.info("Logged beets import start to scan_history")
+        except Exception as e:
+            logger.warning(f"Could not log beets import start: {e}")
 
         try:
             process = self.run_import(artist_path, skip_existing=skip_existing)
