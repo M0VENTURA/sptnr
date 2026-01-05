@@ -370,6 +370,18 @@ class BeetsAutoImporter:
             file_count = sum(1 for _ in import_path.rglob('*.mp3'))
             logger.info(f"Found {file_count} .mp3 files in import path")
         
+        # Check beets database to see how many tracks are already imported
+        try:
+            import sqlite3
+            beets_conn = sqlite3.connect(str(self.beets_db))
+            beets_cursor = beets_conn.cursor()
+            beets_cursor.execute("SELECT COUNT(*) FROM items")
+            existing_count = beets_cursor.fetchone()[0]
+            beets_conn.close()
+            logger.info(f"Beets database currently has {existing_count} tracks")
+        except Exception as e:
+            logger.warning(f"Could not check beets database: {e}")
+        
         cmd = [
             "beet",
             "-c", str(self.beets_config),  # Use our config
@@ -378,6 +390,7 @@ class BeetsAutoImporter:
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
+        logger.info(f"With incremental mode enabled, beets will skip files already in database")
         
         # Run with live output capture
         process = subprocess.Popen(
@@ -685,6 +698,18 @@ class BeetsAutoImporter:
 
         logger.info(f"Beets process completed with return code: {process.returncode}")
         logger.info(f"Captured {line_count} output lines")
+        
+        # Check how many tracks are now in beets database
+        try:
+            import sqlite3
+            beets_conn = sqlite3.connect(str(self.beets_db))
+            beets_cursor = beets_conn.cursor()
+            beets_cursor.execute("SELECT COUNT(*) FROM items")
+            final_count = beets_cursor.fetchone()[0]
+            beets_conn.close()
+            logger.info(f"Beets database now has {final_count} tracks")
+        except Exception as e:
+            logger.warning(f"Could not check final beets database count: {e}")
 
         if process.returncode != 0:
             logger.error(f"Beets import failed with return code {process.returncode}")

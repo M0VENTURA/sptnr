@@ -2397,7 +2397,7 @@ def scan_mp3():
                     from beets_auto_import import BeetsAutoImporter
                     logging.info("Starting Beets auto-import scan in background")
                     importer = BeetsAutoImporter()
-                    importer.import_and_capture()
+                    importer.import_and_capture(skip_existing=True)
                     _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Beets scan completed successfully")
                 except Exception as e:
