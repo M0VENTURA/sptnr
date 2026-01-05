@@ -1,3 +1,37 @@
+@app.route("/config/env", methods=["POST"])
+def config_env_vars_post():
+    """Update environment variables from config page."""
+    try:
+        data = request.get_json(force=True)
+        changed = 0
+        for var, value in data.items():
+            if var in ALL_ENV_VARS:
+                os.environ[var] = value
+                changed += 1
+        return jsonify({"success": True, "updated": changed})
+    except Exception as e:
+        return jsonify({"success": False, "error": str(e)}), 400
+import re
+# --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
+# List of all environment variables used in the project (compiled from codebase)
+ALL_ENV_VARS = [
+    "SECRET_KEY", "CONFIG_PATH", "DB_PATH", "LOG_PATH", "APP_DIR", "SPTNR_DISABLE_BOOT_ND_IMPORT", "SPTNR_SKIP_SINGLES",
+    "MUSIC_ROOT", "MUSIC_FOLDER", "DOWNLOADS_DIR", "POPULARITY_LOG_PATH", "POPULARITY_LOG_STDOUT", "POPULARITY_PROGRESS_FILE",
+    "NAVIDROME_PROGRESS_FILE", "SINGLES_PROGRESS_FILE", "PROGRESS_FILE", "TIMEZONE", "TZ", "SPOTIFY_USER_TOKEN",
+    "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "LISTENBRAINZ_WEIGHT", "AGE_WEIGHT",
+    "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
+    "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
+    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY"
+]
+
+def get_all_env_vars():
+    # Return a dict of all relevant env vars and their current values
+    return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
+
+@app.route("/config/env", methods=["GET"])
+def config_env_vars():
+    """Return all relevant environment variables and their current values as JSON."""
+    return jsonify(get_all_env_vars())
 #!/usr/bin/env python3
 """
 Sptnr Web UI - Flask application for managing music ratings and scans

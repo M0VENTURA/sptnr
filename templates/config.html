@@ -1,3 +1,59 @@
+  <!-- Environment Variables Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-gear"></i> Environment Variables</h5>
+      <small class="text-muted">Edit environment variables used by Sptnr (applies to current process only)</small>
+    </div>
+    <div class="card-body">
+      <form id="envVarsForm">
+        <div id="envVarsContainer" class="row g-3"></div>
+        <button type="submit" class="btn btn-primary mt-3">Save Environment Variables</button>
+        <div id="envVarsMsg" class="mt-2"></div>
+      </form>
+    </div>
+  </div>
+
+<script>
+// Fetch and display environment variables
+function loadEnvVars() {
+  fetch('/config/env').then(r => r.json()).then(vars => {
+    const container = document.getElementById('envVarsContainer');
+    container.innerHTML = '';
+    Object.entries(vars).forEach(([key, value]) => {
+      const col = document.createElement('div');
+      col.className = 'col-12 col-md-6';
+      col.innerHTML = `
+        <label class="form-label">${key}</label>
+        <input type="text" class="form-control monospace" name="${key}" value="${value || ''}" autocomplete="off">
+      `;
+      container.appendChild(col);
+    });
+  });
+}
+document.addEventListener('DOMContentLoaded', loadEnvVars);
+
+// Handle env var form submit
+document.getElementById('envVarsForm').addEventListener('submit', function(e) {
+  e.preventDefault();
+  const form = e.target;
+  const data = {};
+  Array.from(form.elements).forEach(el => {
+    if (el.name && el.type === 'text') data[el.name] = el.value;
+  });
+  fetch('/config/env', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  }).then(r => r.json()).then(resp => {
+    const msg = document.getElementById('envVarsMsg');
+    if (resp.success) {
+      msg.innerHTML = '<span class="text-success">Environment variables updated.</span>';
+    } else {
+      msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Failed to update.') + '</span>';
+    }
+  });
+});
+</script>
 {% extends "base.html" %}
 {% block title %}Config · Sptnr{% endblock %}
 {% block content %}
