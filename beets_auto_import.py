@@ -144,18 +144,29 @@ class BeetsAutoImporter:
                 config = {
                     "directory": str(self.music_path),
                     "library": str(self.beets_db),
+                    "fetchart": {
+                        "auto": True,
+                        "cautious": True,
+                        "minwidth": 500,
+                        "maxwidth": 1200,
+                        "sources": ["coverart", "itunes", "amazon"],
+                        "store_source": True
+                    },
                     "import": {
                         "autotag": True,
                         "copy": False,
                         "write": False,
                         "incremental": True,
                         "resume": False,
-                        "quiet": True  # Suppress beets own logging, we log output to our logger
+                        "quiet": True,  # Suppress beets own logging, we log output to our logger
+                        "timid": False,
+                        "strong_rec_thresh": 0.10,
+                        "strong_rec": True
                     },
                     "musicbrainz": {
                         "enabled": True
                     },
-                    "plugins": ["duplicates", "info"]
+                    "plugins": ["duplicates", "info", "fetchart"]
                 }
             else:
                 config = {
