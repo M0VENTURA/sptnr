@@ -255,40 +255,15 @@ class BeetsAutoImporter:
             self._create_config_file(config_file, readonly=not use_update)
         
         logger.info(f"Using beets config: {config_file} (readonly={not use_update})")
-    
-    def get_artists_in_beets(self) -> set:
-        """
-        Get set of artist names already in beets database.
-        
-        Returns:
-            Set of artist names
-        """
-        try:
-            beets_conn = sqlite3.connect(str(self.beets_db))
-            beets_cursor = beets_conn.cursor()
-            
-            beets_cursor.execute("""
-                SELECT DISTINCT items.artist 
-                FROM items
-                ORDER BY items.artist
-            """)
-            
-            artists = {row[0] for row in beets_cursor.fetchall() if row[0]}
-            beets_conn.close()
-            
-            logger.info(f"Found {len(artists)} artists in beets database")
-            return artists
-        except Exception as e:
-            logger.error(f"Failed to get artists from beets: {e}")
-            return set()
+
 
     def run_import(self, artist_path: Optional[str] = None, skip_existing: bool = False) -> subprocess.Popen:
         """
         Run beets import with auto-tagging.
         
         Args:
-            artist_path: Optional specific artist folder to import
-            skip_existing: If True, skip artists already in beets database
+            artist_path: Optional specific artist folder to import (not used, kept for compatibility)
+            skip_existing: If True, only check but don't filter (beets handles incremental import)
             
         Returns:
             Subprocess handle
@@ -299,9 +274,9 @@ class BeetsAutoImporter:
             if beet_check.returncode != 0:
                 logger.error("beet command not found! Is beets installed?")
                 raise FileNotFoundError("beet command not found")
-                logger.info(f"Found beet at: {beet_check.stdout.strip()}")
+            logger.info(f"Found beet at: {beet_check.stdout.strip()}")
         except Exception as e:
-                logger.error(f"Error checking for beet command: {e}")
+            logger.error(f"Error checking for beet command: {e}")
         
         # Ensure beets database directory exists
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
@@ -310,85 +285,18 @@ class BeetsAutoImporter:
         # Ensure beets config is up-to-date (use read-only config for import by default)
         self.ensure_beets_config(use_update=False)
         
-        # Determine import path
-        if artist_path:
-            import_path = Path(artist_path)
-        else:
-            import_path = self.music_path
-        
-        # Filter out existing artists if requested
-        if skip_existing and not artist_path:
-            logger.info("Skip-existing enabled: filtering out artists already in beets...")
-            existing_artists = self.get_artists_in_beets()
-            
-            if existing_artists:
-                # Get subdirectories in music_path (artist folders)
-                artist_folders = [d for d in import_path.iterdir() if d.is_dir()]
-                filtered_folders = [d for d in artist_folders if d.name not in existing_artists]
-                
-                skipped = len(artist_folders) - len(filtered_folders)
-                logger.info(f"Found {len(existing_artists)} existing artists")
-                logger.info(f"Skipping {skipped} artist(s) already in beets")
-                logger.info(f"Will import {len(filtered_folders)} new/updated artist folder(s)")
-                
-                # Create temporary list of folders to import
-                if not filtered_folders:
-                    logger.warning("\n" + "="*80)
-                    logger.warning("All artists already in beets database. Nothing new to import.")
-                    logger.warning(f"Total artists in beets: {len(existing_artists)}")
-                    logger.warning(f"Total folders in /music: {len(artist_folders)}")
-                    logger.warning("="*80 + "\n")
-                    # Return a dummy process that does nothing
-                    process = subprocess.Popen(['echo', 'No new artists to import'], 
-                                              stdout=subprocess.PIPE, 
-                                              stderr=subprocess.STDOUT,
-                                              text=True)
-                    return process
-                
-                # Import all filtered folders in one batch instead of one-by-one
-                # This allows beets to process them all, not just the last one
-                if filtered_folders:
-                    logger.info(f"Importing {len(filtered_folders)} new artist(s)")
-                    for folder in filtered_folders:
-                        logger.info(f"  - {folder.name}")
-                    
-                    # Build single import command with all folders
-                    cmd = [
-                        "beet", "import",
-                        "-c", str(self.beets_config),  # Use our config
-                        "--library", str(self.beets_db),
-                    ]
-                    # Add all filtered folders as arguments
-                    cmd.extend([str(folder) for folder in filtered_folders])
-                    
-                    logger.info(f"Running: {' '.join(cmd)}")
-                    logger.info(f"Non-interactive mode enabled via config (autotag=True, write=False)")
-                    
-                    # Run as single process with all new artists
-                    process = subprocess.Popen(
-                        cmd,
-                        stdout=subprocess.PIPE,
-                        stderr=subprocess.STDOUT,
-                        text=True,
-                        bufsize=1,
-                        universal_newlines=True,
-                        stdin=subprocess.DEVNULL  # Ensure no stdin available to prevent hanging
-                    )
-                    return process
-                else:
-                    # No new artists to import
-                    logger.warning("All artists already in beets database. Nothing to import.")
-                    process = subprocess.Popen(['echo', 'No new artists to import'], 
-                                              stdout=subprocess.PIPE, 
-                                              stderr=subprocess.STDOUT,
-                                              text=True)
-                    return process
+        # Always import from /music - beets auto-detects artist folders
+        import_path = self.music_path
         
         logger.info(f"Import path: {import_path}")
         logger.info(f"Import path exists: {import_path.exists()}")
         if import_path.exists():
+            # Count artist folders
+            artist_folders = [d for d in import_path.iterdir() if d.is_dir()]
+            logger.info(f"Found {len(artist_folders)} artist folder(s) in /music")
+            
             file_count = sum(1 for _ in import_path.rglob('*.mp3'))
-            logger.info(f"Found {file_count} .mp3 files in import path")
+            logger.info(f"Found {file_count} .mp3 files total")
         
         # Check beets database to see how many tracks are already imported
         try:
@@ -402,15 +310,17 @@ class BeetsAutoImporter:
         except Exception as e:
             logger.warning(f"Could not check beets database: {e}")
         
+        # Simple command - beets auto-detects artist folders and uses incremental import
         cmd = [
             "beet",
-            "-c", str(self.beets_config),  # Use our config
+            "-c", str(self.beets_config),
             "import",
             str(import_path)
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
-        logger.info(f"With incremental mode enabled, beets will skip files already in database")
+        logger.info(f"Beets will auto-detect artist folders in /music")
+        logger.info(f"Incremental mode will skip files already in database")
         logger.info(f"Non-interactive mode enabled via config (autotag=True, write=False)")
         
         # Run with live output capture
