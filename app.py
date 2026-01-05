@@ -2412,7 +2412,7 @@ def scan_mp3():
             
             # Run beets import in background thread instead of subprocess
             def run_beets_scan_bg():
-                nonlocal scan_process_mp3
+                global scan_process_mp3
                 try:
                     from beets_auto_import import BeetsAutoImporter
                     logging.info("Starting Beets auto-import scan in background")
