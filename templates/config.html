@@ -17,27 +17,92 @@
     </div>
   </div>
 
-  <!-- Navidrome Section -->
+  <!-- Multi-User Configuration Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-music-note-beamed"></i> Navidrome</h5>
-      <small class="text-muted">Music streaming server configuration</small>
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
+          <small class="text-muted">Configure Navidrome, Spotify, and ListenBrainz for each user</small>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
+          <i class="bi bi-plus-circle"></i> Add Another User
+        </button>
+      </div>
     </div>
     <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Base URL</label>
-          <input type="text" class="form-control" id="nav_base_url" placeholder="http://localhost:4533" value="{{ config.get('navidrome', {}).get('base_url', '') }}">
-          <div class="form-text">URL to your Navidrome server</div>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Username</label>
-          <input type="text" class="form-control" id="nav_user" placeholder="admin" value="{{ config.get('navidrome', {}).get('user', '') }}">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Password</label>
-          <input type="password" class="form-control" id="nav_pass" placeholder="••••••••" value="{{ config.get('navidrome', {}).get('pass', '') }}">
-        </div>
+      <!-- Users Container -->
+      <div id="usersContainer">
+        {% set navidrome_users = config.get('navidrome_users', []) %}
+        {% if navidrome_users %}
+          {% for user in navidrome_users %}
+          <div class="user-card mb-4 p-3 border rounded" data-user-index="{{ loop.index0 }}">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h6 class="mb-0">User {{ loop.index }}: {{ user.get('display_name', user.get('username', 'Unknown')) }}</h6>
+              {% if loop.length > 1 %}
+              <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser({{ loop.index0 }})">
+                <i class="bi bi-trash"></i> Remove
+              </button>
+              {% endif %}
+            </div>
+            
+            <!-- Navidrome Configuration -->
+            <div class="mb-3">
+              <h6 class="text-primary mb-2"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label form-label-sm">Display Name</label>
+                  <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" value="{{ user.get('display_name', '') }}">
+                </div>
+                <div class="col-12">
+                  <label class="form-label form-label-sm">Navidrome Base URL</label>
+                  <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533" value="{{ user.get('navidrome_base_url', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Username</label>
+                  <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username" value="{{ user.get('username', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Password</label>
+                  <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••" value="{{ user.get('navidrome_password', '') }}">
+                </div>
+              </div>
+            </div>
+            
+            <!-- Spotify Configuration -->
+            <div class="mb-3">
+              <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+              <div class="row g-2">
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Client ID</label>
+                  <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id" value="{{ user.get('spotify_client_id', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Client Secret</label>
+                  <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••" value="{{ user.get('spotify_client_secret', '') }}">
+                </div>
+              </div>
+            </div>
+            
+            <!-- ListenBrainz Configuration -->
+            <div class="mb-3">
+              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label form-label-sm">User Token</label>
+                  <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token" value="{{ user.get('listenbrainz_user_token', '') }}">
+                  <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <!-- No users yet, show empty message -->
+          <div class="alert alert-info" id="emptyUsersMessage">
+            <i class="bi bi-info-circle"></i> No users configured yet. Click "Add Another User" to get started.
+          </div>
+        {% endif %}
       </div>
     </div>
   </div>
@@ -478,12 +543,29 @@ function showToast(title, message, type = 'info') {
 }
 
 function buildConfigObject() {
+  // Build multi-user array
+  const navidrome_users = [];
+  const userCards = document.querySelectorAll('.user-card');
+  
+  userCards.forEach((card, index) => {
+    const user = {
+      username: card.querySelector('.user-nav-username').value,
+      display_name: card.querySelector('.user-display-name').value,
+      navidrome_base_url: card.querySelector('.user-nav-url').value,
+      navidrome_password: card.querySelector('.user-nav-password').value,
+      spotify_client_id: card.querySelector('.user-spotify-id').value,
+      spotify_client_secret: card.querySelector('.user-spotify-secret').value,
+      listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
+    };
+    
+    // Only add user if it has at least username and Navidrome URL
+    if (user.username && user.navidrome_base_url) {
+      navidrome_users.push(user);
+    }
+  });
+  
   return {
-    navidrome: {
-      base_url: document.getElementById('nav_base_url').value,
-      user: document.getElementById('nav_user').value,
-      pass: document.getElementById('nav_pass').value
-    },
+    navidrome_users: navidrome_users,
     qbittorrent: {
       enabled: document.getElementById('qbit_enabled').checked,
       web_url: document.getElementById('qbit_web_url').value,
@@ -660,6 +742,112 @@ function getCustomBookmarkLinks() {
     }
   });
   return links;
+}
+
+// Multi-User Management Functions
+function addNewUser() {
+  const container = document.getElementById('usersContainer');
+  
+  // Hide empty message if it exists
+  const emptyMessage = document.getElementById('emptyUsersMessage');
+  if (emptyMessage) {
+    emptyMessage.remove();
+  }
+  
+  // Get next user index
+  const existingCards = container.querySelectorAll('.user-card');
+  const userIndex = existingCards.length;
+  
+  const userCard = document.createElement('div');
+  userCard.className = 'user-card mb-4 p-3 border rounded';
+  userCard.setAttribute('data-user-index', userIndex);
+  userCard.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h6 class="mb-0">User ${userIndex + 1}: <span class="user-display-value">New User</span></h6>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser(${userIndex})">
+        <i class="bi bi-trash"></i> Remove
+      </button>
+    </div>
+    
+    <!-- Navidrome Configuration -->
+    <div class="mb-3">
+      <h6 class="text-primary mb-2"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label form-label-sm">Display Name</label>
+          <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" onchange="updateUserTitle(this)">
+        </div>
+        <div class="col-12">
+          <label class="form-label form-label-sm">Navidrome Base URL</label>
+          <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Username</label>
+          <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Password</label>
+          <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+    
+    <!-- Spotify Configuration -->
+    <div class="mb-3">
+      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+      <div class="row g-2">
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Client ID</label>
+          <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Client Secret</label>
+          <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+    
+    <!-- ListenBrainz Configuration -->
+    <div class="mb-3">
+      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label form-label-sm">User Token</label>
+          <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token">
+          <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.appendChild(userCard);
+}
+
+function removeUser(userIndex) {
+  const container = document.getElementById('usersContainer');
+  const userCard = container.querySelector(`[data-user-index="${userIndex}"]`);
+  
+  if (userCard) {
+    userCard.remove();
+  }
+  
+  // Show empty message if no users
+  const remainingCards = container.querySelectorAll('.user-card');
+  if (remainingCards.length === 0) {
+    const emptyMessage = document.createElement('div');
+    emptyMessage.className = 'alert alert-info';
+    emptyMessage.id = 'emptyUsersMessage';
+    emptyMessage.innerHTML = '<i class="bi bi-info-circle"></i> No users configured yet. Click "Add Another User" to get started.';
+    container.appendChild(emptyMessage);
+  }
+}
+
+function updateUserTitle(displayNameInput) {
+  // Update the user title when display name changes
+  const userCard = displayNameInput.closest('.user-card');
+  const displayValue = userCard.querySelector('.user-display-value');
+  const displayName = displayNameInput.value.trim() || 'New User';
+  displayValue.textContent = displayName;
 }
 </script>
 

@@ -2763,7 +2763,7 @@ def config_save_json():
         
         # Build YAML structure from JSON
         config_dict = {
-            'navidrome': data.get('navidrome', {}),
+            'navidrome_users': data.get('navidrome_users', []),
             'qbittorrent': data.get('qbittorrent', {}),
             'slskd': data.get('slskd', {}),
             'authentik': data.get('authentik', {}),
@@ -2783,6 +2783,9 @@ def config_save_json():
                 config_dict['features'] = existing_config['features']
             if 'weights' in existing_config:
                 config_dict['weights'] = existing_config['weights']
+            # Also preserve legacy navidrome config if it exists (for backward compatibility)
+            if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
+                config_dict['navidrome'] = existing_config['navidrome']
         
         # Convert to YAML
         yaml_content = yaml.safe_dump(config_dict, sort_keys=False, allow_unicode=True, default_flow_style=False)
