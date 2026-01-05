@@ -702,6 +702,7 @@ def artists():
             artist,
             COUNT(DISTINCT album) as album_count,
             COUNT(*) as track_count,
+            SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
         GROUP BY artist
@@ -712,6 +713,7 @@ def artists():
             artist_name as artist,
             0 as album_count,
             0 as track_count,
+            0 as single_count,
             last_updated
         FROM artist_stats
         WHERE artist_name NOT IN (SELECT DISTINCT artist FROM tracks)

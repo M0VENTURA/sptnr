@@ -38,6 +38,9 @@
                             <th class="d-none d-md-table-cell text-center">
                                 <i class="bi bi-music-note"></i> Tracks
                             </th>
+                            <th class="d-none d-lg-table-cell text-center">
+                                <i class="bi bi-star"></i> Singles
+                            </th>
                             <th class="d-none d-lg-table-cell text-center">Last Updated</th>
                             <th class="text-center">Actions</th>
                         </tr>
@@ -60,10 +63,21 @@
                                     <span class="d-inline d-md-none">{{ artist.album_count or 0 }} albums</span>
                                     <span class="d-inline d-md-none ms-1">•</span>
                                     <span class="d-inline d-md-none ms-1">{{ artist.track_count or 0 }} tracks</span>
+                                    {% if artist.single_count and artist.single_count > 0 %}
+                                        <span class="d-inline d-md-none ms-1">•</span>
+                                        <span class="d-inline d-md-none ms-1"><span class="badge bg-warning text-dark">{{ artist.single_count }} singles</span></span>
+                                    {% endif %}
                                 </div>
                             </td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.album_count or 0 }}</td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.track_count or 0 }}</td>
+                            <td class="d-none d-lg-table-cell text-center">
+                                {% if artist.single_count and artist.single_count > 0 %}
+                                    <span class="badge bg-warning text-dark" title="Singles">{{ artist.single_count }}</span>
+                                {% else %}
+                                    <span class="text-muted">0</span>
+                                {% endif %}
+                            </td>
                             <td class="d-none d-lg-table-cell text-center text-muted" style="font-size: 0.85rem;">
                                 {% if artist.last_updated %}
                                     {{ artist.last_updated }}
