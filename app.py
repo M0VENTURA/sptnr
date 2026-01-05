@@ -926,33 +926,57 @@ def _normalize_release_title(text: str) -> str:
 
 
 def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict]:
-    """Fetch release-groups from MusicBrainz for an artist."""
+    """
+    Fetch release-groups from MusicBrainz for an artist with retry logic.
+    
+    Handles SSL errors, timeouts, and other network issues with exponential backoff.
+    """
     if not artist_name:
         return []
+    
     headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
     releases: list[dict] = []
-    try:
-        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
-        url = "https://musicbrainz.org/ws/2/release-group"
-        params = {"fmt": "json", "limit": limit, "query": query}
-        resp = requests.get(url, headers=headers, params=params, timeout=10)
-        resp.raise_for_status()
-        data = resp.json()
-        for rg in data.get("release-groups", []) or []:
-            rg_id = rg.get("id", "")
-            primary_type = rg.get("primary-type", "")
-            releases.append({
-                "id": rg_id,
-                "title": rg.get("title", ""),
-                "primary_type": primary_type,
-                "first_release_date": rg.get("first-release-date", ""),
-                "secondary_types": rg.get("secondary-types", []),
-                "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
-            })
-    except requests.exceptions.Timeout:
-        logging.debug(f"MusicBrainz timeout fetching releases for {artist_name}")
-    except Exception as e:
-        logging.debug(f"MusicBrainz release fetch failed for {artist_name}: {e}")
+    query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+    url = "https://musicbrainz.org/ws/2/release-group"
+    params = {"fmt": "json", "limit": limit, "query": query}
+    
+    # Retry with exponential backoff
+    max_retries = 3
+    base_delay = 1
+    
+    for attempt in range(max_retries):
+        try:
+            resp = requests.get(url, headers=headers, params=params, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            for rg in data.get("release-groups", []) or []:
+                rg_id = rg.get("id", "")
+                primary_type = rg.get("primary-type", "")
+                releases.append({
+                    "id": rg_id,
+                    "title": rg.get("title", ""),
+                    "primary_type": primary_type,
+                    "first_release_date": rg.get("first-release-date", ""),
+                    "secondary_types": rg.get("secondary-types", []),
+                    "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
+                })
+            return releases  # Success
+        except requests.exceptions.Timeout:
+            logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name}")
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+        except requests.exceptions.ConnectionError as e:
+            # Includes SSLEOFError and other connection issues
+            logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
+            if attempt < max_retries - 1:
+                time.sleep(base_delay * (2 ** attempt))
+        except requests.exceptions.RequestException as e:
+            logging.debug(f"MusicBrainz request error for {artist_name}: {e}")
+            break  # Don't retry for other request errors
+        except Exception as e:
+            logging.debug(f"Unexpected error fetching MusicBrainz releases for {artist_name}: {e}")
+            break
+    
     return releases
 
 
@@ -1311,7 +1335,7 @@ def api_cached_missing_releases():
 
 @app.route("/api/artist/bio")
 def api_artist_bio():
-    """Get artist biography from MusicBrainz"""
+    """Get artist biography from MusicBrainz with Discogs fallback"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         return jsonify({"error": "Artist name required"}), 400
@@ -1325,46 +1349,67 @@ def api_artist_bio():
         conn.close()
         
         artist_mbid = row['beets_artist_mbid'] if row else None
+        bio = ""
+        source = "Unknown"
         
+        # Try MusicBrainz first with shorter timeout
         if not artist_mbid:
-            # Try to search for artist on MusicBrainz
-            search_url = "https://musicbrainz.org/ws/2/artist"
-            params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-            headers = {"User-Agent": "sptnr-web/1.0"}
-            
-            resp = requests.get(search_url, params=params, headers=headers, timeout=10)
-            resp.raise_for_status()
-            data = resp.json()
-            
-            artists = data.get("artists", [])
-            if not artists:
-                return jsonify({"bio": "", "source": "MusicBrainz"}), 200
-            
-            artist_mbid = artists[0].get("id")
+            try:
+                search_url = "https://musicbrainz.org/ws/2/artist"
+                params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
+                headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+                
+                resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                artists = data.get("artists", [])
+                if artists:
+                    artist_mbid = artists[0].get("id")
+            except Exception as e:
+                logging.debug(f"MusicBrainz artist search failed: {e}")
+                artist_mbid = None
         
-        if not artist_mbid:
-            return jsonify({"bio": "", "source": "MusicBrainz"}), 200
+        # Fetch from MusicBrainz if we have MBID
+        if artist_mbid:
+            try:
+                artist_url = f"https://musicbrainz.org/ws/2/artist/{artist_mbid}"
+                params = {"fmt": "json", "inc": "annotation"}
+                headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+                
+                resp = requests.get(artist_url, params=params, headers=headers, timeout=5)
+                resp.raise_for_status()
+                artist_data = resp.json()
+                
+                bio = artist_data.get("annotation", {}).get("text", "") or artist_data.get("disambiguation", "")
+                if bio:
+                    source = "MusicBrainz"
+            except Exception as e:
+                logging.debug(f"MusicBrainz bio fetch failed: {e}")
+                bio = ""
         
-        # Fetch artist details with annotation
-        artist_url = f"https://musicbrainz.org/ws/2/artist/{artist_mbid}"
-        params = {"fmt": "json", "inc": "annotation"}
-        headers = {"User-Agent": "sptnr-web/1.0"}
-        
-        resp = requests.get(artist_url, params=params, headers=headers, timeout=10)
-        resp.raise_for_status()
-        artist_data = resp.json()
-        
-        bio = artist_data.get("annotation", {}).get("text", "") or artist_data.get("disambiguation", "")
+        # Fallback to Discogs if MusicBrainz failed or returned empty
+        if not bio:
+            try:
+                from api_clients.discogs import DiscogsClient
+                discogs_client = DiscogsClient()
+                artist_data = discogs_client.search_artist(artist_name)
+                if artist_data:
+                    bio = artist_data.get("profile", "")
+                    if bio:
+                        source = "Discogs"
+            except Exception as e:
+                logging.debug(f"Discogs bio fetch failed: {e}")
         
         return jsonify({
             "bio": bio,
-            "source": "MusicBrainz",
+            "source": source,
             "artist_mbid": artist_mbid
         })
         
     except Exception as e:
-        logging.error(f"Error fetching artist bio: {e}")
-        return jsonify({"bio": "", "source": "Error", "error": str(e)}), 200
+        logging.error(f"Error fetching artist bio from all sources: {e}")
+        return jsonify({"bio": "", "source": "Error"}), 200
 
 
 @app.route("/api/artist/singles-count")
@@ -2022,6 +2067,16 @@ def track_detail(track_id):
     # Get recommended genres from other tracks with similar titles or artists
     recommended_genres = []
     if track:
+        # Convert Row to dict to ensure all columns are accessible
+        track = dict(track)
+        
+        # Ensure beets columns exist (for backward compatibility)
+        beets_columns = ['beets_mbid', 'beets_similarity', 'beets_album_mbid', 
+                        'beets_artist_mbid', 'beets_album_artist']
+        for col in beets_columns:
+            if col not in track:
+                track[col] = None
+        
         artist_name = track['artist']
         cursor.execute("""
             SELECT genres FROM tracks 
@@ -4887,15 +4942,100 @@ def api_metadata():
     return jsonify(metadata)
 
 
+def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes | None:
+    """
+    Fetch album art from MusicBrainz Cover Art Archive.
+    
+    Args:
+        artist_name: Artist name
+        album_name: Album name
+        
+    Returns:
+        Image bytes if found, None otherwise
+    """
+    try:
+        # Try to get MBID from database
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT beets_album_mbid FROM tracks 
+            WHERE artist = ? AND album = ? AND beets_album_mbid IS NOT NULL
+            LIMIT 1
+        """, (artist_name, album_name))
+        result = cursor.fetchone()
+        conn.close()
+        
+        album_mbid = result['beets_album_mbid'] if result else None
+        
+        # If we don't have MBID, try to search for it
+        if not album_mbid:
+            try:
+                search_url = "https://musicbrainz.org/ws/2/release-group"
+                params = {
+                    "query": f'release:"{album_name}" AND artist:"{artist_name}"',
+                    "fmt": "json",
+                    "limit": 1
+                }
+                headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+                resp = requests.get(search_url, params=params, headers=headers, timeout=3)
+                resp.raise_for_status()
+                data = resp.json()
+                rgs = data.get("release-groups", [])
+                if rgs:
+                    album_mbid = rgs[0].get("id")
+            except Exception as e:
+                logging.debug(f"MusicBrainz album search failed: {e}")
+                return None
+        
+        if not album_mbid:
+            return None
+        
+        # Fetch cover art from Cover Art Archive
+        cover_url = f"https://coverartarchive.org/release-group/{album_mbid}/front-500"
+        resp = requests.get(cover_url, timeout=3)
+        if resp.status_code == 200:
+            return resp.content
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Failed to fetch album art from MusicBrainz: {e}")
+        return None
+
+
+def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | None:
+    """
+    Fetch album art from Discogs as fallback.
+    
+    Args:
+        artist_name: Artist name
+        album_name: Album name
+        
+    Returns:
+        Image bytes if found, None otherwise
+    """
+    try:
+        from api_clients.discogs import DiscogsClient
+        discogs = DiscogsClient()
+        album_data = discogs.search_album(artist_name, album_name)
+        if album_data and album_data.get("cover_url"):
+            resp = requests.get(album_data["cover_url"], timeout=3)
+            if resp.status_code == 200:
+                return resp.content
+    except Exception as e:
+        logging.debug(f"Failed to fetch album art from Discogs: {e}")
+    
+    return None
+
+
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
-    """Get album art from database, Navidrome, or MP3 files"""
+    """Get album art from database, Navidrome, MusicBrainz, or Discogs"""
     try:
         from urllib.parse import unquote
         artist = unquote(artist)
         album = unquote(album)
         
-        # First, check if we have cover_art_url in database
+        # 1. First, check if we have cover_art_url in database
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -4910,10 +5050,8 @@ def api_album_art(artist, album):
             
             if result and result[0]:
                 cover_art_url = result[0]
-                # Fetch and return the image from MusicBrainz
                 try:
-                    import requests
-                    resp = requests.get(cover_art_url, timeout=10)
+                    resp = requests.get(cover_art_url, timeout=5)
                     if resp.status_code == 200:
                         return send_file(
                             io.BytesIO(resp.content),
@@ -4924,27 +5062,23 @@ def api_album_art(artist, album):
         except:
             pass
         
-        # Try to get from Navidrome
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        nav_users = cfg.get("navidrome_users", [])
-        if not nav_users:
-            nav = cfg.get("navidrome", {}) or {}
-            if nav.get("base_url"):
-                nav_users = [nav]
-        
-        if nav_users:
-            nav = nav_users[0]  # Use first Navidrome user
-            base_url = nav.get("base_url", "").rstrip("/")
-            username = nav.get("user", "")
-            password = nav.get("pass", "")
+        # 2. Try to get from Navidrome
+        try:
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            nav_users = cfg.get("navidrome_users", [])
+            if not nav_users:
+                nav = cfg.get("navidrome", {}) or {}
+                if nav.get("base_url"):
+                    nav_users = [nav]
             
-            if base_url:
-                try:
-                    session = create_retry_session(retries=3, backoff=0.3, status_forcelist=(429, 500, 502, 503, 504))
-                    # Try to get album cover via Navidrome REST API
-                    # Format: /rest/getCoverArt.view?u=user&p=pass&c=client&id=album_id
-                    
-                    # First, search for the album
+            if nav_users:
+                nav = nav_users[0]  # Use first Navidrome user
+                base_url = nav.get("base_url", "").rstrip("/")
+                username = nav.get("user", "")
+                password = nav.get("pass", "")
+                
+                if base_url:
+                    session = create_retry_session(retries=2, backoff=0.2, status_forcelist=(429, 500, 502, 503, 504))
                     search_url = f"{base_url}/rest/search3.view"
                     params = {
                         'u': username,
@@ -4955,7 +5089,7 @@ def api_album_art(artist, album):
                         'f': 'json'
                     }
                     
-                    resp = session.get(search_url, params=params, timeout=10)
+                    resp = session.get(search_url, params=params, timeout=5)
                     if resp.status_code == 200:
                         data = resp.json()
                         albums = data.get('subsonic-response', {}).get('searchResult3', {}).get('album', [])
@@ -4971,19 +5105,36 @@ def api_album_art(artist, album):
                                     'id': album_id,
                                     'size': '300'
                                 }
-                                cover_resp = session.get(cover_url, params=cover_params, timeout=10)
+                                cover_resp = session.get(cover_url, params=cover_params, timeout=5)
                                 if cover_resp.status_code == 200:
                                     return send_file(
                                         io.BytesIO(cover_resp.content),
                                         mimetype='image/jpeg'
                                     )
-                except Exception as e:
-                    pass  # Fall through to MP3 extraction
-
-        # If Navidrome didn't return art, let the caller fall back to placeholders/other flows
+        except Exception as e:
+            logging.debug(f"Navidrome cover art fetch failed: {e}")
+        
+        # 3. Try MusicBrainz
+        art_bytes = _fetch_album_art_from_musicbrainz(artist, album)
+        if art_bytes:
+            return send_file(
+                io.BytesIO(art_bytes),
+                mimetype='image/jpeg'
+            )
+        
+        # 4. Fallback to Discogs
+        art_bytes = _fetch_album_art_from_discogs(artist, album)
+        if art_bytes:
+            return send_file(
+                io.BytesIO(art_bytes),
+                mimetype='image/jpeg'
+            )
+        
+        # 5. No art found
         return Response(status=404)
     except Exception as e:
-        return {"error": str(e)}, 400
+        logging.error(f"Error fetching album art for {artist} - {album}: {e}")
+        return Response(status=404)
 
 
 @app.route("/api/downloads/scan")
@@ -6209,7 +6360,7 @@ if __name__ == "__main__":
 
     @app.route("/api/track/musicbrainz", methods=["POST"])
     def api_track_musicbrainz_lookup():
-        """Lookup track on MusicBrainz for multiple matches (Picard-style)"""
+        """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
         try:
             data = request.get_json()
             title = data.get("title", "")
@@ -6218,74 +6369,87 @@ if __name__ == "__main__":
             if not title or not artist:
                 return jsonify({"error": "Missing title or artist"}), 400
             
-            # Search MusicBrainz for recordings
+            # Search MusicBrainz for recordings with retry
             query = f'recording:"{title}" AND artist:"{artist}"'
             headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
             
-            try:
-                resp = requests.get(
-                    "https://musicbrainz.org/ws/2/recording",
-                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
-                    headers=headers,
-                    timeout=10
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                recordings = data.get("recordings", []) or []
-                
-                if not recordings:
-                    return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
-                
-                # Format results with similarity scores
-                import difflib
-                results = []
-                for rec in recordings:
-                    rec_id = rec.get("id", "")
-                    rec_title = rec.get("title", "")
-                    rec_length = rec.get("length", 0)  # in milliseconds
+            max_retries = 2
+            for attempt in range(max_retries):
+                try:
+                    resp = requests.get(
+                        "https://musicbrainz.org/ws/2/recording",
+                        params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
+                        headers=headers,
+                        timeout=5
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    recordings = data.get("recordings", []) or []
                     
-                    # Get artist credit
-                    artist_credit = rec.get("artist-credit", [])
-                    rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
+                    if not recordings:
+                        return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
                     
-                    # Get releases (albums this appears on)
-                    releases = rec.get("releases", []) or []
-                    release_list = []
-                    for rel in releases[:5]:
-                        release_list.append({
-                            "id": rel.get("id", ""),
-                            "title": rel.get("title", "")
+                    # Format results with similarity scores
+                    import difflib
+                    results = []
+                    for rec in recordings:
+                        rec_id = rec.get("id", "")
+                        rec_title = rec.get("title", "")
+                        rec_length = rec.get("length", 0)  # in milliseconds
+                        
+                        # Get artist credit
+                        artist_credit = rec.get("artist-credit", [])
+                        rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
+                        
+                        # Get releases (albums this appears on)
+                        releases = rec.get("releases", []) or []
+                        release_list = []
+                        for rel in releases[:5]:
+                            release_list.append({
+                                "id": rel.get("id", ""),
+                                "title": rel.get("title", "")
+                            })
+                        
+                        # Calculate similarity scores
+                        title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
+                        artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
+                        overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+                        
+                        results.append({
+                            "mbid": rec_id,
+                            "title": rec_title,
+                            "artist": rec_artist,
+                            "length": rec_length,
+                            "releases": release_list,
+                            "confidence": round(overall_confidence, 3),
+                            "title_similarity": round(title_similarity, 3),
+                            "artist_similarity": round(artist_similarity, 3),
+                            "source": "musicbrainz"
                         })
                     
-                    # Calculate similarity scores
-                    title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
-                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
-                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+                    # Sort by confidence
+                    results.sort(key=lambda x: x["confidence"], reverse=True)
                     
-                    results.append({
-                        "mbid": rec_id,
-                        "title": rec_title,
-                        "artist": rec_artist,
-                        "length": rec_length,
-                        "releases": release_list,
-                        "confidence": round(overall_confidence, 3),
-                        "title_similarity": round(title_similarity, 3),
-                        "artist_similarity": round(artist_similarity, 3),
-                        "source": "musicbrainz"
-                    })
-                
-                # Sort by confidence
-                results.sort(key=lambda x: x["confidence"], reverse=True)
-                
-                return jsonify({"results": results[:10]}), 200
-            except Exception as e:
-                logger = logging.getLogger('sptnr')
-                logger.error(f"MusicBrainz lookup error: {e}")
-                return jsonify({"error": str(e)}), 500
+                    return jsonify({"results": results[:10]}), 200
+                    
+                except requests.exceptions.Timeout:
+                    logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {title} by {artist}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1 * (2 ** attempt))  # Exponential backoff
+                except requests.exceptions.ConnectionError as e:
+                    logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}): {type(e).__name__}")
+                    if attempt < max_retries - 1:
+                        time.sleep(1 * (2 ** attempt))
+                except Exception as e:
+                    logging.debug(f"MusicBrainz lookup error: {e}")
+                    if attempt == max_retries - 1:
+                        return jsonify({"error": f"MusicBrainz lookup failed: {str(e)}"}), 500
+                    time.sleep(1)
+            
+            return jsonify({"error": "MusicBrainz lookup failed after retries"}), 500
                 
         except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"MusicBrainz track lookup error: {e}")
+            logging.error(f"MusicBrainz track lookup error: {e}")
             return jsonify({"error": str(e)}), 500
 
     # ==========================================================================

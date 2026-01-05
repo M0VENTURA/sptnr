@@ -75,7 +75,13 @@ required_columns = {
     "navidrome_genre": "TEXT",              # Genre from Navidrome (replaces navidrome_genres)
     "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
     "genre_display": "TEXT",                # Primary display genre (aggregated)
-    "album_folder": "TEXT"                  # Album folder path for beets updates
+    "album_folder": "TEXT",                 # Album folder path for beets updates
+    # ✅ Beets metadata columns
+    "beets_mbid": "TEXT",                     # MusicBrainz ID from beets
+    "beets_similarity": "REAL",               # Beets match similarity (0-1)
+    "beets_album_mbid": "TEXT",               # Album MBID from beets
+    "beets_artist_mbid": "TEXT",              # Artist MBID from beets
+    "beets_album_artist": "TEXT"              # Album artist from beets
 }
 
 # ✅ Define columns for the artists table
