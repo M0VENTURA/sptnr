@@ -1717,18 +1717,18 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     logging.info(msg)
                     print(f"   ðŸ”¢ {msg}")
 
-                discogs_genres = get_discogs_genres(title, artist_name)
-                audiodb_genres = get_audiodb_genres(artist_name) if AUDIODB_ENABLED else []
-                mb_genres      = get_musicbrainz_genres(title, artist_name)
+                discogs_genres = []
+                audiodb_genres = []
+                mb_genres      = []
                 lastfm_tags    = []
 
                 online_top, _ = get_top_genres_with_navidrome(
                     {
-                        "spotify":      spotify_genres,
-                        "lastfm":       lastfm_tags,
-                        "discogs":      discogs_genres,
-                        "audiodb":      audiodb_genres,
-                        "musicbrainz":  mb_genres,
+                        "spotify":      [],
+                        "lastfm":       [],
+                        "discogs":      [],
+                        "audiodb":      [],
+                        "musicbrainz":  [],
                     },
                     nav_genres,
                     title=title,
