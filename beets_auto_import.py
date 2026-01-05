@@ -149,9 +149,8 @@ class BeetsAutoImporter:
                         "copy": False,
                         "write": False,
                         "incremental": True,
-                        "log": str(self.config_path / "beets_import.log"),
                         "resume": False,
-                        "quiet": False
+                        "quiet": True  # Suppress beets own logging, we log output to our logger
                     },
                     "musicbrainz": {
                         "enabled": True
@@ -334,7 +333,11 @@ class BeetsAutoImporter:
                 
                 # Create temporary list of folders to import
                 if not filtered_folders:
-                    logger.warning("All artists already in beets database. Nothing to import.")
+                    logger.warning("\n" + "="*80)
+                    logger.warning("All artists already in beets database. Nothing new to import.")
+                    logger.warning(f"Total artists in beets: {len(existing_artists)}")
+                    logger.warning(f"Total folders in /music: {len(artist_folders)}")
+                    logger.warning("="*80 + "\n")
                     # Return a dummy process that does nothing
                     process = subprocess.Popen(['echo', 'No new artists to import'], 
                                               stdout=subprocess.PIPE, 
@@ -352,7 +355,6 @@ class BeetsAutoImporter:
                     # Build single import command with all folders
                     cmd = [
                         "beet", "import",
-                        "-n",  # Non-interactive mode
                         "-c", str(self.beets_config),  # Use our config
                         "--library", str(self.beets_db),
                     ]
@@ -360,7 +362,7 @@ class BeetsAutoImporter:
                     cmd.extend([str(folder) for folder in filtered_folders])
                     
                     logger.info(f"Running: {' '.join(cmd)}")
-                    logger.info(f"Running in non-interactive mode (-n flag)")
+                    logger.info(f"Non-interactive mode enabled via config (autotag=True, write=False)")
                     
                     # Run as single process with all new artists
                     process = subprocess.Popen(
@@ -403,14 +405,13 @@ class BeetsAutoImporter:
         cmd = [
             "beet",
             "-c", str(self.beets_config),  # Use our config
-            "-n",  # Non-interactive mode (auto-tag without prompts)
             "import",
             str(import_path)
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
         logger.info(f"With incremental mode enabled, beets will skip files already in database")
-        logger.info(f"Running in non-interactive mode (-n flag)")
+        logger.info(f"Non-interactive mode enabled via config (autotag=True, write=False)")
         
         # Run with live output capture
         process = subprocess.Popen(
@@ -669,16 +670,26 @@ class BeetsAutoImporter:
         """
         self.ensure_beets_config()
         
-        logger.info("Starting beets auto-import...")
+        logger.info("\n" + "="*80)
+        logger.info("BEETS AUTO-IMPORT SESSION STARTED")
+        logger.info("="*80)
         logger.info(f"Music path: {self.music_path}")
         logger.info(f"Config path: {self.config_path}")
         logger.info(f"Beets config: {self.beets_config}")
         logger.info(f"Beets DB: {self.beets_db}")
         logger.info(f"Skip existing artists: {skip_existing}")
-
+        
+        # Count folders and files
+        if self.music_path.exists():
+            artist_folders = [d for d in self.music_path.iterdir() if d.is_dir()]
+            logger.info(f"Artist folders in /music: {len(artist_folders)}")
+        
         total_files = 0
         if self.music_path.exists():
             total_files = sum(1 for _ in self.music_path.rglob('*.mp3'))
+        logger.info(f"Total .mp3 files in /music: {total_files}")
+        logger.info("="*80 + "\n")
+        
         save_beets_progress(0, total_files, status="starting", is_running=True)
 
         try:
