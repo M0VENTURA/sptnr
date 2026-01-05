@@ -54,7 +54,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-md-3">
+        <div class="col-6 col-sm-6 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -64,17 +64,7 @@
                 </div>
             </div>
         </div>
-        <div class="col-6 col-sm-4 col-md-3">
-            <div class="card h-100">
-                <div class="card-body text-center">
-                    <div class="stat-label mb-2">
-                        <i class="bi bi-star-fill"></i> 5★
-                    </div>
-                    <div class="h4 mb-0">{{ five_star_count }}</div>
-                </div>
-            </div>
-        </div>
-        <div class="col-6 col-sm-4 col-md-3">
+        <div class="col-6 col-sm-6 col-md-3">
             <div class="card h-100">
                 <div class="card-body text-center">
                     <div class="stat-label mb-2">
@@ -749,25 +739,19 @@ document.addEventListener('DOMContentLoaded', function() {
                     }
                 }
                 
-                // Only update DOM if values changed
-                const progressKey = `${activeScanType}_progress`;
-                if (previousProgress[progressKey] !== percent) {
-                    previousProgress[progressKey] = percent;
-                    
-                    // Update progress bar
-                    if (progressBar) {
-                        progressBar.style.width = percent + '%';
-                        progressBar.setAttribute('aria-valuenow', percent);
-                    }
-                    
-                    // Update percentage
-                    if (progressPercent) {
-                        progressPercent.textContent = percent + '%';
-                    }
+                // Update progress bar (always update to ensure visual consistency)
+                if (progressBar) {
+                    progressBar.style.width = percent + '%';
+                    progressBar.setAttribute('aria-valuenow', percent);
                 }
                 
-                // Update text (may change even if percent doesn't)
-                if (progressText && progressText.textContent !== text) {
+                // Update percentage
+                if (progressPercent) {
+                    progressPercent.textContent = percent + '%';
+                }
+                
+                // Update text
+                if (progressText) {
                     progressText.textContent = text;
                 }
             })
