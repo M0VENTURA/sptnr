@@ -119,6 +119,21 @@ class BeetsAutoImporter:
                 with open(config_path, 'r') as f:
                     content = f.read().strip()
                     if content and content != '{}':
+                        # Check if existing config has invalid resume value and fix it
+                        try:
+                            existing_config = yaml.safe_load(content)
+                            if existing_config and 'import' in existing_config:
+                                resume_val = existing_config['import'].get('resume')
+                                if resume_val == 'no':
+                                    # Fix invalid resume value
+                                    logger.info(f"Fixing invalid resume='no' in {config_path}")
+                                    existing_config['import']['resume'] = True if not readonly else False
+                                    with open(config_path, 'w') as fw:
+                                        yaml.dump(existing_config, fw, default_flow_style=False, sort_keys=False)
+                                    logger.info(f"Updated resume value in {config_path}")
+                                    return
+                        except Exception as e:
+                            logger.warning(f"Could not check/fix existing config: {e}")
                         # File has valid content, skip
                         return
             
