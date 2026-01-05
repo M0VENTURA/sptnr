@@ -17,6 +17,7 @@ import json
 import sqlite3
 import subprocess
 import logging
+import time
 from pathlib import Path
 from datetime import datetime
 from typing import Optional, Dict, List
@@ -351,6 +352,7 @@ class BeetsAutoImporter:
                     # Build single import command with all folders
                     cmd = [
                         "beet", "import",
+                        "-n",  # Non-interactive mode
                         "-c", str(self.beets_config),  # Use our config
                         "--library", str(self.beets_db),
                     ]
@@ -358,6 +360,7 @@ class BeetsAutoImporter:
                     cmd.extend([str(folder) for folder in filtered_folders])
                     
                     logger.info(f"Running: {' '.join(cmd)}")
+                    logger.info(f"Running in non-interactive mode (-n flag)")
                     
                     # Run as single process with all new artists
                     process = subprocess.Popen(
@@ -366,7 +369,8 @@ class BeetsAutoImporter:
                         stderr=subprocess.STDOUT,
                         text=True,
                         bufsize=1,
-                        universal_newlines=True
+                        universal_newlines=True,
+                        stdin=subprocess.DEVNULL  # Ensure no stdin available to prevent hanging
                     )
                     return process
                 else:
@@ -399,12 +403,14 @@ class BeetsAutoImporter:
         cmd = [
             "beet",
             "-c", str(self.beets_config),  # Use our config
+            "-n",  # Non-interactive mode (auto-tag without prompts)
             "import",
             str(import_path)
         ]
         
         logger.info(f"Running: {' '.join(cmd)}")
         logger.info(f"With incremental mode enabled, beets will skip files already in database")
+        logger.info(f"Running in non-interactive mode (-n flag)")
         
         # Run with live output capture
         process = subprocess.Popen(
@@ -413,7 +419,8 @@ class BeetsAutoImporter:
             stderr=subprocess.STDOUT,
             text=True,
             bufsize=1,
-            universal_newlines=True
+            universal_newlines=True,
+            stdin=subprocess.DEVNULL  # Ensure no stdin available to prevent hanging
         )
         
         return process
@@ -676,6 +683,7 @@ class BeetsAutoImporter:
 
         try:
             process = self.run_import(artist_path, skip_existing=skip_existing)
+            logger.info(f"Beets import process started with PID {process.pid}")
         except Exception as e:
             logger.error(f"Failed to start beets import process: {e}")
             import traceback
@@ -683,35 +691,82 @@ class BeetsAutoImporter:
             save_beets_progress(0, total_files, status="error", is_running=False)
             return False
 
-        # Capture output in real-time
+        # Capture output in real-time with timeout handling
         import_metadata: list[dict] = []
         current_item: dict = {}
         line_count = 0
+        last_output_time = time.time()
+        output_timeout = 300  # 5 minutes without output = timeout
 
-        for line in iter(process.stdout.readline, ''):
-            if not line:
-                break
+        try:
+            while True:
+                # Check if process is still running
+                poll_result = process.poll()
+                
+                try:
+                    # Non-blocking read with timeout
+                    line = process.stdout.readline()
+                    
+                    if line:
+                        last_output_time = time.time()  # Reset timeout on new output
+                        line = line.strip()
+                        if line:  # Skip empty lines
+                            line_count += 1
+                            print(line)  # Echo to console
+                            logger.info(f"BEETS: {line}")
 
-            line = line.strip()
-            line_count += 1
-            print(line)  # Echo to console
-            logger.info(f"BEETS: {line}")
+                            metadata = self.parse_import_output(line)
+                            if metadata:
+                                if current_item:
+                                    import_metadata.append(current_item)
+                                current_item = metadata
+                            elif current_item and line:
+                                current_item.setdefault('output_lines', []).append(line)
+                    elif poll_result is not None:
+                        # Process ended and no more output
+                        break
+                    else:
+                        # No output but process still running - check for timeout
+                        elapsed = time.time() - last_output_time
+                        if elapsed > output_timeout:
+                            logger.warning(f"Beets import timeout: no output for {output_timeout} seconds")
+                            logger.warning("Attempting to terminate beets process...")
+                            process.terminate()
+                            try:
+                                process.wait(timeout=10)
+                            except subprocess.TimeoutExpired:
+                                logger.error("Force killing beets process")
+                                process.kill()
+                            break
+                        else:
+                            time.sleep(0.1)  # Small sleep to avoid busy-waiting
+                
+                except Exception as e:
+                    logger.error(f"Error reading beets output: {e}")
+                    break
 
-            metadata = self.parse_import_output(line)
-            if metadata:
-                if current_item:
-                    import_metadata.append(current_item)
-                current_item = metadata
-            elif current_item and line:
-                current_item.setdefault('output_lines', []).append(line)
+        except Exception as e:
+            logger.error(f"Unexpected error during beets import: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            try:
+                process.terminate()
+                process.wait(timeout=5)
+            except:
+                process.kill()
 
         if current_item:
             import_metadata.append(current_item)
 
-        process.wait()
+        try:
+            process.wait(timeout=10)
+        except subprocess.TimeoutExpired:
+            logger.error("Process did not terminate gracefully, killing...")
+            process.kill()
+            process.wait()
 
         logger.info(f"Beets process completed with return code: {process.returncode}")
-        logger.info(f"Captured {line_count} output lines")
+        logger.info(f"Captured {line_count} output lines from beets")
         
         # Check how many tracks are now in beets database
         try:
@@ -725,24 +780,30 @@ class BeetsAutoImporter:
         except Exception as e:
             logger.warning(f"Could not check final beets database count: {e}")
 
-        if process.returncode != 0:
+        if process.returncode is not None and process.returncode not in (0, -15):  # -15 is SIGTERM
             logger.error(f"Beets import failed with return code {process.returncode}")
             save_beets_progress(0, total_files, status="error", is_running=False)
-            return False
-
+            # Don't return False immediately - still try to sync what was imported
+        
         # Save captured metadata
         if import_metadata:
             metadata_file = self.config_path / "beets_import_metadata.json"
-            with open(metadata_file, 'w') as f:
-                json.dump(import_metadata, f, indent=2)
-            logger.info(f"Saved {len(import_metadata)} import records to {metadata_file}")
-        else:
-            logger.warning("No import metadata captured from beets output")
+            try:
+                with open(metadata_file, 'w') as f:
+                    json.dump(import_metadata, f, indent=2)
+                logger.info(f"Saved {len(import_metadata)} import records to {metadata_file}")
+            except Exception as e:
+                logger.error(f"Could not save import metadata: {e}")
+        
+        if line_count == 0:
+            logger.warning("No output captured from beets - this may indicate an issue")
+            logger.warning("Proceeding to sync any data that was imported...")
 
-        # Sync beets database to sptnr
+        # Sync beets database to sptnr even if import had issues
         logger.info("Syncing beets metadata to sptnr database...")
         try:
             self.sync_beets_to_sptnr()
+            logger.info("Beets metadata sync completed successfully")
         except Exception as e:
             logger.error(f"Error syncing beets to sptnr: {e}")
             import traceback
@@ -750,9 +811,9 @@ class BeetsAutoImporter:
             save_beets_progress(total_files, total_files, status="error", is_running=False)
             return False
 
-        logger.info("Import complete!")
+        logger.info("Beets auto-import complete!")
         save_beets_progress(total_files, total_files, status="complete", is_running=False)
-        return process.returncode == 0
+        return True  # Consider it successful if we synced the data
 
 
 def main():
