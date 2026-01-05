@@ -577,30 +577,31 @@ def get_current_track_rating(track_id: str) -> int:
 def get_current_single_detection(track_id: str) -> dict:
     """Query the current single detection values from the database.
     
-    Returns dict with is_single, single_confidence, and single_sources.
-    This is used to preserve user-edited single detection across rescans.
+    Returns dict with is_single, single_confidence, single_sources, and stars.
+    This is used to preserve user-edited single detection and star ratings across rescans.
     """
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
-            "SELECT is_single, single_confidence, single_sources FROM tracks WHERE id = ?",
+            "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
             (track_id,)
         )
         row = cursor.fetchone()
         conn.close()
         if row:
-            is_single, confidence, sources_json = row
+            is_single, confidence, sources_json, stars = row
             sources = json.loads(sources_json) if sources_json else []
             return {
                 "is_single": bool(is_single),
                 "single_confidence": confidence or "low",
-                "single_sources": sources
+                "single_sources": sources,
+                "stars": stars or 0
             }
-        return {"is_single": False, "single_confidence": "low", "single_sources": []}
+        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
     except Exception as e:
         logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
-        return {"is_single": False, "single_confidence": "low", "single_sources": []}
+        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
 
 # --- Spotify API Helpers ---
@@ -1855,6 +1856,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk["_original_is_single"] = current_single["is_single"]
             trk["_original_single_confidence"] = current_single["single_confidence"]
             trk["_original_single_sources"] = current_single["single_sources"]
+            trk["_original_stars"] = current_single["stars"]
             
             # Delegate all single detection to centralized function
             trk = rate_track_single_detection(
@@ -1872,6 +1874,9 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     trk["is_single"] = True
                     trk["single_confidence"] = current_single["single_confidence"]
                     trk["single_sources"] = current_single["single_sources"]
+                    # Also restore the stars if user had manually edited
+                    if current_single["stars"] >= 5:
+                        trk["stars"] = current_single["stars"]
                     logging.info(f"✅ Preserving user-edited is_single=True for '{trk.get('title', '')}' (auto-detected as {auto_detected_is_single})")
                     if verbose:
                         print(f"      ✅ Preserved user edit: is_single=True for '{trk.get('title', '')}'")
@@ -1880,6 +1885,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             trk.pop("_original_is_single", None)
             trk.pop("_original_single_confidence", None)
             trk.pop("_original_single_sources", None)
+            trk.pop("_original_stars", None)
             
             # Collect low-evidence bumps for reporting
             if trk.get("stars") == 2:
