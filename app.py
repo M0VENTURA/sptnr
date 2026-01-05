@@ -2262,7 +2262,18 @@ def track_detail(track_id):
         
         conn.close()
         
-        return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id)
+        # Load config for template
+        try:
+            cfg, _ = _read_yaml(CONFIG_PATH)
+            qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+            slskd_config = cfg.get("slskd", {"enabled": False})
+        except Exception as e:
+            logging.warning(f"Could not load config for track template: {e}")
+            qbit_config = {"enabled": False, "web_url": "http://localhost:8080"}
+            slskd_config = {"enabled": False}
+        
+        return render_template("track.html", track=track, recommended_genres=recommended_genres, track_id=track_id,
+                             qbit_config=qbit_config, slskd_config=slskd_config)
     
     except Exception as e:
         logging.error(f"Error loading track {track_id}: {e}")
@@ -6313,14 +6324,20 @@ if __name__ == "__main__":
             # Format results
             formatted_results = []
             for result in results_data[:5]:
+                # Check if format includes "Single" to detect singles
+                formats = result.get("format", [])
+                is_single_release = "Single" in formats if formats else False
+                
                 formatted_results.append({
                     "title": result.get("title", "Unknown"),
                     "year": result.get("year", ""),
                     "genre": result.get("genre", []),
                     "style": result.get("style", []),
-                    "format": result.get("format", []),
+                    "format": formats,
+                    "is_single": is_single_release,
                     "url": result.get("resource_url", ""),
-                    "source": "discogs"
+                    "source": "discogs",
+                    "discogs_id": result.get("id", "")
                 })
             
             return jsonify({"results": formatted_results}), 200
@@ -6569,6 +6586,7 @@ if __name__ == "__main__":
             artist = data.get("artist", "")
             album = data.get("album", "")
             discogs_id = data.get("discogs_id", "")
+            is_single = data.get("is_single", False)  # Check if Discogs marked this as Single
             
             if not artist or not album or not discogs_id:
                 return jsonify({"error": "Missing required fields"}), 400
@@ -6585,19 +6603,32 @@ if __name__ == "__main__":
                     conn.isolation_level = None  # Autocommit mode
                     cursor = conn.cursor()
                     
-                    # Update all tracks in this album with Discogs ID
-                    cursor.execute(
-                        "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
-                        (discogs_id, artist, album)
-                    )
+                    # Update all tracks in this album with Discogs ID and is_single flag if detected
+                    if is_single:
+                        # If Discogs detected this as a Single, mark tracks as singles with high confidence
+                        cursor.execute(
+                            "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END WHERE artist = ? AND album = ?",
+                            (discogs_id, artist, album)
+                        )
+                    else:
+                        # Just update the Discogs ID
+                        cursor.execute(
+                            "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
+                            (discogs_id, artist, album)
+                        )
+                    
                     rows_updated = cursor.rowcount
                     conn.commit()
                     conn.close()
                     
-                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
+                    if is_single:
+                        logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} and marked as single for {artist} - {album}")
+                    else:
+                        logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
+                    
                     return jsonify({
                         "success": True,
-                        "message": f"Updated {rows_updated} tracks with Discogs ID",
+                        "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single" if is_single else ""),
                         "rows_updated": rows_updated
                     }), 200
                 except sqlite3.OperationalError as e:

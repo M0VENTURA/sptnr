@@ -636,10 +636,11 @@
             results.forEach(result => {
                 const genres = (result.genre || []).join(', ');
                 const styles = (result.style || []).join(', ');
+                const isSingle = result.is_single ? ' <span class="badge bg-info ms-2">Single</span>' : '';
                 html += `
                     <div class="card mb-2">
                         <div class="card-body p-3">
-                            <h6 class="mb-2">${result.title}</h6>
+                            <h6 class="mb-2">${result.title}${isSingle}</h6>
                             <div class="row g-2 mb-2">
                                 <div class="col-6">
                                     <span class="text-muted" style="font-size: 0.75rem;">Year: </span>
@@ -652,8 +653,8 @@
                             </div>
                             ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
                             ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
-                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData('${result.title}', '${genres}')">
-                                <i class="bi bi-check-circle"></i> Apply Genres
+                            <button class="btn btn-sm btn-primary" onclick="applyDiscogsData('${result.discogs_id}', '${result.title}', '${genres}', ${result.is_single})">
+                                <i class="bi bi-check-circle"></i> Apply Metadata
                             </button>
                         </div>
                     </div>
@@ -678,9 +679,37 @@
         alert('✅ MBID applied! Remember to save the form.');
     }
 
-    function applyDiscogsData(title, genres) {
-        // In a real implementation, this would update genres in the track record
-        alert('Applied Discogs metadata:\nTitle: ' + title + '\nGenres: ' + genres);
+    function applyDiscogsData(discogsId, title, genres, isSingle) {
+        // Send request to apply Discogs metadata to all tracks in this album
+        const artist = document.getElementById('artist').value;
+        const album = document.getElementById('album').value;
+        
+        if (!artist || !album) {
+            alert('Please ensure artist and album are filled in');
+            return;
+        }
+        
+        fetch('/api/album/apply-discogs-id', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: artist,
+                album: album,
+                discogs_id: discogsId,
+                is_single: isSingle
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Discogs metadata applied to ' + data.rows_updated + ' track(s)!' + (isSingle ? ' Marked as single.' : ''));
+                // Reload to see updated data
+                location.reload();
+            } else {
+                alert('❌ Error: ' + data.error);
+            }
+        })
+        .catch(error => alert('Network error: ' + error.message));
     }
 </script>
 
