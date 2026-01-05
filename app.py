@@ -6330,6 +6330,8 @@ if __name__ == "__main__":
     @app.route("/api/album/apply-discogs-id", methods=["POST"])
     def api_album_apply_discogs_id():
         """Apply Discogs ID to all tracks in an album"""
+        import time
+        logger = logging.getLogger('sptnr')
         try:
             data = request.get_json()
             artist = data.get("artist", "")
@@ -6339,23 +6341,51 @@ if __name__ == "__main__":
             if not artist or not album or not discogs_id:
                 return jsonify({"error": "Missing required fields"}), 400
             
-            conn = get_db()
-            cursor = conn.cursor()
+            # Retry logic for database lock
+            max_retries = 3
+            retry_delay = 0.5
+            rows_updated = 0
+            last_error = None
             
-            # Update all tracks in this album with Discogs ID
-            cursor.execute(
-                "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
-                (discogs_id, artist, album)
-            )
-            rows_updated = cursor.rowcount
-            conn.commit()
-            conn.close()
+            for attempt in range(max_retries):
+                try:
+                    conn = get_db()
+                    conn.isolation_level = None  # Autocommit mode
+                    cursor = conn.cursor()
+                    
+                    # Update all tracks in this album with Discogs ID
+                    cursor.execute(
+                        "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
+                        (discogs_id, artist, album)
+                    )
+                    rows_updated = cursor.rowcount
+                    conn.commit()
+                    conn.close()
+                    
+                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
+                    return jsonify({
+                        "success": True,
+                        "message": f"Updated {rows_updated} tracks with Discogs ID",
+                        "rows_updated": rows_updated
+                    }), 200
+                except sqlite3.OperationalError as e:
+                    last_error = e
+                    if "database is locked" in str(e):
+                        if attempt < max_retries - 1:
+                            logger.warning(f"Database locked on apply-discogs-id, retry {attempt + 1}/{max_retries}")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff
+                        else:
+                            logger.error(f"Database locked after {max_retries} retries: {e}")
+                    else:
+                        raise
+                except Exception as inner_e:
+                    last_error = inner_e
+                    raise
             
-            return jsonify({
-                "success": True,
-                "message": f"Updated {rows_updated} tracks with Discogs ID",
-                "rows_updated": rows_updated
-            }), 200
+            # If we get here, all retries failed
+            logger.error(f"Apply Discogs ID failed after {max_retries} retries: {last_error}")
+            return jsonify({"error": f"Database locked. Please try again."}), 503
         except Exception as e:
             logger = logging.getLogger('sptnr')
             logger.error(f"Apply Discogs ID error: {e}")

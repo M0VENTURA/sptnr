@@ -16,7 +16,7 @@ logger = logging.getLogger(__name__)
 
 DB_PATH = "/database/sptnr.db"
 CONFIG_PATH = "/config"
-UPDATE_CONFIG = Path(CONFIG_PATH) / "update_config.yml"
+UPDATE_CONFIG = Path(CONFIG_PATH) / "update_config.yaml"
 
 
 def update_album_with_beets(album_folder: str) -> Dict[str, any]:

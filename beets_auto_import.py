@@ -92,8 +92,8 @@ class BeetsAutoImporter:
     def __init__(self, music_path: str = MUSIC_PATH, config_path: str = CONFIG_PATH):
         self.music_path = Path(music_path)
         self.config_path = Path(config_path)
-        self.beets_config_readonly = self.config_path / "read_config.yml"  # Read-only import config
-        self.beets_config_update = self.config_path / "update_config.yml"  # Update/write config
+        self.beets_config_readonly = self.config_path / "read_config.yaml"  # Read-only import config
+        self.beets_config_update = self.config_path / "update_config.yaml"  # Update/write config
         self.beets_config = self.beets_config_readonly  # Default to read-only
         self.beets_db = Path(BEETS_DB_PATH)
         self.sptnr_db = Path(DB_PATH)
@@ -231,7 +231,7 @@ class BeetsAutoImporter:
         Ensure beets configuration is up-to-date.
         
         Args:
-            use_update: If True, use update_config.yml (write mode); otherwise use read_config.yml
+            use_update: If True, use update_config.yaml (write mode); otherwise use read_config.yaml
         """
         config_file = self.beets_config_update if use_update else self.beets_config_readonly
         self.beets_config = config_file
