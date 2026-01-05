@@ -6249,7 +6249,7 @@ if __name__ == "__main__":
                     logger.info("Step 1: Running beets auto-import...")
                     from beets_auto_import import BeetsAutoImporter
                     importer = BeetsAutoImporter()
-                    importer.import_and_capture()
+                    importer.import_and_capture(skip_existing=True)
                     
                     # Then run the standard scanner
                     print("Step 2: Running Navidrome sync and rating scan...")
