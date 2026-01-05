@@ -221,18 +221,99 @@
     </div>
     {% endif %}
     
-    <!-- Genres -->
+    <!-- Genres with Track Fit -->
     {% if album_genres %}
     <div class="card mb-4">
         <div class="card-body">
             <h5 class="card-title mb-3">
                 <i class="bi bi-tags"></i> Genres
             </h5>
-            <div class="d-flex flex-wrap gap-2">
+            <div class="d-flex flex-wrap gap-2 mb-4">
                 {% for genre in album_genres %}
                 <span class="badge badge-secondary">{{ genre }}</span>
                 {% endfor %}
             </div>
+            
+            <!-- Genre Track Fit Matrix -->
+            {% if tracks or tracks_by_disc %}
+            <div class="mt-4">
+                <h6 class="mb-3">Genre Coverage by Track</h6>
+                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                    <table class="table table-sm mb-0" style="font-size: 0.85rem;">
+                        <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
+                            <tr>
+                                <th style="width: 200px;">Track</th>
+                                <th class="text-center" style="width: 60px;">Fit %</th>
+                                <th>Genres</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if tracks_by_disc %}
+                                {% for disc_num in tracks_by_disc|dictsort %}
+                                    {% for track in disc_num[1] %}
+                                    <tr>
+                                        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                            <small class="text-muted">{{ disc_num[0] }}.{{ track.track_number or loop.index }}</small>
+                                            {{ track.title }}
+                                        </td>
+                                        <td class="text-center">
+                                            {% if track.genre_fit_percent > 0 %}
+                                            <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
+                                                {{ track.genre_fit_percent }}%
+                                            </span>
+                                            {% else %}
+                                            <span class="text-muted">—</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if track.matching_genres %}
+                                                {% for genre in track.matching_genres %}
+                                                <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
+                                                    {{ genre }}
+                                                </span>
+                                                {% endfor %}
+                                            {% else %}
+                                            <span class="text-muted small">No album genres</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% endfor %}
+                            {% else %}
+                                {% for track in tracks %}
+                                <tr>
+                                    <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                        <small class="text-muted">{{ loop.index }}</small>
+                                        {{ track.title }}
+                                    </td>
+                                    <td class="text-center">
+                                        {% if track.genre_fit_percent > 0 %}
+                                        <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
+                                            {{ track.genre_fit_percent }}%
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if track.matching_genres %}
+                                            {% for genre in track.matching_genres %}
+                                            <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
+                                                {{ genre }}
+                                            </span>
+                                            {% endfor %}
+                                        {% else %}
+                                        <span class="text-muted small">No album genres</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
         </div>
     </div>
     {% endif %}

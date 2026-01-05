@@ -2070,13 +2070,46 @@ def album_detail(artist, album):
                 logging.debug(f"Error parsing genre row: {e}")
                 continue
         
-        # Group tracks by disc number
-        tracks_by_disc = {}
+        # Calculate genre fit for each track
+        tracks_with_genre_fit = []
         for track in tracks_data:
             try:
-                # Handle both dict and Row objects
+                # Convert Row to dict if needed
+                if hasattr(track, 'keys'):
+                    track_dict = dict(track)
+                else:
+                    # Already a dict or tuple, try to convert
+                    track_dict = track if isinstance(track, dict) else dict(track)
+                
+                # Parse track's genres
+                track_genres = set()
+                if track_dict.get('genres'):
+                    track_genres.update([g.strip() for g in track_dict['genres'].split(',') if g.strip()])
+                
+                # Calculate how many album genres this track contains
+                genre_matches = len(track_genres & album_genres) if album_genres else 0
+                genre_fit_percent = int((genre_matches / len(album_genres) * 100) if album_genres else 0)
+                
+                track_dict['genre_matches'] = genre_matches
+                track_dict['genre_fit_percent'] = genre_fit_percent
+                track_dict['matching_genres'] = sorted(list(track_genres & album_genres))
+                
+                tracks_with_genre_fit.append(track_dict)
+            except Exception as e:
+                logging.debug(f"Error calculating genre fit: {e}")
                 track_dict = dict(track) if hasattr(track, 'keys') else track
-                disc_num = track_dict.get('disc_number') if isinstance(track_dict, dict) else (track['disc_number'] if hasattr(track, '__getitem__') else 1)
+                if not isinstance(track_dict, dict):
+                    track_dict = {'title': str(track)}
+                track_dict['genre_matches'] = 0
+                track_dict['genre_fit_percent'] = 0
+                track_dict['matching_genres'] = []
+                tracks_with_genre_fit.append(track_dict)
+        
+        # Group tracks by disc number
+        tracks_by_disc = {}
+        for track_dict in tracks_with_genre_fit:
+            try:
+                disc_num = track_dict.get('disc_number') if isinstance(track_dict, dict) else (track_dict['disc_number'] if hasattr(track_dict, '__getitem__') else 1)
                 disc_num = disc_num or 1
                 
                 if disc_num not in tracks_by_disc:
@@ -2087,7 +2120,7 @@ def album_detail(artist, album):
                 # Fallback to disc 1
                 if 1 not in tracks_by_disc:
                     tracks_by_disc[1] = []
-                tracks_by_disc[1].append(dict(track) if hasattr(track, 'keys') else track)
+                tracks_by_disc[1].append(track_dict)
         
         conn.close()
         
@@ -2099,7 +2132,7 @@ def album_detail(artist, album):
         return render_template("album.html",
                              artist_name=artist,
                              album_name=album,
-                             tracks=tracks_data,
+                             tracks=tracks_with_genre_fit,
                              tracks_by_disc=tracks_by_disc,
                              album_data=album_data,
                              album_genres=sorted(list(album_genres)),
