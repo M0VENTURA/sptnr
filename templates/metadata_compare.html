@@ -211,23 +211,25 @@ function searchMusicBrainz(artist, album) {
 
     let html = '<div class="list-group">';
     data.results.forEach((result, idx) => {
+      const year = result['first-release-date'] ? result['first-release-date'].split('-')[0] : 'N/A';
+      const genresHtml = (result.genres && result.genres.length > 0) 
+        ? `<div class="mb-2"><strong>Genres:</strong> ${result.genres.map(g => `<span class="badge bg-secondary">${g}</span>`).join(' ')}</div>`
+        : '';
+      
+      const resultJson = JSON.stringify(result).replace(/'/g, "\\'").replace(/"/g, '&quot;');
+      
       html += `
         <div class="list-group-item">
           <div class="d-flex justify-content-between align-items-start">
             <div>
-              <h6 class="mb-1">${result.title || result.album}</h6>
+              <h6 class="mb-1">${result.title || result.album || 'Unknown'}</h6>
               <p class="mb-1 text-muted">
                 <strong>Artist:</strong> ${result['artist-credit'] || result.artist || 'Unknown'}<br>
-                <strong>Year:</strong> ${result['first-release-date'] ? result['first-release-date'].split('-')[0] : 'N/A'}
+                <strong>Year:</strong> ${year}
               </p>
-              {% if result.genres %}
-              <div class="mb-2">
-                <strong>Genres:</strong>
-                ${result.genres.map(g => `<span class="badge bg-secondary">${g}</span>`).join(' ')}
-              </div>
-              {% endif %}
+              ${genresHtml}
             </div>
-            <button class="btn btn-sm btn-success" onclick="applyMusicBrainzData('${artist}', '${album}', ${JSON.stringify(result)})">
+            <button class="btn btn-sm btn-success" onclick="applyMusicBrainzDataClick('${artist}', '${album}', '${resultJson}')">
               <i class="bi bi-check-circle"></i> Use This
             </button>
           </div>
@@ -242,6 +244,15 @@ function searchMusicBrainz(artist, album) {
   });
   
   modal.show();
+}
+
+function applyMusicBrainzDataClick(artist, album, mbDataJson) {
+  try {
+    const mbData = JSON.parse(mbDataJson);
+    applyMusicBrainzData(artist, album, mbData);
+  } catch (e) {
+    alert('Error parsing MusicBrainz data: ' + e.message);
+  }
 }
 
 function applyMusicBrainzData(artist, album, mbData) {
