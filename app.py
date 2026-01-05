@@ -1656,24 +1656,36 @@ def api_album_search_art():
         if source == "musicbrainz":
             # Search for release-group
             search_url = "https://musicbrainz.org/ws/2/release-group"
-            params = {"query": f'release:"{album_name}" AND artist:"{artist_name}"', "fmt": "json", "limit": 10}
+            params = {"query": f'release:"{album_name}" AND artist:"{artist_name}"', "fmt": "json", "limit": 20}
             headers = {"User-Agent": "sptnr-web/1.0"}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
             resp.raise_for_status()
             data = resp.json()
             
-            for rg in data.get("release-groups", [])[:10]:
+            logger.debug(f"MusicBrainz search returned {len(data.get('release-groups', []))} results")
+            
+            for rg in data.get("release-groups", [])[:20]:
                 rg_id = rg.get("id")
                 if rg_id:
-                    # Try to get album art from CAA
-                    image_url = f"https://coverartarchive.org/release-group/{rg_id}/front-500"
-                    images.append({
-                        "url": image_url,
-                        "source": "MusicBrainz CAA",
-                        "title": rg.get("title", ""),
-                        "artist": rg.get("artist-credit", [{}])[0].get("name", "") if rg.get("artist-credit") else ""
-                    })
+                    # Try multiple image formats from CAA
+                    for image_format in ["front-500", "front-250", "front"]:
+                        image_url = f"https://coverartarchive.org/release-group/{rg_id}/{image_format}"
+                        
+                        # Verify the URL exists before adding
+                        try:
+                            head_resp = requests.head(image_url, timeout=3)
+                            if head_resp.status_code == 200:
+                                images.append({
+                                    "url": image_url,
+                                    "source": "MusicBrainz CAA",
+                                    "title": rg.get("title", ""),
+                                    "artist": rg.get("artist-credit", [{}])[0].get("name", "") if rg.get("artist-credit") else ""
+                                })
+                                break  # Found one, don't try other formats for this RG
+                        except Exception as e:
+                            logger.debug(f"HEAD request failed for {image_url}: {e}")
+                            continue
         
         elif source == "discogs":
             # Search Discogs for release
@@ -1689,18 +1701,34 @@ def api_album_search_art():
             if discogs_token:
                 headers["Authorization"] = f"Discogs token={discogs_token}"
             
-            # Search with album and artist
-            query = f"{artist_name} {album_name}"
-            results = _discogs_search(session, headers, query, kind="release", per_page=10)
-            
-            for result in results[:10]:
-                if result.get("cover_image"):
-                    images.append({
-                        "url": result["cover_image"],
-                        "source": "Discogs",
-                        "title": result.get("title", ""),
-                        "artist": ", ".join([a.get("name", "") for a in result.get("artists", [])])
-                    })
+            # Search with album and artist - try different query formats
+            for query in [f"{artist_name} {album_name}", f'"{album_name}" {artist_name}', album_name]:
+                try:
+                    logger.debug(f"Searching Discogs with query: {query}")
+                    results = _discogs_search(session, headers, query, kind="release", per_page=15)
+                    
+                    for result in results[:15]:
+                        if result.get("cover_image"):
+                            # Verify the image URL is valid
+                            try:
+                                img_resp = requests.head(result["cover_image"], timeout=3)
+                                if img_resp.status_code == 200:
+                                    images.append({
+                                        "url": result["cover_image"],
+                                        "source": "Discogs",
+                                        "title": result.get("title", ""),
+                                        "artist": ", ".join([a.get("name", "") for a in result.get("artists", [])])
+                                    })
+                            except Exception as e:
+                                logger.debug(f"Image verification failed for Discogs: {e}")
+                                continue
+                    
+                    if images:
+                        logger.debug(f"Found {len(images)} images on Discogs")
+                        break  # Stop if we found images
+                except Exception as e:
+                    logger.debug(f"Discogs search with query '{query}' failed: {e}")
+                    continue
         
         elif source == "spotify":
             # Search Spotify for album
@@ -1711,20 +1739,48 @@ def api_album_search_art():
             spotify = SpotifyClient(config_data)
             
             if spotify.sp:
-                query = f"album:{album_name} artist:{artist_name}"
-                results = spotify.sp.search(q=query, type='album', limit=10)
-                
-                for album in results.get('albums', {}).get('items', []):
-                    album_images = album.get('images', [])
-                    if album_images:
-                        # Get the medium-sized image (usually index 1)
-                        img_url = album_images[1]['url'] if len(album_images) > 1 else album_images[0]['url']
-                        images.append({
-                            "url": img_url,
-                            "source": "Spotify",
-                            "title": album.get('name', ''),
-                            "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
-                        })
+                # Try different query formats
+                for query in [f'album:"{album_name}" artist:"{artist_name}"', 
+                              f'album:{album_name} artist:{artist_name}',
+                              f'{artist_name} {album_name}']:
+                    try:
+                        logger.debug(f"Searching Spotify with query: {query}")
+                        results = spotify.sp.search(q=query, type='album', limit=15)
+                        
+                        for album in results.get('albums', {}).get('items', []):
+                            album_images = album.get('images', [])
+                            if album_images:
+                                # Get the largest image available
+                                img_url = album_images[0]['url']
+                                
+                                # Verify the image URL is valid
+                                try:
+                                    img_resp = requests.head(img_url, timeout=3)
+                                    if img_resp.status_code == 200:
+                                        images.append({
+                                            "url": img_url,
+                                            "source": "Spotify",
+                                            "title": album.get('name', ''),
+                                            "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
+                                        })
+                                except Exception as e:
+                                    logger.debug(f"Image verification failed for Spotify: {e}")
+                                    # Still add the image even if HEAD fails (some URLs don't support HEAD)
+                                    images.append({
+                                        "url": img_url,
+                                        "source": "Spotify",
+                                        "title": album.get('name', ''),
+                                        "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
+                                    })
+                        
+                        if images:
+                            logger.debug(f"Found {len(images)} images on Spotify")
+                            break  # Stop if we found images
+                    except Exception as e:
+                        logger.debug(f"Spotify search with query '{query}' failed: {e}")
+                        continue
+            else:
+                logger.warning("Spotify client not initialized")
         
         logger.info(f"Album art search for '{artist_name} - {album_name}' via {source}: {len(images)} images found")
         return jsonify({"images": images})
