@@ -458,10 +458,13 @@ def save_to_db(track_data, max_retries=3):
     incoming_path = track_data.get("file_path")
     if not incoming_path:
         try:
-            cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_data["id"],))
+            cursor.execute("SELECT file_path, album_folder FROM tracks WHERE id = ?", (track_data["id"],))
             row = cursor.fetchone()
-            if row and row[0]:
-                track_data["file_path"] = row[0]
+            if row:
+                if row[0]:
+                    track_data["file_path"] = row[0]
+                if row[1]:
+                    track_data["album_folder"] = row[1]
         except Exception:
             pass
 
@@ -481,7 +484,7 @@ def save_to_db(track_data, max_retries=3):
         "genres","navidrome_genres","spotify_genres","lastfm_tags",
         "discogs_genres","audiodb_genres","musicbrainz_genres",
         "spotify_album","spotify_artist","spotify_popularity","spotify_release_date","spotify_album_art_url",
-        "lastfm_track_playcount","lastfm_artist_playcount","file_path",
+        "lastfm_track_playcount","lastfm_artist_playcount","file_path","album_folder",
         "duration","track_number","disc_number","year","album_artist","bitrate","sample_rate",
         "is_single","single_confidence","last_scanned",
         "mbid","suggested_mbid","suggested_mbid_confidence","single_sources",
@@ -514,6 +517,7 @@ def save_to_db(track_data, max_retries=3):
         int(track_data.get("lastfm_track_playcount",0) or 0),
         int(track_data.get("lastfm_artist_playcount",0) or 0),
         track_data.get("file_path",""),
+        track_data.get("album_folder",""),
         track_data.get("duration"),
         track_data.get("track_number"),
         track_data.get("disc_number"),
