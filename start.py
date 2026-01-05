@@ -1149,6 +1149,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     if not track_id:
                         continue
 
+                    # Get current single detection state to preserve user edits during Navidrome sync
+                    current_single = get_current_single_detection(track_id)
+
                     td = {
                         "id": track_id,
                         "title": t.get("title", ""),
@@ -1178,14 +1181,13 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         "spotify_total_tracks": 0,
                         "spotify_id": None,
                         "is_spotify_single": False,
-                        "is_single": False,
-                        "single_confidence": "low",
-                        "single_sources": [],
-                        "stars": 0,
+                        "is_single": current_single["is_single"],  # Preserve user edits
+                        "single_confidence": current_single["single_confidence"],  # Preserve user edits
+                        "single_sources": current_single["single_sources"],  # Preserve user edits
+                        "stars": int(t.get("userRating", 0) or 0),
                         "mbid": t.get("mbid", "") or "",
                         "suggested_mbid": "",
                         "suggested_mbid_confidence": 0.0,
-                        "stars": int(t.get("userRating", 0) or 0),
                         "duration": t.get("duration"),
                         "track_number": t.get("track"),
                         "disc_number": t.get("discNumber"),
