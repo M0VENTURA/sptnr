@@ -2380,11 +2380,19 @@ def scan_mp3():
             if isinstance(scan_process_mp3, dict):
                 thread = scan_process_mp3.get('thread')
                 if thread and thread.is_alive():
-                    flash("Beets auto-import is already running", "warning")
+                    flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
+                    logging.warning("Attempted to start beets import while one is already running")
                     return redirect(url_for("dashboard"))
+                else:
+                    # Clean up dead thread reference
+                    scan_process_mp3 = None
             elif hasattr(scan_process_mp3, 'is_alive') and scan_process_mp3.is_alive():
-                flash("Beets auto-import is already running", "warning")
+                flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
+                logging.warning("Attempted to start beets import while one is already running")
                 return redirect(url_for("dashboard"))
+            else:
+                # Clean up dead thread reference
+                scan_process_mp3 = None
         
         try:
             db_dir = os.path.dirname(DB_PATH)
@@ -2393,6 +2401,7 @@ def scan_mp3():
             
             # Run beets import in background thread instead of subprocess
             def run_beets_scan_bg():
+                nonlocal scan_process_mp3
                 try:
                     from beets_auto_import import BeetsAutoImporter
                     logging.info("Starting Beets auto-import scan in background")
@@ -2403,6 +2412,11 @@ def scan_mp3():
                 except Exception as e:
                     logging.error(f"Error in Beets scan: {e}", exc_info=True)
                     _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                finally:
+                    # Clean up thread reference when done
+                    with scan_lock:
+                        scan_process_mp3 = None
+                    logging.info("Beets scan thread cleanup complete")
             
             scan_thread = threading.Thread(target=run_beets_scan_bg, daemon=False)
             scan_thread.start()

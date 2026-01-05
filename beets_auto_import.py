@@ -3,7 +3,7 @@
 Beets auto-import with metadata capture.
 
 This script:
-1. Runs 'beet import -A' (auto-tag without prompts) on the music library
+1. Runs 'beet import' (with config to auto-tag without prompts) on the music library
 2. Captures autotagger output (MusicBrainz matches, similarity scores)
 3. Stores beets recommendations in the sptnr database
 4. Updates existing tracks with beets metadata
@@ -336,7 +336,6 @@ class BeetsAutoImporter:
                     # Build single import command with all folders
                     cmd = [
                         "beet", "import",
-                        "-A",  # Import without modifying files
                         "-c", str(self.beets_config),  # Use our config
                         "--library", str(self.beets_db),
                     ]
