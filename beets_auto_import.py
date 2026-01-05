@@ -153,7 +153,7 @@ class BeetsAutoImporter:
                         "store_source": True
                     },
                     "import": {
-                        "autotag": True,
+                        "autotag": False,
                         "copy": False,
                         "write": False,
                         "incremental": True,
@@ -164,7 +164,7 @@ class BeetsAutoImporter:
                         "strong_rec": True
                     },
                     "musicbrainz": {
-                        "enabled": True
+                        "enabled": False
                     },
                     "plugins": ["duplicates", "info", "fetchart"]
                 }
