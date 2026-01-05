@@ -134,7 +134,7 @@ class BeetsAutoImporter:
                         "write": False,
                         "incremental": True,
                         "log": str(self.config_path / "beets_import.log"),
-                        "resume": "no",
+                        "resume": False,
                         "quiet": False
                     },
                     "musicbrainz": {
@@ -151,7 +151,7 @@ class BeetsAutoImporter:
                         "copy": False,
                         "write": True,
                         "incremental": True,
-                        "resume": "no",
+                        "resume": True,
                         "quiet": False
                     },
                     "musicbrainz": {
@@ -208,7 +208,7 @@ class BeetsAutoImporter:
                     "copy": False,  # Don't copy, files are already in /music
                     "write": False,  # Don't modify files (-A mode)
                     "autotag": False,  # Don't auto-tag, just import metadata
-                    "resume": "no",  # Don't try to resume - always start fresh to avoid stuck state
+                    "resume": True,  # Allow resuming interrupted imports
                     "incremental": True,  # Only import new/modified files
                     "log": str(self.config_path / "beets_import.log")
                 },
