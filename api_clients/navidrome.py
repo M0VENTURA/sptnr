@@ -118,6 +118,75 @@ class NavidromeClient:
         except Exception as e:
             logger.error(f"❌ Failed to build artist index: {e}")
             return {}
+    
+    def get_starred_items(self) -> dict:
+        """
+        Fetch all starred items (tracks, albums, artists) for the current user.
+        
+        Returns:
+            Dict with 'tracks', 'albums', 'artists' lists
+        """
+        url = f"{self.base_url}/rest/getStarred.view"
+        params = self._build_params()
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            starred = res.json().get("subsonic-response", {}).get("starred", {})
+            
+            result = {
+                "tracks": starred.get("song", []),
+                "albums": starred.get("album", []),
+                "artists": starred.get("artist", [])
+            }
+            
+            logger.info(f"✅ Fetched starred items: {len(result['tracks'])} tracks, "
+                       f"{len(result['albums'])} albums, {len(result['artists'])} artists")
+            return result
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch starred items: {e}")
+            return {"tracks": [], "albums": [], "artists": []}
+    
+    def star_track(self, track_id: str) -> bool:
+        """
+        Star a track in Navidrome.
+        
+        Args:
+            track_id: Navidrome track ID
+            
+        Returns:
+            True if successful
+        """
+        url = f"{self.base_url}/rest/star.view"
+        params = self._build_params(id=track_id)
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            logger.info(f"✅ Starred track {track_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to star track {track_id}: {e}")
+            return False
+    
+    def unstar_track(self, track_id: str) -> bool:
+        """
+        Unstar a track in Navidrome.
+        
+        Args:
+            track_id: Navidrome track ID
+            
+        Returns:
+            True if successful
+        """
+        url = f"{self.base_url}/rest/unstar.view"
+        params = self._build_params(id=track_id)
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            logger.info(f"✅ Unstarred track {track_id}")
+            return True
+        except Exception as e:
+            logger.error(f"❌ Failed to unstar track {track_id}: {e}")
+            return False
 
     def extract_track_metadata(self, track: dict) -> dict:
         """

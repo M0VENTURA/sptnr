@@ -71,6 +71,34 @@ def get_db_connection():
     return conn
 
 
+def fetch_listenbrainz_genre_tags(mbid: str) -> list:
+    """
+    Fetch genre tags from ListenBrainz for a recording.
+    
+    Args:
+        mbid: MusicBrainz recording ID
+        
+    Returns:
+        List of dicts with 'tag' and 'count' keys
+    """
+    if not mbid:
+        return []
+    
+    try:
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+        # Create a dummy client (genre tags don't require auth)
+        client = ListenBrainzUserClient(user_token="dummy")
+        tags = client.get_recording_tags(mbid)
+        
+        if tags:
+            logging.debug(f"Got {len(tags)} ListenBrainz genre tags for {mbid}")
+        
+        return tags
+    except Exception as e:
+        logging.debug(f"Failed to fetch ListenBrainz genre tags for {mbid}: {e}")
+        return []
+
+
 # ============================================================================
 # ADVANCED SINGLE DETECTION - Integrated from single_detector.py
 # ============================================================================
@@ -962,6 +990,19 @@ def rate_track_single_detection(
         elif verbose:
             logging.info("ℹ️ Not enough sources for single confirmation")
         logging.debug(f"Single NOT confirmed for '{title}' – sources={sorted(sources)} total_matches={total_matches}")
+    
+    # ✅ Fetch ListenBrainz genre tags (if MBID available)
+    mbid = track.get("mbid") or track.get("beets_mbid")
+    if mbid:
+        try:
+            lb_tags = fetch_listenbrainz_genre_tags(mbid)
+            if lb_tags:
+                # Store as JSON string
+                import json
+                track["listenbrainz_genre_tags"] = json.dumps(lb_tags)
+                logging.debug(f"Stored {len(lb_tags)} ListenBrainz genre tags for '{title}'")
+        except Exception as e:
+            logging.debug(f"Failed to fetch/store ListenBrainz tags for '{title}': {e}")
     
     return track
 

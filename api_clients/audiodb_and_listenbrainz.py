@@ -1,10 +1,148 @@
 """AudioDB and ListenBrainz API client module."""
 import logging
 import math
+import json
 from datetime import datetime
 from . import session
 
 logger = logging.getLogger(__name__)
+
+
+class ListenBrainzUserClient:
+    """
+    ListenBrainz API wrapper for user-specific operations.
+    Requires user authentication token for love/feedback operations.
+    """
+    
+    def __init__(self, user_token: str, http_session=None):
+        """
+        Initialize ListenBrainz user client.
+        
+        Args:
+            user_token: User's ListenBrainz API token
+            http_session: Optional requests.Session (uses shared if not provided)
+        """
+        self.token = user_token
+        self.session = http_session or session
+        self.base_url = "https://api.listenbrainz.org/1"
+        self.headers = {"Authorization": f"Token {user_token}"}
+    
+    def love_track(self, mbid: str) -> bool:
+        """
+        Mark a track as loved on ListenBrainz.
+        
+        Args:
+            mbid: MusicBrainz recording ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            url = f"{self.base_url}/feedback/recording-feedback"
+            payload = {
+                "recording_mbid": mbid,
+                "score": 1  # 1 = love
+            }
+            res = self.session.post(url, json=payload, headers=self.headers, timeout=10)
+            res.raise_for_status()
+            logger.info(f"Marked {mbid} as loved on ListenBrainz")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to love track {mbid} on ListenBrainz: {e}")
+            return False
+    
+    def unlove_track(self, mbid: str) -> bool:
+        """
+        Remove love status from a track on ListenBrainz.
+        
+        Args:
+            mbid: MusicBrainz recording ID
+            
+        Returns:
+            True if successful
+        """
+        try:
+            url = f"{self.base_url}/feedback/recording-feedback"
+            payload = {
+                "recording_mbid": mbid,
+                "score": 0  # 0 = remove feedback
+            }
+            res = self.session.post(url, json=payload, headers=self.headers, timeout=10)
+            res.raise_for_status()
+            logger.info(f"Removed love from {mbid} on ListenBrainz")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to unlove track {mbid} on ListenBrainz: {e}")
+            return False
+    
+    def get_loved_tracks(self, limit: int = 100, offset: int = 0) -> list:
+        """
+        Get tracks the user has loved on ListenBrainz.
+        
+        Args:
+            limit: Number of results per page
+            offset: Pagination offset
+            
+        Returns:
+            List of dicts with 'recording_mbid' and 'score'
+        """
+        try:
+            url = f"{self.base_url}/feedback/user/{{username}}/get-feedback"
+            # Note: Need to get username first or use a different endpoint
+            # For now, return empty list - this needs username from token validation
+            logger.warning("get_loved_tracks not fully implemented - needs username")
+            return []
+        except Exception as e:
+            logger.error(f"Failed to get loved tracks from ListenBrainz: {e}")
+            return []
+    
+    def get_recording_tags(self, mbid: str) -> list:
+        """
+        Get genre tags for a recording from ListenBrainz.
+        Does not require authentication.
+        
+        Args:
+            mbid: MusicBrainz recording ID
+            
+        Returns:
+            List of dicts with 'tag' and 'count'
+        """
+        try:
+            url = f"{self.base_url}/metadata/recording/{mbid}/tags"
+            res = self.session.get(url, timeout=10)
+            res.raise_for_status()
+            data = res.json()
+            tags = data.get("tag", {}).get("recording", [])
+            # Sort by count descending
+            sorted_tags = sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
+            logger.debug(f"Got {len(sorted_tags)} tags for recording {mbid}")
+            return sorted_tags
+        except Exception as e:
+            logger.debug(f"Failed to get tags for recording {mbid}: {e}")
+            return []
+    
+    def get_artist_tags(self, mbid: str) -> list:
+        """
+        Get genre tags for an artist from ListenBrainz.
+        
+        Args:
+            mbid: MusicBrainz artist ID
+            
+        Returns:
+            List of dicts with 'tag' and 'count'
+        """
+        try:
+            url = f"{self.base_url}/metadata/artist/{mbid}/tags"
+            res = self.session.get(url, timeout=10)
+            res.raise_for_status()
+            data = res.json()
+            tags = data.get("tag", {}).get("artist", [])
+            sorted_tags = sorted(tags, key=lambda x: x.get("count", 0), reverse=True)
+            logger.debug(f"Got {len(sorted_tags)} tags for artist {mbid}")
+            return sorted_tags
+        except Exception as e:
+            logger.debug(f"Failed to get tags for artist {mbid}: {e}")
+            return []
 
 
 class ListenBrainzClient:

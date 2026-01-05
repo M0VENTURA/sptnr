@@ -69,7 +69,22 @@ required_columns = {
     "composer": "TEXT",                     # Composer/songwriter
     "comment": "TEXT",                      # Comment field from file
     "lyrics": "TEXT",                       # Song lyrics if embedded
-    "cover_art_url": "TEXT"                 # Album cover art URL from MusicBrainz
+    "cover_art_url": "TEXT",                # Album cover art URL from MusicBrainz
+    # ✅ Genre fields from multiple sources
+    "beets_genre": "TEXT",                  # Genre from beets metadata
+    "navidrome_genre": "TEXT",              # Genre from Navidrome (replaces navidrome_genres)
+    "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
+    "genre_display": "TEXT"                 # Primary display genre (aggregated)
+}
+
+# ✅ Define columns for the artists table
+required_artist_columns = {
+    "id": "TEXT",                           # Primary key
+    "name": "TEXT",                         # Artist name
+    "beets_genre": "TEXT",                  # Genre from beets metadata
+    "navidrome_genre": "TEXT",              # Genre from Navidrome
+    "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
+    "genre_display": "TEXT"                 # Primary display genre (aggregated)
 }
 
 def update_schema(db_path):
@@ -97,6 +112,23 @@ def update_schema(db_path):
     if columns_added:
         print(f"✅ Added {len(columns_added)} missing column(s): {', '.join(columns_added)}")
 
+    # ✅ Ensure artists table exists and add genre columns
+    cursor.execute("CREATE TABLE IF NOT EXISTS artists (id TEXT PRIMARY KEY, name TEXT NOT NULL);")
+    
+    # Get existing columns for artists
+    cursor.execute("PRAGMA table_info(artists);")
+    existing_artist_columns = [row[1] for row in cursor.fetchall()]
+    
+    # Add missing artist columns
+    artist_columns_added = []
+    for col, col_type in required_artist_columns.items():
+        if col not in existing_artist_columns:
+            cursor.execute(f"ALTER TABLE artists ADD COLUMN {col} {col_type};")
+            artist_columns_added.append(col)
+    
+    if artist_columns_added:
+        print(f"✅ Added {len(artist_columns_added)} missing artist column(s): {', '.join(artist_columns_added)}")
+
     # ✅ Ensure artist_stats table exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS artist_stats (
@@ -105,6 +137,80 @@ def update_schema(db_path):
             album_count INTEGER,
             track_count INTEGER,
             last_updated TEXT
+        );
+    """)
+    
+    # ✅ Ensure navidrome_users table exists (for per-user features)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS navidrome_users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL UNIQUE,
+            display_name TEXT,
+            navidrome_base_url TEXT,
+            navidrome_password TEXT,
+            listenbrainz_token TEXT,
+            spotify_client_id TEXT,
+            spotify_client_secret TEXT,
+            is_active BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+    """)
+    
+    # ✅ Ensure user_loved_tracks table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_loved_tracks (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            track_id TEXT NOT NULL,
+            is_loved BOOLEAN DEFAULT 0,
+            loved_at TIMESTAMP,
+            synced_to_listenbrainz BOOLEAN DEFAULT 0,
+            last_sync_attempt TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES navidrome_users(id) ON DELETE CASCADE,
+            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE,
+            UNIQUE(user_id, track_id)
+        );
+    """)
+    
+    # ✅ Ensure user_loved_albums table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_loved_albums (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            is_loved BOOLEAN DEFAULT 0,
+            loved_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES navidrome_users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, artist, album)
+        );
+    """)
+    
+    # ✅ Ensure user_loved_artists table exists
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS user_loved_artists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            user_id INTEGER NOT NULL,
+            artist TEXT NOT NULL,
+            is_loved BOOLEAN DEFAULT 0,
+            loved_at TIMESTAMP,
+            FOREIGN KEY (user_id) REFERENCES navidrome_users(id) ON DELETE CASCADE,
+            UNIQUE(user_id, artist)
+        );
+    """)
+    
+    # ✅ Ensure albums table exists (for album-level metadata)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS albums (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist TEXT NOT NULL,
+            album TEXT NOT NULL,
+            beets_genre TEXT,
+            navidrome_genre TEXT,
+            listenbrainz_genre_tags TEXT,
+            genre_display TEXT,
+            UNIQUE(artist, album)
         );
     """)
 
@@ -203,7 +309,17 @@ def update_schema(db_path):
         ("idx_managed_downloads_status", "managed_downloads(status)"),
         ("idx_managed_downloads_created", "managed_downloads(created_at DESC)"),
         ("idx_slskd_search_results_download", "slskd_search_results(download_id)"),
-        ("idx_slskd_search_results_selected", "slskd_search_results(selected)")
+        ("idx_slskd_search_results_selected", "slskd_search_results(selected)"),
+        # Per-user love indexes
+        ("idx_user_loved_tracks_user", "user_loved_tracks(user_id)"),
+        ("idx_user_loved_tracks_track", "user_loved_tracks(track_id)"),
+        ("idx_user_loved_tracks_status", "user_loved_tracks(is_loved)"),
+        ("idx_user_loved_albums_user", "user_loved_albums(user_id)"),
+        ("idx_user_loved_albums_name", "user_loved_albums(artist, album)"),
+        ("idx_user_loved_artists_user", "user_loved_artists(user_id)"),
+        ("idx_user_loved_artists_name", "user_loved_artists(artist)"),
+        ("idx_albums_artist_album", "albums(artist, album)"),
+        ("idx_navidrome_users_username", "navidrome_users(username)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")

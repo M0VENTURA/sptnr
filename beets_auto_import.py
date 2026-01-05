@@ -251,19 +251,26 @@ class BeetsAutoImporter:
                                               text=True)
                     return process
                 
-                # Import only filtered folders one by one
-                for folder in filtered_folders:
-                    logger.info(f"Importing new artist: {folder.name}")
+                # Import all filtered folders in one batch instead of one-by-one
+                # This allows beets to process them all, not just the last one
+                if filtered_folders:
+                    logger.info(f"Importing {len(filtered_folders)} new artist(s)")
+                    for folder in filtered_folders:
+                        logger.info(f"  - {folder.name}")
+                    
+                    # Build single import command with all folders
                     cmd = [
                         "beet", "import",
                         "-A",  # Import without modifying files
                         "-c", str(self.beets_config),  # Use our config
                         "--library", str(self.beets_db),
-                        str(folder)
                     ]
+                    # Add all filtered folders as arguments
+                    cmd.extend([str(folder) for folder in filtered_folders])
+                    
                     logger.info(f"Running: {' '.join(cmd)}")
                     
-                    # Run sequentially for new artists
+                    # Run as single process with all new artists
                     process = subprocess.Popen(
                         cmd,
                         stdout=subprocess.PIPE,
@@ -272,10 +279,15 @@ class BeetsAutoImporter:
                         bufsize=1,
                         universal_newlines=True
                     )
-                    process.wait()
-                
-                # Return final process (won't be used much in this flow)
-                return process
+                    return process
+                else:
+                    # No new artists to import
+                    logger.warning("All artists already in beets database. Nothing to import.")
+                    process = subprocess.Popen(['echo', 'No new artists to import'], 
+                                              stdout=subprocess.PIPE, 
+                                              stderr=subprocess.STDOUT,
+                                              text=True)
+                    return process
         
         logger.info(f"Import path: {import_path}")
         logger.info(f"Import path exists: {import_path.exists()}")
@@ -378,6 +390,8 @@ class BeetsAutoImporter:
             self._ensure_beets_columns(sptnr_cursor)
             
             # Get all items from beets
+            # NOTE: Use albums.mb_albumid for Release Group ID (album concept)
+            # NOT items.mb_albumid which is Release ID (specific pressing)
             beets_cursor.execute("""
                 SELECT 
                     items.id,
@@ -386,7 +400,7 @@ class BeetsAutoImporter:
                     items.album,
                     items.albumartist,
                     items.mb_trackid,
-                    items.mb_albumid,
+                    albums.mb_albumid as album_release_group_id,
                     items.mb_artistid,
                     items.path,
                     items.year,
@@ -457,6 +471,7 @@ class BeetsAutoImporter:
                         beets_path = beets_path.decode('utf-8', errors='replace')
                     
                     # Update sptnr track with beets metadata
+                    # Use album_release_group_id from albums table (not items.mb_albumid)
                     sptnr_cursor.execute("""
                         UPDATE tracks SET
                             beets_mbid = ?,
@@ -469,7 +484,7 @@ class BeetsAutoImporter:
                         WHERE id = ?
                     """, (
                         track['mb_trackid'],
-                        track['mb_albumid'],
+                        track['album_release_group_id'],  # Use release group ID from albums table
                         track['mb_artistid'],
                         track['album_artist_credit'] or track['albumartist'],
                         track['year'],
