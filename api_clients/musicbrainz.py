@@ -131,47 +131,62 @@ class MusicBrainzClient:
         if not self.enabled:
             return []
         
-        try:
-            # Step 1: search recording with richer includes
-            query = f'{title} AND artist:{artist}'
-            rec_params = {
-                "query": query,
-                "fmt": "json",
-                "limit": 3,
-                "inc": "tags+artist-credits+releases",
-            }
-            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=10)
-            r.raise_for_status()
-            recs = r.json().get("recordings", []) or []
-            if not recs:
+        import time
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Step 1: search recording with richer includes
+                query = f'{title} AND artist:{artist}'
+                rec_params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": 3,
+                    "inc": "tags+artist-credits+releases",
+                }
+                r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=5)
+                r.raise_for_status()
+                recs = r.json().get("recordings", []) or []
+                if not recs:
+                    return []
+                
+                # Prefer the top match
+                rec = recs[0]
+                
+                # 2) use recording-level tags if present
+                tags = rec.get("tags") or []
+                tag_names = [t.get("name", "") for t in tags if t.get("name")]
+                if tag_names:
+                    return tag_names
+                
+                # 3) fallback: pull tags from the first release if any
+                releases = rec.get("releases") or []
+                if releases:
+                    rel_id = releases[0].get("id")
+                    if rel_id:
+                        rel_params = {"fmt": "json", "inc": "tags"}
+                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=5)
+                        rr.raise_for_status()
+                        rel_tags = rr.json().get("tags", []) or []
+                        return [t.get("name", "") for t in rel_tags if t.get("name")]
                 return []
-            
-            # Prefer the top match
-            rec = recs[0]
-            
-            # 2) use recording-level tags if present
-            tags = rec.get("tags") or []
-            tag_names = [t.get("name", "") for t in tags if t.get("name")]
-            if tag_names:
-                return tag_names
-            
-            # 3) fallback: pull tags from the first release if any
-            releases = rec.get("releases") or []
-            if releases:
-                rel_id = releases[0].get("id")
-                if rel_id:
-                    rel_params = {"fmt": "json", "inc": "tags"}
-                    rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
-                    rr.raise_for_status()
-                    rel_tags = rr.json().get("tags", []) or []
-                    return [t.get("name", "") for t in rel_tags if t.get("name")]
-            return []
-        except requests.exceptions.Timeout:
-            logger.debug(f"MusicBrainz timeout fetching genres for '{title}' by '{artist}'")
-            return []
-        except Exception as e:
-            logger.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
-            return []
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz genres lookup attempt {attempt + 1} failed for '{title}' by '{artist}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
+                    return []
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"MusicBrainz genres lookup request error for '{title}' by '{artist}': {e}")
+                return []
+            except Exception as e:
+                logger.warning(f"MusicBrainz genres lookup failed for '{title}' by '{artist}': {e}")
+                return []
+        
+        return []
     
     def get_suggested_mbid(self, title: str, artist: str, limit: int = 5) -> tuple[str, float]:
         """
