@@ -79,6 +79,17 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
+@app.route("/setup")
+def setup():
+    """Setup wizard page"""
+    try:
+        # You can add logic here to check config, etc.
+        return render_template("setup.html")
+    except Exception as e:
+        import logging
+        logging.error(f"Error loading setup page: {e}")
+        return "Setup page error", 500
+
 
 
 # Standardized config/database/log path variables
