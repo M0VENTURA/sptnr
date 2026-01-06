@@ -1,5 +1,18 @@
 # NEW API ENDPOINTS FOR ARTIST PAGE IMPROVEMENTS
 # These need to be added to app.py
+from flask import current_app as app, request, jsonify, send_file, redirect, Response
+import logging
+import requests
+import io
+from datetime import datetime
+
+from app import get_db, CONFIG_PATH
+import yaml
+# ...existing code...
+
+# If you need to load config.yaml, use this inside a function:
+# with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+#     config = yaml.safe_load(f)
 
 @app.route("/api/artist/bio")
 def api_artist_bio():
@@ -129,6 +142,10 @@ def api_create_essential_playlist():
             from api_clients.navidrome import create_navidrome_playlist
             result = create_navidrome_playlist(playlist_name, track_ids)
             if result and result.get('id'):
+                # Load config here
+                import yaml
+                with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                    config = yaml.safe_load(f)
                 navidrome_base = config.get('navidrome', {}).get('base_url', '')
                 navidrome_url = f"{navidrome_base}/playlist/{result['id']}"
         except Exception as e:

@@ -22,9 +22,14 @@ function loadEnvVars() {
     Object.entries(vars).forEach(([key, value]) => {
       const col = document.createElement('div');
       col.className = 'col-12 col-md-6';
+      let help = '';
+      if (["PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"].includes(key)) {
+        help = `<div class='form-text'>PostgreSQL connection (${key.replace('PG_', '').toLowerCase()})</div>`;
+      }
       col.innerHTML = `
         <label class="form-label">${key}</label>
         <input type="text" class="form-control monospace" name="${key}" value="${value || ''}" autocomplete="off">
+        ${help}
       `;
       container.appendChild(col);
     });
@@ -501,6 +506,38 @@ document.getElementById('envVarsForm').addEventListener('submit', function(e) {
           </div>
         </div>
       </div>
+      <!-- Postgres Migration Section -->
+      <hr class="my-4">
+      <h5 class="mb-3"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</h5>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label">Postgres Host</label>
+          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ os.environ.get('PG_HOST', '') }}">
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Postgres Port</label>
+          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ os.environ.get('PG_PORT', '5432') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres User</label>
+          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ os.environ.get('PG_USER', '') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres Password</label>
+          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ os.environ.get('PG_PASSWORD', '') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres Database</label>
+          <input type="text" class="form-control" id="pg_database" placeholder="sptnr" value="{{ os.environ.get('PG_DATABASE', '') }}">
+        </div>
+        <div class="col-12">
+          <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
+            <i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL
+          </button>
+          <div class="form-text text-danger mt-2">This will copy all data from SQLite to PostgreSQL and update your configuration. This may take several minutes for large databases.</div>
+          <div id="pgMigrateMsg" class="mt-2"></div>
+        </div>
+      </div>
     </div>
   </div>
 
@@ -542,11 +579,11 @@ document.getElementById('envVarsForm').addEventListener('submit', function(e) {
     <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='{{ url_for('dashboard') }}'">
       Cancel
     </button>
+  </div>
     <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
     </button>
   </div>
-
   <!-- Toast notification -->
   <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
     <div id="configToast" class="toast" role="alert">
@@ -981,4 +1018,40 @@ function updateUserTitle(displayNameInput) {
     background-color: var(--secondary-bg) !important;
 }
 </style>
+<script>
+function migrateToPostgres() {
+  const btn = document.getElementById('migratePostgresBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Migrating...';
+  const msg = document.getElementById('pgMigrateMsg');
+  msg.innerHTML = '';
+  const data = {
+    pg_host: document.getElementById('pg_host').value,
+    pg_port: document.getElementById('pg_port').value,
+    pg_user: document.getElementById('pg_user').value,
+    pg_password: document.getElementById('pg_password').value,
+    pg_database: document.getElementById('pg_database').value
+  };
+  fetch('/config/migrate_postgres', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  })
+  .then(r => r.json())
+  .then(resp => {
+    if (resp.success) {
+      msg.innerHTML = '<span class="text-success">Migration successful! Please restart the server to use PostgreSQL.</span>';
+    } else {
+      msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Migration failed.') + '</span>';
+    }
+  })
+  .catch(function(e) {
+    msg.innerHTML = '<span class="text-danger">' + (e && e.message ? e.message : 'Unknown error') + '</span>';
+  })
+  .finally(function() {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
+  });
+}
+</script>
 {% endblock %}

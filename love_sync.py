@@ -9,6 +9,7 @@ Features:
 - Bi-directional sync between platforms
 """
 
+import os
 import sqlite3
 import logging
 from datetime import datetime
@@ -17,7 +18,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-DB_PATH = "/database/sptnr.db"
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 
 class LoveSyncManager:

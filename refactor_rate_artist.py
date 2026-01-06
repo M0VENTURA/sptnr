@@ -4,6 +4,8 @@
 with open('start.py', 'r', encoding='utf-8') as f:
     lines = f.readlines()
 
+import os
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 # Find the start: "low_evidence_bumps = []"
 start_line = None
 for i, line in enumerate(lines):

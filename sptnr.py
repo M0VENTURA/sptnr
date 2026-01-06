@@ -15,6 +15,7 @@ LIGHT_CYAN = Fore.CYAN + Style.BRIGHT
 BOLD = Style.BRIGHT
 RESET = Style.RESET_ALL
 
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 # Helper function to parse datetime flexibly
 def parse_datetime_flexible(date_string):
     """Parse datetime with flexible format handling for both 'T' and space separators."""

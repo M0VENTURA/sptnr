@@ -24,7 +24,7 @@ except ImportError:
 class BeetsClient:
     """Wrapper for beets music tagger CLI."""
     
-    def __init__(self, config_path: str = "/config", enabled: bool = True):
+    def __init__(self, config_path: str = os.environ.get("CONFIG_PATH", "/config"), enabled: bool = True):
         """
         Initialize Beets client.
         

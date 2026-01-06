@@ -35,10 +35,11 @@ _clients_configured = False
 
 
 def _load_config() -> dict:
-    if not os.path.exists(CONFIG_PATH):
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    if not os.path.exists(config_path):
         return {}
     try:
-        with open(CONFIG_PATH, "r") as f:
+        with open(config_path, "r") as f:
             return yaml.safe_load(f) or {}
     except Exception:
         return {}

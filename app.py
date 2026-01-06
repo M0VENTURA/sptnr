@@ -1,17 +1,5 @@
-@app.route("/config/env", methods=["POST"])
-def config_env_vars_post():
-    """Update environment variables from config page."""
-    try:
-        data = request.get_json(force=True)
-        changed = 0
-        for var, value in data.items():
-            if var in ALL_ENV_VARS:
-                os.environ[var] = value
-                changed += 1
-        return jsonify({"success": True, "updated": changed})
-    except Exception as e:
-        return jsonify({"success": False, "error": str(e)}), 400
 import re
+
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
 ALL_ENV_VARS = [
@@ -21,17 +9,17 @@ ALL_ENV_VARS = [
     "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "LISTENBRAINZ_WEIGHT", "AGE_WEIGHT",
     "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
     "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
-    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY"
+    "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY",
+    "PG_HOST", "PG_PORT", "PG_USER", "PG_PASSWORD", "PG_DATABASE"
 ]
 
 def get_all_env_vars():
     # Return a dict of all relevant env vars and their current values
     return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
 
-@app.route("/config/env", methods=["GET"])
-def config_env_vars():
-    """Return all relevant environment variables and their current values as JSON."""
-    return jsonify(get_all_env_vars())
+
+# Place all Flask route definitions after app = Flask(__name__)
+
 #!/usr/bin/env python3
 """
 Sptnr Web UI - Flask application for managing music ratings and scans
@@ -39,32 +27,35 @@ Sptnr Web UI - Flask application for managing music ratings and scans
 
 from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
 import sqlite3
+import psycopg2
+import psycopg2.extras
 from contextlib import closing
 import yaml
+import json
+from datetime import datetime
+import copy
+from functools import wraps
+from scan_helpers import scan_artist_to_db, aggregate_genres_from_tracks, build_artist_index, run_popularity_scan, rate_artist
+from database.database import update_schema, save_to_db
+from scan_helpers import scan_artist_to_db
+
 import os
 import sys
+from beets_integration import _get_beets_client
+import secrets
 import subprocess
 import threading
 import time
 import logging
 import re
+from api_clients.slskd import SlskdClient
+from metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
+import io
+from helpers import create_retry_session
 import difflib
 import unicodedata
 import requests
 import hashlib
-import secrets
-from datetime import datetime
-import copy
-import json
-import io
-from functools import wraps
-from check_db import update_schema
-from metadata_reader import read_mp3_metadata, find_track_file, aggregate_genres_from_tracks, get_track_metadata_from_db
-from start import create_retry_session, rate_artist, build_artist_index, save_to_db
-from scan_helpers import scan_artist_to_db
-from popularity import scan_popularity as run_popularity_scan
-from api_clients.slskd import SlskdClient
-from beets_integration import _get_beets_client
 
 # Configure logging for web UI
 logging.basicConfig(
@@ -80,12 +71,21 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
-# Paths
+
+
+# Standardized config/database/log path variables
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 LOG_PATH = os.environ.get("LOG_PATH", "/config/app.log")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_CONFIG_PATH = os.path.join(APP_DIR, "config", "config.yaml")
+
+# Standardized PostgreSQL connection info
+PG_HOST = os.environ.get("PG_HOST", "")
+PG_PORT = os.environ.get("PG_PORT", "5432")
+PG_USER = os.environ.get("PG_USER", "")
+PG_PASSWORD = os.environ.get("PG_PASSWORD", "")
+PG_DATABASE = os.environ.get("PG_DATABASE", "")
 
 # Ensure expected log files exist so the log viewer doesn't 404
 def _ensure_log_file(path: str):
@@ -492,45 +492,50 @@ def enforce_setup_wizard():
 # Track if schema has been updated this session
 _schema_updated = False
 
+
 def get_db():
-    """Get database connection with WAL mode for better concurrency"""
+    """Get a database connection (PostgreSQL if configured, else SQLite)."""
     global _schema_updated
-    db_dir = os.path.dirname(DB_PATH)
-    if db_dir:
-        os.makedirs(db_dir, exist_ok=True)
-    
-    # Ensure schema is up-to-date (only once per session)
-    if not _schema_updated:
-        try:
-            update_schema(DB_PATH)
-            _schema_updated = True
-        except Exception as e:
-            print(f"⚠️ Database schema update warning: {e}")
-    
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
+    if PG_HOST and PG_USER and PG_DATABASE:
+        # Connect to PostgreSQL
+        conn = psycopg2.connect(
+            host=PG_HOST,
+            port=PG_PORT,
+            user=PG_USER,
+            password=PG_PASSWORD,
+            dbname=PG_DATABASE,
+            cursor_factory=psycopg2.extras.RealDictCursor
+        )
+        return conn
+    else:
+        # Fallback to SQLite
+        db_dir = os.path.dirname(DB_PATH)
+        def get_db():
+            """Get a standardized database connection (SQLite only)."""
+            global _schema_updated
+            db_dir = os.path.dirname(DB_PATH)
+            if db_dir:
+                os.makedirs(db_dir, exist_ok=True)
+            if not _schema_updated:
+                update_schema(DB_PATH)
+                _schema_updated = True
+            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            conn.execute("PRAGMA journal_mode=WAL")
+            conn.row_factory = sqlite3.Row
+            return conn
 
-
-@app.route("/setup", methods=["GET", "POST"])
-def setup():
-    cfg, _ = _read_yaml(CONFIG_PATH)
-    baseline = copy.deepcopy(_baseline_config())
-
-    if request.method == "POST":
-        # Get lists of user credentials (arrays from form)
-        nav_base_urls = request.form.getlist("nav_base_url[]")
-        nav_users = request.form.getlist("nav_user[]")
-        nav_passes = request.form.getlist("nav_pass[]")
-        
         spotify_client_id = request.form.get("spotify_client_id", "").strip()
         spotify_client_secret = request.form.get("spotify_client_secret", "").strip()
         discogs_token = request.form.get("discogs_token", "").strip()
         lastfm_api_key = request.form.get("lastfm_api_key", "").strip()
 
+        # Initialize credential arrays from form
+        nav_base_urls = request.form.getlist("nav_base_url")
+        nav_users = request.form.getlist("nav_user")
+        nav_passes = request.form.getlist("nav_pass")
+
         errors = []
-        
+
         # Validate that we have at least one complete user entry
         if not nav_base_urls or not nav_users or not nav_passes:
             errors.append("At least one Navidrome user is required")
@@ -549,13 +554,13 @@ def setup():
         if errors:
             for err in errors:
                 flash(err, "danger")
-            
+
             # Reconstruct user list for template
             users_list = [
                 {"base_url": url, "user": user, "pass": pwd}
                 for url, user, pwd in zip(nav_base_urls, nav_users, nav_passes)
             ]
-            
+
             return render_template(
                 "setup.html",
                 nav_users=users_list,
@@ -572,6 +577,8 @@ def setup():
             if url.strip() and user.strip() and pwd.strip()
         ]
 
+        # Get baseline config
+        baseline = _baseline_config()
         new_cfg = copy.deepcopy(baseline)
         
         # Store as navidrome_users list (multi-user format)
@@ -3051,24 +3058,25 @@ def config_editor():
     return render_template("config.html", config=config, config_raw=raw, CONFIG_PATH=CONFIG_PATH)
 
 
-@app.route("/config/edit", methods=["POST"])
-def config_edit():
-    """Save config.yaml"""
-    config_content = request.form.get("config_content", "")
 
+@app.route("/config/env", methods=["GET"])
+def config_env_vars():
+    """Return all relevant environment variables and their current values as JSON."""
+    return jsonify(get_all_env_vars())
+
+@app.route("/config/env", methods=["POST"])
+def config_env_vars_post():
+    """Update environment variables from config page."""
     try:
-        yaml.safe_load(config_content)
-        cfg_dir = os.path.dirname(CONFIG_PATH)
-        if cfg_dir:
-            os.makedirs(cfg_dir, exist_ok=True)
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            f.write(config_content)
-        flash("Configuration saved successfully", "success")
-    except yaml.YAMLError as e:
-        flash(f"Invalid YAML: {e}", "danger")
+        data = request.get_json(force=True)
+        changed = 0
+        for var, value in data.items():
+            if var in ALL_ENV_VARS:
+                os.environ[var] = value
+                changed += 1
+        return jsonify({"success": True, "updated": changed})
     except Exception as e:
-        flash(f"Error saving config: {e}", "danger")
-
+        return jsonify({"success": False, "error": str(e)}), 400
     return redirect(url_for("config_editor"))
 
 

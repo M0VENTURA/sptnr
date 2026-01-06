@@ -15,7 +15,7 @@ import sqlite3
 logger = logging.getLogger(__name__)
 
 DB_PATH = "/database/sptnr.db"
-CONFIG_PATH = "/config"
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config")
 UPDATE_CONFIG = Path(CONFIG_PATH) / "update_config.yaml"
 
 
