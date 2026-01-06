@@ -1039,9 +1039,8 @@ def rate_track_single_detection(
             save_source_detections(track_id, source_results)
         return track
     
-    # --- If neither Spotify nor Video match → not a single ---
+    # --- If neither Spotify nor Video match, do not set is_single (inconclusive) ---
     if not (discogs_video_hit or spotify_matched):
-        track["is_single"] = False
         track["single_sources"] = sorted(sources)
         track["single_confidence"] = "low" if len(sources) == 0 else "medium"
         logging.debug(f"No single hint (Spotify/Video) for '{title}' → not checking further")
@@ -1124,7 +1123,6 @@ def rate_track_single_detection(
             logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via 2+ sources: {', '.join(sorted(sources))}")
     else:
         # Got Spotify or Video hit, but only 1 source total → +1★ bump
-        track["is_single"] = False
         track["single_sources"] = sorted(sources)
         track["single_confidence"] = "medium" if total_matches >= 1 else "low"
         # Apply +1★ bump if we have Spotify or Video signal
