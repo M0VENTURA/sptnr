@@ -81,14 +81,41 @@ app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    """Setup wizard page"""
+    """Setup wizard page (multi-user only, first user is main)"""
     try:
+        import yaml
         if request.method == "POST":
-            # Process form data here (save config, etc.)
-            # Example: flash("Setup updated!", "success")
+            # Collect form data for navidrome_users (main user first)
+            nav_users = []
+            # Example: get data from form fields named nav_user_0_username, nav_user_0_password, etc.
+            # For simplicity, only handle one user here, but can be extended for more
+            user = {
+                "display_name": request.form.get("nav_user_0_display_name", "Main User"),
+                "navidrome_base_url": request.form.get("nav_user_0_base_url", ""),
+                "username": request.form.get("nav_user_0_username", ""),
+                "navidrome_password": request.form.get("nav_user_0_password", ""),
+                "spotify_client_id": request.form.get("nav_user_0_spotify_client_id", ""),
+                "spotify_client_secret": request.form.get("nav_user_0_spotify_client_secret", ""),
+                "listenbrainz_user_token": request.form.get("nav_user_0_listenbrainz_user_token", "")
+            }
+            nav_users.append(user)
+            # Add more users if needed by iterating over form fields
+            config = {"navidrome_users": nav_users}
+            # Save to config.yaml
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
             flash("Setup updated!", "success")
             return redirect(url_for("setup"))
-        return render_template("setup.html")
+        # For GET, load existing users if present
+        nav_users = []
+        try:
+            import yaml
+            with open(CONFIG_PATH, "r", encoding="utf-8") as f:
+                config = yaml.safe_load(f)
+                nav_users = config.get("navidrome_users", [])
+        except Exception:
+            pass
+        return render_template("setup.html", nav_users=nav_users)
     except Exception as e:
         import logging
         logging.error(f"Error loading setup page: {e}")
