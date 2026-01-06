@@ -129,8 +129,45 @@
               </div>
             </div>
             <div class="card-footer d-flex justify-content-end gap-2">
-              <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary">Skip for now</a>
-              <button type="submit" class="btn btn-primary">Save & Continue</button>
+              <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary" id="skipBtn">Skip for now</a>
+              <button type="submit" class="btn btn-primary" id="saveContinueBtn">Save & Continue</button>
+              <div id="setupWarning" class="alert alert-danger mt-3" style="display:none;"></div>
+            <script>
+            // Disable Save & Continue if required fields are missing
+            function validateSetupFields() {
+              let valid = true;
+              let msg = [];
+              // Check Navidrome user fields
+              const navUrls = document.getElementsByName('nav_base_url[]');
+              const navUsers = document.getElementsByName('nav_user[]');
+              const navPasses = document.getElementsByName('nav_pass[]');
+              if (!navUrls[0].value.trim()) { valid = false; msg.push('Navidrome URL is required.'); }
+              if (!navUsers[0].value.trim() || navUsers[0].value === 'admin') { valid = false; msg.push('Navidrome username is required and cannot be "admin".'); }
+              if (!navPasses[0].value.trim() || navPasses[0].value === 'password') { valid = false; msg.push('Navidrome password is required and cannot be "password".'); }
+              // Check API keys
+              const spotifyId = document.getElementById('spotify_client_id').value.trim();
+              const spotifySecret = document.getElementById('spotify_client_secret').value.trim();
+              const lastfmKey = document.getElementById('lastfm_api_key').value.trim();
+              const discogsToken = document.getElementById('discogs_token').value.trim();
+              if (!spotifyId || spotifyId === 'your_spotify_client_id') { valid = false; msg.push('Spotify Client ID is required.'); }
+              if (!spotifySecret || spotifySecret === 'your_spotify_client_secret') { valid = false; msg.push('Spotify Client Secret is required.'); }
+              if (!lastfmKey || lastfmKey === 'your_lastfm_api_key') { valid = false; msg.push('Last.fm API key is required.'); }
+              if (!discogsToken || discogsToken === 'your_discogs_token') { valid = false; msg.push('Discogs token is required.'); }
+              // Show/hide warning
+              const warn = document.getElementById('setupWarning');
+              if (!valid) {
+                warn.style.display = '';
+                warn.innerHTML = msg.join('<br>');
+              } else {
+                warn.style.display = 'none';
+              }
+              document.getElementById('saveContinueBtn').disabled = !valid;
+              document.getElementById('skipBtn').style.display = valid ? '' : 'none';
+              return valid;
+            }
+            document.getElementById('setupForm').addEventListener('input', validateSetupFields);
+            window.addEventListener('DOMContentLoaded', validateSetupFields);
+            </script>
             </div>
           </form>
         </div>
