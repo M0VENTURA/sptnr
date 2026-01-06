@@ -1,4 +1,7 @@
 
+# Place all Flask route definitions after app = Flask(__name__)
+
+
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
