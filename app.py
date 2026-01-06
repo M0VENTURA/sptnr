@@ -1,15 +1,4 @@
-# --- SETUP ROUTE (for initial config/setup wizard) ---
-@app.route("/setup", methods=["GET", "POST"])
-def setup():
-    """Setup wizard for initial configuration."""
-    # This is a minimal placeholder. You may want to expand this logic as needed.
-    if request.method == "POST":
-        # Handle form submission or config save here if needed
-        flash("Configuration saved.", "success")
-        return redirect(url_for("dashboard"))
-    # Render the setup page (template must exist)
-    return render_template("setup.html")
-import re
+
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -526,150 +515,15 @@ def get_db():
     else:
         # Fallback to SQLite
         db_dir = os.path.dirname(DB_PATH)
-        def get_db():
-            """Get a standardized database connection (SQLite only)."""
-            global _schema_updated
-            db_dir = os.path.dirname(DB_PATH)
-            if db_dir:
-                os.makedirs(db_dir, exist_ok=True)
-            if not _schema_updated:
-                update_schema(DB_PATH)
-                _schema_updated = True
-            conn = sqlite3.connect(DB_PATH, timeout=30.0)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.row_factory = sqlite3.Row
-            return conn
-
-        spotify_client_id = request.form.get("spotify_client_id", "").strip()
-        spotify_client_secret = request.form.get("spotify_client_secret", "").strip()
-        discogs_token = request.form.get("discogs_token", "").strip()
-        lastfm_api_key = request.form.get("lastfm_api_key", "").strip()
-
-        # Initialize credential arrays from form
-        nav_base_urls = request.form.getlist("nav_base_url")
-        nav_users = request.form.getlist("nav_user")
-        nav_passes = request.form.getlist("nav_pass")
-
-        errors = []
-
-        # Validate that we have at least one complete user entry
-        if not nav_base_urls or not nav_users or not nav_passes:
-            errors.append("At least one Navidrome user is required")
-        elif len(nav_base_urls) != len(nav_users) or len(nav_users) != len(nav_passes):
-            errors.append("User credential arrays have mismatched lengths")
-        else:
-            # Validate each user entry
-            for idx, (url, user, pwd) in enumerate(zip(nav_base_urls, nav_users, nav_passes), 1):
-                if not url.strip():
-                    errors.append(f"User {idx}: Navidrome URL is required")
-                if not user.strip():
-                    errors.append(f"User {idx}: Username is required")
-                if not pwd.strip():
-                    errors.append(f"User {idx}: Password is required")
-
-        if errors:
-            for err in errors:
-                flash(err, "danger")
-
-            # Reconstruct user list for template
-            users_list = [
-                {"base_url": url, "user": user, "pass": pwd}
-                for url, user, pwd in zip(nav_base_urls, nav_users, nav_passes)
-            ]
-
-            return render_template(
-                "setup.html",
-                nav_users=users_list,
-                spotify_client_id=spotify_client_id,
-                spotify_client_secret=spotify_client_secret,
-                discogs_token=discogs_token,
-                lastfm_api_key=lastfm_api_key,
-            )
-
-        # Build navidrome_users list
-        navidrome_users = [
-            {"base_url": url.strip(), "user": user.strip(), "pass": pwd.strip()}
-            for url, user, pwd in zip(nav_base_urls, nav_users, nav_passes)
-            if url.strip() and user.strip() and pwd.strip()
-        ]
-
-        # Get baseline config
-        baseline = _baseline_config()
-        new_cfg = copy.deepcopy(baseline)
-        
-        # Store as navidrome_users list (multi-user format)
-        new_cfg["navidrome_users"] = navidrome_users
-        
-        # Also set single navidrome entry for backward compatibility (first user)
-        if navidrome_users:
-            new_cfg.setdefault("navidrome", {})
-            new_cfg["navidrome"].update(navidrome_users[0])
-
-        api = new_cfg.setdefault("api_integrations", {})
-
-        spotify_cfg = api.setdefault("spotify", {"enabled": False, "client_id": "", "client_secret": ""})
-        if spotify_client_id and spotify_client_secret:
-            spotify_cfg.update({
-                "enabled": True,
-                "client_id": spotify_client_id,
-                "client_secret": spotify_client_secret,
-            })
-        elif not (spotify_cfg.get("client_id") and spotify_cfg.get("client_secret")):
-            spotify_cfg["enabled"] = False
-
-        discogs_cfg = api.setdefault("discogs", {"enabled": False, "token": ""})
-        if discogs_token:
-            discogs_cfg.update({"enabled": True, "token": discogs_token})
-        elif not discogs_cfg.get("token"):
-            discogs_cfg["enabled"] = False
-
-        lastfm_cfg = api.setdefault("lastfm", {"enabled": False, "api_key": ""})
-        if lastfm_api_key:
-            lastfm_cfg.update({"enabled": True, "api_key": lastfm_api_key})
-        elif not lastfm_cfg.get("api_key"):
-            lastfm_cfg["enabled"] = False
-
-        new_cfg.setdefault("database", {}).setdefault("path", DB_PATH)
-        new_cfg.setdefault("logging", {}).setdefault("file", LOG_PATH)
-
-        cfg_dir = os.path.dirname(CONFIG_PATH)
-        if cfg_dir:
-            os.makedirs(cfg_dir, exist_ok=True)
-
-        with open(CONFIG_PATH, "w", encoding="utf-8") as f:
-            yaml.safe_dump(new_cfg, f, sort_keys=False, allow_unicode=False)
-
-        user_count = len(navidrome_users)
-        flash(f"Configuration saved with {user_count} Navidrome user(s). You are ready to start your first scan.", "success")
-        return redirect(url_for("dashboard"))
-
-    # GET request - load existing config
-    # Check for navidrome_users list first, then fall back to single navidrome entry
-    nav_users_list = cfg.get("navidrome_users", []) if cfg else []
-    
-    # If no navidrome_users, check for single navidrome entry
-    if not nav_users_list:
-        nav_single = cfg.get("navidrome", {}) if cfg else baseline.get("navidrome", {})
-        if nav_single and nav_single.get("base_url"):
-            nav_users_list = [nav_single]
-    
-    # If still empty, provide default empty structure
-    if not nav_users_list:
-        nav_users_list = []
-    
-    api_defaults = cfg.get("api_integrations", {}) if cfg else baseline.get("api_integrations", {})
-
-    return render_template(
-        "setup.html",
-        nav_users=nav_users_list,
-        nav_base_url=nav_users_list[0].get("base_url", "") if nav_users_list else "",
-        nav_user=nav_users_list[0].get("user", "") if nav_users_list else "",
-        nav_pass=nav_users_list[0].get("pass", "") if nav_users_list else "",
-        spotify_client_id=api_defaults.get("spotify", {}).get("client_id", ""),
-        spotify_client_secret=api_defaults.get("spotify", {}).get("client_secret", ""),
-        discogs_token=api_defaults.get("discogs", {}).get("token", ""),
-        lastfm_api_key=api_defaults.get("lastfm", {}).get("api_key", ""),
-    )
+        if db_dir:
+            os.makedirs(db_dir, exist_ok=True)
+        if not _schema_updated:
+            update_schema(DB_PATH)
+            _schema_updated = True
+        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.row_factory = sqlite3.Row
+        return conn
 
 
 @app.route("/")
