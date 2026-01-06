@@ -79,11 +79,15 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
-@app.route("/setup")
+@app.route("/setup", methods=["GET", "POST"])
 def setup():
     """Setup wizard page"""
     try:
-        # You can add logic here to check config, etc.
+        if request.method == "POST":
+            # Process form data here (save config, etc.)
+            # Example: flash("Setup updated!", "success")
+            flash("Setup updated!", "success")
+            return redirect(url_for("setup"))
         return render_template("setup.html")
     except Exception as e:
         import logging
