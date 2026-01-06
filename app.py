@@ -1,3 +1,14 @@
+# --- SETUP ROUTE (for initial config/setup wizard) ---
+@app.route("/setup", methods=["GET", "POST"])
+def setup():
+    """Setup wizard for initial configuration."""
+    # This is a minimal placeholder. You may want to expand this logic as needed.
+    if request.method == "POST":
+        # Handle form submission or config save here if needed
+        flash("Configuration saved.", "success")
+        return redirect(url_for("dashboard"))
+    # Render the setup page (template must exist)
+    return render_template("setup.html")
 import re
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
