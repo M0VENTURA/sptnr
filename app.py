@@ -40,7 +40,8 @@ from start import rate_artist
 from popularity import scan_popularity
 from start import build_artist_index
 from metadata_reader import aggregate_genres_from_tracks
-from database.database import update_schema, save_to_db
+from check_db import update_schema
+from start import save_to_db
 from scan_helpers import scan_artist_to_db
 
 import os
