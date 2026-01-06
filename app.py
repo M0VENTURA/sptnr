@@ -35,7 +35,8 @@ import json
 from datetime import datetime
 import copy
 from functools import wraps
-from scan_helpers import scan_artist_to_db, run_popularity_scan, rate_artist
+from scan_helpers import scan_artist_to_db, rate_artist
+from popularity import scan_popularity
 from start import build_artist_index
 from metadata_reader import aggregate_genres_from_tracks
 from database.database import update_schema, save_to_db
@@ -2294,7 +2295,7 @@ def album_rescan(artist, album):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist)
-            run_popularity_scan(verbose=True, artist=artist_name)
+            scan_popularity(verbose=True, artist=artist_name)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -2336,7 +2337,7 @@ def scan_track_rescan(artist, album, track_id):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist, which includes the track)
-            run_popularity_scan(verbose=True, artist=artist_name)
+            scan_popularity(verbose=True, artist=artist_name)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -2630,7 +2631,7 @@ def scan_popularity():
             def run_popularity_scan_bg():
                 try:
                     logging.info("Starting popularity score scan in background")
-                    run_popularity_scan(verbose=False)
+                    scan_popularity(verbose=False)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Popularity scan completed successfully")
                 except Exception as e:
