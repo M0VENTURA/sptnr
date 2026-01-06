@@ -35,7 +35,8 @@ import json
 from datetime import datetime
 import copy
 from functools import wraps
-from scan_helpers import scan_artist_to_db, rate_artist
+from scan_helpers import scan_artist_to_db
+from start import rate_artist
 from popularity import scan_popularity
 from start import build_artist_index
 from metadata_reader import aggregate_genres_from_tracks
