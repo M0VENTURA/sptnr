@@ -79,43 +79,126 @@ app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
+
 @app.route("/setup", methods=["GET", "POST"])
 def setup():
-    """Setup wizard page (multi-user only, first user is main)"""
+    """Setup wizard page (first-run, full config overwrite on save)"""
+    import yaml
     try:
-        import yaml
         if request.method == "POST":
-            # Collect form data for navidrome_users (main user first)
-            nav_users = []
-            # Example: get data from form fields named nav_user_0_username, nav_user_0_password, etc.
-            # For simplicity, only handle one user here, but can be extended for more
-            user = {
-                "display_name": request.form.get("nav_user_0_display_name", "Main User"),
-                "navidrome_base_url": request.form.get("nav_user_0_base_url", ""),
-                "username": request.form.get("nav_user_0_username", ""),
-                "navidrome_password": request.form.get("nav_user_0_password", ""),
-                "spotify_client_id": request.form.get("nav_user_0_spotify_client_id", ""),
-                "spotify_client_secret": request.form.get("nav_user_0_spotify_client_secret", ""),
-                "listenbrainz_user_token": request.form.get("nav_user_0_listenbrainz_user_token", "")
+            # Build full config from form data
+            nav_base_urls = request.form.getlist("nav_base_url[]")
+            nav_users = request.form.getlist("nav_user[]")
+            nav_passes = request.form.getlist("nav_pass[]")
+            # Optional per-user fields (future: add more as needed)
+            # For now, only first user gets Spotify keys from main form
+            users = []
+            for i in range(len(nav_base_urls)):
+                user = {
+                    "base_url": nav_base_urls[i],
+                    "user": nav_users[i],
+                    "pass": nav_passes[i],
+                }
+                if i == 0:
+                    # First user: add Spotify keys if present
+                    user["spotify_client_id"] = request.form.get("spotify_client_id", "")
+                    user["spotify_client_secret"] = request.form.get("spotify_client_secret", "")
+                    user["lastfm_api_key"] = request.form.get("lastfm_api_key", "")
+                    user["discogs_token"] = request.form.get("discogs_token", "")
+                users.append(user)
+
+            # Build full config structure (overwrite)
+            config = {
+                "navidrome_users": users,
+                "api_integrations": {
+                    "spotify": {
+                        "enabled": True,
+                        "client_id": request.form.get("spotify_client_id", ""),
+                        "client_secret": request.form.get("spotify_client_secret", "")
+                    },
+                    "lastfm": {
+                        "enabled": True,
+                        "api_key": request.form.get("lastfm_api_key", "")
+                    },
+                    "listenbrainz": {"enabled": True},
+                    "discogs": {
+                        "enabled": True,
+                        "token": request.form.get("discogs_token", "")
+                    },
+                    "musicbrainz": {"enabled": True},
+                    "audiodb": {"enabled": False, "api_key": ""},
+                    "google": {"enabled": False, "api_key": "", "cse_id": ""},
+                    "youtube": {"enabled": False, "api_key": ""},
+                },
+                "qbittorrent": {
+                    "enabled": False,
+                    "web_url": "http://localhost:8080",
+                    "username": "",
+                    "password": ""
+                },
+                "slskd": {
+                    "enabled": True,
+                    "web_url": "http://localhost:5030",
+                    "api_key": ""
+                },
+                "downloads": {"folder": "/downloads/Music"},
+                "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
+                "database": {"path": "/database/sptnr.db", "vacuum_on_start": False},
+                "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
+                "features": {
+                    "dry_run": False,
+                    "sync": True,
+                    "force": False,
+                    "verbose": False,
+                    "perpetual": True,
+                    "batchrate": False,
+                    "artist": [],
+                    "album_skip_days": 7,
+                    "album_skip_min_tracks": 1,
+                    "clamp_min": 0.75,
+                    "clamp_max": 1.25,
+                    "cap_top4_pct": 0.25,
+                    "title_sim_threshold": 0.92,
+                    "short_release_counts_as_match": False,
+                    "secondary_single_lookup_enabled": True,
+                    "secondary_lookup_metric": "score",
+                    "secondary_lookup_delta": 0.05,
+                    "secondary_required_strong_sources": 2,
+                    "median_gate_strategy": "hard",
+                    "use_lastfm_single": True,
+                    "refresh_artist_index_on_start": False,
+                    "discogs_min_interval_sec": 0.35,
+                    "include_user_ratings_on_scan": True,
+                    "scan_worker_threads": 4,
+                    "spotify_prefetch_timeout": 30,
+                },
             }
-            nav_users.append(user)
-            # Add more users if needed by iterating over form fields
-            config = {"navidrome_users": nav_users}
-            # Save to config.yaml
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
             flash("Setup updated!", "success")
             return redirect(url_for("setup"))
-        # For GET, load existing users if present
-        nav_users = []
+
+        # For GET, load the full config (all sections) and pass to template
+        config = {}
         try:
-            import yaml
             with open(CONFIG_PATH, "r", encoding="utf-8") as f:
-                config = yaml.safe_load(f)
-                nav_users = config.get("navidrome_users", [])
+                config = yaml.safe_load(f) or {}
         except Exception:
-            pass
-        return render_template("setup.html", nav_users=nav_users)
+            config = {}
+        # Extract user and integration fields for template
+        nav_users = config.get("navidrome_users", [])
+        spotify_client_id = config.get("api_integrations", {}).get("spotify", {}).get("client_id", "")
+        spotify_client_secret = config.get("api_integrations", {}).get("spotify", {}).get("client_secret", "")
+        discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+        lastfm_api_key = config.get("api_integrations", {}).get("lastfm", {}).get("api_key", "")
+        return render_template(
+            "setup.html",
+            nav_users=nav_users,
+            spotify_client_id=spotify_client_id,
+            spotify_client_secret=spotify_client_secret,
+            discogs_token=discogs_token,
+            lastfm_api_key=lastfm_api_key
+        )
     except Exception as e:
         import logging
         logging.error(f"Error loading setup page: {e}")
