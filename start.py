@@ -297,22 +297,11 @@ def validate_config(config):
             issues.append("Discogs is enabled but token is missing or placeholder. Single detection may be limited.")
 
     if issues:
-        print("\nâš ï¸ Configuration issues detected:")
+        print("\n⚠️ Configuration issues detected:")
         for issue in issues:
             print(f" - {issue}")
-
-        print("\nâŒ Please update config.yaml before continuing.")
-        print("ðŸ‘‰ To edit the file inside the container, run:")
-        print("   vi /config/config.yaml")
-        print("âœ… After saving changes, restart the container")
-        # Keep container alive and wait for user action
-        print("â¸ Waiting for config update... Container will stay alive. Please restart the container after editing the config.")
-        try:
-            while True:
-                time.sleep(60)
-        except KeyboardInterrupt:
-            print("\nâ„¹ï¸ Exiting script.")
-            sys.exit(0)
+        print("\n❌ Please update config.yaml using the web UI setup wizard.")
+        print("You can access the setup wizard at /setup once the web UI is running.")
 
 # âœ… Call this right after loading config
 validate_config(config)
