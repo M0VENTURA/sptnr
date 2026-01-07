@@ -876,6 +876,62 @@ function updateUserTitle(displayNameInput) {
 // --- Features & Weights Editing ---
 function renderFeaturesWeights(features, weights) {
   let html = '';
+
+  // --- Groupings and Explanations ---
+  const featureGroups = [
+    {
+      heading: 'General Operation',
+      description: 'Core options that control the overall behavior of the app, including dry-run/testing, syncing, and batch operations.',
+      keys: ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'artist'],
+      explanations: {
+        dry_run: 'Run all operations in test mode without making any changes to your files or database. Useful for safely testing configuration changes.',
+        sync: 'Enable automatic syncing of your music libraries between sources and the app.',
+        force: 'Force certain operations to run even if pre-checks or validations fail. Use with caution.',
+        verbose: 'Show detailed logs and debug information for troubleshooting and advanced users.',
+        perpetual: 'Keep background services (like folder watchers and scanners) running continuously.',
+        batchrate: 'Enable batch rating mode to rate multiple albums or tracks at once.',
+        artist: 'Comma-separated list of artist names to prioritize or filter during scans and imports.'
+      }
+    },
+    {
+      heading: 'Single Detection & Scoring',
+      description: 'Advanced controls for how singles and albums are detected, scored, and filtered. Adjust these for fine-tuning detection accuracy and automation.',
+      keys: [
+        'album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold',
+        'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta',
+        'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start',
+        'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'
+      ],
+      explanations: {
+        album_skip_days: 'Skip albums that were released within this many days (prevents importing very new releases).',
+        album_skip_min_tracks: 'Minimum number of tracks required for an album to be considered valid.',
+        clamp_min: 'Minimum allowed value for score normalization (prevents scores from dropping too low).',
+        clamp_max: 'Maximum allowed value for score normalization (prevents scores from exceeding this value).',
+        cap_top4_pct: 'Maximum percentage weight that the top 4 sources can contribute to the overall score.',
+        title_sim_threshold: 'How similar two album titles must be (0-1) to be considered a match. Higher values mean stricter matching.',
+        short_release_counts_as_match: 'If enabled, short releases (like singles/EPs) are treated as valid matches.',
+        secondary_single_lookup_enabled: 'Enable a secondary lookup step for singles to improve detection accuracy.',
+        secondary_lookup_metric: 'Which metric to use for secondary lookup (e.g., score, popularity).',
+        secondary_lookup_delta: 'How much the score must differ to trigger a secondary lookup.',
+        secondary_required_strong_sources: 'Number of strong sources required to confirm a secondary lookup match.',
+        median_gate_strategy: 'Strategy for handling ambiguous matches: "hard" (strict) or "soft" (lenient).',
+        use_lastfm_single: 'Use Last.fm data as an additional source for single detection.',
+        refresh_artist_index_on_start: 'Refresh the artist index every time the app starts (may slow startup).',
+        discogs_min_interval_sec: 'Minimum time (in seconds) between Discogs API calls to avoid rate limits.',
+        include_user_ratings_on_scan: 'Include user ratings when scanning and scoring albums.',
+        scan_worker_threads: 'Number of parallel worker threads to use for scanning (higher = faster, but more CPU).',
+        spotify_prefetch_timeout: 'Timeout (in seconds) for Spotify data prefetching during scans.'
+      }
+    }
+  ];
+
+  const weightExplanations = {
+    spotify: 'Weight for Spotify data in scoring.',
+    lastfm: 'Weight for Last.fm data in scoring.',
+    listenbrainz: 'Weight for ListenBrainz data in scoring.',
+    age: 'Weight for album age in scoring.'
+  };
+
   html += '<div class="card shadow-sm mb-3">';
   html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
   html += '<h5 class="mb-0"><i class="bi bi-sliders"></i> Features & Weights</h5>';
@@ -884,30 +940,68 @@ function renderFeaturesWeights(features, weights) {
   html += '<div class="card-body">';
   html += '<form id="featuresWeightsForm">';
   html += '<div class="row g-3">';
-  // Features
-  html += '<div class="col-12"><h6>Features</h6></div>';
-  for (const [key, value] of Object.entries(features)) {
-    html += '<div class="col-md-4">';
-    html += `<label class="form-label">${key}</label>`;
-    if (typeof value === 'boolean') {
-      html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
-    } else if (typeof value === 'number') {
-      html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
-    } else if (Array.isArray(value)) {
-      html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
-    } else {
-      html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+
+  // Render grouped features
+  for (const group of featureGroups) {
+    html += `<div class="col-12 mt-4"><h5>${group.heading}</h5>`;
+    if (group.description) {
+      html += `<div class="text-muted mb-2">${group.description}</div>`;
     }
-    html += '</div>';
+    html += `</div>`;
+    for (const key of group.keys) {
+      if (features.hasOwnProperty(key)) {
+        html += '<div class="col-md-4">';
+        html += `<label class="form-label">${key}</label>`;
+        if (group.explanations[key]) {
+          html += `<div class="text-muted small mb-1">${group.explanations[key]}</div>`;
+        }
+        const value = features[key];
+        if (typeof value === 'boolean') {
+          html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+        } else if (typeof value === 'number') {
+          html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+        } else if (Array.isArray(value)) {
+          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+        } else {
+          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+        }
+        html += '</div>';
+      }
+    }
   }
-  // Weights
-  html += '<div class="col-12 mt-3"><h6>Weights</h6></div>';
+
+  // Render any other features not grouped
+  const groupedKeys = featureGroups.flatMap(g => g.keys);
+  for (const [key, value] of Object.entries(features)) {
+    if (!groupedKeys.includes(key)) {
+      html += '<div class="col-md-4">';
+      html += `<label class="form-label">${key}</label>`;
+      html += `<div class="text-muted small mb-1">(Custom/Other feature)</div>`;
+      if (typeof value === 'boolean') {
+        html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+      } else if (typeof value === 'number') {
+        html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+      } else if (Array.isArray(value)) {
+        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+      } else {
+        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+      }
+      html += '</div>';
+    }
+  }
+
+  // Weights section
+  html += '<div class="col-12 mt-4"><h6>Weights</h6></div>';
   for (const [key, value] of Object.entries(weights)) {
     html += '<div class="col-md-4">';
     html += `<label class="form-label">${key}</label>`;
+    if (weightExplanations[key]) {
+      html += `<div class="text-muted small mb-1">${weightExplanations[key]}</div>`;
+    }
     html += `<input type="number" step="any" class="form-control weight-field" name="weight_${key}" value="${value}">`;
     html += '</div>';
   }
+
   html += '</div>';
   html += '<div class="mt-3 text-end">';
   html += '<button type="button" class="btn btn-primary" onclick="saveFeaturesWeights()">Save Features & Weights</button>';
