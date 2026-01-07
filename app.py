@@ -3056,24 +3056,25 @@ def api_delete_bookmark(bookmark_id):
 
 @app.route("/config")
 def config_editor():
-    """View/edit config.yaml. Redirect to setup if required keys are missing."""
+    """View/edit config.yaml. Always allow access, show warning if setup incomplete."""
     config, raw = _read_yaml(CONFIG_PATH)
-    # Check for required keys in navidrome_users
+    # Check for required keys in navidrome_users (for warning only)
     navidrome_users = config.get('navidrome_users', [])
-    required_keys = ["display_name", "navidrome_base_url", "username", "navidrome_password", "spotify_client_id", "spotify_client_secret", "listenbrainz_user_token"]
+    required_keys = ["base_url", "user", "pass"]
     needs_setup = False
-    for user in navidrome_users:
-        for key in required_keys:
-            if not user.get(key):
-                needs_setup = True
+    if not navidrome_users:
+        needs_setup = True
+    else:
+        for user in navidrome_users:
+            for key in required_keys:
+                if not user.get(key):
+                    needs_setup = True
+                    break
+            if needs_setup:
                 break
-        if needs_setup:
-            break
-    if not navidrome_users or needs_setup:
-        return redirect(url_for('setup'))
     if not raw:
         raw = yaml.safe_dump(config, sort_keys=False, allow_unicode=False) if config else ""
-    return render_template("config.html", config=config, config_raw=raw, CONFIG_PATH=CONFIG_PATH)
+    return render_template("config.html", config=config, config_raw=raw, CONFIG_PATH=CONFIG_PATH, needs_setup=needs_setup)
 
 
 
