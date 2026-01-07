@@ -457,23 +457,23 @@
       <div class="row g-3">
         <div class="col-12 col-md-6">
           <label class="form-label">Postgres Host</label>
-          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ os.environ.get('PG_HOST', '') }}">
+          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ config.get('PG_HOST', '') }}">
         </div>
         <div class="col-12 col-md-6">
           <label class="form-label">Postgres Port</label>
-          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ os.environ.get('PG_PORT', '5432') }}">
+          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ config.get('PG_PORT', '5432') }}">
         </div>
         <div class="col-12 col-md-4">
           <label class="form-label">Postgres User</label>
-          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ os.environ.get('PG_USER', '') }}">
+          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ config.get('PG_USER', '') }}">
         </div>
         <div class="col-12 col-md-4">
           <label class="form-label">Postgres Password</label>
-          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ os.environ.get('PG_PASSWORD', '') }}">
+          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ config.get('PG_PASSWORD', '') }}">
         </div>
         <div class="col-12 col-md-4">
           <label class="form-label">Postgres Database</label>
-          <input type="text" class="form-control" id="pg_database" placeholder="sptnr" value="{{ os.environ.get('PG_DATABASE', '') }}">
+          <input type="text" class="form-control" id="pg_database" placeholder="sptnr" value="{{ config.get('PG_DATABASE', '') }}">
         </div>
         <div class="col-12">
           <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
