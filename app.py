@@ -196,6 +196,14 @@ def setup():
             config = {}
         # Extract user and integration fields for template
         nav_users = config.get("navidrome_users", [])
+        # Map legacy/alternate keys to expected keys for UI
+        for user in nav_users:
+            if "navidrome_base_url" in user:
+                user["base_url"] = user["navidrome_base_url"]
+            if "navidrome_password" in user:
+                user["pass"] = user["navidrome_password"]
+            if "username" in user:
+                user["user"] = user["username"]
         spotify_client_id = config.get("api_integrations", {}).get("spotify", {}).get("client_id", "")
         spotify_client_secret = config.get("api_integrations", {}).get("spotify", {}).get("client_secret", "")
         discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
@@ -3120,6 +3128,14 @@ def config_save_json():
         
         # Build YAML structure from JSON
         navidrome_users = data.get('navidrome_users', [])
+        # Map legacy/alternate keys to expected keys on save
+        for user in navidrome_users:
+            if "navidrome_base_url" in user:
+                user["base_url"] = user["navidrome_base_url"]
+            if "navidrome_password" in user:
+                user["pass"] = user["navidrome_password"]
+            if "username" in user:
+                user["user"] = user["username"]
         config_dict = {
             'navidrome_users': navidrome_users,
             'qbittorrent': data.get('qbittorrent', {}),
