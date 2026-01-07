@@ -732,7 +732,7 @@ function saveRawYaml() {
   const formData = new FormData();
   formData.append('config_content', configContent);
   
-  fetch('{{ url_for("config_edit") }}', {
+  fetch('{{ url_for("config_editor") }}', {
     method: 'POST',
     body: formData
   })
