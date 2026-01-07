@@ -873,6 +873,109 @@ function updateUserTitle(displayNameInput) {
   const displayName = displayNameInput.value.trim() || 'New User';
   displayValue.textContent = displayName;
 }
+// --- Features & Weights Editing ---
+function renderFeaturesWeights(features, weights) {
+  let html = '';
+  html += '<div class="card shadow-sm mb-3">';
+  html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
+  html += '<h5 class="mb-0"><i class="bi bi-sliders"></i> Features & Weights</h5>';
+  html += '<small class="text-muted">Advanced options for scoring and detection</small>';
+  html += '</div>';
+  html += '<div class="card-body">';
+  html += '<form id="featuresWeightsForm">';
+  html += '<div class="row g-3">';
+  // Features
+  html += '<div class="col-12"><h6>Features</h6></div>';
+  for (const [key, value] of Object.entries(features)) {
+    html += '<div class="col-md-4">';
+    html += `<label class="form-label">${key}</label>`;
+    if (typeof value === 'boolean') {
+      html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+    } else if (typeof value === 'number') {
+      html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+    } else if (Array.isArray(value)) {
+      html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+    } else {
+      html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+    }
+    html += '</div>';
+  }
+  // Weights
+  html += '<div class="col-12 mt-3"><h6>Weights</h6></div>';
+  for (const [key, value] of Object.entries(weights)) {
+    html += '<div class="col-md-4">';
+    html += `<label class="form-label">${key}</label>`;
+    html += `<input type="number" step="any" class="form-control weight-field" name="weight_${key}" value="${value}">`;
+    html += '</div>';
+  }
+  html += '</div>';
+  html += '<div class="mt-3 text-end">';
+  html += '<button type="button" class="btn btn-primary" onclick="saveFeaturesWeights()">Save Features & Weights</button>';
+  html += '</div>';
+  html += '</form>';
+  html += '</div></div>';
+  return html;
+}
+
+function saveFeaturesWeights() {
+  // Gather all config data from the page (users, integrations, features, weights)
+  const config = window.currentConfig || {};
+  // Features
+  const features = {};
+  document.querySelectorAll('.feature-field').forEach(input => {
+    let key = input.name.replace('feature_', '');
+    let val = input.value;
+    if (input.tagName === 'SELECT') {
+      val = (val === 'true');
+    } else if (Array.isArray(config.features[key])) {
+      val = val.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (!isNaN(val) && val !== '') {
+      val = Number(val);
+    }
+    features[key] = val;
+  });
+  // Weights
+  const weights = {};
+  document.querySelectorAll('.weight-field').forEach(input => {
+    let key = input.name.replace('weight_', '');
+    let val = input.value;
+    if (!isNaN(val) && val !== '') {
+      val = Number(val);
+    }
+    weights[key] = val;
+  });
+  // Merge into config
+  config.features = features;
+  config.weights = weights;
+  // Save via AJAX
+  fetch('/config/save-json', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(config)
+  })
+  .then(r => r.json())
+  .then(resp => {
+    if (resp.success) {
+      alert('Features & weights saved!');
+      location.reload();
+    } else {
+      alert('Save failed: ' + (resp.error || 'Unknown error'));
+    }
+  });
+}
+
+</script>
+<script>
+// On page load, render features/weights section
+window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
+document.addEventListener('DOMContentLoaded', function() {
+  const features = window.currentConfig.features || {};
+  const weights = window.currentConfig.weights || {};
+  const section = document.createElement('div');
+  section.innerHTML = renderFeaturesWeights(features, weights);
+  document.body.appendChild(section);
+});
+</script>
 </script>
 
 <style>

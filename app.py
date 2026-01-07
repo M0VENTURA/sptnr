@@ -100,14 +100,42 @@ def setup():
                     "pass": nav_passes[i],
                 }
                 if i == 0:
-                    # First user: add Spotify keys if present
                     user["spotify_client_id"] = request.form.get("spotify_client_id", "")
                     user["spotify_client_secret"] = request.form.get("spotify_client_secret", "")
                     user["lastfm_api_key"] = request.form.get("lastfm_api_key", "")
                     user["discogs_token"] = request.form.get("discogs_token", "")
                 users.append(user)
 
-            # Build full config structure (overwrite)
+            # Always include features and weights at the bottom
+            features = {
+                "dry_run": False,
+                "sync": True,
+                "force": False,
+                "verbose": False,
+                "perpetual": True,
+                "batchrate": False,
+                "artist": [],
+                "album_skip_days": 7,
+                "album_skip_min_tracks": 1,
+                "clamp_min": 0.75,
+                "clamp_max": 1.25,
+                "cap_top4_pct": 0.25,
+                "title_sim_threshold": 0.92,
+                "short_release_counts_as_match": False,
+                "secondary_single_lookup_enabled": True,
+                "secondary_lookup_metric": "score",
+                "secondary_lookup_delta": 0.05,
+                "secondary_required_strong_sources": 2,
+                "median_gate_strategy": "hard",
+                "use_lastfm_single": True,
+                "refresh_artist_index_on_start": False,
+                "discogs_min_interval_sec": 0.35,
+                "include_user_ratings_on_scan": True,
+                "scan_worker_threads": 4,
+                "spotify_prefetch_timeout": 30,
+            }
+            weights = {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1}
+
             config = {
                 "navidrome_users": users,
                 "api_integrations": {
@@ -142,36 +170,10 @@ def setup():
                     "api_key": ""
                 },
                 "downloads": {"folder": "/downloads/Music"},
-                "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
+                "weights": weights,
                 "database": {"path": "/database/sptnr.db", "vacuum_on_start": False},
                 "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
-                "features": {
-                    "dry_run": False,
-                    "sync": True,
-                    "force": False,
-                    "verbose": False,
-                    "perpetual": True,
-                    "batchrate": False,
-                    "artist": [],
-                    "album_skip_days": 7,
-                    "album_skip_min_tracks": 1,
-                    "clamp_min": 0.75,
-                    "clamp_max": 1.25,
-                    "cap_top4_pct": 0.25,
-                    "title_sim_threshold": 0.92,
-                    "short_release_counts_as_match": False,
-                    "secondary_single_lookup_enabled": True,
-                    "secondary_lookup_metric": "score",
-                    "secondary_lookup_delta": 0.05,
-                    "secondary_required_strong_sources": 2,
-                    "median_gate_strategy": "hard",
-                    "use_lastfm_single": True,
-                    "refresh_artist_index_on_start": False,
-                    "discogs_min_interval_sec": 0.35,
-                    "include_user_ratings_on_scan": True,
-                    "scan_worker_threads": 4,
-                    "spotify_prefetch_timeout": 30,
-                },
+                "features": features,
             }
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
