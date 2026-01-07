@@ -62,15 +62,15 @@
                 </div>
                 <div class="col-12">
                   <label class="form-label form-label-sm">Navidrome Base URL</label>
-                  <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533" value="{{ user.get('navidrome_base_url', '') }}">
+                  <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533" value="{{ user.get('base_url', '') }}">
                 </div>
                 <div class="col-12 col-sm-6">
                   <label class="form-label form-label-sm">Username</label>
-                  <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username" value="{{ user.get('username', '') }}">
+                  <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username" value="{{ user.get('user', '') }}">
                 </div>
                 <div class="col-12 col-sm-6">
                   <label class="form-label form-label-sm">Password</label>
-                  <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••" value="{{ user.get('navidrome_password', '') }}">
+                  <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••" value="{{ user.get('pass', '') }}">
                 </div>
               </div>
             </div>
@@ -861,23 +861,9 @@ function addNewUser() {
   container.appendChild(userCard);
 }
 
-function removeUser(userIndex) {
-  const container = document.getElementById('usersContainer');
-  const userCard = container.querySelector(`[data-user-index="${userIndex}"]`);
-  
-  if (userCard) {
-    userCard.remove();
-  }
-  
-  // Show empty message if no users
-  const remainingCards = container.querySelectorAll('.user-card');
-  if (remainingCards.length === 0) {
-    const emptyMessage = document.createElement('div');
-    emptyMessage.className = 'alert alert-info';
-    emptyMessage.id = 'emptyUsersMessage';
-    emptyMessage.innerHTML = '<i class="bi bi-info-circle"></i> No users configured yet. Click "Add Another User" to get started.';
-    container.appendChild(emptyMessage);
-  }
+function removeUser(idx) {
+  // No-op: implement user removal logic if needed
+  alert('User removal not yet implemented.');
 }
 
 function updateUserTitle(displayNameInput) {
