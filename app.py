@@ -3112,8 +3112,9 @@ def config_save_json():
             return jsonify({"success": False, "error": "No JSON data provided"}), 400
         
         # Build YAML structure from JSON
+        navidrome_users = data.get('navidrome_users', [])
         config_dict = {
-            'navidrome_users': data.get('navidrome_users', []),
+            'navidrome_users': navidrome_users,
             'qbittorrent': data.get('qbittorrent', {}),
             'slskd': data.get('slskd', {}),
             'authentik': data.get('authentik', {}),
@@ -3125,6 +3126,13 @@ def config_save_json():
             'features': {},  # Preserve features section if it exists
             'weights': {}  # Preserve weights section if it exists
         }
+        # Always set main navidrome section to first user for compatibility
+        if navidrome_users and len(navidrome_users) > 0:
+            config_dict['navidrome'] = {
+                'base_url': navidrome_users[0].get('base_url', ''),
+                'user': navidrome_users[0].get('user', ''),
+                'pass': navidrome_users[0].get('pass', ''),
+            }
         
         # Read existing config to preserve features and weights
         existing_config, _ = _read_yaml(CONFIG_PATH)
