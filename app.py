@@ -502,7 +502,14 @@ def _baseline_config():
 # Kick off Navidrome metadata-only import at startup (missing-only)
 if AUTO_BOOT_ND_IMPORT:
     try:
-        _start_boot_navidrome_import()
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        batchrate_enabled = False
+        if cfg and 'features' in cfg:
+            batchrate_enabled = bool(cfg['features'].get('batchrate', False))
+        if batchrate_enabled:
+            _start_boot_navidrome_import()
+        else:
+            logging.info("Navidrome scan at boot skipped: batchrate is False")
     except Exception as e:
         logging.error(f"Failed to start boot Navidrome import: {e}")
 
