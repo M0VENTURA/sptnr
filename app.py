@@ -594,22 +594,29 @@ def enforce_setup_wizard():
     try:
         exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
         if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
-            return
+            try:
+                exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
+                if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
+                    return
 
-        # If config doesn't exist, allow setup
-        if not os.path.exists(CONFIG_PATH):
-            if request.endpoint != "setup":
-                return redirect(url_for("setup"))
-            return
+                # If config doesn't exist or is incomplete, redirect to setup wizard
+                cfg, _ = _read_yaml(CONFIG_PATH)
+                from os.path import exists
+                if not exists(CONFIG_PATH) or _needs_setup(cfg):
+                    if request.endpoint != "setup":
+                        return redirect(url_for("setup"))
+                    return
 
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        
-        # If setup is needed, redirect to setup
-        if _needs_setup(cfg):
-            if request.endpoint != "setup":
-                return redirect(url_for("setup"))
-            return
-        
+                # Only require login if config exists and is valid
+                if 'username' not in session:
+                    if request.endpoint != "login":
+                        return redirect(url_for("login"))
+            except Exception as e:
+                logging.error(f"Error in enforce_setup_wizard: {e}")
+                import traceback
+                traceback.print_exc()
+                # Don't block the request, let it fail naturally so we can see the real error
+                pass
         # If setup is complete and not logged in, redirect to login
         if 'username' not in session:
             if request.endpoint != "login":
