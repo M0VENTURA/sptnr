@@ -179,7 +179,32 @@ def load_config():
             print(f"âš ï¸ No template found. Creating default config...")
             create_default_config(CONFIG_PATH)
     with open(CONFIG_PATH, "r") as f:
-        return yaml.safe_load(f)
+        loaded = yaml.safe_load(f) or {}
+    # Merge defaults to avoid KeyErrors
+    def deep_update(d, u):
+        for k, v in u.items():
+            if isinstance(v, dict):
+                d[k] = deep_update(d.get(k, {}), v)
+            else:
+                d.setdefault(k, v)
+        return d
+    defaults = {
+        "database": {"path": "/database/sptnr.db", "vacuum_on_start": False},
+        "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
+        "features": {
+            "dry_run": False, "sync": True, "force": False, "verbose": False, "perpetual": False,
+            "batchrate": False, "refresh_playlists_on_start": False, "refresh_artist_index_on_start": False,
+            "discogs_min_interval_sec": 0.35, "album_skip_days": 7, "album_skip_min_tracks": 1,
+            "clamp_min": 0.75, "clamp_max": 1.25, "cap_top4_pct": 0.25, "title_sim_threshold": 0.92,
+            "short_release_counts_as_match": False, "secondary_single_lookup_enabled": True,
+            "secondary_lookup_metric": "score", "secondary_lookup_delta": 0.05,
+            "secondary_required_strong_sources": 2, "median_gate_strategy": "hard", "use_lastfm_single": True,
+            "include_user_ratings_on_scan": True, "scan_worker_threads": 4, "spotify_prefetch_timeout": 30,
+            "artist": []
+        }
+    }
+    config = deep_update(loaded, defaults)
+    return config
 
 config = load_config()
 
