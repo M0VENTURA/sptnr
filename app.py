@@ -175,6 +175,13 @@ def setup():
                 "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
                 "features": features,
             }
+            # Always set main navidrome section to first user for compatibility
+            if users and len(users) > 0:
+                config["navidrome"] = {
+                    "base_url": users[0].get("base_url", ""),
+                    "user": users[0].get("user", ""),
+                    "pass": users[0].get("pass", ""),
+                }
             with open(CONFIG_PATH, "w", encoding="utf-8") as f:
                 yaml.safe_dump(config, f, sort_keys=False, allow_unicode=True)
             flash("Setup updated!", "success")
