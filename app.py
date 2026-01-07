@@ -6037,16 +6037,19 @@ def search_musicbrainz_for_album():
         if not artist or not album:
             return jsonify({"error": "Artist and album name required"}), 400
         
-        # Import MusicBrainz client
+        # Import MusicBrainz client and use get_suggested_mbid
         from api_clients.musicbrainz import MusicBrainzClient
         mb_client = MusicBrainzClient()
-        
-        # Search for releases
-        results = mb_client.search_releases(artist, album)
-        
+        mbid, confidence = mb_client.get_suggested_mbid(album, artist)
+        result = {
+            "mbid": mbid,
+            "confidence": confidence,
+            "album": album,
+            "artist": artist
+        }
         return jsonify({
             "success": True,
-            "results": results
+            "result": result
         })
     except Exception as e:
         logging.error(f"MusicBrainz search error: {str(e)}")

@@ -163,15 +163,26 @@
             </div>
 
             <!-- Search and Add Songs -->
+
             <div class="mb-4">
               <h6 class="mb-3">Add Songs</h6>
+              <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                  <input type="text" id="searchTitleInput" class="form-control" placeholder="Song Title">
+                </div>
+                <div class="col-md-4">
+                  <input type="text" id="searchArtistInput" class="form-control" placeholder="Artist">
+                </div>
+                <div class="col-md-4">
+                  <input type="text" id="searchAlbumInput" class="form-control" placeholder="Album">
+                </div>
+              </div>
               <div class="input-group mb-3">
-                <input type="text" id="songSearchInput" class="form-control" placeholder="Search: artist, title, album...">
+                <input type="text" id="songSearchInput" class="form-control" placeholder="General Search (any field)">
                 <button class="btn btn-primary" type="button" onclick="searchSongs()">
                   <i class="bi bi-search"></i> Search
                 </button>
               </div>
-
               <!-- Search Results -->
               <div id="songSearchResults" style="display: none; max-height: 300px; overflow-y: auto;" class="border rounded p-3 bg-light mb-3">
                 <!-- Results will appear here -->
@@ -359,8 +370,12 @@ let selectedSongs = [];
 
 async function searchSongs() {
   const query = document.getElementById('songSearchInput').value.trim();
-  if (!query || query.length < 2) {
-    alert('Please enter at least 2 characters');
+  const title = document.getElementById('searchTitleInput').value.trim();
+  const artist = document.getElementById('searchArtistInput').value.trim();
+  const album = document.getElementById('searchAlbumInput').value.trim();
+
+  if (!query && !title && !artist && !album) {
+    alert('Please enter at least one search field');
     return;
   }
 
@@ -368,7 +383,7 @@ async function searchSongs() {
     const response = await fetch('/api/playlist/search-songs', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ query })
+      body: JSON.stringify({ query, title, artist, album })
     });
 
     const data = await response.json();
