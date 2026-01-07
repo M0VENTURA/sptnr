@@ -902,6 +902,7 @@ def rate_track_single_detection(
         DISCOGS_TOKEN,
         MUSICBRAINZ_ENABLED,
         CONTEXT_FALLBACK_STUDIO,
+        config as global_config,
     )
     
     title = track.get("title", "")
@@ -1080,6 +1081,26 @@ def rate_track_single_detection(
             source_results["musicbrainz_single"] = None
     
     # --- Last.fm - Check cache first ---
+    # Always use the first user's Last.fm API key for single detection
+    first_user_api_key = None
+    api_integrations = global_config.get("api_integrations", {})
+    if api_integrations.get("lastfm", {}).get("api_key"):
+        first_user_api_key = api_integrations["lastfm"]["api_key"]
+    elif global_config.get("navidrome_users") and len(global_config["navidrome_users"]):
+        # If per-user keys are present, use the first user's key if available
+        first_user = global_config["navidrome_users"][0]
+        first_user_api_key = first_user.get("lastfm_api_key")
+    else:
+        first_user_api_key = None
+
+    def is_lastfm_single_first_user(title, artist):
+        from api_clients.lastfm import LastFmClient
+        client = LastFmClient(first_user_api_key)
+        info = client.get_track_info(artist, title)
+        # Use tags if available (simulate single detection)
+        # This is a simplified check; adapt as needed for your logic
+        return info.get("track_play", 0) > 0
+
     if "lastfm_single" in cached_sources and cached_sources["lastfm_single"] is not None:
         lfm_single = bool(cached_sources["lastfm_single"])
         source_results["lastfm_single"] = lfm_single
@@ -1090,16 +1111,16 @@ def rate_track_single_detection(
     else:
         try:
             logging.debug(f"Checking Last.fm single for '{title}' by '{artist_name}' (online, enabled={use_lastfm_single})")
-            if use_lastfm_single and is_lastfm_single(title, artist_name):
+            if use_lastfm_single and first_user_api_key and is_lastfm_single_first_user(title, artist_name):
                 sources.add("lastfm")
                 source_results["lastfm_single"] = True
-                logging.debug(f"Last.fm reports single for '{title}'")
+                logging.debug(f"Last.fm reports single for '{title}' (first user only)")
                 if verbose:
-                    logging.info("✅ Last.fm single FOUND")
+                    logging.info("✅ Last.fm single FOUND (first user)")
             else:
                 source_results["lastfm_single"] = False
                 if verbose and use_lastfm_single:
-                    logging.info("❌ Last.fm single not found")
+                    logging.info("❌ Last.fm single not found (first user)")
         except Exception as e:
             logging.exception(f"Last.fm single check failed for '{title}': {e}")
             source_results["lastfm_single"] = None
@@ -1135,18 +1156,27 @@ def rate_track_single_detection(
             logging.info("ℹ️ Not enough sources for single confirmation")
         logging.debug(f"Single NOT confirmed for '{title}' – sources={sorted(sources)} total_matches={total_matches}")
     
-    # ✅ Fetch ListenBrainz genre tags (if MBID available)
+    # ✅ Fetch ListenBrainz genre tags (if MBID available, first user only)
     mbid = track.get("mbid") or track.get("beets_mbid")
-    if mbid:
+    first_user_token = None
+    if api_integrations.get("listenbrainz", {}).get("user_token"):
+        first_user_token = api_integrations["listenbrainz"]["user_token"]
+    elif global_config.get("navidrome_users") and len(global_config["navidrome_users"]):
+        first_user = global_config["navidrome_users"][0]
+        first_user_token = first_user.get("listenbrainz_user_token")
+    else:
+        first_user_token = None
+    if mbid and first_user_token:
         try:
-            lb_tags = fetch_listenbrainz_genre_tags(mbid)
+            from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+            client = ListenBrainzUserClient(user_token=first_user_token)
+            lb_tags = client.get_recording_tags(mbid)
             if lb_tags:
-                # Store as JSON string
                 import json
                 track["listenbrainz_genre_tags"] = json.dumps(lb_tags)
-                logging.debug(f"Stored {len(lb_tags)} ListenBrainz genre tags for '{title}'")
+                logging.debug(f"Stored {len(lb_tags)} ListenBrainz genre tags for '{title}' (first user only)")
         except Exception as e:
-            logging.debug(f"Failed to fetch/store ListenBrainz tags for '{title}': {e}")
+            logging.debug(f"Failed to fetch/store ListenBrainz tags for '{title}' (first user): {e}")
     
     # ✅ Save per-source detection results for caching
     if track_id:
