@@ -404,33 +404,44 @@ function displaySearchResults(songs) {
     return;
   }
 
-  resultsDiv.innerHTML = songs.map(song => `
+  resultsDiv.innerHTML = songs.map((song, idx) => `
     <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
       <div>
         <strong>${escapeHtml(song.title || 'Unknown')}</strong><br>
         <small class="text-muted">${escapeHtml(song.artist || 'Unknown')} ${song.album ? '· ' + escapeHtml(song.album) : ''}</small>
       </div>
-      <button class="btn btn-sm btn-outline-success" onclick="addSongToPlaylist('${escapeHtml(JSON.stringify(song))}')">
+      <button class="btn btn-sm btn-outline-success" data-song-idx="${idx}" type="button">
         <i class="bi bi-plus"></i> Add
       </button>
     </div>
   `).join('');
+  // Attach event listeners for add buttons
+  songs.forEach((song, idx) => {
+    const btn = resultsDiv.querySelector(`button[data-song-idx="${idx}"]`);
+    if (btn) {
+      btn.addEventListener('click', function() {
+        addSongToPlaylistObj(song);
+      });
+    }
+  });
   resultsDiv.style.display = 'block';
 }
 
-function addSongToPlaylist(songJson) {
-  try {
-    const song = JSON.parse(songJson);
-    // Check if already added
-    if (selectedSongs.find(s => s.id === song.id)) {
-      alert('This song is already in the playlist');
-      return;
-    }
-    selectedSongs.push(song);
-    updateSelectedSongsList();
-  } catch (error) {
-    console.error('Error:', error);
+
+function getSongKey(song) {
+  // Use id if present, else composite key
+  return song.id || `${song.title || ''}|${song.artist || ''}|${song.album || ''}`;
+}
+
+function addSongToPlaylistObj(song) {
+  const key = getSongKey(song);
+  if (selectedSongs.find(s => getSongKey(s) === key)) {
+    alert('This song is already in the playlist');
+    return;
   }
+  console.log('Adding song to playlist:', song); // Debug log
+  selectedSongs.push(song);
+  updateSelectedSongsList();
 }
 
 function updateSelectedSongsList() {
