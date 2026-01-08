@@ -1,3 +1,52 @@
+# --- Navidrome Playlists API ---
+@app.route("/api/navidrome/playlists", methods=["GET"])
+def api_navidrome_playlists():
+    """Return all Navidrome playlists (id, name, type) grouped by type for dropdowns."""
+    try:
+        # TODO: Replace with per-user config if needed
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
+        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
+        username = nav_cfg.get("username") or config_data.get("nav_user")
+        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        if not (base_url and username and password):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        from api_clients.navidrome import NavidromeClient
+        client = NavidromeClient(base_url, username, password)
+        playlists = client.fetch_all_playlists()
+        result = {"smart": [], "regular": []}
+        for pl in playlists:
+            entry = {"id": pl.get("id"), "name": pl.get("name")}
+            if pl.get("type") == "smart":
+                result["smart"].append(entry)
+            else:
+                result["regular"].append(entry)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Failed to fetch Navidrome playlists: {e}")
+        return jsonify({"error": "Failed to fetch playlists"}), 500
+
+@app.route("/api/navidrome/playlist/<playlist_id>", methods=["GET"])
+def api_navidrome_playlist_detail(playlist_id):
+    """Return full details for a single Navidrome playlist by ID."""
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
+        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
+        username = nav_cfg.get("username") or config_data.get("nav_user")
+        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        if not (base_url and username and password):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        from api_clients.navidrome import NavidromeClient
+        client = NavidromeClient(base_url, username, password)
+        playlists = client.fetch_all_playlists()
+        for pl in playlists:
+            if str(pl.get("id")) == str(playlist_id):
+                return jsonify(pl)
+        return jsonify({"error": "Playlist not found"}), 404
+    except Exception as e:
+        logging.error(f"Failed to fetch Navidrome playlist detail: {e}")
+        return jsonify({"error": "Failed to fetch playlist details"}), 500
 
 # Place all Flask route definitions after app = Flask(__name__)
 
@@ -65,15 +114,34 @@ import unicodedata
 import requests
 import hashlib
 
-# Configure logging for web UI
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s [%(levelname)s] %(message)s',
-    handlers=[
-        logging.FileHandler("/config/webui.log"),
-        logging.StreamHandler()
-    ]
-)
+
+# Unified logging setup
+import logging
+LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
+VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
+SERVICE_PREFIX = "WebUI_"
+
+class ServicePrefixFormatter(logging.Formatter):
+    def __init__(self, prefix, fmt=None):
+        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
+        self.prefix = prefix
+    def format(self, record):
+        record.msg = f"{self.prefix}{record.msg}"
+        return super().format(record)
+
+formatter = ServicePrefixFormatter(SERVICE_PREFIX)
+file_handler = logging.FileHandler(LOG_PATH)
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+
+def log_basic(msg):
+    logging.info(msg)
+
+def log_verbose(msg):
+    if VERBOSE:
+        logging.info(msg)
 
 app = Flask(__name__)
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
@@ -6300,17 +6368,25 @@ def api_spotify_playlists():
     try:
         config_data, _ = _read_yaml(CONFIG_PATH)
         spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
-        
-        if not spotify_config.get("enabled"):
-            return jsonify({"error": "Spotify not enabled"}), 400
-        
-        # Get Spotify credentials
         client_id = spotify_config.get("client_id", "")
         client_secret = spotify_config.get("client_secret", "")
-        
-        if not client_id or not client_secret:
-            return jsonify({"error": "Spotify credentials not configured"}), 400
-        
+        enabled = spotify_config.get("enabled", False)
+
+        # If not enabled or missing credentials, try to fall back to first user with valid Spotify config
+        if not (enabled and client_id and client_secret):
+            # Try to find first user with valid Spotify config
+            users = config_data.get("users", [])
+            fallback_found = False
+            for user in users:
+                user_spotify = user.get("api_integrations", {}).get("spotify", {})
+                if user_spotify.get("enabled") and user_spotify.get("client_id") and user_spotify.get("client_secret"):
+                    client_id = user_spotify["client_id"]
+                    client_secret = user_spotify["client_secret"]
+                    fallback_found = True
+                    break
+            if not fallback_found:
+                return jsonify({"error": "Spotify not enabled or configured for any user"}), 400
+
         try:
             from api_clients.spotify import get_spotify_user_playlists
             playlists = get_spotify_user_playlists(client_id, client_secret)
