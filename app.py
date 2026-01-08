@@ -2654,22 +2654,19 @@ def scan_popularity():
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
             # Run popularity scan in background thread instead of subprocess
+            from popularity import scan_popularity as scan_popularity_func
             def run_popularity_scan_bg():
                 try:
                     logging.info("Starting popularity score scan in background")
-                    scan_popularity(verbose=False)
+                    scan_popularity_func(verbose=False)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Popularity scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
-            
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
-            
-            # Store thread reference for tracking
             scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
-            
             flash("✅ Popularity score scan started", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:

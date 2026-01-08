@@ -318,14 +318,16 @@ def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]
             
             headers = client._headers()
             playlists = []
-            next_url = "https://api.spotify.com/v1/browse/featured-playlists?limit=50&country=US"
+            next_url = "https://api.spotify.com/v1/browse/featured-playlists?limit=50&country=AU"
             
             while next_url and len(playlists) < 100:  # Limit to 100 playlists
                 try:
                     res = requests.get(next_url, headers=headers, timeout=10)
+                    if res.status_code == 404:
+                        logger.error(f"Spotify API endpoint not found: {next_url}")
+                        break
                     res.raise_for_status()
                     data = res.json()
-                    
                     for item in data.get("playlists", {}).get("items", []):
                         playlists.append({
                             "id": item["id"],
@@ -336,11 +338,9 @@ def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]
                             "owner": item.get("owner", {}).get("display_name", "Spotify"),
                             "external_url": item.get("external_urls", {}).get("spotify", "")
                         })
-                    
                     next_url = data.get("playlists", {}).get("next")
                     if not next_url:
                         break
-                    
                 except Exception as e:
                     logger.error(f"Failed to fetch featured playlists: {e}")
                     break
