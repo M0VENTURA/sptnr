@@ -228,15 +228,19 @@ async function loadPlaylistList() {
   try {
     const response = await fetch('/api/playlist/list');
     const data = await response.json();
-    
     const select = document.getElementById('playlistFileSelect');
     select.innerHTML = '<option value="">Select a playlist...</option>';
-    
     if (data.playlists && data.playlists.length > 0) {
       data.playlists.forEach(playlist => {
         const option = document.createElement('option');
         option.value = playlist.path;
-        option.textContent = playlist.name || playlist.path;
+        // Show type and song count in dropdown
+        let typeLabel = '';
+        if (playlist.type === 'smart' || playlist.type === 'smart-local') typeLabel = ' (Smart)';
+        option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
+        option.dataset.type = playlist.type;
+        option.dataset.songCount = playlist.songCount || 0;
+        option.dataset.owner = playlist.owner || '';
         select.appendChild(option);
       });
     } else {
@@ -280,11 +284,28 @@ function displayPlaylistDownloader(data) {
   document.getElementById('downloaderEmpty').style.display = 'none';
   document.getElementById('downloaderResults').style.display = 'block';
 
-  // Update counts
+  // Update counts and show playlist type/metadata if available
   document.getElementById('dlTotalCount').textContent = songs.length;
   document.getElementById('dlMatchedCount').textContent = matched.length;
   const coverage = songs.length > 0 ? Math.round((matched.length / songs.length) * 100) : 0;
   document.getElementById('dlCoverage').textContent = coverage + '%';
+  // Show playlist type and metadata (for unified management)
+  if (data && data.playlist_type) {
+    let meta = `Type: <b>${escapeHtml(data.playlist_type)}</b>`;
+    if (data.owner) meta += ` &nbsp; Owner: <b>${escapeHtml(data.owner)}</b>`;
+    if (data.created) meta += ` &nbsp; Created: <b>${escapeHtml(data.created)}</b>`;
+    if (data.changed) meta += ` &nbsp; Updated: <b>${escapeHtml(data.changed)}</b>`;
+    if (data.comment) meta += `<br><i>${escapeHtml(data.comment)}</i>`;
+    let metaDiv = document.getElementById('playlistMetaInfo');
+    if (!metaDiv) {
+      metaDiv = document.createElement('div');
+      metaDiv.id = 'playlistMetaInfo';
+      metaDiv.className = 'alert alert-secondary my-2';
+      document.querySelector('.mb-4').insertAdjacentElement('afterend', metaDiv);
+    }
+    metaDiv.innerHTML = meta;
+  }
+  // ...existing code...
 
   // Original Songs (Left Column)
   const originalHtml = songs.map((song, idx) => `

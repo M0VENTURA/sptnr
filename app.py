@@ -7134,17 +7134,16 @@ if __name__ == "__main__":
 
     @app.route("/api/playlist/list")
     def api_playlist_list():
-        """List all playlists in Navidrome"""
+        """List all playlists in Navidrome, including type and metadata"""
         try:
             cfg, _ = _read_yaml(CONFIG_PATH)
             navidrome_config = cfg.get("navidrome", {})
             base_url = navidrome_config.get("base_url", "http://localhost:4533")
             user = navidrome_config.get("user", "admin")
             password = navidrome_config.get("pass", "")
-            
             import requests as req
-            
-            # Get user token
+
+            # Authenticate
             auth_response = req.post(
                 f"{base_url}/rest/authenticate.view",
                 params={
@@ -7155,36 +7154,63 @@ if __name__ == "__main__":
                 },
                 timeout=10
             )
-            
             if auth_response.status_code != 200:
                 return jsonify({"error": "Failed to authenticate with Navidrome"}), 500
-            
             auth_data = auth_response.json()
             if not auth_data.get("subsonic-response", {}).get("token"):
                 return jsonify({"error": "Invalid Navidrome credentials"}), 500
-            
             token = auth_data["subsonic-response"]["token"]
-            
-            # Get playlists
+
+            # Get playlists (regular and smart)
             playlists_response = req.get(
                 f"{base_url}/rest/getPlaylists.view",
                 params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json"},
                 timeout=10
             )
-            
             if playlists_response.status_code != 200:
                 return jsonify({"error": "Failed to get playlists"}), 500
-            
             playlists_data = playlists_response.json()
             playlists = []
-            
             for playlist in playlists_data.get("subsonic-response", {}).get("playlists", {}).get("playlist", []):
+                # Determine type: smart if has 'criteria' or 'isSmart', else regular
+                playlist_type = "smart" if playlist.get("isSmart") or playlist.get("criteria") else "regular"
                 playlists.append({
                     "id": playlist.get("id"),
                     "name": playlist.get("name"),
+                    "type": playlist_type,
+                    "songCount": playlist.get("songCount"),
+                    "owner": playlist.get("owner"),
+                    "public": playlist.get("public"),
+                    "created": playlist.get("created"),
+                    "changed": playlist.get("changed"),
+                    "comment": playlist.get("comment"),
                     "path": playlist.get("id")
                 })
-            
+
+            # Optionally: scan for .nsp files in Playlists dir for local smart playlists
+            import os, glob
+            music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+            playlists_dir = os.path.join(music_folder, "Playlists")
+            nsp_files = glob.glob(os.path.join(playlists_dir, "*.nsp"))
+            for nsp_path in nsp_files:
+                try:
+                    with open(nsp_path, "r", encoding="utf-8") as f:
+                        nsp_data = json.load(f)
+                    playlists.append({
+                        "id": os.path.basename(nsp_path),
+                        "name": nsp_data.get("name", os.path.basename(nsp_path)),
+                        "type": "smart-local",
+                        "songCount": len(nsp_data.get("songs", [])),
+                        "owner": nsp_data.get("owner", user),
+                        "public": nsp_data.get("public", False),
+                        "created": nsp_data.get("created"),
+                        "changed": nsp_data.get("changed"),
+                        "comment": nsp_data.get("description", ""),
+                        "path": nsp_path
+                    })
+                except Exception as e:
+                    logging.warning(f"Failed to load smart playlist file {nsp_path}: {e}")
+
             return jsonify({"playlists": playlists}), 200
         except Exception as e:
             logging.error(f"Error listing playlists: {e}", exc_info=True)
