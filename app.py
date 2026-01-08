@@ -1,52 +1,4 @@
-# --- Navidrome Playlists API ---
-@app.route("/api/navidrome/playlists", methods=["GET"])
-def api_navidrome_playlists():
-    """Return all Navidrome playlists (id, name, type) grouped by type for dropdowns."""
-    try:
-        # TODO: Replace with per-user config if needed
-        config_data, _ = _read_yaml(CONFIG_PATH)
-        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
-        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
-        username = nav_cfg.get("username") or config_data.get("nav_user")
-        password = nav_cfg.get("password") or config_data.get("nav_pass")
-        if not (base_url and username and password):
-            return jsonify({"error": "Navidrome not configured"}), 400
-        from api_clients.navidrome import NavidromeClient
-        client = NavidromeClient(base_url, username, password)
-        playlists = client.fetch_all_playlists()
-        result = {"smart": [], "regular": []}
-        for pl in playlists:
-            entry = {"id": pl.get("id"), "name": pl.get("name")}
-            if pl.get("type") == "smart":
-                result["smart"].append(entry)
-            else:
-                result["regular"].append(entry)
-        return jsonify(result)
-    except Exception as e:
-        logging.error(f"Failed to fetch Navidrome playlists: {e}")
-        return jsonify({"error": "Failed to fetch playlists"}), 500
 
-@app.route("/api/navidrome/playlist/<playlist_id>", methods=["GET"])
-def api_navidrome_playlist_detail(playlist_id):
-    """Return full details for a single Navidrome playlist by ID."""
-    try:
-        config_data, _ = _read_yaml(CONFIG_PATH)
-        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
-        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
-        username = nav_cfg.get("username") or config_data.get("nav_user")
-        password = nav_cfg.get("password") or config_data.get("nav_pass")
-        if not (base_url and username and password):
-            return jsonify({"error": "Navidrome not configured"}), 400
-        from api_clients.navidrome import NavidromeClient
-        client = NavidromeClient(base_url, username, password)
-        playlists = client.fetch_all_playlists()
-        for pl in playlists:
-            if str(pl.get("id")) == str(playlist_id):
-                return jsonify(pl)
-        return jsonify({"error": "Playlist not found"}), 404
-    except Exception as e:
-        logging.error(f"Failed to fetch Navidrome playlist detail: {e}")
-        return jsonify({"error": "Failed to fetch playlist details"}), 500
 
 # Place all Flask route definitions after app = Flask(__name__)
 
@@ -144,6 +96,55 @@ def log_verbose(msg):
         logging.info(msg)
 
 app = Flask(__name__)
+# --- Navidrome Playlists API ---
+@app.route("/api/navidrome/playlists", methods=["GET"])
+def api_navidrome_playlists():
+    """Return all Navidrome playlists (id, name, type) grouped by type for dropdowns."""
+    try:
+        # TODO: Replace with per-user config if needed
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
+        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
+        username = nav_cfg.get("username") or config_data.get("nav_user")
+        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        if not (base_url and username and password):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        from api_clients.navidrome import NavidromeClient
+        client = NavidromeClient(base_url, username, password)
+        playlists = client.fetch_all_playlists()
+        result = {"smart": [], "regular": []}
+        for pl in playlists:
+            entry = {"id": pl.get("id"), "name": pl.get("name")}
+            if pl.get("type") == "smart":
+                result["smart"].append(entry)
+            else:
+                result["regular"].append(entry)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Failed to fetch Navidrome playlists: {e}")
+        return jsonify({"error": "Failed to fetch playlists"}), 500
+
+@app.route("/api/navidrome/playlist/<playlist_id>", methods=["GET"])
+def api_navidrome_playlist_detail(playlist_id):
+    """Return full details for a single Navidrome playlist by ID."""
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
+        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
+        username = nav_cfg.get("username") or config_data.get("nav_user")
+        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        if not (base_url and username and password):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        from api_clients.navidrome import NavidromeClient
+        client = NavidromeClient(base_url, username, password)
+        playlists = client.fetch_all_playlists()
+        for pl in playlists:
+            if str(pl.get("id")) == str(playlist_id):
+                return jsonify(pl)
+        return jsonify({"error": "Playlist not found"}), 404
+    except Exception as e:
+        logging.error(f"Failed to fetch Navidrome playlist detail: {e}")
+        return jsonify({"error": "Failed to fetch playlist details"}), 500
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
