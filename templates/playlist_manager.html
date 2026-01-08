@@ -520,11 +520,17 @@ async function createCustomPlaylist(event) {
       })
     });
 
-    const data = await response.json();
+    let data;
+    try {
+      data = await response.json();
+    } catch (jsonErr) {
+      const raw = await response.text();
+      console.error('Raw response (not valid JSON):', raw);
+      throw new Error('Invalid JSON response from server.');
+    }
     if (!response.ok) throw new Error(data.error || 'Failed to create playlist');
 
     alert('✅ Playlist created successfully!');
-    
     // Reset form
     event.target.reset();
     selectedSongs = [];

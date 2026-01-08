@@ -7492,11 +7492,13 @@ if __name__ == "__main__":
                 )
             
             logging.info(f"Created playlist '{name}' with {len(songs)} songs")
-            return jsonify({
+            response = jsonify({
                 "success": True,
                 "playlist_id": playlist_id,
                 "message": f"Playlist created with {len(songs)} songs"
-            }), 201
+            })
+            response.status_code = 201
+            return response
         except Exception as e:
             logging.error(f"Error creating custom playlist: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
