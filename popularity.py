@@ -41,7 +41,7 @@ def log_verbose(msg):
         logging.info(msg)
 
 
-...existing code...
+
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 POPULARITY_PROGRESS_FILE = os.environ.get("POPULARITY_PROGRESS_FILE", "/database/popularity_scan_progress.json")
