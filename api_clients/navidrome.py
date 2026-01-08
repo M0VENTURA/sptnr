@@ -17,29 +17,30 @@ logger = logging.getLogger(__name__)
 
 
 class NavidromeClient:
-        def fetch_all_playlists(self) -> list:
-            """
-            Fetch all playlists (smart and regular) from Navidrome.
-            Returns a list of playlist dicts with type info if available.
-            """
-            url = f"{self.base_url}/rest/getPlaylists.view"
-            params = self._build_params()
-            try:
-                res = self.session.get(url, params=params)
-                res.raise_for_status()
-                playlists = res.json().get("subsonic-response", {}).get("playlists", {}).get("playlist", [])
-                # Add 'type' field: 'smart' if present, else 'regular'
-                for pl in playlists:
-                    if pl.get('smart', False):
-                        pl['type'] = 'smart'
-                    else:
-                        pl['type'] = 'regular'
-                return playlists
-            except Exception as e:
-                logger.error(f"❌ Failed to fetch playlists: {e}")
-                return []
     """Client for interacting with Navidrome Subsonic API."""
-    
+
+    def fetch_all_playlists(self) -> list:
+        """
+        Fetch all playlists (smart and regular) from Navidrome.
+        Returns a list of playlist dicts with type info if available.
+        """
+        url = f"{self.base_url}/rest/getPlaylists.view"
+        params = self._build_params()
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            playlists = res.json().get("subsonic-response", {}).get("playlists", {}).get("playlist", [])
+            # Add 'type' field: 'smart' if present, else 'regular'
+            for pl in playlists:
+                if pl.get('smart', False):
+                    pl['type'] = 'smart'
+                else:
+                    pl['type'] = 'regular'
+            return playlists
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch playlists: {e}")
+            return []
+
     def __init__(self, base_url: str, username: str, password: str, http_session=None):
         """
         Initialize NavidromeClient.
