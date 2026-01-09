@@ -4,12 +4,16 @@ Popularity Scanner - Detects track popularity from external sources (Spotify, La
 Calculates popularity scores and updates database.
 """
 
+
 import os
 import sqlite3
 import logging
 import json
 import math
 from datetime import datetime
+
+# Import single detection
+from singledetection import rate_track_single_detection, config as singles_config
 
 # Dedicated popularity logger (no propagation to root)
 
@@ -211,21 +215,59 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                         log_verbose(f"ListenBrainz: No data available for {title} (MBID: {mbid_value or 'N/A'})")
             except Exception as e:
                 log_verbose(f"ListenBrainz lookup failed for {title}: {e}")
+                # --- Singles detection: run alongside popularity scan ---
+                # Prepare album context for single detection (minimal, can be expanded)
+                album_ctx = {"album": album_name}
+                # Call single detection and update track dict
+                try:
+                    single_result = rate_track_single_detection(
+                        dict(track),  # pass a copy to avoid side effects
+                        artist_name,
+                        album_ctx,
+                        singles_config,
+                        verbose=verbose
+                    )
+                except Exception as e:
+                    log_basic(f"Single detection failed for {title}: {e}")
+                    single_result = {}
+
+                # Extract singles fields for DB update
+                is_single = single_result.get("is_single", False)
+                single_sources = ",".join(single_result.get("single_sources", [])) if single_result.get("single_sources") else None
+                single_confidence = single_result.get("single_confidence", None)
+                single_stars = single_result.get("stars", None)
 
             # Compute composite score (align with start.py scoring)
             release_date = track['spotify_release_date'] or "1992-01-01"
             momentum_raw, _ = score_by_age(lastfm_playcount, release_date)
             sp_norm = spotify_score / 100.0
-            lf_norm = math.log10(lastfm_playcount + 1)
-            lb_norm = math.log10(listenbrainz_count + 1)
-            age_norm = math.log10(momentum_raw + 1)
-            composite_score = (
-                (SPOTIFY_WEIGHT * sp_norm) +
-                (LASTFM_WEIGHT * lf_norm) +
-                (LISTENBRAINZ_WEIGHT * lb_norm) +
-                (AGE_WEIGHT * age_norm)
-            )
-
+                    cursor.execute("""
+                        UPDATE tracks SET
+                            spotify_score = ?,
+                            lastfm_ratio = ?,
+                            listenbrainz_score = ?,
+                            score = ?,
+                            popularity_score = ?,
+                            stars = CASE WHEN (stars IS NULL OR stars = 0) THEN ? ELSE stars END,
+                            is_single = ?,
+                            single_source = ?,
+                            single_confidence = ?,
+                            single_stars = ?
+                        WHERE id = ?
+                    """,
+                    (
+                        spotify_score,
+                        lastfm_ratio,
+                        listenbrainz_count,
+                        composite_score,
+                        composite_score,
+                        base_stars,
+                        int(is_single),
+                        single_sources,
+                        single_confidence,
+                        single_stars,
+                        track_id
+                    ))
             # Initial star assignment (will be refined later by single detection)
             if composite_score >= 4.0:
                 base_stars = 4
