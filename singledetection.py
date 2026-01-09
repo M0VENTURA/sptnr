@@ -21,804 +21,20 @@ import threading
 import difflib
 from concurrent.futures import ThreadPoolExecutor
 
-# Setup logging
 
+
+# Cleaned up: Only DB helpers and orchestration wrappers remain. All single detection logic is now in single_detector.py.
+
+import sqlite3
 import logging
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
-SERVICE_PREFIX = "singledetection_"
-
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-def log_basic(msg):
-    logging.info(msg)
-
-def log_verbose(msg):
-    if VERBOSE:
-        logging.info(msg)
-
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-SINGLES_PROGRESS_FILE = os.environ.get("SINGLES_PROGRESS_FILE", "/database/singles_scan_progress.json")
-
-# Import from start.py
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from start import (
-    config,
-    discogs_client,
-    musicbrainz_client,
-    DISCOGS_TOKEN,
-    CONTEXT_GATE,
-    CONTEXT_FALLBACK_STUDIO,
-    _DEF_USER_AGENT,
-    strip_parentheses,
-    create_retry_session,
-)
-
-# Import new single detection modules
-try:
-    from single_detector import decide_is_single, TrackMeta
-    SINGLE_DETECTOR_AVAILABLE = True
-except ImportError:
-    logging.warning("single_detector module not available, using legacy detection")
-    SINGLE_DETECTOR_AVAILABLE = False
-
-try:
-    from ddg_searchapi_checker import ddg_searchapi_official_video_match
-    DDG_AVAILABLE = True
-except ImportError:
-    logging.warning("ddg_searchapi_checker module not available")
-    DDG_AVAILABLE = False
+from typing import Optional, Dict
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
+    from start import DB_PATH
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
-
-
-def fetch_listenbrainz_genre_tags(mbid: str) -> list:
-    """
-    Fetch genre tags from ListenBrainz for a recording.
-    
-    Args:
-        mbid: MusicBrainz recording ID
-        
-    Returns:
-        List of dicts with 'tag' and 'count' keys
-    """
-    if not mbid:
-        return []
-    
-    try:
-        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
-        # Create a dummy client (genre tags don't require auth)
-        client = ListenBrainzUserClient(user_token="dummy")
-        tags = client.get_recording_tags(mbid)
-        
-        if tags:
-            logging.debug(f"Got {len(tags)} ListenBrainz genre tags for {mbid}")
-        
-        return tags
-    except Exception as e:
-        logging.debug(f"Failed to fetch ListenBrainz genre tags for {mbid}: {e}")
-        return []
-
-
-# ============================================================================
-# ADVANCED SINGLE DETECTION - Integrated from single_detector.py
-# ============================================================================
-
-def detect_single_advanced(
-    artist: str,
-    title: str,
-    album: Optional[str] = None,
-    raw_sources: Optional[dict] = None,
-    enable_ddg: bool = True,
-    label_whitelist: Optional[list] = None
-) -> dict:
-    """
-    Advanced single detection using multi-source weighted scoring.
-    
-    Integrates:
-    - single_detector.py for weighted source aggregation
-    - ddg_searchapi_checker.py for DuckDuckGo video verification
-    
-    Returns:
-        {
-            'is_single': bool,
-            'score': int,
-            'matches': int,
-            'confidence': 'low' | 'medium' | 'high',
-            'reasons': [str],
-            'source_breakdown': {source: {is_single, weight, details}}
-        }
-    """
-    if not SINGLE_DETECTOR_AVAILABLE:
-        logging.debug("single_detector not available, falling back to legacy detection")
-        return None
-    
-    try:
-        # Build metadata for the new detector
-        meta = TrackMeta(
-            artist=artist,
-            title=title,
-            album=album,
-            raw_sources=raw_sources or {}
-        )
-        
-        # Get base decision from single_detector
-        decision = decide_is_single(meta)
-        
-        # Add DuckDuckGo as last resort if enabled and available
-        if enable_ddg and DDG_AVAILABLE and not decision['is_single']:
-            label_whitelist = label_whitelist or config.get("features", {}).get("label_whitelist", [])
-            exception_artists = config.get("features", {}).get("video_exception_artists", [])
-            
-            ddg_result = ddg_searchapi_official_video_match(
-                artist=artist,
-                track_title=title,
-                label_whitelist=label_whitelist,
-                exception_artists=exception_artists
-            )
-            
-            if ddg_result.get('matched'):
-                decision['source_breakdown']['ddg_video'] = {
-                    'is_single': True,
-                    'weight': ddg_result.get('weight', 20),
-                    'details': {
-                        'source': 'ddg_video',
-                        'reason': [ddg_result.get('reason', '')],
-                        'channel': ddg_result.get('channel'),
-                        'video_title': ddg_result.get('video_title'),
-                        'video_url': ddg_result.get('video_url')
-                    }
-                }
-                # Recalculate if DDG adds weight
-                decision['source_breakdown']['ddg_video']['is_single'] = True
-        
-        # Add confidence level
-        if decision['score'] >= 150:
-            confidence = 'high'
-        elif decision['score'] >= 100:
-            confidence = 'medium'
-        else:
-            confidence = 'low'
-        
-        decision['confidence'] = confidence
-        return decision
-        
-    except Exception as e:
-        logging.error(f"Advanced single detection failed for {artist} - {title}: {e}")
-        return None
-
-
-def save_singles_progress(scanned_artists: int, total_artists: int):
-    """Save singles detection progress to file"""
-    try:
-        progress_data = {
-            "is_running": True,
-            "scan_type": "singles_scan",
-            "processed_artists": scanned_artists,
-            "total_artists": total_artists,
-            "percent_complete": int((scanned_artists / total_artists * 100)) if total_artists > 0 else 0
-        }
-        with open(SINGLES_PROGRESS_FILE, 'w') as f:
-            json.dump(progress_data, f)
-    except Exception as e:
-        logging.error(f"Error saving singles progress: {e}")
-
-
-# ============ DISCOGS SESSION & THROTTLING ============
-
-_discogs_session = None
-_discogs_lock = threading.Lock()
-
-def _get_discogs_session():
-    """Return a shared requests.Session with sensible retries and backoff."""
-    global _discogs_session
-    with _discogs_lock:
-        if _discogs_session is None:
-            _discogs_session = create_retry_session(user_agent=_DEF_USER_AGENT, retries=5, backoff=1.2)
-        return _discogs_session
-
-# --- Simple RPM throttle (authenticated limit is generous, but be safe) ---
-_last_call_ts = 0.0
-_min_interval_sec = float(config.get("features", {}).get("discogs_min_interval_sec", 0.35))
-# 0.35s ~ 171 req/min theoretical max; adjust to 1.0s if you still see 429s
-_discogs_throttle_lock = threading.Lock()
-
-def _throttle_discogs():
-    """Sleep briefly between Discogs calls to avoid 429s (thread-safe)."""
-    global _last_call_ts
-    now = time.time()
-    with _discogs_throttle_lock:
-        wait = _min_interval_sec - (now - _last_call_ts)
-        if wait > 0:
-            time.sleep(wait)
-        _last_call_ts = time.time()
-
-def _respect_retry_after(resp):
-    """If Discogs returns Retry-After, sleep that amount."""
-    ra = resp.headers.get("Retry-After")
-    if ra:
-        try:
-            delay = float(ra)
-            time.sleep(min(delay, 10.0))  # cap at 10s per call
-        except Exception:
-            pass
-
-
-# ============ DISCOGS HELPERS ============
-
-def _discogs_search(session, headers, q, kind: str = "release", per_page: int = 10, timeout: int = 10) -> list:
-    """Perform a Discogs database search with throttle and Retry-After handling."""
-    try:
-        _throttle_discogs()
-        resp = session.get(
-            "https://api.discogs.com/database/search",
-            headers=headers,
-            params={"q": q, "type": kind, "per_page": per_page},
-            timeout=timeout,
-        )
-        if resp.status_code == 429:
-            _respect_retry_after(resp)
-        resp.raise_for_status()
-        return resp.json().get("results", []) or []
-    except Exception as e:
-        logging.debug(f"Discogs {kind} search failed for '{q}': {e}")
-        return []
-
-
-def _canon(s: str) -> str:
-    """Canonicalize string: lowercase, strip, collapse whitespace."""
-    return " ".join((s or "").lower().split())
-
-
-def _strip_video_noise(s: str) -> str:
-    """
-    Remove common boilerplate to improve title matching:
-      - 'official music video', 'official video', 'music video', 'hd', '4k', 'uhd', 'remastered'
-      - bracketed content [..], (..), {..}
-      - normalize 'feat.' / 'ft.' to 'feat '
-    Returns a canonicalized string via _canon.
-    """
-    s = (s or "").lower()
-    noise_phrases = [
-        "official music video", "official video", "music video",
-        "hd", "4k", "uhd", "remastered", "lyrics", "lyric video",
-        "audio", "visualizer"
-    ]
-    for p in noise_phrases:
-        s = s.replace(p, " ")
-    # Drop bracketed content
-    s = re.sub(r"\[.*?\]|\(.*?\)|\{.*?\}", " ", s)
-    # Normalize common abbreviations
-    s = s.replace("feat.", "feat ").replace("ft.", "feat ")
-    return _canon(s)
-
-
-def _release_context_compatible_discogs(rel_json: dict, require_live: bool, forbid_live: bool) -> bool:
-    """Decide if a Discogs release is compatible with album context (live/unplugged)."""
-    title_l = (rel_json.get("title") or "").lower()
-    notes_l = (rel_json.get("notes") or "").lower()
-    formats = rel_json.get("formats") or []
-    tags = {d.lower() for f in formats for d in (f.get("descriptions") or [])}
-
-    has_live_signal = (
-        ("live" in tags) or ("unplugged" in title_l) or ("mtv unplugged" in title_l) or
-        ("recorded live" in notes_l) or ("unplugged" in notes_l)
-    )
-
-    if require_live and not has_live_signal:
-        return False
-    if forbid_live and has_live_signal:
-        return False
-    return True
-
-
-def _banned_flavor(vt_raw: str, vd_raw: str, *, allow_live: bool = False) -> bool:
-    """
-    Reject 'live' and 'remix' unless allow_live=True.
-    Radio edits are allowed (without 'remix').
-    """
-    t = (vt_raw or "").lower()
-    d = (vd_raw or "").lower()
-
-    # Live only banned when album context doesn't allow it
-    if (not allow_live) and ("live" in t or "live" in d):
-        return True
-
-    # 'remix' anywhere is banned; radio edits allowed if no 'remix'
-    if "remix" in t or "remix" in d:
-        return True
-
-    return False
-
-
-# ============ ALBUM CONTEXT & SINGLE DETECTION ============
-
-def infer_album_context(album_title: str, release_types: list[str] | None = None) -> dict:
-    """
-    Infer album context flags (live/unplugged) from album title and optional release_types.
-    - release_types can be Discogs-like list: ["Album", "Live"]
-    """
-    t = (album_title or "").lower()
-    types_norm = [(rt or "").lower() for rt in (release_types or [])]
-    is_unplugged = ("unplugged" in t) or ("mtv unplugged" in t)
-    is_live = is_unplugged or ("live" in t) or ("live" in types_norm)
-    return {
-        "is_live": is_live,
-        "is_unplugged": is_unplugged,
-        "title": album_title,
-        "raw_types": types_norm,
-    }
-
-
-def _has_official_on_release_top(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
-    """
-    Compatibility helper: Check if data contains an official release matching nav_title.
-    Delegate to discogs_official_video_signal if Discogs token available.
-    Returns True if official match found, False otherwise.
-    """
-    if not data:
-        return False
-    
-    # If Discogs token available, use the full video signal detection
-    if DISCOGS_TOKEN:
-        result = discogs_official_video_signal(
-            title=nav_title,
-            artist=data.get("artist", ""),
-            discogs_token=DISCOGS_TOKEN,
-            allow_lyric_as_official=True,
-            album_context={"is_live": allow_live} if allow_live else None,
-            permissive_fallback=True
-        )
-        return result.get("match", False)
-    
-    return False
-
-
-# --- Discogs "Official Video / Official Lyric Video" signal (with cache) ---
-_DISCOGS_VID_CACHE: dict[tuple[str, str, str], dict] = {}
-
-def _has_official(vt_raw: str, vd_raw: str, allow_lyric: bool = True) -> bool:
-    """Require 'official' in title/description; optionally accept 'lyric' as official."""
-    t = (vt_raw or "").lower()
-    d = (vd_raw or "").lower()
-    if ("official" in t) or ("official" in d):
-        return True
-    return allow_lyric and (("lyric" in t) or ("lyric" in d))
-
-
-def discogs_official_video_signal(
-    title: str,
-    artist: str,
-    *,
-    discogs_token: str,
-    timeout: int = 10,
-    per_page: int = 10,
-    min_ratio: float = 0.55,
-    allow_lyric_as_official: bool = True,
-    album_context: dict | None = None,
-    permissive_fallback: bool = False,
-) -> dict:
-    """
-    Detect an 'official' (or 'lyric' if allowed) video for a track on Discogs,
-    honoring album context (live/unplugged), with:
-      - Candidate shortlist (title similarity + 'Single' OR 'Album' hint),
-      - Parallel inspections (bounded executor),
-      - Early bailouts and caching.
-    Returns (on success):
-      {"match": True, "uri": <video_url>, "release_id": <id>, "ratio": <float>, "why": "discogs_official_video"}
-    """
-    # ---- Basic token check ---------------------------------------------------
-    if not discogs_token:
-        return {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_token"}
-    # ---- Context gate --------------------------------------------------------
-    allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
-    context_key = "live" if allow_live_ctx else "studio"
-    cache_key = (_canon(artist), _canon(title), context_key)
-    # Fast cache path
-    cached = _DISCOGS_VID_CACHE.get(cache_key)
-    if cached is not None:
-        return cached
-    # ---- Setup ---------------------------------------------------------------
-    session = _get_discogs_session()
-    headers = {"Authorization": f"Discogs token={discogs_token}", "User-Agent": _DEF_USER_AGENT}
-    nav_title_raw = strip_parentheses(title)
-    nav_title_clean = _strip_video_noise(nav_title_raw)
-    nav_title = _canon(nav_title_raw)  # canonical for shortlist similarity
-    # Context rules
-    require_live = allow_live_ctx and CONTEXT_GATE
-    forbid_live  = (not allow_live_ctx) and CONTEXT_GATE
-    allow_live_for_video = allow_live_ctx  # allow 'live' in video title only if album context is live
-
-    # ---- Release inspection helper -------------------------------------------
-    def _inspect_release(rel_id: int, *, require_live: bool, forbid_live: bool, allow_live_for_video: bool) -> dict | None:
-        """
-        Pull the release, apply context compatibility, then scan videos:
-          - Require 'official' (or 'lyric' if allowed),
-          - Ban 'remix' always; ban 'live' unless album context allows it,
-          - Title/description similarity >= min_ratio against cleaned nav title.
-        """
-        try:
-            _throttle_discogs()
-            r = session.get(f"https://api.discogs.com/releases/{rel_id}", headers=headers, timeout=timeout)
-            if r.status_code == 429:
-                _respect_retry_after(r)
-            r.raise_for_status()
-            data = r.json()
-        except Exception:
-            return None
-        if not _release_context_compatible_discogs(data, require_live, forbid_live):
-            return None
-        best = None
-        for v in (data.get("videos") or []):
-            vt_raw = v.get("title", "") or ""
-            vd_raw = v.get("description", "") or ""
-
-            # official/lyric requirement and similarity check
-            t_l = vt_raw.lower(); d_l = vd_raw.lower()
-            if ("official" not in t_l and "official" not in d_l):
-                if not allow_lyric_as_official or ("lyric" not in t_l and "lyric" not in d_l):
-                    continue
-            if _banned_flavor(vt_raw, vd_raw, allow_live=allow_live_for_video):
-                continue
-            vt_clean = _strip_video_noise(vt_raw)
-            vd_clean = _strip_video_noise(vd_raw)
-            ratio = max(
-                difflib.SequenceMatcher(None, vt_clean, nav_title_clean).ratio(),
-                difflib.SequenceMatcher(None, vd_clean, nav_title_clean).ratio(),
-            )
-            if ratio >= min_ratio:
-                current = {
-                    "match": True,
-                    "uri": v.get("uri"),
-                    "release_id": rel_id,
-                    "ratio": round(ratio, 3),
-                    "why": "discogs_official_video",
-                }
-                if best is None or current["ratio"] > best["ratio"]:
-                    best = current
-
-        return best
-    # ---- Release search & shortlist --------------------------------
-    results = _discogs_search(session, headers, f"{artist} {title}", kind="release", per_page=per_page, timeout=timeout)
-    if not results:
-        res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
-        _DISCOGS_VID_CACHE[cache_key] = res
-        return res
-    cands: list[tuple[int, bool, float]] = []
-    for r in results[:15]:  # inspect a few more results; still bounded
-        rid = r.get("id")
-        if not rid:
-            continue
-        rel_title = _canon(r.get("title", ""))
-        title_ratio = difflib.SequenceMatcher(None, rel_title, nav_title).ratio()
-        # 'format' hint list may include entries like ['CD', 'Album'] or ['VHS', 'Promo']
-        formats_hint = r.get("format", []) or []
-        fmt_norm = [(fmt or "").lower() for fmt in formats_hint]
-        prefer_single  = any("single" in f for f in fmt_norm)
-        is_album_like  = any("album" in f for f in fmt_norm)
-        # Keep candidate if:
-        #  - it's an obvious SINGLE, OR
-        #  - release title is reasonably similar to the track title, OR
-        #  - it's an ALBUM (many official videos live on the album's Discogs page)
-        keep = prefer_single or (title_ratio >= 0.65) or is_album_like
-        if keep:
-            cands.append((rid, prefer_single, title_ratio))
-    # Prefer singles; otherwise title similarity. Cap to 8 to keep requests sane.
-    cands = sorted(cands, key=lambda x: (not x[1], -x[2]))[:8]
-    # ---- Parallel inspections of shortlist ----------------------------------
-    best = None
-    if cands:
-        with ThreadPoolExecutor(max_workers=3) as pool:
-            futures = [
-                pool.submit(
-                    _inspect_release,
-                    rid,
-                    require_live=require_live,
-                    forbid_live=forbid_live,
-                    allow_live_for_video=allow_live_for_video,
-                )
-                for rid, _, _ in cands
-            ]
-            for f in futures:
-                hit = f.result()
-                if hit and (best is None or hit["ratio"] > best["ratio"]):
-                    best = hit
-                    # Cancel remaining inspections to save time
-                    for other in futures:
-                        if other is not f:
-                            try:
-                                other.cancel()
-                            except:
-                                pass
-                    break
-    if best:
-        _DISCOGS_VID_CACHE[cache_key] = best
-        return best
-    # ---- Optional permissive fallback (studio allowed if album is live) -----
-    if allow_live_ctx and (permissive_fallback or CONTEXT_FALLBACK_STUDIO):
-        relaxed_best = None
-        with ThreadPoolExecutor(max_workers=2) as pool:
-            futures = [
-                pool.submit(
-                    _inspect_release,
-                    rid,
-                    require_live=False,
-                    forbid_live=False,
-                    allow_live_for_video=False,
-                )
-                for rid, _, _ in cands
-            ]
-            for f in futures:
-                hit = f.result()
-                if hit and (relaxed_best is None or hit["ratio"] > relaxed_best["ratio"]):
-                    relaxed_best = hit
-                    for other in futures:
-                        if other is not f:
-                            try:
-                                other.cancel()
-                            except:
-                                pass
-                    break
-        if relaxed_best:
-            _DISCOGS_VID_CACHE[cache_key] = relaxed_best
-            return relaxed_best
-    # ---- No match -----------------------------------------------------------
-    res = {"match": False, "uri": None, "release_id": None, "ratio": None, "why": "no_video_match"}
-    _DISCOGS_VID_CACHE[cache_key] = res
-    return res
-
-
-# Cache for single detection
-_DISCOGS_SINGLE_CACHE: dict[tuple[str, str, str], bool] = {}
-
-def is_discogs_single(
-    title: str,
-    artist: str,
-    *,
-    album_context: dict | None = None,
-    timeout: int = 10
-) -> bool:
-    """Check if track is a single via Discogs (wrapper using DiscogsClient)."""
-    return discogs_client.is_single(title, artist, album_context, timeout)
-
-def is_lastfm_single(title: str, artist: str) -> bool:
-    """Placeholder for Last.fm single detection."""
-    return False
-
-def is_musicbrainz_single(title: str, artist: str) -> bool:
-    """Check if track is a single via MusicBrainz (wrapper using MusicBrainzClient)."""
-    return musicbrainz_client.is_single(title, artist)
-
-
-def secondary_single_lookup(track: dict, artist_name: str, album_ctx: dict | None, *, singles_set: set | None = None, required_strong_sources: int = 2) -> dict:
-    """Perform a lightweight secondary check for single evidence.
-
-    Returns a dict: {"sources": [...], "confidence": "low|medium|high"}.
-    This aggregates Discogs single/video, MusicBrainz, Last.fm, and Spotify prefetch signals.
-    """
-    sources = set()
-    title = track.get("title", "")
-    try:
-        # Discogs single
-        try:
-            if DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
-                sources.add("discogs")
-        except Exception:
-            pass
-
-        # Discogs official video
-        try:
-            if DISCOGS_TOKEN:
-                dv = discogs_official_video_signal(title, artist_name, discogs_token=DISCOGS_TOKEN, album_context=album_ctx, permissive_fallback=CONTEXT_FALLBACK_STUDIO)
-                if dv.get("match"):
-                    sources.add("discogs_video")
-        except Exception:
-            pass
-
-        # MusicBrainz
-        try:
-            if is_musicbrainz_single(title, artist_name):
-                sources.add("musicbrainz")
-        except Exception:
-            pass
-
-        # Last.fm (configurable)
-        try:
-            if config.get("features", {}).get("use_lastfm_single", True) and is_lastfm_single(title, artist_name):
-                sources.add("lastfm")
-        except Exception:
-            pass
-
-        # Spotify prefetch
-        try:
-            spid = track.get("spotify_id")
-            if singles_set and spid and spid in singles_set:
-                sources.add("spotify")
-        except Exception:
-            pass
-
-    except Exception:
-        return {"sources": [], "confidence": "low"}
-
-    strong_sources = {"discogs", "discogs_video", "musicbrainz"}
-    strong_count = len(sources & strong_sources)
-    if strong_count >= required_strong_sources:
-        confidence = "high"
-    elif len(sources) >= 2:
-        confidence = "medium"
-    else:
-        confidence = "low"
-
-    return {"sources": sorted(sources), "confidence": confidence}
-
-
-def single_detection_scan(verbose: bool = False):
-    """Detect which tracks are singles"""
-    logging.info("=" * 60)
-    logging.info("Single Detection Scanner Started")
-    logging.info("=" * 60)
-    
-    try:
-        conn = get_db_connection()
-        conn.row_factory = sqlite3.Row  # Enable dictionary-like access
-        cursor = conn.cursor()
-        
-        # Get all distinct artists for progress tracking
-        cursor.execute("SELECT DISTINCT artist FROM tracks ORDER BY artist")
-        artists = cursor.fetchall()
-        total_artists = len(artists)
-        
-        # Get all tracks with current single detection state (for user edit preservation)
-        cursor.execute("""
-            SELECT id, artist, title, album, is_single, single_source, single_confidence
-            FROM tracks
-            ORDER BY artist, title
-        """)
-        
-        tracks = cursor.fetchall()
-        logging.info(f"Found {len(tracks)} tracks to scan for single detection")
-        
-        scanned_count = 0
-        current_artist_idx = 0
-        current_artist = None
-        
-        for track in tracks:
-            track_id = track["id"]
-            artist = track["artist"]
-            title = track["title"]
-            album = track["album"]
-            previous_is_single = track["is_single"]  # Current DB value
-            previous_source = track["single_source"]
-            previous_confidence = track["single_confidence"]
-            
-            # Update progress when we move to a new artist
-            if artist != current_artist:
-                current_artist = artist
-                try:
-                    current_artist_idx = next(i for i, a in enumerate(artists) if a["artist"] == artist)
-                    save_singles_progress(current_artist_idx + 1, total_artists)
-                except StopIteration:
-                    pass
-            
-            if verbose:
-                logging.info(f"Checking: {artist} - {title}")
-            
-            is_single = False
-            single_source = None
-            confidence = "low"
-            
-            # Try Discogs first
-            try:
-                if is_discogs_single(title, artist, album_context=infer_album_context(album)):
-                    is_single = True
-                    single_source = "discogs"
-                    confidence = "high"
-                    if verbose:
-                        logging.debug(f"  -> Single (Discogs)")
-            except Exception as e:
-                if verbose:
-                    logging.debug(f"Discogs check failed: {e}")
-            
-            # Try Last.fm if not already marked as single
-            if not is_single:
-                try:
-                    if is_lastfm_single(title, artist):
-                        is_single = True
-                        single_source = "lastfm"
-                        confidence = "medium"
-                        if verbose:
-                            logging.debug(f"  -> Single (Last.fm)")
-                except Exception as e:
-                    if verbose:
-                        logging.debug(f"Last.fm check failed: {e}")
-            
-            # Try MusicBrainz if not already marked as single
-            if not is_single:
-                try:
-                    if is_musicbrainz_single(title, artist):
-                        is_single = True
-                        single_source = "musicbrainz"
-                        confidence = "medium"
-                        if verbose:
-                            logging.debug(f"  -> Single (MusicBrainz)")
-                except Exception as e:
-                    if verbose:
-                        logging.debug(f"MusicBrainz check failed: {e}")
-            
-            # Try secondary lookup for additional validation
-            if is_single or not is_single:
-                try:
-                    secondary = secondary_single_lookup(
-                        {"title": title, "artist": artist},
-                        artist,
-                        infer_album_context(album) if album else None
-                    )
-                    if secondary.get("is_single"):
-                        is_single = True
-                        single_source = secondary.get("source", "secondary")
-                        confidence = "high"
-                except Exception as e:
-                    if verbose:
-                        logging.debug(f"Secondary lookup failed: {e}")
-            
-            # PRESERVE USER EDITS: If user manually set is_single=True, don't override it
-            if not is_single and previous_is_single:
-                # Auto-detection says NOT a single, but user previously marked it as one
-                # This indicates user edit → preserve the user's choice
-                is_single = previous_is_single
-                single_source = previous_source
-                confidence = previous_confidence
-                if verbose:
-                    logging.debug(f"  ✅ Preserving user-edited is_single=True for '{title}'")
-            
-            # Update database with retry logic
-            for retry in range(3):
-                try:
-                    cursor.execute(
-                        """UPDATE tracks 
-                           SET is_single = ?, single_source = ?, single_confidence = ?
-                           WHERE id = ?""",
-                        (1 if is_single else 0, single_source or "none", confidence, track_id)
-                    )
-                    break
-                except sqlite3.OperationalError as e:
-                    if "locked" in str(e) and retry < 2:
-                        logging.debug(f"Database locked during update, retrying ({retry + 1}/3)...")
-                        time.sleep(0.5 * (retry + 1))
-                        continue
-                    raise
-            scanned_count += 1
-        
-        conn.commit()
-        conn.close()
-        
-        logging.info(f"✅ Single detection scan completed: {scanned_count} tracks scanned")
-        
-    except Exception as e:
-        logging.error(f"❌ Single detection scan failed: {str(e)}")
-        raise
-    
-    finally:
-        logging.info("=" * 60)
-
 
 def get_cached_source_detections(track_id: str) -> dict:
     """
@@ -826,8 +42,7 @@ def get_cached_source_detections(track_id: str) -> dict:
     Returns dict with source names as keys and boolean values (or None if not cached).
     """
     try:
-        conn = sqlite3.connect(DB_PATH)
-        conn.row_factory = sqlite3.Row
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             """SELECT source_discogs_single, source_discogs_video, source_spotify_single,
@@ -837,7 +52,6 @@ def get_cached_source_detections(track_id: str) -> dict:
         )
         row = cursor.fetchone()
         conn.close()
-        
         if row:
             return {
                 "discogs_single": row["source_discogs_single"],
@@ -853,15 +67,15 @@ def get_cached_source_detections(track_id: str) -> dict:
         logging.debug(f"Could not get cached detection results for {track_id}: {e}")
         return {}
 
-
 def save_source_detections(track_id: str, source_results: dict) -> None:
     """
     Save per-source single detection results to database for caching.
     source_results should have keys: discogs_single, discogs_video, spotify_single, 
     musicbrainz_single, lastfm_single, short_release (all boolean or None)
     """
+    from datetime import datetime
     try:
-        conn = sqlite3.connect(DB_PATH)
+        conn = get_db_connection()
         cursor = conn.cursor()
         cursor.execute(
             """UPDATE tracks SET 
@@ -889,325 +103,77 @@ def save_source_detections(track_id: str, source_results: dict) -> None:
     except Exception as e:
         logging.debug(f"Could not save detection results for {track_id}: {e}")
 
+    # All orchestration and detection logic should now use single_detector.py
 
-def rate_track_single_detection(
-    track: dict,
-    artist_name: str,
-    album_ctx: dict,
-    config: dict,
-    title_sim_threshold: float = 0.92,
-    count_short_release_as_match: bool = False,
-    use_lastfm_single: bool = True,
-    verbose: bool = False
-) -> dict:
+
+
+def get_cached_source_detections(track_id: str) -> dict:
     """
-    Perform single detection on a track and update its fields with single status, sources, and star assignment.
-    
-    This is extracted from rate_artist() to keep single detection logic centralized in singledetection.py.
-    
-    Returns the updated track dict with:
-    - is_single (bool)
-    - single_sources (list)
-    - single_confidence (str): 'high', 'medium', 'low'
-    - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
-    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
+    Retrieve cached per-source single detection results from database.
+    Returns dict with source names as keys and boolean values (or None if not cached).
     """
-    from start import (
-        _base_title,
-        _has_subtitle_variant,
-        _similar,
-        is_valid_version,
-        DISCOGS_ENABLED,
-        DISCOGS_TOKEN,
-        MUSICBRAINZ_ENABLED,
-        CONTEXT_FALLBACK_STUDIO,
-        config as global_config,
-    )
-    
-    title = track.get("title", "")
-    canonical_base = _base_title(title)
-    sim_to_base = _similar(title, canonical_base)
-    has_subtitle = _has_subtitle_variant(title)
-    
-    if verbose:
-        logging.info(f"🎵 Checking: {title}")
-    
-    allow_live_remix = bool(album_ctx.get("is_live") or album_ctx.get("is_unplugged"))
-    canonical = is_valid_version(title, allow_live_remix=allow_live_remix)
-    
-    # ✅ Store canonical title audit fields
-    track['is_canonical_title'] = 1 if canonical else 0
-    track['title_similarity_to_base'] = sim_to_base
-    
-    # ✅ Get track ID for caching detection results
-    track_id = track.get("id", "")
-    
-    # ✅ Try to get cached source detection results
-    cached_sources = get_cached_source_detections(track_id) if track_id else {}
-    source_results = {}  # Will store results for caching
-    
-    spotify_matched = bool(track.get("is_spotify_single"))
-    tot = track.get("spotify_total_tracks")
-    short_release = (tot is not None and tot > 0 and tot <= 2)
-    
-    # Accumulate sources for visibility
-    sources = set()
-    if spotify_matched:
-        sources.add("spotify")
-    if short_release:
-        sources.add("short_release")
-    
-    if verbose:
-        hints = []
-        if spotify_matched:
-            hints.append("Spotify single")
-        if short_release:
-            hints.append(f"short release ({tot} tracks)")
-        if hints:
-            logging.info(f"💡 Initial hints: {', '.join(hints)}")
-    
-    # --- Discogs Single (hard stop) - Check cache first ---
-    discogs_single_hit = False
-    if "discogs_single" in cached_sources and cached_sources["discogs_single"] is not None:
-        # Use cached result
-        discogs_single_hit = bool(cached_sources["discogs_single"])
-        source_results["discogs_single"] = discogs_single_hit
-        if verbose:
-            logging.info(f"🔍 Discogs single: {discogs_single_hit} (cached)")
-    else:
-        # Check online and cache the result
-        try:
-            if verbose:
-                logging.info("🔍 Checking Discogs single (online)...")
-            logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
-            if DISCOGS_ENABLED and DISCOGS_TOKEN and is_discogs_single(title, artist=artist_name, album_context=album_ctx):
-                sources.add("discogs")
-                discogs_single_hit = True
-                track['discogs_single_confirmed'] = 1
-                source_results["discogs_single"] = True
-                logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
-                if verbose:
-                    logging.info("✅ Discogs single FOUND")
-            else:
-                source_results["discogs_single"] = False
-                logging.debug(f"Discogs single not detected for '{title}'")
-                if verbose and DISCOGS_ENABLED:
-                    logging.info("❌ Discogs single not found")
-        except Exception as e:
-            logging.exception(f"is_discogs_single failed for '{title}': {e}")
-            source_results["discogs_single"] = None
-    
-    if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
-        track["is_single"] = True
-        track["single_sources"] = sorted(sources)
-        track["single_confidence"] = "high"
-        track["stars"] = 5
-        logging.info(f"Single CONFIRMED (Discogs): '{title}' → 5★")
-        if verbose:
-            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Discogs single (sources: {', '.join(sorted(sources))})")
-        if track_id:
-            save_source_detections(track_id, source_results)
-        return track
-    
-    # --- Discogs Official Video - Check cache first ---
-    discogs_video_hit = False
-    if "discogs_video" in cached_sources and cached_sources["discogs_video"] is not None:
-        # Use cached result
-        discogs_video_hit = bool(cached_sources["discogs_video"])
-        source_results["discogs_video"] = discogs_video_hit
-        if verbose:
-            logging.info(f"🎬 Discogs video: {discogs_video_hit} (cached)")
-    else:
-        # Check online and cache the result
-        try:
-            if DISCOGS_ENABLED and DISCOGS_TOKEN:
-                if verbose:
-                    logging.info("🎬 Checking Discogs official video (online)...")
-                logging.debug(f"Searching Discogs for official video for '{title}' by '{artist_name}'")
-                dv = discogs_official_video_signal(
-                    title, artist_name,
-                    discogs_token=DISCOGS_TOKEN,
-                    album_context=album_ctx,
-                    permissive_fallback=CONTEXT_FALLBACK_STUDIO,
-                )
-                logging.debug(f"Discogs video check result for '{title}': {dv}")
-                if dv.get("match"):
-                    sources.add("discogs_video")
-                    discogs_video_hit = True
-                    track['discogs_video_found'] = 1
-                    source_results["discogs_video"] = True
-                    if verbose:
-                        logging.info("✅ Discogs official video FOUND")
-                else:
-                    source_results["discogs_video"] = False
-                    if verbose:
-                        logging.info("❌ Discogs official video not found")
-        except Exception as e:
-            logging.exception(f"discogs_official_video_signal failed for '{title}': {e}")
-            source_results["discogs_video"] = None
-    
-    # Paired hard stop: Spotify + Official Video both match → 5★
-    if (discogs_video_hit and spotify_matched) and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
-        track["is_single"] = True
-        track["single_sources"] = sorted(sources)
-        track["single_confidence"] = "high"
-        track["stars"] = 5
-        logging.info(f"Single CONFIRMED (Spotify + Video): '{title}' → 5★")
-        if verbose:
-            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via Spotify + Discogs video (sources: {', '.join(sorted(sources))})")
-        if track_id:
-            save_source_detections(track_id, source_results)
-        return track
-    
-    # --- If neither Spotify nor Video match, do not set is_single (inconclusive) ---
-    if not (discogs_video_hit or spotify_matched):
-        track["single_sources"] = sorted(sources)
-        track["single_confidence"] = "low" if len(sources) == 0 else "medium"
-        logging.debug(f"No single hint (Spotify/Video) for '{title}' → not checking further")
-        if verbose:
-            logging.info("⭕ No Spotify/Video hints - skipping further checks")
-        if track_id:
-            save_source_detections(track_id, source_results)
-        return track
-    
-    # Add corroborative sources
-    if verbose:
-        logging.info("🔍 Checking additional sources (MusicBrainz, Last.fm)...")
-    
-    # --- MusicBrainz - Check cache first ---
-    if "musicbrainz_single" in cached_sources and cached_sources["musicbrainz_single"] is not None:
-        mb_single = bool(cached_sources["musicbrainz_single"])
-        source_results["musicbrainz_single"] = mb_single
-        if mb_single:
-            sources.add("musicbrainz")
-        if verbose:
-            logging.info(f"🔍 MusicBrainz: {mb_single} (cached)")
-    else:
-        try:
-            logging.debug(f"Checking MusicBrainz single for '{title}' by '{artist_name}' (online)")
-            if is_musicbrainz_single(title, artist_name):
-                sources.add("musicbrainz")
-                source_results["musicbrainz_single"] = True
-                logging.debug(f"MusicBrainz reports single for '{title}'")
-                if verbose:
-                    logging.info("✅ MusicBrainz single FOUND")
-            else:
-                source_results["musicbrainz_single"] = False
-                if verbose and MUSICBRAINZ_ENABLED:
-                    logging.info("❌ MusicBrainz single not found")
-        except Exception as e:
-            logging.exception(f"MusicBrainz single check failed for '{title}': {e}")
-            source_results["musicbrainz_single"] = None
-    
-    # --- Last.fm - Check cache first ---
-    # Always use the first user's Last.fm API key for single detection
-    first_user_api_key = None
-    api_integrations = global_config.get("api_integrations", {})
-    if api_integrations.get("lastfm", {}).get("api_key"):
-        first_user_api_key = api_integrations["lastfm"]["api_key"]
-    elif global_config.get("navidrome_users") and len(global_config["navidrome_users"]):
-        # If per-user keys are present, use the first user's key if available
-        first_user = global_config["navidrome_users"][0]
-        first_user_api_key = first_user.get("lastfm_api_key")
-    else:
-        first_user_api_key = None
-
-    def is_lastfm_single_first_user(title, artist):
-        from api_clients.lastfm import LastFmClient
-        client = LastFmClient(first_user_api_key)
-        info = client.get_track_info(artist, title)
-        # Use tags if available (simulate single detection)
-        # This is a simplified check; adapt as needed for your logic
-        return info.get("track_play", 0) > 0
-
-    if "lastfm_single" in cached_sources and cached_sources["lastfm_single"] is not None:
-        lfm_single = bool(cached_sources["lastfm_single"])
-        source_results["lastfm_single"] = lfm_single
-        if lfm_single:
-            sources.add("lastfm")
-        if verbose:
-            logging.info(f"💿 Last.fm: {lfm_single} (cached)")
-    else:
-        try:
-            logging.debug(f"Checking Last.fm single for '{title}' by '{artist_name}' (online, enabled={use_lastfm_single})")
-            if use_lastfm_single and first_user_api_key and is_lastfm_single_first_user(title, artist_name):
-                sources.add("lastfm")
-                source_results["lastfm_single"] = True
-                logging.debug(f"Last.fm reports single for '{title}' (first user only)")
-                if verbose:
-                    logging.info("✅ Last.fm single FOUND (first user)")
-            else:
-                source_results["lastfm_single"] = False
-                if verbose and use_lastfm_single:
-                    logging.info("❌ Last.fm single not found (first user)")
-        except Exception as e:
-            logging.exception(f"Last.fm single check failed for '{title}': {e}")
-            source_results["lastfm_single"] = None
-    
-    # Count matches toward 5★ confirmation
-    match_pool = {"spotify", "discogs_video", "musicbrainz", "lastfm"}
-    if count_short_release_as_match:
-        match_pool.add("short_release")
-    total_matches = len(sources & match_pool)
-    
-    if verbose:
-        logging.info(f"📊 Total sources: {', '.join(sorted(sources))} ({total_matches} matches)")
-    
-    if (total_matches >= 2) and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
-        track["is_single"] = True
-        track["single_sources"] = sorted(sources)
-        track["single_confidence"] = "high"
-        track["stars"] = 5
-        logging.info(f"Single CONFIRMED (2+ sources): '{title}' sources={sorted(sources)} → 5★")
-        if verbose:
-            logging.info(f"⭐⭐⭐⭐⭐ CONFIRMED via 2+ sources: {', '.join(sorted(sources))}")
-    else:
-        # Got Spotify or Video hit, but only 1 source total → +1★ bump
-        track["single_sources"] = sorted(sources)
-        track["single_confidence"] = "medium" if total_matches >= 1 else "low"
-        # Apply +1★ bump if we have Spotify or Video signal
-        if (spotify_matched or discogs_video_hit) and canonical and not has_subtitle:
-            track["stars"] = 2  # +1 from default 1
-            logging.debug(f"Low-evidence +1★ bump for '{title}' (Spotify/Video hint)")
-            if verbose:
-                logging.info("⭐⭐ Low-evidence bump (Spotify/Video hint)")
-        elif verbose:
-            logging.info("ℹ️ Not enough sources for single confirmation")
-        logging.debug(f"Single NOT confirmed for '{title}' – sources={sorted(sources)} total_matches={total_matches}")
-    
-    # ✅ Fetch ListenBrainz genre tags (if MBID available, first user only)
-    mbid = track.get("mbid") or track.get("beets_mbid")
-    first_user_token = None
-    if api_integrations.get("listenbrainz", {}).get("user_token"):
-        first_user_token = api_integrations["listenbrainz"]["user_token"]
-    elif global_config.get("navidrome_users") and len(global_config["navidrome_users"]):
-        first_user = global_config["navidrome_users"][0]
-        first_user_token = first_user.get("listenbrainz_user_token")
-    else:
-        first_user_token = None
-    if mbid and first_user_token:
-        try:
-            from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
-            client = ListenBrainzUserClient(user_token=first_user_token)
-            lb_tags = client.get_recording_tags(mbid)
-            if lb_tags:
-                import json
-                track["listenbrainz_genre_tags"] = json.dumps(lb_tags)
-                logging.debug(f"Stored {len(lb_tags)} ListenBrainz genre tags for '{title}' (first user only)")
-        except Exception as e:
-            logging.debug(f"Failed to fetch/store ListenBrainz tags for '{title}' (first user): {e}")
-    
-    # ✅ Save per-source detection results for caching
-    if track_id:
-        save_source_detections(track_id, source_results)
-    
-    return track
+    try:
+        from start import DB_PATH
+        conn = sqlite3.connect(DB_PATH)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        cursor.execute(
+            """SELECT source_discogs_single, source_discogs_video, source_spotify_single,
+                      source_musicbrainz_single, source_lastfm_single, source_short_release,
+                      source_detection_date FROM tracks WHERE id = ?""",
+            (track_id,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        if row:
+            return {
+                "discogs_single": row["source_discogs_single"],
+                "discogs_video": row["source_discogs_video"],
+                "spotify_single": row["source_spotify_single"],
+                "musicbrainz_single": row["source_musicbrainz_single"],
+                "lastfm_single": row["source_lastfm_single"],
+                "short_release": row["source_short_release"],
+                "detection_date": row["source_detection_date"]
+            }
+        return {}
+    except Exception as e:
+        logging.debug(f"Could not get cached detection results for {track_id}: {e}")
+        return {}
 
 
-if __name__ == "__main__":
-    import argparse
-    parser = argparse.ArgumentParser(description="Detect which tracks are singles")
-    parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    
-    args = parser.parse_args()
-    single_detection_scan(verbose=args.verbose)
+def save_source_detections(track_id: str, source_results: dict) -> None:
+    """
+    Save per-source single detection results to database for caching.
+    source_results should have keys: discogs_single, discogs_video, spotify_single, 
+    musicbrainz_single, lastfm_single, short_release (all boolean or None)
+    """
+    try:
+        from start import DB_PATH
+        from datetime import datetime
+        conn = sqlite3.connect(DB_PATH)
+        cursor = conn.cursor()
+        cursor.execute(
+            """UPDATE tracks SET 
+                source_discogs_single = ?,
+                source_discogs_video = ?,
+                source_spotify_single = ?,
+                source_musicbrainz_single = ?,
+                source_lastfm_single = ?,
+                source_short_release = ?,
+                source_detection_date = ?
+            WHERE id = ?""",
+            (
+                source_results.get("discogs_single"),
+                source_results.get("discogs_video"),
+                source_results.get("spotify_single"),
+                source_results.get("musicbrainz_single"),
+                source_results.get("lastfm_single"),
+                source_results.get("short_release"),
+                datetime.now().isoformat(),
+                track_id
+            )
+        )
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        logging.debug(f"Could not save detection results for {track_id}: {e}")

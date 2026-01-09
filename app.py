@@ -1,3 +1,22 @@
+# --- Spotify Playlists API ---
+from api_clients.spotify import get_spotify_user_playlists
+
+@app.route("/api/spotify/playlists", methods=["GET"])
+def api_spotify_playlists():
+    """Return all Spotify playlists for the configured user/client credentials."""
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        # Try to get Spotify credentials from config
+        spotify_cfg = config_data.get("api_integrations", {}).get("spotify", {})
+        client_id = spotify_cfg.get("client_id")
+        client_secret = spotify_cfg.get("client_secret")
+        if not (client_id and client_secret):
+            return jsonify({"error": "Spotify client_id and client_secret not configured."}), 400
+        playlists = get_spotify_user_playlists(client_id, client_secret)
+        return jsonify({"playlists": playlists})
+    except Exception as e:
+        logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
+        return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
 
 
 # Place all Flask route definitions after app = Flask(__name__)
@@ -103,10 +122,14 @@ def api_navidrome_playlists():
     try:
         # TODO: Replace with per-user config if needed
         config_data, _ = _read_yaml(CONFIG_PATH)
+        # Try both config formats: 'navidrome' and 'api_integrations.navidrome'
         nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
+        # Fallback to top-level 'navidrome' if not found
+        if not nav_cfg or not nav_cfg.get("base_url"):
+            nav_cfg = config_data.get("navidrome", {})
         base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
-        username = nav_cfg.get("username") or config_data.get("nav_user")
-        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        username = nav_cfg.get("username") or nav_cfg.get("user") or config_data.get("nav_user")
+        password = nav_cfg.get("password") or nav_cfg.get("pass") or config_data.get("nav_pass")
         if not (base_url and username and password):
             logging.error(f"Navidrome not configured: base_url={base_url}, username={username}, password={'set' if password else 'unset'}")
             return jsonify({"error": "Navidrome not configured. Please check your config file and credentials."}), 400

@@ -614,34 +614,9 @@ def get_current_track_rating(track_id: str) -> int:
         return 0
 
 
-def get_current_single_detection(track_id: str) -> dict:
-    """Query the current single detection values from the database.
-    
-    Returns dict with is_single, single_confidence, single_sources, and stars.
-    This is used to preserve user-edited single detection and star ratings across rescans.
-    """
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
-            (track_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            is_single, confidence, sources_json, stars = row
-            sources = json.loads(sources_json) if sources_json else []
-            return {
-                "is_single": bool(is_single),
-                "single_confidence": confidence or "low",
-                "single_sources": sources,
-                "stars": stars or 0
-            }
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
-    except Exception as e:
-        logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
+
+# Import single detection helpers from single_detector.py
+from single_detector import get_current_single_detection
 
 
 # --- Spotify API Helpers ---
@@ -1561,6 +1536,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     # Import helpers from singledetection module
     from singledetection import infer_album_context
+    from single_detector import get_current_single_detection, rate_track_single_detection
     
     # ----- Tunables & feature flags ------------------------------------------
     CLAMP_MIN    = float(config["features"].get("clamp_min", 0.75))
@@ -1880,7 +1856,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         # ----------------------------------------------------------------------
         # SINGLE DETECTION – Centralized in singledetection.py
         # -----------------------------------------------------------------------
-        from singledetection import rate_track_single_detection
+        # Use the advanced single detection logic from single_detector.py
         
         if verbose:
             logging.info(f"Starting single detection for album: {album_name} ({len(album_tracks)} tracks)")
