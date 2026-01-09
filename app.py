@@ -41,7 +41,7 @@ import copy
 from functools import wraps
 from scan_helpers import scan_artist_to_db
 from start import rate_artist
-from popularity import scan_popularity
+from popularity import popularity_scan
 from start import build_artist_index
 from metadata_reader import aggregate_genres_from_tracks
 from check_db import update_schema
@@ -2402,7 +2402,7 @@ def album_rescan(artist, album):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist)
-            scan_popularity(verbose=True, artist=artist_name)
+            popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -2444,7 +2444,7 @@ def scan_track_rescan(artist, album, track_id):
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
             # Step 2: popularity (per-artist, which includes the track)
-            scan_popularity(verbose=True, artist=artist_name)
+            popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
             rate_artist(artist_id, artist_name, verbose=True, force=True)
@@ -2687,7 +2687,7 @@ def scan_mp3():
 
 
 @app.route("/scan/popularity", methods=["POST"])
-def scan_popularity():
+def scan_popularity_route():
     """Run popularity score update from external sources"""
     global scan_process_popularity
     
@@ -2735,7 +2735,7 @@ def scan_popularity():
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
             # Run popularity scan in background thread instead of subprocess
-            from popularity import scan_popularity as scan_popularity_func
+            from popularity import popularity_scan as scan_popularity_func
             def run_popularity_scan_bg():
                 try:
                     logging.info("Starting popularity score scan in background")
