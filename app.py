@@ -1,6 +1,8 @@
-# --- Spotify Playlists API ---
+
+# Place all Flask route definitions after app = Flask(__name__)
 from api_clients.spotify import get_spotify_user_playlists
 
+# --- Spotify Playlists API ---
 @app.route("/api/spotify/playlists", methods=["GET"])
 def api_spotify_playlists():
     """Return all Spotify playlists for the configured user/client credentials."""
@@ -17,9 +19,6 @@ def api_spotify_playlists():
     except Exception as e:
         logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
         return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
-
-
-# Place all Flask route definitions after app = Flask(__name__)
 
 
 
