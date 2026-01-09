@@ -106,9 +106,10 @@ def api_unified_log():
     try:
         with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
             log_lines = f.readlines()[-lines:]
-        return jsonify({"log": "".join(log_lines)})
+        # Return as array of lines for frontend compatibility
+        return jsonify({"lines": [line.rstrip('\n') for line in log_lines]})
     except Exception as e:
-        return jsonify({"error": str(e), "log": ""}), 500
+        return jsonify({"error": str(e), "lines": []}), 500
 
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
