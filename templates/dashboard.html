@@ -111,19 +111,17 @@
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
-                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
-                            <small class="d-block text-muted">Ready to scan...</small>
-                        </div>
+                        <!-- Unified log area will be shown below all scan cards -->
                     </div>
                     
                     <div class="d-flex gap-2">
                         <form method="POST" action="{{ url_for('scan_navidrome') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-primary w-100">
+                            <button type="submit" class="btn btn-primary btn-sm w-100 px-2 py-1">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
                         <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger">
+                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -155,19 +153,17 @@
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
-                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
-                            <small class="d-block text-muted">Ready to scan...</small>
-                        </div>
+                        <!-- Unified log area will be shown below all scan cards -->
                     </div>
                     
                     <div class="d-flex gap-2">
                         <form method="POST" action="{{ url_for('scan_popularity_route') }}" class="flex-grow-1">
-                            <button id="popularity-start-btn" type="submit" class="btn btn-primary w-100">
+                            <button id="popularity-start-btn" type="submit" class="btn btn-primary btn-sm w-100 px-2 py-1">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
                         <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger">
+                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -199,19 +195,17 @@
                             <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
-                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
-                            <small class="d-block text-muted">Ready to scan...</small>
-                        </div>
+                        <!-- Unified log area will be shown below all scan cards -->
                     </div>
                     
                     <div class="d-flex gap-2">
                         <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-info w-100" style="color: #000; font-weight: 600;">
+                            <button type="submit" class="btn btn-info btn-sm w-100 px-2 py-1" style="color: #000; font-weight: 600;">
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
                         <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger">
+                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
@@ -243,20 +237,27 @@
                             <small class="text-muted"><span class="scan-progress-text">Ready to scan...</span></small>
                             <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
                         </div>
-                        <div class="scan-logs" style="max-height: 120px; overflow-y: auto; font-size: 0.75rem; margin-top: 0.5rem;">
-                            <small class="d-block text-muted">Press Start to scan all artists for missing releases</small>
-                        </div>
+                        <!-- Unified log area will be shown below all scan cards -->
                     </div>
                     
                     <div class="d-flex gap-2">
-                        <button type="button" class="btn btn-warning flex-grow-1" onclick="startMissingReleasesScan()">
+                        <button type="button" class="btn btn-warning btn-sm flex-grow-1 px-2 py-1" onclick="startMissingReleasesScan()">
                             <i class="bi bi-play-fill"></i> Start Scan
                         </button>
                         <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger">
+                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
                         </form>
+                    </div>
+                    <!-- Unified Log Area -->
+                    <div class="card mt-4">
+                        <div class="card-header py-2 px-3">
+                            <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
+                        </div>
+                        <div class="card-body p-2">
+                            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -758,47 +759,25 @@ document.addEventListener('DOMContentLoaded', function() {
             .catch(error => console.error('Error fetching scan progress:', error));
     }
     
-    // Update scan logs in the log containers
-    function updateScanLogsAndProgress() {
-        fetch('/api/scan-logs')
+    // Update unified log area
+    function updateUnifiedLog() {
+        fetch('/api/unified-log?lines=40')
             .then(response => response.json())
             .then(data => {
-                // Map log types to scan types
-                const logMapping = {
-                    'navidrome': 'navidrome_scan',
-                    'popularity': 'popularity_scan',
-                    'singles': 'singles_scan',
-                    'file_paths': 'mp3_scan'
-                };
-                
-                // Update each scan type's logs
-                Object.keys(logMapping).forEach(logType => {
-                    const scanType = logMapping[logType];
-                    const logContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"] .scan-logs`);
-                    
-                    if (logContainer && data[logType]) {
-                        const logs = data[logType];
-                        if (logs.length > 0) {
-                            // Show last 5 log entries
-                            const logHtml = logs.slice(-5).map(log => 
-                                `<small class="d-block text-muted">${log}</small>`
-                            ).join('');
-                            logContainer.innerHTML = logHtml;
-                            
-                            // Auto-scroll to bottom
-                            logContainer.scrollTop = logContainer.scrollHeight;
-                        }
-                    }
-                });
+                const logEl = document.getElementById('unifiedLog');
+                if (logEl && data && data.lines) {
+                    logEl.textContent = data.lines.join('\n');
+                    logEl.scrollTop = logEl.scrollHeight;
+                }
             })
-            .catch(error => console.error('Error fetching scan logs:', error));
+            .catch(error => console.error('Error fetching unified log:', error));
     }
-    
+
     // Combined update function to reduce API calls
     function updateAll() {
         updateScanStatus();
         updateIndividualScanProgress();
-        updateScanLogsAndProgress();
+        updateUnifiedLog();
         updateRecentScans();
     }
     
