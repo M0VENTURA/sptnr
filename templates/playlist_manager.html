@@ -4,6 +4,21 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
+  <!-- Navidrome Playlists Dropdowns -->
+  <div class="row mb-4">
+    <div class="col-md-6">
+      <label for="smartPlaylistSelect" class="form-label">Smart Playlists</label>
+      <select id="smartPlaylistSelect" class="form-select">
+        <option value="">Select a smart playlist...</option>
+      </select>
+    </div>
+    <div class="col-md-6">
+      <label for="regularPlaylistSelect" class="form-label">Regular Playlists</label>
+      <select id="regularPlaylistSelect" class="form-select">
+        <option value="">Select a regular playlist...</option>
+      </select>
+    </div>
+  </div>
   <div class="mb-4">
     <h1 class="h2 mb-2">
       <i class="bi bi-music-note-list"></i> Playlist Manager
@@ -212,6 +227,62 @@
 </div>
 
 <script>
+// ===============================
+// NAVIDROME PLAYLIST DROPDOWNS
+// ===============================
+document.addEventListener('DOMContentLoaded', function() {
+  loadNavidromePlaylists();
+});
+
+async function loadNavidromePlaylists() {
+  try {
+    const response = await fetch('/api/navidrome/playlists');
+    const data = await response.json();
+    const smartSelect = document.getElementById('smartPlaylistSelect');
+    const regularSelect = document.getElementById('regularPlaylistSelect');
+    smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
+    regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
+    (data.smart || []).forEach(pl => {
+      const opt = document.createElement('option');
+      opt.value = pl.id;
+      opt.textContent = pl.name;
+      smartSelect.appendChild(opt);
+    });
+    (data.regular || []).forEach(pl => {
+      const opt = document.createElement('option');
+      opt.value = pl.id;
+      opt.textContent = pl.name;
+      regularSelect.appendChild(opt);
+    });
+  } catch (e) {
+    console.error('Failed to load Navidrome playlists:', e);
+  }
+}
+
+document.getElementById('smartPlaylistSelect').addEventListener('change', function() {
+  if (this.value) loadNavidromePlaylistDetail(this.value);
+});
+document.getElementById('regularPlaylistSelect').addEventListener('change', function() {
+  if (this.value) loadNavidromePlaylistDetail(this.value);
+});
+
+async function loadNavidromePlaylistDetail(playlistId) {
+  try {
+    const response = await fetch(`/api/navidrome/playlist/${playlistId}`);
+    const data = await response.json();
+    if (data && data.name) {
+      // Populate form fields for editing
+      document.getElementById('customPlaylistName').value = data.name || '';
+      document.getElementById('customPlaylistDesc').value = data.comment || '';
+      // Optionally set user, public, and pre-fill songs if API provides them
+      // Clear selected songs for now (future: load playlist tracks)
+      selectedSongs = [];
+      updateSelectedSongsList();
+    }
+  } catch (e) {
+    console.error('Failed to load playlist details:', e);
+  }
+}
 // =============================================================================
 // PLAYLIST DOWNLOADER
 // =============================================================================

@@ -9,19 +9,6 @@
     <div class="mb-3">
         <div class="row g-2 align-items-center">
             <div class="col-auto">
-                <label for="logSelector" class="form-label mb-0">Log File:</label>
-            </div>
-            <div class="col-auto">
-                <select id="logSelector" class="form-select form-select-sm">
-                    <option value="main">Main Log</option>
-                    <option value="webui">Web UI</option>
-                    <option value="beets">Beets Auto-Import</option>
-                    <option value="navidrome">Navidrome Scan</option>
-                    <option value="popularity">Popularity Detection</option>
-                    <option value="downloads">Downloads/Soulseek</option>
-                </select>
-            </div>
-            <div class="col-auto">
                 <button id="toggleStream" class="btn btn-primary btn-sm">Start Live Stream</button>
             </div>
             <div class="col-auto">
@@ -41,18 +28,10 @@
 </div>
 
 <script>
+
 let eventSource = null;
 let isStreaming = false;
 let isPaused = false;
-let currentLogType = 'main';
-
-document.getElementById('logSelector').addEventListener('change', function() {
-    currentLogType = this.value;
-    if (isStreaming) {
-        stopStream();
-        startStream();
-    }
-});
 
 document.getElementById('toggleStream').addEventListener('click', function() {
     if (isStreaming) {
