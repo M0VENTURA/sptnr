@@ -1,26 +1,4 @@
-
 # Place all Flask route definitions after app = Flask(__name__)
-from api_clients.spotify import get_spotify_user_playlists
-
-# --- Spotify Playlists API ---
-@app.route("/api/spotify/playlists", methods=["GET"])
-def api_spotify_playlists():
-    """Return all Spotify playlists for the configured user/client credentials."""
-    try:
-        config_data, _ = _read_yaml(CONFIG_PATH)
-        # Try to get Spotify credentials from config
-        spotify_cfg = config_data.get("api_integrations", {}).get("spotify", {})
-        client_id = spotify_cfg.get("client_id")
-        client_secret = spotify_cfg.get("client_secret")
-        if not (client_id and client_secret):
-            return jsonify({"error": "Spotify client_id and client_secret not configured."}), 400
-        playlists = get_spotify_user_playlists(client_id, client_secret)
-        return jsonify({"playlists": playlists})
-    except Exception as e:
-        logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
-        return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
-
-
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
