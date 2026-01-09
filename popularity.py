@@ -139,45 +139,47 @@ def scan_popularity(verbose: bool = False, artist: str | None = None):
                   {artist_filter}
             ORDER BY artist, album, title
             LIMIT 2000
-        """, params)
+            # Update database
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(
+                    """
+                    UPDATE tracks SET
+                        spotify_score = ?,
+                        lastfm_ratio = ?,
+                        listenbrainz_score = ?,
+                        score = ?,
+                        popularity_score = ?,
+                        stars = CASE WHEN (stars IS NULL OR stars = 0) THEN ? ELSE stars END,
+                        is_single = ?,
+                        single_source = ?,
+                        single_confidence = ?,
+                        single_stars = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        spotify_score,
+                        lastfm_ratio,
+                        listenbrainz_count,
+                        composite_score,
+                        composite_score,
+                        base_stars,
+                        int(is_single),
+                        single_sources,
+                        single_confidence,
+                        single_stars,
+                        track_id
+                    )
+                )
+                conn.commit()
+                conn.close()
+                updated_count += 1
 
-        tracks = cursor.fetchall()
-        conn.close()
-
-        if not tracks:
-            print("✅ All tracks have recent popularity data")
-            log_basic("All tracks have recent popularity data")
-            return
-        print(f"📊 Scanning popularity for {len(tracks)} tracks..." + (f" (artist={artist})" if artist else ""))
-
-        updated_count = 0
-        current_album = None
-        album_tracks = 0
-        
-        for idx, track in enumerate(tracks, 1):
-            if idx % 50 == 0:
-                print(f"Progress: {idx}/{len(tracks)}")
-                log_basic(f"Popularity scan progress: {idx}/{len(tracks)}")
-                save_popularity_progress(idx, len(tracks))
-
-            artist_name = track['artist']
-            album_name = track['album']
-            title = track['title']
-            track_id = track['id']
-            
-            # Track album changes to log when we finish an album
-            if current_album != (artist_name, album_name):
-                # Log the previous album if we were processing one
-                if current_album is not None and album_tracks > 0:
-                    log_album_scan(current_album[0], current_album[1], 'popularity', album_tracks, 'completed')
-                    log_basic(f"Completed popularity scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks)")
-                
-                current_album = (artist_name, album_name)
-                album_tracks = 0
-            
-            album_tracks += 1
-
-            # Get Spotify score
+                if verbose:
+                    print(f"  ✓ {title}: Spotify={spotify_score}, LastFM={lastfm_ratio:.1f}, LB={listenbrainz_count}, Score={composite_score:.3f}")
+            except Exception as e:
+                log_basic(f"Failed to update track {track_id}: {e}")
             spotify_score = track['spotify_score'] or 0
             try:
                 results = search_spotify_track(title, artist_name)
