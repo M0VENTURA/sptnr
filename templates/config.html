@@ -627,51 +627,24 @@ function buildConfigObject() {
       custom_links: getCustomBookmarkLinks()
     },
     api_integrations: {
-      spotify: {
-        enabled: document.getElementById('spotify_enabled').checked,
-        client_id: document.getElementById('spotify_client_id').value,
-        client_secret: document.getElementById('spotify_client_secret').value
-      },
-      lastfm: {
-        enabled: document.getElementById('lastfm_enabled').checked,
-        api_key: document.getElementById('lastfm_api_key').value
-      },
-      listenbrainz: {
-        enabled: document.getElementById('listenbrainz_enabled').checked
-      },
-      discogs: {
-        enabled: document.getElementById('discogs_enabled').checked,
-        token: document.getElementById('discogs_token').value
-      },
-      musicbrainz: {
-        enabled: document.getElementById('musicbrainz_enabled').checked
-      },
-      audiodb: {
-        enabled: document.getElementById('audiodb_enabled').checked,
-        api_key: document.getElementById('audiodb_api_key').value
-      },
-      google: {
-        enabled: document.getElementById('google_enabled').checked,
-        api_key: document.getElementById('google_api_key').value,
-        cse_id: document.getElementById('google_cse_id').value
-      },
-      youtube: {
+      // Removed invalid JS/TS/JSX block. If you need to show config structure, use a <pre> or <code> block, or render as Jinja2/HTML. 
+      // Assign config sections using valid JS
+      config.youtube = {
         enabled: document.getElementById('youtube_enabled').checked,
         api_key: document.getElementById('youtube_api_key').value
-      }
-    },
-    downloads: {
-      folder: document.getElementById('downloads_folder').value
-    },
-    database: {
-      path: document.getElementById('db_path').value,
-      vacuum_on_start: document.getElementById('db_vacuum').checked
-    },
-    logging: {
-      level: document.getElementById('log_level').value,
-      file: document.getElementById('log_file').value,
-      console: document.getElementById('log_console').value === 'true'
-    }
+      };
+      config.downloads = {
+        folder: document.getElementById('downloads_folder').value
+      };
+      config.database = {
+        path: document.getElementById('db_path').value,
+        vacuum_on_start: document.getElementById('db_vacuum').checked
+      };
+      config.logging = {
+        level: document.getElementById('log_level').value,
+        file: document.getElementById('log_file').value,
+        console: document.getElementById('log_console').value === 'true'
+      };
   };
 }
 
