@@ -1,3 +1,4 @@
+# ⚠️ Note: Single detection logic is now fully modularized. All advanced logic is in `single_detector.py`; `singledetection.py` contains only DB helpers. See the main README for details.
 # 📚 Album Metadata Improvements - Complete Documentation Index
 
 ## Quick Start

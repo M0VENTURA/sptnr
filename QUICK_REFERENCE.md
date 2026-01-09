@@ -1,3 +1,4 @@
+# ⚠️ Note: As of the latest refactor, all advanced single detection logic is now in `single_detector.py`. The `singledetection.py` module only contains DB helpers and orchestration wrappers. See the 'Modular Structure' section in the main README for details.
 # Quick Reference: Function Analysis Matrix
 
 ## Master Function Table

@@ -30,15 +30,30 @@ SPTNR works by blending multiple sources of listening data:
 
 ---
 
+
 ## 🧪 How Does It Work?
 SPTNR fetches each artist’s tracks from Navidrome and calculates a composite score using:
 
 - **Spotify popularity** (weighted)
 - **Last.fm track vs. artist ratio** (weighted)
 - **Age momentum** (older tracks decay unless historically significant)
-- **Single detection boost** if confirmed via metadata
+- **Single detection boost** if confirmed via metadata (see Modular Structure below)
 
 You can adjust score weights in `config.yaml`.
+
+---
+
+## 🧩 Modular Structure
+SPTNR is now fully modularized for maintainability and clarity:
+
+- **single_detector.py**: All advanced single detection logic and helpers (multi-source, weighted, explainable decisions)
+- **singledetection.py**: Only DB helpers and orchestration wrappers for single detection state (no detection logic)
+- **popularity.py**: Popularity scan logic and integration with single detection
+- **popularity_helpers.py**: Shared helpers for popularity scoring and API lookups
+
+If you want to extend or debug single detection, start with `single_detector.py`.
+
+---
 
 ---
 
@@ -168,13 +183,23 @@ python start.py --perpetual --batchrate --sync
 
 ---
 
+
 ## 🔧 Advanced Options
 Customize scoring weights in `config.yaml`:
 
 weights:
-spotify: 0.3
-lastfm: 0.5
-age: 0.2
+	spotify: 0.3
+	lastfm: 0.5
+	age: 0.2
+
+---
+
+## 🛠️ Development Notes
+- All advanced single detection logic is in `single_detector.py`.
+- `singledetection.py` is now only for DB helpers and orchestration wrappers.
+- For popularity scan logic, see `popularity.py` and `popularity_helpers.py`.
+
+---
 
 
 ---
