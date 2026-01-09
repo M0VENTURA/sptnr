@@ -1,3 +1,8 @@
+# --- Unified Log API ---
+
+# --- Unified Log API ---
+# Place this after app = Flask(__name__)
+
 # Place all Flask route definitions after app = Flask(__name__)
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
@@ -92,6 +97,19 @@ def log_verbose(msg):
         logging.info(msg)
 
 app = Flask(__name__)
+
+# --- Unified Log API ---
+@app.route("/api/unified-log")
+def api_unified_log():
+    lines = int(request.args.get("lines", 40))
+    log_path = os.environ.get("LOG_PATH", "/config/sptnr.log")
+    try:
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            log_lines = f.readlines()[-lines:]
+        return jsonify({"log": "".join(log_lines)})
+    except Exception as e:
+        return jsonify({"error": str(e), "log": ""}), 500
+
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
 def api_navidrome_playlists():
