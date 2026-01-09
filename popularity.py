@@ -13,7 +13,7 @@ import math
 from datetime import datetime
 
 # Import single detection
-from singledetection import rate_track_single_detection, config as singles_config
+from single_detector import rate_track_single_detection, WEIGHTS as singles_config
 
 # Dedicated popularity logger (no propagation to root)
 
