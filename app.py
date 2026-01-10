@@ -1,4 +1,18 @@
+
+
 # --- Unified Log API ---
+from scan_history import get_recent_album_scans
+
+# --- Recent Scans API ---
+@app.route("/api/recent-scans")
+def api_recent_scans():
+    limit = int(request.args.get("limit", 20))
+    try:
+        scans = get_recent_album_scans(limit=limit)
+        return jsonify({"scans": scans})
+    except Exception as e:
+        logging.error(f"Failed to fetch recent scans: {e}")
+        return jsonify({"error": str(e), "scans": []}), 500
 
 # --- Unified Log API ---
 # Place this after app = Flask(__name__)
@@ -26,17 +40,6 @@ def get_all_env_vars():
 # Place all Flask route definitions after app = Flask(__name__)
 
 #!/usr/bin/env python3
-"""
-Sptnr Web UI - Flask application for managing music ratings and scans
-"""
-
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
-import sqlite3
-import psycopg2
-import psycopg2.extras
-from contextlib import closing
-import yaml
-import json
 from datetime import datetime
 import copy
 from functools import wraps
@@ -104,19 +107,27 @@ def api_unified_log():
     lines = int(request.args.get("lines", 40))
     verbose = request.args.get("verbose", "0") == "1"
     log_path = os.environ.get("LOG_PATH", "sptnr.log")
-    unified_scan_log_path = os.environ.get("UNIFIED_SCAN_LOG_PATH", "unified_scan.log")
+    unified_scan_log_candidates = [
+        os.environ.get("UNIFIED_SCAN_LOG_PATH", "unified_scan.log"),
+        os.path.join("config", "unified_scan.log"),
+        os.path.join(os.getcwd(), "unified_scan.log"),
+        os.path.join(os.getcwd(), "config", "unified_scan.log")
+    ]
     log_dir = os.path.dirname(log_path) or "."
     sptnr_log_full = os.path.join(log_dir, os.path.basename(log_path))
-    unified_scan_log_full = os.path.join(log_dir, os.path.basename(unified_scan_log_path))
     log_lines = []
     try:
-        # Read sptnr.log if exists
-        if os.path.exists(sptnr_log_full):
+        # Try all unified_scan.log candidates
+        found_unified = False
+        for candidate in unified_scan_log_candidates:
+            if os.path.exists(candidate):
+                with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
+                    log_lines += f.readlines()
+                found_unified = True
+                break
+        # If no unified_scan.log, fallback to sptnr.log
+        if not found_unified and os.path.exists(sptnr_log_full):
             with open(sptnr_log_full, "r", encoding="utf-8", errors="ignore") as f:
-                log_lines += f.readlines()
-        # Read unified_scan.log if exists
-        if os.path.exists(unified_scan_log_full):
-            with open(unified_scan_log_full, "r", encoding="utf-8", errors="ignore") as f:
                 log_lines += f.readlines()
         # Filter out web response logs unless verbose is enabled
         if not verbose:
