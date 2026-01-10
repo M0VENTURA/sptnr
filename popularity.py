@@ -109,6 +109,7 @@ def popularity_scan(verbose: bool = False):
     log_basic("Popularity Scanner Started")
     log_basic("=" * 60)
 
+
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -125,11 +126,12 @@ def popularity_scan(verbose: bool = False):
         log_basic(f"Found {len(tracks)} tracks to scan for popularity")
 
         scanned_count = 0
-
+        album_map = {}
         for track in tracks:
             track_id = track["id"]
             artist = track["artist"]
             title = track["title"]
+            album = track["album"]
 
             if verbose:
                 log_verbose(f"Scanning: {artist} - {title}")
@@ -139,7 +141,7 @@ def popularity_scan(verbose: bool = False):
             try:
                 artist_id = get_spotify_artist_id(artist)
                 if artist_id:
-                    spotify_results = search_spotify_track(title, artist, track.get("album"))
+                    spotify_results = search_spotify_track(title, artist, album)
                     if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                         # Select best match (highest popularity)
                         best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
@@ -166,9 +168,18 @@ def popularity_scan(verbose: bool = False):
                     (popularity_score, track_id)
                 )
                 scanned_count += 1
+                # Track processed albums for logging
+                key = (artist, album)
+                if key not in album_map:
+                    album_map[key] = 0
+                album_map[key] += 1
 
         conn.commit()
         conn.close()
+
+        # Log each album scan to scan_history
+        for (artist, album), tracks_processed in album_map.items():
+            log_album_scan(artist, album, 'popularity', tracks_processed, 'completed')
 
         log_basic(f"✅ Popularity scan completed: {scanned_count} tracks updated")
 
