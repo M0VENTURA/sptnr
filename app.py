@@ -102,11 +102,27 @@ app = Flask(__name__)
 @app.route("/api/unified-log")
 def api_unified_log():
     lines = int(request.args.get("lines", 40))
-    log_path = os.environ.get("LOG_PATH", "/config/sptnr.log")
+    verbose = request.args.get("verbose", "0") == "1"
+    log_path = os.environ.get("LOG_PATH", "sptnr.log")
+    unified_scan_log_path = os.environ.get("UNIFIED_SCAN_LOG_PATH", "unified_scan.log")
+    log_dir = os.path.dirname(log_path) or "."
+    sptnr_log_full = os.path.join(log_dir, os.path.basename(log_path))
+    unified_scan_log_full = os.path.join(log_dir, os.path.basename(unified_scan_log_path))
+    log_lines = []
     try:
-        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
-            log_lines = f.readlines()[-lines:]
-        # Return as array of lines for frontend compatibility
+        # Read sptnr.log if exists
+        if os.path.exists(sptnr_log_full):
+            with open(sptnr_log_full, "r", encoding="utf-8", errors="ignore") as f:
+                log_lines += f.readlines()
+        # Read unified_scan.log if exists
+        if os.path.exists(unified_scan_log_full):
+            with open(unified_scan_log_full, "r", encoding="utf-8", errors="ignore") as f:
+                log_lines += f.readlines()
+        # Filter out web response logs unless verbose is enabled
+        if not verbose:
+            log_lines = [line for line in log_lines if not ("HTTP" in line or "GET /" in line or "POST /" in line or "200" in line or "404" in line or "500" in line)]
+        # Only return the last N lines
+        log_lines = log_lines[-lines:]
         return jsonify({"lines": [line.rstrip('\n') for line in log_lines]})
     except Exception as e:
         return jsonify({"error": str(e), "lines": []}), 500
