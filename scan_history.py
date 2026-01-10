@@ -130,6 +130,30 @@ def get_recent_album_scans(limit: int = 10):
                 'album': row['album'],
                 'scan_type': row['scan_type'],
                 'scan_timestamp': row['scan_timestamp'],
+            DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+
+            # Ensure scan_history table exists on import
+            def ensure_scan_history_table():
+                try:
+                    conn = sqlite3.connect(DB_PATH)
+                    cursor = conn.cursor()
+                    cursor.execute('''
+                        CREATE TABLE IF NOT EXISTS scan_history (
+                            id INTEGER PRIMARY KEY AUTOINCREMENT,
+                            artist TEXT,
+                            album TEXT,
+                            scan_type TEXT,
+                            scan_timestamp TEXT,
+                            tracks_processed INTEGER,
+                            status TEXT
+                        )
+                    ''')
+                    conn.commit()
+                    conn.close()
+                except Exception as e:
+                    logging.error(f"Error ensuring scan_history table exists: {e}")
+
+            ensure_scan_history_table()
                 'tracks_processed': row['tracks_processed'],
                 'status': row['status']
             })
