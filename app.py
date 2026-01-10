@@ -1,12 +1,3 @@
-            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
-            # Use DiscogsClient for API calls
-            # Example: client = DiscogsClient(token)
-            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
-            # Use DiscogsClient for API calls
-            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
-            # Use DiscogsClient for API calls
-            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
-            # Use DiscogsClient for API calls
 # --- Unified Log API ---
 
 # --- Unified Log API ---
