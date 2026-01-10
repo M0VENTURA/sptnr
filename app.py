@@ -1,3 +1,12 @@
+            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
+            # Use DiscogsClient for API calls
+            # Example: client = DiscogsClient(token)
+            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
+            # Use DiscogsClient for API calls
+            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
+            # Use DiscogsClient for API calls
+            from api_clients.discogs import DiscogsClient, get_discogs_genres, is_discogs_single
+            # Use DiscogsClient for API calls
 # --- Unified Log API ---
 
 # --- Unified Log API ---
@@ -1727,20 +1736,20 @@ def api_artist_search_images():
         
         elif source == "discogs":
             # Search Discogs for artist
-            from singledetection import _discogs_search, _get_discogs_session
+            from api_clients.discogs import DiscogsClient
             from helpers import _read_yaml
-            
+
             config_data, _ = _read_yaml(CONFIG_PATH)
             discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
             discogs_token = discogs_config.get("token", "")
-            
-            session = _get_discogs_session()
-            headers = {"User-Agent": "Sptnr/1.0"}
-            if discogs_token:
-                headers["Authorization"] = f"Discogs token={discogs_token}"
-            
-            results = _discogs_search(session, headers, artist_name, kind="artist", per_page=5)
-            
+
+            client = DiscogsClient(discogs_token)
+            # Discogs API does not have a direct 'search_artist', so use database/search with type=artist
+            search_url = f"https://api.discogs.com/database/search"
+            params = {"q": artist_name, "type": "artist", "per_page": 5}
+            res = client.session.get(search_url, headers=client.headers, params=params, timeout=10)
+            res.raise_for_status()
+            results = res.json().get("results", [])
             for result in results[:5]:
                 if result.get("thumb"):
                     images.append({"url": result["thumb"], "source": "Discogs"})

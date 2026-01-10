@@ -105,19 +105,20 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
         albums = fetch_artist_albums(artist_id)
         if verbose:
-            print(f"Scanning artist: {artist_name} ({len(albums)} albums)")
-            logging.info(f"Scanning artist {artist_name} ({len(albums)} albums)")
+            print(f"🎤 Scanning artist: {artist_name} ({len(albums)} albums)")
+        logging.info(f"🎤 [Navidrome] Scanning artist: {artist_name} ({len(albums)} albums)")
 
         # Save artist-level progress
         if total_artists > 0:
             save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
 
         total_albums = len(albums)
-        for alb_idx, alb in enumerate(albums):
+        for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
             album_id = alb.get("id")
             if not album_id:
                 continue
+            logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
 
             try:
                 tracks = fetch_album_tracks(album_id)

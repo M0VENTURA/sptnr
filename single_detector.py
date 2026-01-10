@@ -109,17 +109,19 @@ def rate_track_single_detection(
         if verbose:
             logging.info("🔍 Checking Discogs single (online)...")
         logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
-        if DISCOGS_ENABLED and DISCOGS_TOKEN and False:  # placeholder for is_discogs_single
-            sources.add("discogs")
-            discogs_single_hit = True
-            track['discogs_single_confirmed'] = 1
-            logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
-            if verbose:
-                logging.info("✅ Discogs single FOUND")
-        else:
-            logging.debug(f"Discogs single not detected for '{title}'")
-            if verbose and DISCOGS_ENABLED:
-                logging.info("❌ Discogs single not found")
+        from api_clients.discogs import is_discogs_single
+        if DISCOGS_ENABLED and DISCOGS_TOKEN:
+            discogs_single_hit = is_discogs_single(title, artist_name, album_ctx, token=DISCOGS_TOKEN)
+            if discogs_single_hit:
+                sources.add("discogs")
+                track['discogs_single_confirmed'] = 1
+                logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
+                if verbose:
+                    logging.info("✅ Discogs single FOUND")
+            else:
+                logging.debug(f"Discogs single not detected for '{title}'")
+                if verbose:
+                    logging.info("❌ Discogs single not found")
     except Exception as e:
         logging.exception(f"is_discogs_single failed for '{title}': {e}")
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:

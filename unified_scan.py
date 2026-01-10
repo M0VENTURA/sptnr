@@ -172,9 +172,9 @@ def unified_scan_pipeline(
     from popularity import scan_popularity
     from start import rate_artist, build_artist_index
     
-    logging.info("=" * 60)
-    logging.info("Unified Scan Pipeline Started")
-    logging.info("=" * 60)
+    logging.info("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
+    logging.info(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    logging.info("=" * 70)
     
     # Initialize progress
     progress = ScanProgress()
@@ -216,7 +216,7 @@ def unified_scan_pipeline(
         
         conn.close()
         
-        logging.info(f"Processing {progress.total_artists} artists, {progress.total_tracks} total tracks, {progress.total_files} files in folder")
+        logging.info(f"🎼 Total Artists: {progress.total_artists} | 🎵 Total Tracks: {progress.total_tracks} | 📂 Files: {progress.total_files}")
         progress.save()
         
         # Build artist index for ID lookups
@@ -226,16 +226,13 @@ def unified_scan_pipeline(
         for idx, artist_name in enumerate(artists, 1):
             progress.current_artist = artist_name
             progress.processed_artists = idx - 1
-            
-            logging.info(f"\n[{idx}/{progress.total_artists}] Processing artist: {artist_name}")
-            print(f"\n🎵 [{idx}/{progress.total_artists}] {artist_name}")
-            
+            logging.info("")
+            logging.info(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
             # Get artist ID
             artist_id = artist_index.get(artist_name)
             if not artist_id:
-                logging.warning(f"No artist ID found for '{artist_name}', skipping")
+                logging.warning(f"⚠️ No artist ID found for '{artist_name}', skipping")
                 continue
-            
             # Get albums for this artist
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -246,38 +243,29 @@ def unified_scan_pipeline(
             """, (artist_name,))
             albums = [row['album'] for row in cursor.fetchall()]
             conn.close()
-            
-            # Process each album
             for album_idx, album_name in enumerate(albums, 1):
                 progress.current_album = album_name
-                
-                logging.info(f"  [{album_idx}/{len(albums)}] Album: {album_name}")
-                print(f"  💿 [{album_idx}/{len(albums)}] {album_name}")
-                
+                logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
                 # Phase 1: Popularity Detection
                 progress.current_phase = "popularity"
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                
-                logging.info(f"    → Phase 1: Popularity detection...")
+                logging.info(f"      → Phase: Popularity detection")
                 try:
                     scan_popularity(verbose=verbose, artist=artist_name)
                 except Exception as e:
-                    logging.error(f"    ✗ Popularity scan failed: {e}")
-                
+                    logging.error(f"      ✗ Popularity scan failed: {e}")
                 # Phase 2: Single Detection & Rating
                 progress.current_phase = "singles"
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                
-                logging.info(f"    → Phase 2: Single detection & rating...")
+                logging.info(f"      → Phase: Single detection & rating")
                 try:
                     rate_artist(artist_id, artist_name, verbose=verbose, force=force)
                 except Exception as e:
-                    logging.error(f"    ✗ Rating failed: {e}")
-                
+                    logging.error(f"      ✗ Rating failed: {e}")
                 # Update track count
                 conn = get_db_connection()
                 cursor = conn.cursor()
@@ -287,30 +275,25 @@ def unified_scan_pipeline(
                 """, (artist_name, album_name))
                 album_track_count = cursor.fetchone()['count']
                 conn.close()
-                
                 progress.processed_tracks += album_track_count
-                # Increment files processed proportionally
                 if progress.total_tracks > 0:
                     progress.processed_files = int((progress.processed_tracks / progress.total_tracks) * progress.total_files)
                 progress.processed_albums += 1
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                
-                logging.info(f"    ✓ Album complete ({album_track_count} tracks)")
-            
+                logging.info(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
             progress.processed_artists += 1
             progress.save()
             if progress_callback:
                 progress_callback(progress)
-            
-            # Small delay between artists
             time.sleep(1)
         
-        logging.info("\n" + "=" * 60)
-        logging.info(f"✅ Unified scan complete!")
-        logging.info(f"   Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
-        logging.info("=" * 60)
+        logging.info("")
+        logging.info("🟢 ==================== UNIFIED SCAN COMPLETE ==================== 🟢")
+        logging.info(f"🏁 End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        logging.info(f"✅ Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
+        logging.info("=" * 70)
         
     except Exception as e:
         logging.error(f"Unified scan failed: {e}")
