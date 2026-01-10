@@ -1,6 +1,10 @@
+
 import sqlite3
 
 DB_PATH = 'sptnr.db'
+
+
+# NOTE: The scan_history table is now created by check_db.py. Ensure check_db.py (or update_schema) runs at startup.
 
 try:
     conn = sqlite3.connect(DB_PATH)

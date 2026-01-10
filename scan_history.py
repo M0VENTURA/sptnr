@@ -12,28 +12,6 @@ import time
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
-# Ensure scan_history table exists on import
-def ensure_scan_history_table():
-    try:
-        conn = sqlite3.connect(DB_PATH)
-        cursor = conn.cursor()
-        cursor.execute('''
-            CREATE TABLE IF NOT EXISTS scan_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                artist TEXT,
-                album TEXT,
-                scan_type TEXT,
-                scan_timestamp TEXT,
-                tracks_processed INTEGER,
-                status TEXT
-            )
-        ''')
-        conn.commit()
-        conn.close()
-    except Exception as e:
-        logging.error(f"Error ensuring scan_history table exists: {e}")
-
-ensure_scan_history_table()
 
 def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed"):
     """
