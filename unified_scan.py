@@ -24,6 +24,7 @@ logging.basicConfig(
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
+SCAN_HISTORY_PATH = os.environ.get("SCAN_HISTORY_PATH", "/database/scan_history.json")
 
 
 def count_music_files(music_folder: str = "/music") -> int:
@@ -171,6 +172,7 @@ def unified_scan_pipeline(
     """
     from popularity import scan_popularity
     from start import rate_artist, build_artist_index
+    from scan_history import log_album_scan
     
     logging.info("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
     logging.info(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
@@ -264,8 +266,12 @@ def unified_scan_pipeline(
                 logging.info(f"      → Phase: Single detection & rating")
                 try:
                     rate_artist(artist_id, artist_name, verbose=verbose, force=force)
+                    # Log singles detection scan
+                    log_album_scan(artist_name, album_name, 'singles', album_track_count, 'completed')
                 except Exception as e:
                     logging.error(f"      ✗ Rating failed: {e}")
+                # Log unified scan for this album
+                log_album_scan(artist_name, album_name, 'unified', album_track_count, 'completed')
                 # Update track count
                 conn = get_db_connection()
                 cursor = conn.cursor()
