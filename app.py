@@ -1,22 +1,6 @@
 
 
 # --- Unified Log API ---
-from scan_history import get_recent_album_scans
-
-# --- Recent Scans API ---
-@app.route("/api/recent-scans")
-def api_recent_scans():
-    limit = int(request.args.get("limit", 20))
-    try:
-        scans = get_recent_album_scans(limit=limit)
-        return jsonify({"scans": scans})
-    except Exception as e:
-        logging.error(f"Failed to fetch recent scans: {e}")
-        return jsonify({"error": str(e), "scans": []}), 500
-
-# --- Unified Log API ---
-# Place this after app = Flask(__name__)
-
 # Place all Flask route definitions after app = Flask(__name__)
 
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
