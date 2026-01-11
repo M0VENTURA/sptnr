@@ -434,6 +434,7 @@ USE_SEARCH3 = "search3" in SUPPORTED_EXTENSIONS
 # âœ… Logging setup
 
 
+
 # --- Dual Logger Setup: sptnr.log and unified_scan.log ---
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
@@ -452,17 +453,23 @@ class ServicePrefixFormatter(logging.Formatter):
 formatter = ServicePrefixFormatter(SERVICE_PREFIX)
 file_handler = logging.FileHandler(LOG_PATH)
 file_handler.setFormatter(formatter)
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(formatter)
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, unified_file_handler, stream_handler])
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+
+# Dedicated logger for unified_scan.log
+unified_logger = logging.getLogger("unified_scan")
+unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
+unified_file_handler.setFormatter(formatter)
+unified_logger.setLevel(logging.INFO)
+if not unified_logger.hasHandlers():
+    unified_logger.addHandler(unified_file_handler)
 
 def log_basic(msg):
     logging.info(msg)
 
 def log_unified(msg):
-    logging.getLogger().info(msg)
+    unified_logger.info(msg)
 
 def log_verbose(msg):
     if VERBOSE:
