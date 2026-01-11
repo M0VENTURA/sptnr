@@ -12,10 +12,17 @@ import time
 from datetime import datetime
 from typing import Dict, Optional, Callable
 
+
 # --- Unified Logger Setup (shared with start.py/popularity.py) ---
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
 SERVICE_PREFIX = "unified_scan_"
+VERBOSE = (
+    os.environ.get("SPTNR_VERBOSE_UNIFIEDSCAN") or os.environ.get("SPTNR_VERBOSE") or "0"
+) == "1"
+def log_verbose(msg):
+    if VERBOSE:
+        logging.info(f"[VERBOSE] {msg}")
 
 class ServicePrefixFormatter(logging.Formatter):
     def __init__(self, prefix, fmt=None):
@@ -205,6 +212,8 @@ def unified_scan_pipeline(
     log_unified(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     log_unified("=" * 70)
     log_unified(f"🟢 Unified scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if verbose:
+        log_verbose("Unified scan pipeline started.")
     
     # Initialize progress
     progress = ScanProgress()
@@ -214,44 +223,55 @@ def unified_scan_pipeline(
     progress.save()
     
     try:
+        if verbose:
+            log_verbose("Getting list of artists from database...")
         # Get list of artists
         conn = get_db_connection()
         cursor = conn.cursor()
-        
+
         if artist_filter:
-            cursor.execute("""
+            sql = """
                 SELECT DISTINCT artist FROM tracks WHERE artist = ?
                 ORDER BY artist COLLATE NOCASE
-            """, (artist_filter,))
+            """
+            log_verbose(f"Executing SQL: {sql.strip()} with artist_filter={artist_filter}")
+            cursor.execute(sql, (artist_filter,))
         else:
-            cursor.execute("""
+            sql = """
                 SELECT DISTINCT artist FROM tracks
                 ORDER BY artist COLLATE NOCASE
-            """)
-        
+            """
+            log_verbose(f"Executing SQL: {sql.strip()}")
+            cursor.execute(sql)
+
         artists = [row['artist'] for row in cursor.fetchall()]
         progress.total_artists = len(artists)
-        
+        log_verbose(f"Found {progress.total_artists} artists.")
+
         # Count total tracks for progress
-        cursor.execute("""
+        sql = """
             SELECT COUNT(*) as count FROM tracks
             WHERE 1=1 {}
-        """.format("AND artist = ?" if artist_filter else ""),
-        (artist_filter,) if artist_filter else ())
+        """.format("AND artist = ?" if artist_filter else "")
+        log_verbose(f"Executing SQL: {sql.strip()} with artist_filter={artist_filter}")
+        cursor.execute(sql, (artist_filter,) if artist_filter else ())
         progress.total_tracks = cursor.fetchone()['count']
-        
+        log_verbose(f"Total tracks: {progress.total_tracks}")
+
         # Count actual music files in folder for accurate progress
         music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        log_verbose(f"Counting music files in folder: {music_folder}")
         progress.total_files = count_music_files(music_folder)
-        
+
         conn.close()
-        
+
         logging.info(f"🎼 Total Artists: {progress.total_artists} | 🎵 Total Tracks: {progress.total_tracks} | 📂 Files: {progress.total_files}")
         progress.save()
-        
+
         # Build artist index for ID lookups
+        log_verbose("Building artist index...")
         artist_index = build_artist_index()
-        
+
         # Process each artist
         for idx, artist_name in enumerate(artists, 1):
             progress.current_artist = artist_name
@@ -259,35 +279,47 @@ def unified_scan_pipeline(
             log_unified("")
             log_unified(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
             logging.info(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
+            if verbose:
+                log_verbose(f"Processing artist: {artist_name} ({idx}/{progress.total_artists})")
             # Get artist ID
             artist_id = artist_index.get(artist_name)
             if not artist_id:
                 logging.warning(f"⚠️ No artist ID found for '{artist_name}', skipping")
                 logging.info(f"⚠️ No artist ID found for '{artist_name}', skipping")
+                if verbose:
+                    log_verbose(f"No artist ID found for {artist_name}, skipping.")
                 continue
             # Get albums for this artist
             conn = get_db_connection()
             cursor = conn.cursor()
-            cursor.execute("""
+            sql = """
                 SELECT DISTINCT album FROM tracks
                 WHERE artist = ?
                 ORDER BY album COLLATE NOCASE
-            """, (artist_name,))
+            """
+            log_verbose(f"Executing SQL: {sql.strip()} with artist_name={artist_name}")
+            cursor.execute(sql, (artist_name,))
             albums = [row['album'] for row in cursor.fetchall()]
             conn.close()
+            log_verbose(f"Found {len(albums)} albums for artist {artist_name}.")
             for album_idx, album_name in enumerate(albums, 1):
                 progress.current_album = album_name
                 log_unified(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
                 logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
+                if verbose:
+                    log_verbose(f"Processing album: {album_name} ({album_idx}/{len(albums)}) for artist {artist_name}")
                 # Get track count for this album first
                 conn = get_db_connection()
                 cursor = conn.cursor()
-                cursor.execute("""
+                sql = """
                     SELECT COUNT(*) as count FROM tracks
                     WHERE artist = ? AND album = ?
-                """, (artist_name, album_name))
+                """
+                log_verbose(f"Executing SQL: {sql.strip()} with artist_name={artist_name}, album_name={album_name}")
+                cursor.execute(sql, (artist_name, album_name))
                 album_track_count = cursor.fetchone()['count']
                 conn.close()
+                log_verbose(f"Album {album_name} has {album_track_count} tracks.")
                 # Phase 1: Popularity Detection
                 progress.current_phase = "popularity"
                 progress.save()
@@ -295,6 +327,8 @@ def unified_scan_pipeline(
                     progress_callback(progress)
                 log_unified(f"      → Phase: Popularity detection")
                 logging.info(f"      → Phase: Popularity detection")
+                if verbose:
+                    log_verbose(f"Starting popularity scan for album {album_name} by {artist_name}")
                 try:
                     popularity_scan(verbose=verbose)
                     # Log popularity scan for this album

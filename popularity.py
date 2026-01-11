@@ -25,7 +25,9 @@ from single_detector import rate_track_single_detection, WEIGHTS as singles_conf
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
+VERBOSE = (
+    os.environ.get("SPTNR_VERBOSE_POPULARITY") or os.environ.get("SPTNR_VERBOSE") or "0"
+) == "1"
 SERVICE_PREFIX = "popularity_"
 
 class ServicePrefixFormatter(logging.Formatter):
@@ -143,20 +145,24 @@ def popularity_scan(verbose: bool = False):
     log_unified("✅ Spotify client configured")
 
     try:
+        log_verbose("Connecting to database for popularity scan...")
         conn = get_db_connection()
         cursor = conn.cursor()
 
         # Get all tracks that need popularity detection
-        cursor.execute("""
+        sql = ("""
             SELECT id, artist, title, album
             FROM tracks
             WHERE popularity_score IS NULL OR popularity_score = 0
             ORDER BY artist, title
             LIMIT 100
         """)
+        log_verbose(f"Executing SQL: {sql.strip()}")
+        cursor.execute(sql)
 
         tracks = cursor.fetchall()
         log_unified(f"Found {len(tracks)} tracks to scan for popularity")
+        log_verbose(f"Fetched {len(tracks)} tracks from database.")
 
         scanned_count = 0
         album_map = {}
@@ -167,7 +173,7 @@ def popularity_scan(verbose: bool = False):
             album = track["album"]
 
             if verbose:
-                log_verbose(f"Scanning: {artist} - {title}")
+                log_verbose(f"Scanning: {artist} - {title} (Track ID: {track_id})")
 
             # Progress log every 10 tracks
             if idx % 10 == 0:
@@ -176,30 +182,36 @@ def popularity_scan(verbose: bool = False):
             # Try to get popularity from Spotify
             spotify_score = 0
             try:
+                log_verbose(f"Calling get_spotify_artist_id for artist: {artist}")
                 artist_id = get_spotify_artist_id(artist)
+                log_verbose(f"Spotify artist_id: {artist_id}")
                 if artist_id:
+                    log_verbose(f"Calling search_spotify_track for title: {title}, artist: {artist}, album: {album}")
                     spotify_results = search_spotify_track(title, artist, album)
+                    log_verbose(f"Spotify results: {spotify_results}")
                     if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                         # Select best match (highest popularity)
                         best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
+                        log_verbose(f"Best Spotify match: {best_match}")
                         spotify_score = best_match.get("popularity", 0)
             except Exception as e:
-                if verbose:
-                    log_verbose(f"Spotify lookup failed for {artist} - {title}: {e}")
+                log_verbose(f"Spotify lookup failed for {artist} - {title}: {e}")
 
             # Try to get popularity from Last.fm
             lastfm_score = 0
             try:
+                log_verbose(f"Calling get_lastfm_track_info for artist: {artist}, title: {title}")
                 lastfm_info = get_lastfm_track_info(artist, title)
+                log_verbose(f"Last.fm info: {lastfm_info}")
                 if lastfm_info and lastfm_info.get("track_play"):
                     lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
             except Exception as e:
-                if verbose:
-                    log_verbose(f"Last.fm lookup failed for {artist} - {title}: {e}")
+                log_verbose(f"Last.fm lookup failed for {artist} - {title}: {e}")
 
             # Average the scores
             if spotify_score > 0 or lastfm_score > 0:
                 popularity_score = (spotify_score + lastfm_score) / 2.0
+                log_verbose(f"Updating popularity_score={popularity_score} for track_id={track_id}")
                 cursor.execute(
                     "UPDATE tracks SET popularity_score = ? WHERE id = ?",
                     (popularity_score, track_id)
@@ -210,6 +222,20 @@ def popularity_scan(verbose: bool = False):
                 if key not in album_map:
                     album_map[key] = 0
                 album_map[key] += 1
+            else:
+                log_verbose(f"No popularity score found for {artist} - {title}")
+
+        log_verbose("Committing changes to database.")
+        conn.commit()
+        conn.close()
+
+        # Log each album scan to scan_history
+        for (artist, album), tracks_processed in album_map.items():
+            log_verbose(f"Logging album scan: {artist} - {album}, tracks_processed={tracks_processed}")
+            log_album_scan(artist, album, 'popularity', tracks_processed, 'completed')
+
+        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
+        log_verbose(f"Popularity scan completed: {scanned_count} tracks updated")
 
         conn.commit()
         conn.close()

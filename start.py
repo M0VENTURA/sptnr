@@ -439,7 +439,9 @@ USE_SEARCH3 = "search3" in SUPPORTED_EXTENSIONS
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
+VERBOSE = (
+    os.environ.get("SPTNR_VERBOSE_START") or os.environ.get("SPTNR_VERBOSE") or "0"
+) == "1"
 SERVICE_PREFIX = "start_"
 
 class ServicePrefixFormatter(logging.Formatter):
@@ -493,16 +495,19 @@ def save_to_db(track_data, max_retries=3):
     """Save track data to database with retry logic for handling locks."""
     for attempt in range(max_retries):
         try:
+            log_verbose(f"Attempting to get DB connection for save_to_db (attempt {attempt+1})")
             conn = get_db_connection()
             cursor = conn.cursor()
             break
         except sqlite3.OperationalError as e:
             if "locked" in str(e) and attempt < max_retries - 1:
-                logging.debug(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
+                log_verbose(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
                 time.sleep(0.5 * (attempt + 1))  # Exponential backoff
                 continue
+            log_verbose(f"Database error in save_to_db: {e}")
             raise
     else:
+        log_verbose("Failed to acquire database connection after retries")
         logging.error("Failed to acquire database connection after retries")
         return
 
@@ -510,6 +515,7 @@ def save_to_db(track_data, max_retries=3):
     incoming_path = track_data.get("file_path")
     if not incoming_path:
         try:
+            log_verbose(f"Fetching file_path and album_folder for track id {track_data['id']}")
             cursor.execute("SELECT file_path, album_folder FROM tracks WHERE id = ?", (track_data["id"],))
             row = cursor.fetchone()
             if row:
@@ -517,7 +523,8 @@ def save_to_db(track_data, max_retries=3):
                     track_data["file_path"] = row[0]
                 if row[1]:
                     track_data["album_folder"] = row[1]
-        except Exception:
+        except Exception as e:
+            log_verbose(f"Error fetching file_path/album_folder: {e}")
             pass
 
     # Prepare multi-value fields
@@ -604,16 +611,21 @@ def save_to_db(track_data, max_retries=3):
     try:
         placeholders = ", ".join(["?"] * len(columns))
         sql = f"INSERT OR REPLACE INTO tracks ({', '.join(columns)}) VALUES ({placeholders})"
+        log_verbose(f"Executing SQL: {sql} with values for track id {track_data['id']}")
         cursor.execute(sql, values)
         conn.commit()
+        log_verbose(f"Track {track_data['id']} committed to DB.")
     except sqlite3.OperationalError as e:
         if "locked" in str(e):
+            log_verbose(f"Database locked during save for track {track_data.get('id')}, will retry on next scan")
             logging.warning(f"Database locked during save for track {track_data.get('id')}, will retry on next scan")
         else:
+            log_verbose(f"Database error saving track {track_data.get('id')}: {e}")
             logging.error(f"Database error saving track {track_data.get('id')}: {e}")
         raise
     finally:
         conn.close()
+        log_verbose(f"DB connection closed for track {track_data['id']}")
 
 
 def get_current_track_rating(track_id: str) -> int:

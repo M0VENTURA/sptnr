@@ -66,7 +66,9 @@ import hashlib
 
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
+VERBOSE = (
+    os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
+) == "1"
 SERVICE_PREFIX = "WebUI_"
 
 class ServicePrefixFormatter(logging.Formatter):
@@ -85,11 +87,12 @@ stream_handler.setFormatter(formatter)
 logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 
 def log_basic(msg):
-    logging.info(msg)
+    if VERBOSE:
+        logging.info(msg)
 
 def log_verbose(msg):
     if VERBOSE:
-        logging.info(msg)
+        logging.info(f"[VERBOSE] {msg}")
 
 app = Flask(__name__)
 
@@ -98,39 +101,35 @@ app = Flask(__name__)
 def api_unified_log():
     lines = int(request.args.get("lines", 40))
     verbose = request.args.get("verbose", "0") == "1"
-    log_path = os.environ.get("LOG_PATH", "sptnr.log")
-    unified_scan_log_candidates = [
-        os.environ.get("UNIFIED_SCAN_LOG_PATH", "unified_scan.log"),
-        os.path.join("config", "unified_scan.log"),
-        os.path.join(os.getcwd(), "unified_scan.log"),
-        os.path.join(os.getcwd(), "config", "unified_scan.log")
-    ]
-    log_dir = os.path.dirname(log_path) or "."
-    sptnr_log_full = os.path.join(log_dir, os.path.basename(log_path))
+    unified_log_path = "/config/unified_scan.log"
     log_lines = []
     try:
-        # Try all unified_scan.log candidates
-        found_unified = False
-        for candidate in unified_scan_log_candidates:
-            if os.path.exists(candidate):
-                with open(candidate, "r", encoding="utf-8", errors="ignore") as f:
-                    log_lines += f.readlines()
-                found_unified = True
-                break
-        # If no unified_scan.log, fallback to sptnr.log
-        if not found_unified and os.path.exists(sptnr_log_full):
-            with open(sptnr_log_full, "r", encoding="utf-8", errors="ignore") as f:
-                log_lines += f.readlines()
+        log_verbose(f"[api_unified_log] Reading {lines} lines from {unified_log_path}")
+        if not os.path.exists(unified_log_path):
+            log_verbose(f"[api_unified_log] Log file not found: {unified_log_path}")
+            return jsonify({"error": f"Unified log file not found at {unified_log_path}", "lines": []}), 404
+        with open(unified_log_path, "r", encoding="utf-8", errors="ignore") as f:
+            log_lines = f.readlines()
+    except Exception as e:
+        log_verbose(f"[api_unified_log] Exception reading file: {e}")
+        return jsonify({"error": str(e), "lines": []}), 500
+    try:
         # Filter out HTTP request/response logs unless verbose is enabled
         if not verbose:
             import re
-            http_log_pattern = re.compile(r'"(GET|POST|PUT|DELETE|PATCH) /api/.* HTTP/1\.[01]" (200|201|204|400|401|403|404|500|502|503)')
+            http_log_pattern = re.compile(r'"(GET|POST|PUT|DELETE|PATCH) /api/.* HTTP/1\\.[01]" (200|201|204|400|401|403|404|500|502|503)')
             log_lines = [line for line in log_lines if not http_log_pattern.search(line)]
         # Only return the last N lines
         log_lines = log_lines[-lines:]
+        log_verbose(f"[api_unified_log] Returning {len(log_lines)} log lines")
         return jsonify({"lines": [line.rstrip('\n') for line in log_lines]})
     except Exception as e:
+        log_verbose(f"[api_unified_log] Exception processing log lines: {e}")
         return jsonify({"error": str(e), "lines": []}), 500
+if VERBOSE:
+    logging.basicConfig(level=logging.WARNING, handlers=[file_handler, stream_handler])
+else:
+    logging.basicConfig(level=logging.ERROR, handlers=[file_handler, stream_handler])
 
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
