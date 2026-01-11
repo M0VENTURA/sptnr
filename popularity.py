@@ -137,6 +137,10 @@ def popularity_scan(verbose: bool = False):
     log_unified("=" * 60)
     log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+    # Initialize popularity helpers to configure Spotify client
+    from popularity_helpers import configure_popularity_helpers
+    configure_popularity_helpers()
+    log_unified("✅ Spotify client configured")
 
     try:
         conn = get_db_connection()

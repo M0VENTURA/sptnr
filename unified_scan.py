@@ -39,6 +39,7 @@ unified_file_handler.setFormatter(formatter)
 unified_logger.setLevel(logging.INFO)
 if not unified_logger.hasHandlers():
     unified_logger.addHandler(unified_file_handler)
+unified_logger.propagate = False
 
 def log_unified(msg):
     unified_logger.info(msg)
