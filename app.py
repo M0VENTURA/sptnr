@@ -63,6 +63,7 @@ import hashlib
 
 
 # Unified logging setup
+
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
