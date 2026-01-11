@@ -1634,15 +1634,270 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     for album in albums:
         album_name = album.get("name", "Unknown Album")
         album_id   = album.get("id")
-        # ...existing code...
-        rated_map.update({t["id"]: t for t in sorted_album})
+        
+        if not album_id:
+            continue
+            
+        if verbose:
+            print(f"\n   💿 Album: {album_name}")
+        
+        # Fetch album tracks
+        try:
+            album_tracks = fetch_album_tracks(album_id)
+        except Exception as e:
+            logging.error(f"Failed to fetch tracks for album '{album_name}': {e}")
+            continue
+            
+        if not album_tracks:
+            if verbose:
+                print(f"      ⚠️ No tracks found for album '{album_name}'")
+            continue
+        
+        # Check if we should skip this album (recently scanned)
+        skip_album = False
+        if not force and ALBUM_SKIP_DAYS > 0 and len(album_tracks) >= ALBUM_SKIP_MIN_TRACKS:
+            try:
+                album_track_count = get_album_track_count_in_db(artist_name, album_name)
+                if album_track_count >= len(album_tracks):
+                    # Album already has all tracks, check when it was last scanned
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT MAX(last_scanned) FROM tracks 
+                        WHERE artist = ? AND album = ?
+                    """, (artist_name, album_name))
+                    last_scanned = cursor.fetchone()[0]
+                    conn.close()
+                    
+                    if last_scanned:
+                        last_scan_date = parse_datetime_flexible(last_scanned)
+                        if datetime.now() - last_scan_date < timedelta(days=ALBUM_SKIP_DAYS):
+                            skip_album = True
+                            if verbose:
+                                print(f"      ⏩ Skipping recently scanned album (last scan: {last_scan_date.strftime('%Y-%m-%d')})")
+            except Exception as e:
+                logging.debug(f"Error checking album skip status: {e}")
+        
+        if skip_album:
+            continue
+        
+        # Infer album context (is_live, is_unplugged, etc.)
+        album_ctx = infer_album_context(album_name)
+        
+        # Collect popularity scores for all tracks in the album
+        for t in album_tracks:
+            track_id = t.get("id", "")
+            title = t.get("title", "")
+            
+            # Initialize track dict
+            t["artist_name"] = artist_name
+            t["album_name"] = album_name
+            t["spotify_score"] = 0
+            t["lastfm_score"] = 0
+            t["listenbrainz_score"] = 0
+            t["age_score"] = 0
+            t["score"] = 0.0
+            t["stars"] = 1
+            t["is_single"] = False
+            t["single_sources"] = []
+            t["single_confidence"] = "low"
+            
+            # Get Spotify popularity
+            try:
+                spotify_results = search_spotify_track(title, artist_name, album_name)
+                if spotify_results:
+                    best_match = select_best_spotify_match(spotify_results, title, album_ctx)
+                    t["spotify_score"] = best_match.get("popularity", 0)
+                    t["spotify_popularity"] = best_match.get("popularity", 0)
+                    
+                    # Check if it's a Spotify single
+                    spotify_album = best_match.get("album", {})
+                    if spotify_album.get("album_type") == "single":
+                        t["is_spotify_single"] = True
+                        t["spotify_album_type"] = "single"
+                    t["spotify_total_tracks"] = spotify_album.get("total_tracks", 0)
+            except Exception as e:
+                if verbose:
+                    logging.debug(f"Spotify lookup failed for '{title}': {e}")
+            
+            # Get Last.fm popularity
+            try:
+                lastfm_info = get_lastfm_track_info(artist_name, title)
+                if lastfm_info and lastfm_info.get("track_play"):
+                    # Normalize Last.fm playcount to 0-100 scale
+                    lastfm_playcount = int(lastfm_info["track_play"])
+                    t["lastfm_score"] = min(100, lastfm_playcount // 1000)  # 1000 plays = 1 point
+                    t["lastfm_track_playcount"] = lastfm_playcount
+                    # Store ratio for adaptive weighting
+                    t["lastfm_ratio"] = t["lastfm_score"]
+            except Exception as e:
+                if verbose:
+                    logging.debug(f"Last.fm lookup failed for '{title}': {e}")
+            
+            # Get ListenBrainz score
+            try:
+                lb_score = get_listenbrainz_score(artist_name, title)
+                if lb_score:
+                    t["listenbrainz_score"] = lb_score
+            except Exception as e:
+                if verbose:
+                    logging.debug(f"ListenBrainz lookup failed for '{title}': {e}")
+            
+            # Calculate age score if we have release date
+            if t.get("year"):
+                t["age_score"] = score_by_age(t.get("year"))
+        
+        # Normalize scores by album median
+        # Collect all non-zero scores
+        spotify_scores = [t.get("spotify_score", 0) for t in album_tracks if t.get("spotify_score", 0) > 0]
+        lastfm_scores = [t.get("lastfm_score", 0) for t in album_tracks if t.get("lastfm_score", 0) > 0]
+        lb_scores = [t.get("listenbrainz_score", 0) for t in album_tracks if t.get("listenbrainz_score", 0) > 0]
+        
+        # Calculate medians for normalization
+        from statistics import median
+        spotify_median = median(spotify_scores) if spotify_scores else 50
+        lastfm_median = median(lastfm_scores) if lastfm_scores else 50
+        lb_median = median(lb_scores) if lb_scores else 50
+        
+        # Compute adaptive weights per album
+        base_weights = {
+            'spotify': SPOTIFY_WEIGHT,
+            'lastfm': LASTFM_WEIGHT,
+            'listenbrainz': LISTENBRAINZ_WEIGHT
+        }
+        adaptive_weights = compute_adaptive_weights(album_tracks, base_weights, clamp=(CLAMP_MIN, CLAMP_MAX))
+        
+        # Calculate final scores with adaptive weights
+        for t in album_tracks:
+            spotify_score = t.get("spotify_score", 0)
+            lastfm_score = t.get("lastfm_score", 0)
+            lb_score = t.get("listenbrainz_score", 0)
+            age_score = t.get("age_score", 0)
+            
+            # Normalize by album median, then weight
+            spotify_norm = (spotify_score / spotify_median) if spotify_median > 0 else 0
+            lastfm_norm = (lastfm_score / lastfm_median) if lastfm_median > 0 else 0
+            lb_norm = (lb_score / lb_median) if lb_median > 0 else 0
+            
+            # Calculate weighted final score
+            final_score = (
+                spotify_norm * adaptive_weights['spotify'] +
+                lastfm_norm * adaptive_weights['lastfm'] +
+                lb_norm * adaptive_weights['listenbrainz'] +
+                age_score * AGE_WEIGHT
+            )
+            
+            t["score"] = final_score
+            t["adaptive_weight_spotify"] = adaptive_weights['spotify']
+            t["adaptive_weight_lastfm"] = adaptive_weights['lastfm']
+            t["adaptive_weight_listenbrainz"] = adaptive_weights['listenbrainz']
+            t["album_median_score"] = spotify_median  # Store for reference
+        
+        # Single detection for each track
+        single_sources_list = []
+        for t in album_tracks:
+            result = rate_track_single_detection(
+                track=t,
+                artist_name=artist_name,
+                album_ctx=album_ctx,
+                config={"features": config.get("features", {})},
+                title_sim_threshold=TITLE_SIM_THRESHOLD,
+                count_short_release_as_match=COUNT_SHORT_RELEASE_AS_MATCH,
+                use_lastfm_single=use_lastfm_single,
+                verbose=verbose
+            )
+            
+            # Track sources for this track's single detection
+            if t.get("is_single"):
+                sources_used = t.get("single_sources", [])
+                if sources_used:
+                    single_sources_list.extend(sources_used)
+        
+        # Assign stars based on is_single flag and scores
+        # Singles get automatic 5 stars
+        for t in album_tracks:
+            if t.get("is_single"):
+                t["stars"] = 5
+            else:
+                # Assign stars based on z-score bands relative to album
+                # Calculate z-score for non-singles
+                album_scores = [track.get("score", 0) for track in album_tracks]
+                track_score = t.get("score", 0)
+                
+                # Simple percentile-based star assignment
+                sorted_scores = sorted(album_scores, reverse=True)
+                if track_score in sorted_scores:
+                    percentile = sorted_scores.index(track_score) / len(sorted_scores) if sorted_scores else 0.5
+                    
+                    if percentile < 0.1:  # Top 10%
+                        t["stars"] = 4
+                    elif percentile < 0.3:  # Top 30%
+                        t["stars"] = 3
+                    elif percentile < 0.7:  # Top 70%
+                        t["stars"] = 2
+                    else:
+                        t["stars"] = 1
+        
+        # Save all tracks to database
+        for t in album_tracks:
+            t["last_scanned"] = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
+            try:
+                save_to_db(t)
+            except Exception as e:
+                logging.error(f"Failed to save track '{t.get('title', '')}': {e}")
+        
+        # Collect unique sources used for this album
+        unique_sources = list(set(single_sources_list))
+        source_str = ", ".join(unique_sources) if unique_sources else "None"
+        
         # Log singles detection scan for this album
-        log_album_scan(artist_name, album_name, 'singles', len(sorted_album), 'completed')
-    # ...existing code...
+        log_album_scan(artist_name, album_name, 'singles', len(album_tracks), 'completed', source_str)
+        
+        # Update rated_map
+        rated_map.update({t["id"]: t for t in album_tracks})
+        
+        if verbose:
+            singles_count = sum(1 for t in album_tracks if t.get("is_single"))
+            print(f"      ✓ Processed {len(album_tracks)} tracks, {singles_count} singles detected")
+    
+    # --------------------------------------------------------------------------
+    # Essential Artist Playlist Creation (after all albums processed)
+    # --------------------------------------------------------------------------
+    try:
+        # Collect all tracks for this artist from database to create playlist
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, stars, score FROM tracks 
+            WHERE artist = ?
+        """, (artist_name,))
+        all_tracks = cursor.fetchall()
+        conn.close()
+        
+        # Convert to list of dicts for create_or_update_playlist_for_artist
+        tracks_list = [{"id": t[0], "title": t[1], "stars": t[2], "score": t[3]} for t in all_tracks]
+        
+        # Use existing function to create/update Essential playlist
+        create_or_update_playlist_for_artist(artist_name, tracks_list)
+        
+        # Log the result
+        five_star_count = sum(1 for t in tracks_list if t.get("stars") == 5)
+        if five_star_count >= 10:
+            if verbose:
+                print(f"\n   ⭐ Created 'Essential {artist_name}' playlist ({five_star_count} five-star songs)")
+        elif len(tracks_list) >= 100:
+            if verbose:
+                print(f"\n   ⭐ Created 'Essential {artist_name}' playlist (top 10% by rating)")
+        else:
+            if verbose:
+                print(f"\n   ℹ️ Not enough tracks for Essential playlist ({len(tracks_list)} total, {five_star_count} five-star)")
+    except Exception as e:
+        logging.error(f"Failed to create Essential playlist for {artist_name}: {e}")
+    
     if aux_pool:
         aux_pool.shutdown(wait=False)
 
-    print(f"âœ… Finished rating for artist: {artist_name}")
+    print(f"✅ Finished rating for artist: {artist_name}")
     return rated_map
 
 def _self_test_single_gate():

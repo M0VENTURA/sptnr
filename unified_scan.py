@@ -170,7 +170,7 @@ def unified_scan_pipeline(
         artist_filter: Optional artist name to filter by
         progress_callback: Optional callback function for progress updates
     """
-    from popularity import scan_popularity
+    from popularity import popularity_scan
     from start import rate_artist, build_artist_index
     from scan_history import log_album_scan
     
@@ -248,31 +248,8 @@ def unified_scan_pipeline(
             for album_idx, album_name in enumerate(albums, 1):
                 progress.current_album = album_name
                 logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
-                # Phase 1: Popularity Detection
-                progress.current_phase = "popularity"
-                progress.save()
-                if progress_callback:
-                    progress_callback(progress)
-                logging.info(f"      → Phase: Popularity detection")
-                try:
-                    scan_popularity(verbose=verbose, artist=artist_name)
-                except Exception as e:
-                    logging.error(f"      ✗ Popularity scan failed: {e}")
-                # Phase 2: Single Detection & Rating
-                progress.current_phase = "singles"
-                progress.save()
-                if progress_callback:
-                    progress_callback(progress)
-                logging.info(f"      → Phase: Single detection & rating")
-                try:
-                    rate_artist(artist_id, artist_name, verbose=verbose, force=force)
-                    # Log singles detection scan
-                    log_album_scan(artist_name, album_name, 'singles', album_track_count, 'completed')
-                except Exception as e:
-                    logging.error(f"      ✗ Rating failed: {e}")
-                # Log unified scan for this album
-                log_album_scan(artist_name, album_name, 'unified', album_track_count, 'completed')
-                # Update track count
+                
+                # Get track count for this album first
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
@@ -281,6 +258,36 @@ def unified_scan_pipeline(
                 """, (artist_name, album_name))
                 album_track_count = cursor.fetchone()['count']
                 conn.close()
+                
+                # Phase 1: Popularity Detection
+                progress.current_phase = "popularity"
+                progress.save()
+                if progress_callback:
+                    progress_callback(progress)
+                logging.info(f"      → Phase: Popularity detection")
+                try:
+                    popularity_scan(verbose=verbose)
+                    # Log popularity scan for this album
+                    log_album_scan(artist_name, album_name, 'popularity', album_track_count, 'completed', 'Spotify, Last.fm, ListenBrainz')
+                except Exception as e:
+                    logging.error(f"      ✗ Popularity scan failed: {e}")
+                    log_album_scan(artist_name, album_name, 'popularity', 0, 'error', str(e))
+                    
+                # Phase 2: Single Detection & Rating
+                progress.current_phase = "singles"
+                progress.save()
+                if progress_callback:
+                    progress_callback(progress)
+                logging.info(f"      → Phase: Single detection & rating")
+                try:
+                    rate_artist(artist_id, artist_name, verbose=verbose, force=force)
+                    # Log singles detection scan - source will be added by rate_artist
+                except Exception as e:
+                    logging.error(f"      ✗ Rating failed: {e}")
+                    log_album_scan(artist_name, album_name, 'singles', 0, 'error', str(e))
+                    
+                # Log unified scan for this album
+                log_album_scan(artist_name, album_name, 'unified', album_track_count, 'completed')
                 progress.processed_tracks += album_track_count
                 if progress.total_tracks > 0:
                     progress.processed_files = int((progress.processed_tracks / progress.total_tracks) * progress.total_files)
