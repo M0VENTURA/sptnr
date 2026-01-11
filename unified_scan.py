@@ -12,15 +12,36 @@ import time
 from datetime import datetime
 from typing import Dict, Optional, Callable
 
-# Setup logging
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(message)s",
-    handlers=[
-        logging.FileHandler("/config/unified_scan.log"),
-        logging.StreamHandler()
-    ]
-)
+# --- Unified Logger Setup (shared with start.py/popularity.py) ---
+LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
+UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
+SERVICE_PREFIX = "unified_scan_"
+
+class ServicePrefixFormatter(logging.Formatter):
+    def __init__(self, prefix, fmt=None):
+        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
+        self.prefix = prefix
+    def format(self, record):
+        record.msg = f"{self.prefix}{record.msg}"
+        return super().format(record)
+
+formatter = ServicePrefixFormatter(SERVICE_PREFIX)
+file_handler = logging.FileHandler(LOG_PATH)
+file_handler.setFormatter(formatter)
+stream_handler = logging.StreamHandler()
+stream_handler.setFormatter(formatter)
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+
+# Dedicated logger for unified_scan.log
+unified_logger = logging.getLogger("unified_scan")
+unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
+unified_file_handler.setFormatter(formatter)
+unified_logger.setLevel(logging.INFO)
+if not unified_logger.hasHandlers():
+    unified_logger.addHandler(unified_file_handler)
+
+def log_unified(msg):
+    unified_logger.info(msg)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
@@ -174,10 +195,10 @@ def unified_scan_pipeline(
     from start import rate_artist, build_artist_index
     from scan_history import log_album_scan
     
-    logging.info("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
-    logging.info(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    logging.info("=" * 70)
-    logging.info(f"🟢 Unified scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_unified("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
+    log_unified(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_unified("=" * 70)
+    log_unified(f"🟢 Unified scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Initialize progress
     progress = ScanProgress()
@@ -229,8 +250,8 @@ def unified_scan_pipeline(
         for idx, artist_name in enumerate(artists, 1):
             progress.current_artist = artist_name
             progress.processed_artists = idx - 1
-            logging.info("")
-            logging.info(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
+            log_unified("")
+            log_unified(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
             logging.info(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
             # Get artist ID
             artist_id = artist_index.get(artist_name)
@@ -250,7 +271,7 @@ def unified_scan_pipeline(
             conn.close()
             for album_idx, album_name in enumerate(albums, 1):
                 progress.current_album = album_name
-                logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
+                log_unified(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
                 logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
                 # Get track count for this album first
                 conn = get_db_connection()
@@ -266,13 +287,13 @@ def unified_scan_pipeline(
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                logging.info(f"      → Phase: Popularity detection")
+                log_unified(f"      → Phase: Popularity detection")
                 logging.info(f"      → Phase: Popularity detection")
                 try:
                     popularity_scan(verbose=verbose)
                     # Log popularity scan for this album
                     log_album_scan(artist_name, album_name, 'popularity', album_track_count, 'completed', 'Spotify, Last.fm, ListenBrainz')
-                    logging.info(f"      ✓ Popularity scan complete for album '{album_name}' ({album_track_count} tracks)")
+                    log_unified(f"      ✓ Popularity scan complete for album '{album_name}' ({album_track_count} tracks)")
                 except Exception as e:
                     logging.error(f"      ✗ Popularity scan failed: {e}")
                     log_album_scan(artist_name, album_name, 'popularity', 0, 'error', str(e))
@@ -282,12 +303,12 @@ def unified_scan_pipeline(
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                logging.info(f"      → Phase: Single detection & rating")
+                log_unified(f"      → Phase: Single detection & rating")
                 logging.info(f"      → Phase: Single detection & rating")
                 try:
                     rate_artist(artist_id, artist_name, verbose=verbose, force=force)
                     # Log singles detection scan - source will be added by rate_artist
-                    logging.info(f"      ✓ Singles detection and rating complete for album '{album_name}'")
+                    log_unified(f"      ✓ Singles detection and rating complete for album '{album_name}'")
                 except Exception as e:
                     logging.error(f"      ✗ Rating failed: {e}")
                     log_album_scan(artist_name, album_name, 'singles', 0, 'error', str(e))
@@ -301,7 +322,7 @@ def unified_scan_pipeline(
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                logging.info(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
+                log_unified(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
                 logging.info(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
             # --- Essential Artist Smart Playlist Creation ---
             try:
@@ -343,11 +364,11 @@ def unified_scan_pipeline(
                     playlist_path = os.path.join(playlists_dir, f"Essential {artist_name}.nsp")
                     with open(playlist_path, "w", encoding="utf-8") as pf:
                         json.dump(playlist_json, pf, indent=2)
-                    logging.info(f"✓ Essential Artist playlist created: {playlist_path}")
+                    log_unified(f"✓ Essential Artist playlist created: {playlist_path}")
                     logging.info(f"✓ Essential Artist playlist created: {playlist_path}")
             except Exception as e:
                 logging.error(f"Failed to create Essential Artist playlist for {artist_name}: {e}")
-                logging.info(f"✗ Failed to create Essential Artist playlist for {artist_name}: {e}")
+                log_unified(f"✗ Failed to create Essential Artist playlist for {artist_name}: {e}")
             # --- End Essential Artist Smart Playlist Creation ---
             progress.processed_artists += 1
             progress.save()
@@ -355,12 +376,12 @@ def unified_scan_pipeline(
                 progress_callback(progress)
             time.sleep(1)
         
-        logging.info("")
-        logging.info("🟢 ==================== UNIFIED SCAN COMPLETE ==================== 🟢")
-        logging.info(f"🏁 End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        logging.info(f"✅ Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
-        logging.info("=" * 70)
-        logging.info(f"🟢 Unified scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
+        log_unified("")
+        log_unified("🟢 ==================== UNIFIED SCAN COMPLETE ==================== 🟢")
+        log_unified(f"🏁 End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        log_unified(f"✅ Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
+        log_unified("=" * 70)
+        log_unified(f"🟢 Unified scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
         
     except Exception as e:
         logging.error(f"Unified scan failed: {e}")
