@@ -86,6 +86,14 @@ except ImportError:
     def log_album_scan(*args, **kwargs):
         pass  # Fallback if scan_history not available
 
+# --- DEBUG: Test log_unified and print log path ---
+if __name__ == "__main__":
+    try:
+        print("UNIFIED_LOG_PATH:", UNIFIED_LOG_PATH)
+        log_unified("TEST ENTRY: log_unified() at script start")
+    except Exception as e:
+        print("log_unified() test failed:", e)
+
 def get_db_connection():
     """Get database connection with WAL mode"""
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
