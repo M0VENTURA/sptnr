@@ -148,6 +148,7 @@ def popularity_scan(verbose: bool = False):
             FROM tracks
             WHERE popularity_score IS NULL OR popularity_score = 0
             ORDER BY artist, title
+            LIMIT 100
         """)
 
         tracks = cursor.fetchall()
@@ -155,7 +156,7 @@ def popularity_scan(verbose: bool = False):
 
         scanned_count = 0
         album_map = {}
-        for track in tracks:
+        for idx, track in enumerate(tracks, 1):
             track_id = track["id"]
             artist = track["artist"]
             title = track["title"]
@@ -163,6 +164,10 @@ def popularity_scan(verbose: bool = False):
 
             if verbose:
                 log_verbose(f"Scanning: {artist} - {title}")
+
+            # Progress log every 10 tracks
+            if idx % 10 == 0:
+                log_unified(f"Progress: scanned {idx} of {len(tracks)} tracks...")
 
             # Try to get popularity from Spotify
             spotify_score = 0
