@@ -1639,8 +1639,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             continue
             
         if verbose:
-            print(f"
-   💿 Album: {album_name}")
+            print(f"\n   💿 Album: {album_name}")
         
         # Fetch album tracks
         try:
