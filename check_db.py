@@ -255,6 +255,12 @@ def update_schema(db_path):
             status TEXT DEFAULT 'completed'
         );
     """)
+    # ✅ Ensure 'source' column exists in scan_history
+    cursor.execute("PRAGMA table_info(scan_history);")
+    scan_history_columns = [row[1] for row in cursor.fetchall()]
+    if 'source' not in scan_history_columns:
+        cursor.execute("ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT '';")
+        print("✅ Added missing 'source' column to scan_history table.")
     
     # ✅ Ensure missing_releases table exists
     cursor.execute("""
