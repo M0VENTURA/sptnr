@@ -5,6 +5,8 @@ Calculates popularity scores and updates database.
 """
 
 
+
+
 import os
 import sqlite3
 import logging
