@@ -433,8 +433,11 @@ USE_SEARCH3 = "search3" in SUPPORTED_EXTENSIONS
 
 # âœ… Logging setup
 
+
+# --- Dual Logger Setup: sptnr.log and unified_scan.log ---
 import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
+UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
 VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
 SERVICE_PREFIX = "start_"
 
@@ -449,12 +452,17 @@ class ServicePrefixFormatter(logging.Formatter):
 formatter = ServicePrefixFormatter(SERVICE_PREFIX)
 file_handler = logging.FileHandler(LOG_PATH)
 file_handler.setFormatter(formatter)
+unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
+unified_file_handler.setFormatter(formatter)
 stream_handler = logging.StreamHandler()
 stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+logging.basicConfig(level=logging.INFO, handlers=[file_handler, unified_file_handler, stream_handler])
 
 def log_basic(msg):
     logging.info(msg)
+
+def log_unified(msg):
+    logging.getLogger().info(msg)
 
 def log_verbose(msg):
     if VERBOSE:
@@ -1023,7 +1031,7 @@ def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
             "sort": "random"
         }
         _create_nsp_file(playlist_name, playlist_data)
-        logging.info(f"Essential playlist created for '{artist}' (5â˜… essentials)")
+        log_unified(f"Essential playlist created for '{artist}' (5â˜… essentials)")
         return
 
     # CASE B â€” 100+ total tracks â†’ top 10% by rating
@@ -1038,10 +1046,10 @@ def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
             "limit": limit
         }
         _create_nsp_file(playlist_name, playlist_data)
-        logging.info(f"Essential playlist created for '{artist}' (top 10% by rating)")
+        log_unified(f"Essential playlist created for '{artist}' (top 10% by rating)")
         return
 
-    logging.info(
+    log_unified(
         f"No Essential playlist created for '{artist}' "
         f"(total={total_tracks}, fiveâ˜…={len(five_star_tracks)})"
     )
