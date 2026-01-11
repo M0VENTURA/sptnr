@@ -123,6 +123,7 @@ def popularity_scan(verbose: bool = False):
     log_basic("=" * 60)
     log_basic("Popularity Scanner Started")
     log_basic("=" * 60)
+    log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
     try:
@@ -204,6 +205,7 @@ def popularity_scan(verbose: bool = False):
 
     finally:
         log_basic("=" * 60)
+        log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
     import argparse

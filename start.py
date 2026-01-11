@@ -1979,6 +1979,8 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
             f.write(str(os.getpid()))
     except Exception as e:
         logging.warning(f"Could not create scan lock file: {e}")
+    # Log scan start to unified log
+    log_unified(f"🟢 SPTNR scan started: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # âœ… Reload config on each run
     config = load_config()
@@ -2080,8 +2082,10 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
                 conn.close()
                 print(f"âœ… Cache cleared for artist '{name}'")
 
+            log_unified(f"🎤 Starting rating for artist: {name} (ID: {artist_info['id']}) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
             rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
             print(f"âœ… Completed rating for {name}. Tracks rated: {len(rated)}")
+            log_unified(f"🎤 Completed rating for artist: {name} (ID: {artist_info['id']}) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Tracks rated: {len(rated)}")
 
             album_count = len(fetch_artist_albums(artist_info['id']))
             track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
@@ -2261,6 +2265,8 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
             os.remove(scan_lock_path)
     except Exception as e:
         logging.warning(f"Could not remove scan lock file: {e}")
+    # Log scan completion to unified log
+    log_unified(f"✅ SPTNR scan complete: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 # --- CLI Handling ---
