@@ -42,6 +42,11 @@ if not unified_logger.hasHandlers():
 
 def log_unified(msg):
     unified_logger.info(msg)
+    for handler in unified_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
