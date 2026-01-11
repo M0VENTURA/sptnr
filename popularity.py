@@ -48,8 +48,10 @@ unified_logger = logging.getLogger("unified_scan")
 unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
 unified_file_handler.setFormatter(formatter)
 unified_logger.setLevel(logging.INFO)
-if not unified_logger.hasHandlers():
-    unified_logger.addHandler(unified_file_handler)
+# Always add the file handler (even if handlers exist)
+unified_logger.addHandler(unified_file_handler)
+unified_logger.propagate = False
+print("unified_logger handlers:", unified_logger.handlers)
 
 def log_basic(msg):
     logging.info(msg)
