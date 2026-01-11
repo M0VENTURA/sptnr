@@ -105,143 +105,119 @@
           {% endfor %}
         {% else %}
           <!-- No users yet, show empty message -->
-          <div class="alert alert-info" id="emptyUsersMessage">
-            <i class="bi bi-info-circle"></i> No users configured yet. Click "Add Another User" to get started.
-          </div>
-        {% endif %}
-      </div>
-    </div>
-  </div>
 
-  <!-- qBittorrent Section -->
-  <div class="card shadow-sm mb-3">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0">
-        <i class="bi bi-download"></i> qBittorrent
-        <span class="float-end">
-          <div class="form-check form-switch d-inline-block">
-            <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="qbit_enabled">Enabled</label>
-          </div>
-        </span>
-      </h5>
-      <small class="text-muted">BitTorrent client for searching and downloading releases</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Web URL</label>
-          <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
-          <div class="form-text">URL to your qBittorrent Web UI</div>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Username</label>
-          <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Password</label>
-          <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
-        </div>
-      </div>
-    </div>
-  </div>
+          // --- BEGIN: Dynamic Config Editor for All Options ---
+          // Descriptions for config.yaml options (top-level and nested)
+          const CONFIG_DESCRIPTIONS = {
+            navidrome: 'Navidrome music server connection settings.',
+            qbittorrent: 'qBittorrent integration for searching and downloading releases.',
+            slskd: 'Soulseek (slskd) integration for P2P music file sharing.',
+            downloads: 'Folder path for downloaded music files.',
+            api_integrations: 'Enable/disable and configure external music APIs.',
+            database: 'Database file path and options.',
+            logging: 'Logging level, file, and console output.',
+            features: 'Advanced feature flags and detection/scoring knobs.',
+            weights: 'Relative weights for scoring sources.',
+            // Nested
+            spotify: 'Spotify API credentials.',
+            lastfm: 'Last.fm API credentials.',
+            listenbrainz: 'ListenBrainz API (public, no key needed).',
+            discogs: 'Discogs API token.',
+            musicbrainz: 'MusicBrainz API (public, no key needed).',
+            audiodb: 'AudioDB API key (optional).',
+            google: 'Google Custom Search API (optional).',
+            youtube: 'YouTube API key (optional).',
+          };
 
-  <!-- Downloads Section -->
-  <div class="card shadow-sm mb-3">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0"><i class="bi bi-folder-down"></i> Downloads</h5>
-      <small class="text-muted">Download folder configuration</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Downloads Folder Path</label>
-          <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
-          <div class="form-text">Path where downloaded files are stored. Used for monitoring downloads and building the library.</div>
-        </div>
-      </div>
-    </div>
-  </div>
+          function renderConfigEditor(config) {
+            let html = '<div class="card shadow-sm mb-3">';
+            html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
+            html += '<h5 class="mb-0"><i class="bi bi-gear"></i> All Configuration Options</h5>';
+            html += '<small class="text-muted">Edit all config.yaml options below. Hover for descriptions.</small>';
+            html += '</div>';
+            html += '<div class="card-body">';
+            html += '<form id="allConfigForm"><div class="row g-3">';
 
-  <!-- Soulseek (slskd) Section -->
-  <div class="card shadow-sm mb-3">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0">
-        <i class="bi bi-cloud-download"></i> Soulseek (slskd)
-        <span class="float-end">
-          <div class="form-check form-switch d-inline-block">
-            <input class="form-check-input" type="checkbox" id="slskd_enabled" {% if config.get('slskd', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="slskd_enabled">Enabled</label>
-          </div>
-        </span>
-      </h5>
-      <small class="text-muted">P2P music file sharing network</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Web URL</label>
-          <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
-          <div class="form-text">URL to your slskd Web UI</div>
-        </div>
-        <div class="col-12">
-          <label class="form-label">API Key</label>
-          <input type="password" class="form-control" id="slskd_api_key" placeholder="••••••••" value="{{ config.get('slskd', {}).get('api_key', '') }}">
-          <div class="form-text">Found in Settings > API</div>
-        </div>
-      </div>
-    </div>
-  </div>
+            for (const [key, value] of Object.entries(config)) {
+              if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
+                html += `<div class="col-12 mt-3"><h6>${key.charAt(0).toUpperCase() + key.slice(1)}</h6>`;
+                if (CONFIG_DESCRIPTIONS[key]) {
+                  html += `<div class="text-muted small mb-2">${CONFIG_DESCRIPTIONS[key]}</div>`;
+                }
+                for (const [subkey, subval] of Object.entries(value)) {
+                  html += '<div class="mb-2">';
+                  html += `<label class="form-label">${subkey}</label>`;
+                  if (CONFIG_DESCRIPTIONS[subkey]) {
+                    html += `<div class="text-muted small mb-1">${CONFIG_DESCRIPTIONS[subkey]}</div>`;
+                  }
+                  html += renderConfigInput(`${key}.${subkey}`, subval);
+                  html += '</div>';
+                }
+                html += '</div>';
+              } else {
+                html += '<div class="col-md-4">';
+                html += `<label class="form-label">${key}</label>`;
+                if (CONFIG_DESCRIPTIONS[key]) {
+                  html += `<div class="text-muted small mb-1">${CONFIG_DESCRIPTIONS[key]}</div>`;
+                }
+                html += renderConfigInput(key, value);
+                html += '</div>';
+              }
+            }
 
-  <!-- Authentik SSO Section -->
-  <div class="card shadow-sm mb-3">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0">
-        <i class="bi bi-shield-lock"></i> Authentik SSO
-        <span class="float-end">
-          <div class="form-check form-switch d-inline-block">
-            <input class="form-check-input" type="checkbox" id="authentik_enabled" {% if config.get('authentik', {}).get('enabled') %}checked{% endif %}>
-            <label class="form-check-label" for="authentik_enabled">Enabled</label>
-          </div>
-        </span>
-      </h5>
-      <small class="text-muted">Single Sign-On authentication provider</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
-        <div class="col-12">
-          <label class="form-label">Server URL</label>
-          <input type="text" class="form-control" id="authentik_server_url" placeholder="https://auth.example.com" value="{{ config.get('authentik', {}).get('server_url', '') }}">
-          <div class="form-text">URL to your Authentik server</div>
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Client ID</label>
-          <input type="text" class="form-control" id="authentik_client_id" placeholder="client_id" value="{{ config.get('authentik', {}).get('client_id', '') }}">
-        </div>
-        <div class="col-12 col-sm-6">
-          <label class="form-label">Client Secret</label>
-          <input type="password" class="form-control" id="authentik_client_secret" placeholder="••••••••" value="{{ config.get('authentik', {}).get('client_secret', '') }}">
-        </div>
-      </div>
-    </div>
-  </div>
+            html += '</div></form></div></div>';
+            return html;
+          }
 
-  <!-- Bookmarks Section -->
-  <div class="card shadow-sm mb-3">
-    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
-      <h5 class="mb-0">
-        <i class="bi bi-bookmark-star"></i> Bookmarks
-        <span class="float-end">
-          <div class="form-check form-switch d-inline-block">
-            <input class="form-check-input" type="checkbox" id="bookmarks_enabled" {% if config.get('bookmarks', {}).get('enabled', True) %}checked{% endif %}>
-            <label class="form-check-label" for="bookmarks_enabled">Enabled</label>
-          </div>
-        </span>
-      </h5>
-      <small class="text-muted">Quick access to favorite artists, albums, and tracks</small>
-    </div>
-    <div class="card-body">
-      <div class="row g-3">
+          function renderConfigInput(name, value) {
+            if (typeof value === 'boolean') {
+              return `<select class="form-select config-field" name="${name}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+            } else if (typeof value === 'number') {
+              return `<input type="number" step="any" class="form-control config-field" name="${name}" value="${value}">`;
+            } else if (Array.isArray(value)) {
+              return `<input type="text" class="form-control config-field" name="${name}" value="${value.join(', ')}">`;
+            } else {
+              return `<input type="text" class="form-control config-field" name="${name}" value="${value}">`;
+            }
+          }
+
+          function saveAllConfig() {
+            const config = window.currentConfig || {};
+            // Gather all config fields
+            document.querySelectorAll('.config-field').forEach(input => {
+              const name = input.name;
+              let val = input.value;
+              if (input.tagName === 'SELECT') {
+                val = (val === 'true');
+              } else if (!isNaN(val) && val !== '') {
+                val = Number(val);
+              }
+              // Support nested keys (e.g., navidrome.base_url)
+              const parts = name.split('.');
+              if (parts.length === 2) {
+                if (!config[parts[0]]) config[parts[0]] = {};
+                config[parts[0]][parts[1]] = val;
+              } else {
+                config[name] = val;
+              }
+            });
+            // Save via AJAX
+            fetch('/config/save-json', {
+              method: 'POST',
+              headers: {'Content-Type': 'application/json'},
+              body: JSON.stringify(config)
+            })
+            .then(r => r.json())
+            .then(resp => {
+              if (resp.success) {
+                alert('Configuration saved!');
+                location.reload();
+              } else {
+                alert('Save failed: ' + (resp.error || 'Unknown error'));
+              }
+            });
+          }
+          // --- END: Dynamic Config Editor for All Options ---
         <div class="col-12">
           <label class="form-label">Max Bookmarks</label>
           <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
@@ -627,25 +603,10 @@ function buildConfigObject() {
       custom_links: getCustomBookmarkLinks()
     },
     api_integrations: {
-      // Removed invalid JS/TS/JSX block. If you need to show config structure, use a <pre> or <code> block, or render as Jinja2/HTML. 
-      // Assign config sections using valid JS
-      config.youtube = {
-        enabled: document.getElementById('youtube_enabled').checked,
-        api_key: document.getElementById('youtube_api_key').value
-      };
-      config.downloads = {
-        folder: document.getElementById('downloads_folder').value
-      };
-      config.database = {
-        path: document.getElementById('db_path').value,
-        vacuum_on_start: document.getElementById('db_vacuum').checked
-      };
-      config.logging = {
-        level: document.getElementById('log_level').value,
-        file: document.getElementById('log_file').value,
-        console: document.getElementById('log_console').value === 'true'
-      };
-  };
+      // ...existing code for api_integrations if needed...
+    },
+    // The following are handled by the new dynamic config editor and do not need to be set here:
+    // youtube, downloads, database, logging
 }
 
 function saveConfig() {
@@ -1036,11 +997,22 @@ function saveFeaturesWeights() {
 // On page load, render features/weights section
 window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
 document.addEventListener('DOMContentLoaded', function() {
+  // Render new all-options config editor at the top
+  const configSection = document.createElement('div');
+  configSection.innerHTML = renderConfigEditor(window.currentConfig);
+  document.body.insertBefore(configSection, document.body.firstChild);
+  // Render features/weights section as before
   const features = window.currentConfig.features || {};
   const weights = window.currentConfig.weights || {};
   const section = document.createElement('div');
   section.innerHTML = renderFeaturesWeights(features, weights);
   document.body.appendChild(section);
+  // Add save button for all config
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn btn-primary my-3';
+  saveBtn.textContent = 'Save All Configuration';
+  saveBtn.onclick = saveAllConfig;
+  configSection.appendChild(saveBtn);
 });
 </script>
 </script>
