@@ -120,9 +120,11 @@ def api_unified_log():
         if not found_unified and os.path.exists(sptnr_log_full):
             with open(sptnr_log_full, "r", encoding="utf-8", errors="ignore") as f:
                 log_lines += f.readlines()
-        # Filter out web response logs unless verbose is enabled
+        # Filter out HTTP request/response logs unless verbose is enabled
         if not verbose:
-            log_lines = [line for line in log_lines if not ("HTTP" in line or "GET /" in line or "POST /" in line or "200" in line or "404" in line or "500" in line)]
+            import re
+            http_log_pattern = re.compile(r'"(GET|POST|PUT|DELETE|PATCH) /api/.* HTTP/1\.[01]" (200|201|204|400|401|403|404|500|502|503)')
+            log_lines = [line for line in log_lines if not http_log_pattern.search(line)]
         # Only return the last N lines
         log_lines = log_lines[-lines:]
         return jsonify({"lines": [line.rstrip('\n') for line in log_lines]})
