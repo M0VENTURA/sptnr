@@ -282,6 +282,7 @@
                                 <i class="bi bi-disc"></i> Album
                             </th>
                             <th>Scan Type</th>
+                            <th>Source</th>
                             <th>Last Scanned</th>
                             <th class="text-center">Actions</th>
                         </tr>
@@ -307,11 +308,19 @@
                                     <span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>
                                 {% elif scan.scan_type == 'popularity' %}
                                     <span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>
+                                {% elif scan.scan_type == 'singles' %}
+                                    <span class="badge bg-warning text-dark"><i class="bi bi-star"></i> Singles</span>
                                 {% elif scan.scan_type == 'beets' %}
                                     <span class="badge bg-info text-dark"><i class="bi bi-disc"></i> Beets</span>
+                                {% elif scan.scan_type == 'unified' %}
+                                    <span class="badge bg-secondary"><i class="bi bi-layers"></i> Unified</span>
                                 {% else %}
                                     <span class="badge bg-secondary">{{ scan.scan_type }}</span>
                                 {% endif %}
+                            </td>
+                            <td data-label="Source" class="d-flex justify-content-between d-md-table-cell">
+                                <span class="d-md-none text-muted fw-bold">Source</span>
+                                <small class="text-muted">{{ scan.source if scan.source else '-' }}</small>
                             </td>
                             <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
                                 <span class="d-md-none text-muted fw-bold">Scanned</span>
@@ -325,7 +334,7 @@
                         </tr>
                         {% else %}
                         <tr>
-                            <td colspan="5" class="text-center text-muted">No recent scans yet</td>
+                            <td colspan="6" class="text-center text-muted">No recent scans yet</td>
                         </tr>
                         {% endfor %}
                     </tbody>

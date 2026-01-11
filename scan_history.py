@@ -13,16 +13,17 @@ import time
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 
-def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed"):
+def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed", source: str = ""):
     """
     Log an album scan to the scan_history table with retry logic for database locks.
     
     Args:
         artist: Artist name
         album: Album name
-        scan_type: Type of scan ('navidrome', 'popularity', or 'beets')
+        scan_type: Type of scan ('navidrome', 'popularity', 'singles', 'unified', or 'beets')
         tracks_processed: Number of tracks processed
         status: Status of the scan ('completed', 'error', 'skipped')
+        source: Optional source information (e.g., which APIs were used for detection)
     """
     logging.info(f"log_album_scan called: artist='{artist}', album='{album}', type={scan_type}, tracks={tracks_processed}, status={status}")
     
@@ -45,7 +46,8 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
                     scan_type TEXT NOT NULL,
                     scan_timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
                     tracks_processed INTEGER DEFAULT 0,
-                    status TEXT DEFAULT 'completed'
+                    status TEXT DEFAULT 'completed',
+                    source TEXT DEFAULT ''
                 )
             """)
             
@@ -61,9 +63,9 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             
             # Insert scan record
             conn.execute("""
-                INSERT INTO scan_history (artist, album, scan_type, tracks_processed, status)
-                VALUES (?, ?, ?, ?, ?)
-            """, (artist, album, scan_type, tracks_processed, status))
+                INSERT INTO scan_history (artist, album, scan_type, tracks_processed, status, source)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (artist, album, scan_type, tracks_processed, status, source))
             
             conn.commit()
             conn.close()
@@ -118,7 +120,7 @@ def get_recent_album_scans(limit: int = 10):
             return []
         
         cursor.execute("""
-            SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status
+            SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
             FROM scan_history
             ORDER BY scan_timestamp DESC
             LIMIT ?
@@ -132,7 +134,8 @@ def get_recent_album_scans(limit: int = 10):
                 'scan_type': row['scan_type'],
                 'scan_timestamp': row['scan_timestamp'],
                 'tracks_processed': row['tracks_processed'],
-                'status': row['status']
+                'status': row['status'],
+                'source': row['source'] if 'source' in row.keys() else ''
             })
         
         conn.close()
