@@ -120,9 +120,9 @@ def save_popularity_progress(processed_artists: int, total_artists: int):
 
 def popularity_scan(verbose: bool = False):
     """Detect track popularity from external sources (legacy function)"""
-    log_basic("=" * 60)
-    log_basic("Popularity Scanner Started")
-    log_basic("=" * 60)
+    log_unified("=" * 60)
+    log_unified("Popularity Scanner Started")
+    log_unified("=" * 60)
     log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
@@ -139,7 +139,7 @@ def popularity_scan(verbose: bool = False):
         """)
 
         tracks = cursor.fetchall()
-        log_basic(f"Found {len(tracks)} tracks to scan for popularity")
+        log_unified(f"Found {len(tracks)} tracks to scan for popularity")
 
         scanned_count = 0
         album_map = {}
@@ -197,14 +197,14 @@ def popularity_scan(verbose: bool = False):
         for (artist, album), tracks_processed in album_map.items():
             log_album_scan(artist, album, 'popularity', tracks_processed, 'completed')
 
-        log_basic(f"✅ Popularity scan completed: {scanned_count} tracks updated")
+        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
 
     except Exception as e:
-        log_basic(f"❌ Popularity scan failed: {str(e)}")
+        log_unified(f"❌ Popularity scan failed: {str(e)}")
         raise
 
     finally:
-        log_basic("=" * 60)
+        log_unified("=" * 60)
         log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 if __name__ == "__main__":
