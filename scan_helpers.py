@@ -7,7 +7,7 @@ import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from .start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
+from start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
 from colorama import Fore, Style
 
 try:
