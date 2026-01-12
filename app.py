@@ -1,9 +1,5 @@
-<<<<<<< HEAD
-
-
-# --- Unified Log API ---
-# Place all Flask route definitions after app = Flask(__name__)
-
+#!/usr/bin/env python3
+import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
 ALL_ENV_VARS = [
@@ -20,11 +16,6 @@ ALL_ENV_VARS = [
 def get_all_env_vars():
     # Return a dict of all relevant env vars and their current values
     return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
-
-
-# Place all Flask route definitions after app = Flask(__name__)
-
-#!/usr/bin/env python3
 import sqlite3
 import psycopg2
 import psycopg2.extras
