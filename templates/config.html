@@ -433,7 +433,7 @@ document.addEventListener('DOMContentLoaded', function() {
   var cancelBtn = document.getElementById('cancelBtn');
   if (cancelBtn) {
     cancelBtn.addEventListener('click', function(e) {
-      window.location.href = '{{ url_for('dashboard') }}';
+      window.location.href = "{{ url_for('dashboard') }}";
       e.preventDefault();
       return false;
     });
@@ -460,17 +460,16 @@ function buildConfigObject() {
   
   userCards.forEach((card, index) => {
     const user = {
-      username: card.querySelector('.user-nav-username').value,
+      user: card.querySelector('.user-nav-username').value,
       display_name: card.querySelector('.user-display-name').value,
-      navidrome_base_url: card.querySelector('.user-nav-url').value,
-      navidrome_password: card.querySelector('.user-nav-password').value,
+      base_url: card.querySelector('.user-nav-url').value,
+      pass: card.querySelector('.user-nav-password').value,
       spotify_client_id: card.querySelector('.user-spotify-id').value,
       spotify_client_secret: card.querySelector('.user-spotify-secret').value,
       listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
     };
-    
     // Only add user if it has at least username and Navidrome URL
-    if (user.username && user.navidrome_base_url) {
+    if (user.user && user.base_url) {
       navidrome_users.push(user);
     }
   });
