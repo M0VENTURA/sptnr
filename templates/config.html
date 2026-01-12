@@ -106,118 +106,6 @@
         {% else %}
           <!-- No users yet, show empty message -->
 
-          // --- BEGIN: Dynamic Config Editor for All Options ---
-          // Descriptions for config.yaml options (top-level and nested)
-          const CONFIG_DESCRIPTIONS = {
-            navidrome: 'Navidrome music server connection settings.',
-            qbittorrent: 'qBittorrent integration for searching and downloading releases.',
-            slskd: 'Soulseek (slskd) integration for P2P music file sharing.',
-            downloads: 'Folder path for downloaded music files.',
-            api_integrations: 'Enable/disable and configure external music APIs.',
-            database: 'Database file path and options.',
-            logging: 'Logging level, file, and console output.',
-            features: 'Advanced feature flags and detection/scoring knobs.',
-            weights: 'Relative weights for scoring sources.',
-            // Nested
-            spotify: 'Spotify API credentials.',
-            lastfm: 'Last.fm API credentials.',
-            listenbrainz: 'ListenBrainz API (public, no key needed).',
-            discogs: 'Discogs API token.',
-            musicbrainz: 'MusicBrainz API (public, no key needed).',
-            audiodb: 'AudioDB API key (optional).',
-            google: 'Google Custom Search API (optional).',
-            youtube: 'YouTube API key (optional).',
-          };
-
-          function renderConfigEditor(config) {
-            let html = '<div class="card shadow-sm mb-3">';
-            html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
-            html += '<h5 class="mb-0"><i class="bi bi-gear"></i> All Configuration Options</h5>';
-            html += '<small class="text-muted">Edit all config.yaml options below. Hover for descriptions.</small>';
-            html += '</div>';
-            html += '<div class="card-body">';
-            html += '<form id="allConfigForm"><div class="row g-3">';
-
-            for (const [key, value] of Object.entries(config)) {
-              if (typeof value === 'object' && value !== null && !Array.isArray(value)) {
-                html += `<div class="col-12 mt-3"><h6>${key.charAt(0).toUpperCase() + key.slice(1)}</h6>`;
-                if (CONFIG_DESCRIPTIONS[key]) {
-                  html += `<div class="text-muted small mb-2">${CONFIG_DESCRIPTIONS[key]}</div>`;
-                }
-                for (const [subkey, subval] of Object.entries(value)) {
-                  html += '<div class="mb-2">';
-                  html += `<label class="form-label">${subkey}</label>`;
-                  if (CONFIG_DESCRIPTIONS[subkey]) {
-                    html += `<div class="text-muted small mb-1">${CONFIG_DESCRIPTIONS[subkey]}</div>`;
-                  }
-                  html += renderConfigInput(`${key}.${subkey}`, subval);
-                  html += '</div>';
-                }
-                html += '</div>';
-              } else {
-                html += '<div class="col-md-4">';
-                html += `<label class="form-label">${key}</label>`;
-                if (CONFIG_DESCRIPTIONS[key]) {
-                  html += `<div class="text-muted small mb-1">${CONFIG_DESCRIPTIONS[key]}</div>`;
-                }
-                html += renderConfigInput(key, value);
-                html += '</div>';
-              }
-            }
-
-            html += '</div></form></div></div>';
-            return html;
-          }
-
-          function renderConfigInput(name, value) {
-            if (typeof value === 'boolean') {
-              return `<select class="form-select config-field" name="${name}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
-            } else if (typeof value === 'number') {
-              return `<input type="number" step="any" class="form-control config-field" name="${name}" value="${value}">`;
-            } else if (Array.isArray(value)) {
-              return `<input type="text" class="form-control config-field" name="${name}" value="${value.join(', ')}">`;
-            } else {
-              return `<input type="text" class="form-control config-field" name="${name}" value="${value}">`;
-            }
-          }
-
-          function saveAllConfig() {
-            const config = window.currentConfig || {};
-            // Gather all config fields
-            document.querySelectorAll('.config-field').forEach(input => {
-              const name = input.name;
-              let val = input.value;
-              if (input.tagName === 'SELECT') {
-                val = (val === 'true');
-              } else if (!isNaN(val) && val !== '') {
-                val = Number(val);
-              }
-              // Support nested keys (e.g., navidrome.base_url)
-              const parts = name.split('.');
-              if (parts.length === 2) {
-                if (!config[parts[0]]) config[parts[0]] = {};
-                config[parts[0]][parts[1]] = val;
-              } else {
-                config[name] = val;
-              }
-            });
-            // Save via AJAX
-            fetch('/config/save-json', {
-              method: 'POST',
-              headers: {'Content-Type': 'application/json'},
-              body: JSON.stringify(config)
-            })
-            .then(r => r.json())
-            .then(resp => {
-              if (resp.success) {
-                alert('Configuration saved!');
-                location.reload();
-              } else {
-                alert('Save failed: ' + (resp.error || 'Unknown error'));
-              }
-            });
-          }
-          // --- END: Dynamic Config Editor for All Options ---
         <div class="col-12">
           <label class="form-label">Max Bookmarks</label>
           <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
@@ -497,9 +385,7 @@
 
   <!-- Save Button -->
   <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
-    <button type="button" class="btn btn-outline-secondary" onclick="window.location.href='{{ url_for('dashboard') }}'">
-      Cancel
-    </button>
+    <button type="button" class="btn btn-outline-secondary" id="cancelBtn">Cancel</button>
   </div>
     <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
@@ -542,6 +428,16 @@
 </div>
 
 <script>
+document.addEventListener('DOMContentLoaded', function() {
+  var cancelBtn = document.getElementById('cancelBtn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function(e) {
+      window.location.href = '{{ url_for('dashboard') }}';
+      e.preventDefault();
+      return false;
+    });
+  }
+});
 function showToast(title, message, type = 'info') {
   const toast = new bootstrap.Toast(document.getElementById('configToast'));
   document.getElementById('toastTitle').textContent = title;
@@ -797,8 +693,13 @@ function addNewUser() {
 }
 
 function removeUser(idx) {
-  // No-op: implement user removal logic if needed
-  alert('User removal not yet implemented.');
+  // Remove the user card from the DOM
+  const userCards = document.querySelectorAll('.user-card');
+  if (userCards[idx]) {
+    userCards[idx].remove();
+  }
+  // Optionally, update the underlying config data structure if needed
+  // TODO: Add logic to update config and persist changes if required
 }
 
 function updateUserTitle(displayNameInput) {

@@ -45,6 +45,14 @@ from scan_helpers import scan_artist_to_db
 
 import os
 import sys
+
+# Diagnostic: Print which start.py is being imported
+import importlib.util
+spec = importlib.util.find_spec("start")
+if spec and spec.origin:
+    print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
+else:
+    print("[DIAGNOSTIC] start.py module not found in import path!")
 from beets_integration import _get_beets_client
 import secrets
 import subprocess
@@ -136,16 +144,21 @@ else:
 def api_navidrome_playlists():
     """Return all Navidrome playlists (id, name, type) grouped by type for dropdowns."""
     try:
-        # TODO: Replace with per-user config if needed
         config_data, _ = _read_yaml(CONFIG_PATH)
-        # Try both config formats: 'navidrome' and 'api_integrations.navidrome'
-        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
-        # Fallback to top-level 'navidrome' if not found
-        if not nav_cfg or not nav_cfg.get("base_url"):
+        current_user = session.get("username")
+        navidrome_users = config_data.get("navidrome_users", [])
+        nav_cfg = None
+
+        if navidrome_users and current_user:
+            # Find the config for the logged-in user
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if not nav_cfg:
+            # Fallback to single-user config
             nav_cfg = config_data.get("navidrome", {})
-        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
-        username = nav_cfg.get("username") or nav_cfg.get("user") or config_data.get("nav_user")
-        password = nav_cfg.get("password") or nav_cfg.get("pass") or config_data.get("nav_pass")
+
+        base_url = nav_cfg.get("base_url")
+        username = nav_cfg.get("user")
+        password = nav_cfg.get("pass")
         if not (base_url and username and password):
             logging.error(f"Navidrome not configured: base_url={base_url}, username={username}, password={'set' if password else 'unset'}")
             return jsonify({"error": "Navidrome not configured. Please check your config file and credentials."}), 400
@@ -565,7 +578,7 @@ def _baseline_config():
             "musicbrainz": {"enabled": True},
             "audiodb": {"enabled": False, "api_key": ""},
             "google": {"enabled": False, "api_key": "", "cse_id": ""},
-            "youtube": {"enabled": False, "api_key": ""},
+            "youtube": {"enabled": False, "api_key": ""}
         },
         "qbittorrent": {
             "enabled": False,
@@ -614,8 +627,8 @@ def _baseline_config():
             "discogs_min_interval_sec": 0.35,
             "include_user_ratings_on_scan": True,
             "scan_worker_threads": 4,
-            "spotify_prefetch_timeout": 30,
-        },
+            "spotify_prefetch_timeout": 30
+        }
     }
 
 

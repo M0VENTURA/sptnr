@@ -1,5 +1,14 @@
-﻿#!/usr/bin/env python3
-# ðŸŽ§ SPTNR â€“ Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
+﻿
+#!/usr/bin/env python3
+# SPTNR – Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
+
+# Explicitly export key functions for import in other modules
+__all__ = [
+    "get_db_connection",
+    "fetch_artist_albums",
+    "fetch_album_tracks",
+    "save_to_db"
+]
 
 import argparse
 import os
@@ -1275,7 +1284,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             continue
         
         print(f"ðŸŽ¨ [{artist_count}/{total_artists}] Processing artist: {name}")
-        logging.info(f"Processing artist {artist_count}/{total_artists}: {name} (ID: {artist_id})")
+        logging.debug(f"Processing artist {artist_count}/{total_artists}: {name} (ID: {artist_id})")
 
         # Prefetch cached tracks for this artist to enable per-artist skip decisions
         existing_album_tracks: dict[str, set[str]] = {}
@@ -1295,7 +1304,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             albums = fetch_artist_albums(artist_id)
             if albums:
                 print(f"   ðŸ“€ Found {len(albums)} albums")
-                logging.info(f"Found {len(albums)} albums for artist '{name}'")
+                logging.debug(f"Found {len(albums)} albums for artist '{name}'")
         except Exception as e:
             print(f"   âŒ Failed to fetch albums: {e}")
             logging.error(f"Failed to fetch albums for '{name}': {e}")
@@ -1310,7 +1319,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 continue
             
             print(f"   ðŸ“€ [{album_count}/{len(albums)}] Album: {album_name}")
-            logging.info(f"Scanning album {album_count}/{len(albums)}: {album_name}")
+            logging.debug(f"Scanning album {album_count}/{len(albums)}: {album_name}")
             
             try:
                 tracks = fetch_album_tracks(album_id)

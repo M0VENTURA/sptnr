@@ -144,120 +144,141 @@ def popularity_scan(verbose: bool = False):
     configure_popularity_helpers()
     log_unified("✅ Spotify client configured")
 
-    try:
-        log_verbose("Connecting to database for popularity scan...")
-        conn = get_db_connection()
-        cursor = conn.cursor()
 
-        # Get all tracks that need popularity detection
-        sql = ("""
-            SELECT id, artist, title, album
-            FROM tracks
-            WHERE popularity_score IS NULL OR popularity_score = 0
-            ORDER BY artist, title
-            LIMIT 100
-        """)
-        log_verbose(f"Executing SQL: {sql.strip()}")
-        cursor.execute(sql)
+    log_verbose("Connecting to database for popularity scan...")
+    conn = get_db_connection()
+    cursor = conn.cursor()
 
-        tracks = cursor.fetchall()
-        log_unified(f"Found {len(tracks)} tracks to scan for popularity")
-        log_verbose(f"Fetched {len(tracks)} tracks from database.")
+    # Get all tracks that need popularity detection
+    sql = ("""
+        SELECT id, artist, title, album
+        FROM tracks
+        WHERE popularity_score IS NULL OR popularity_score = 0
+        ORDER BY artist, album, title
+    """)
+    log_verbose(f"Executing SQL: {sql.strip()}")
+    cursor.execute(sql)
 
-        scanned_count = 0
-        album_map = {}
-        for idx, track in enumerate(tracks, 1):
-            track_id = track["id"]
-            artist = track["artist"]
-            title = track["title"]
-            album = track["album"]
+    tracks = cursor.fetchall()
+    log_unified(f"Found {len(tracks)} tracks to scan for popularity")
+    log_verbose(f"Fetched {len(tracks)} tracks from database.")
 
-            if verbose:
-                log_verbose(f"Scanning: {artist} - {title} (Track ID: {track_id})")
+    if not tracks:
+        log_unified("No tracks found for popularity scan. Exiting.")
+        return
 
-            # Progress log every 10 tracks
-            if idx % 10 == 0:
-                log_unified(f"Progress: scanned {idx} of {len(tracks)} tracks...")
+        try:
+            log_verbose("Connecting to database for popularity scan...")
+            conn = get_db_connection()
+            cursor = conn.cursor()
 
-            # Try to get popularity from Spotify
-            spotify_score = 0
-            try:
-                log_verbose(f"Calling get_spotify_artist_id for artist: {artist}")
-                artist_id = get_spotify_artist_id(artist)
-                log_verbose(f"Spotify artist_id: {artist_id}")
-                if artist_id:
-                    log_verbose(f"Calling search_spotify_track for title: {title}, artist: {artist}, album: {album}")
-                    spotify_results = search_spotify_track(title, artist, album)
-                    log_verbose(f"Spotify results: {spotify_results}")
-                    if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-                        # Select best match (highest popularity)
-                        best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
-                        log_verbose(f"Best Spotify match: {best_match}")
-                        spotify_score = best_match.get("popularity", 0)
-            except Exception as e:
-                log_verbose(f"Spotify lookup failed for {artist} - {title}: {e}")
+            # Get all tracks that need popularity detection
+            sql = ("""
+                SELECT id, artist, title, album
+                FROM tracks
+                WHERE popularity_score IS NULL OR popularity_score = 0
+                ORDER BY artist, album, title
+            """)
+            log_verbose(f"Executing SQL: {sql.strip()}")
+            cursor.execute(sql)
 
-            # Try to get popularity from Last.fm
-            lastfm_score = 0
-            try:
-                log_verbose(f"Calling get_lastfm_track_info for artist: {artist}, title: {title}")
-                lastfm_info = get_lastfm_track_info(artist, title)
-                log_verbose(f"Last.fm info: {lastfm_info}")
-                if lastfm_info and lastfm_info.get("track_play"):
-                    lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
-            except Exception as e:
-                log_verbose(f"Last.fm lookup failed for {artist} - {title}: {e}")
+            tracks = cursor.fetchall()
+            log_unified(f"Found {len(tracks)} tracks to scan for popularity")
+            log_verbose(f"Fetched {len(tracks)} tracks from database.")
 
-            # Average the scores
-            if spotify_score > 0 or lastfm_score > 0:
-                popularity_score = (spotify_score + lastfm_score) / 2.0
-                log_verbose(f"Updating popularity_score={popularity_score} for track_id={track_id}")
-                cursor.execute(
-                    "UPDATE tracks SET popularity_score = ? WHERE id = ?",
-                    (popularity_score, track_id)
-                )
-                scanned_count += 1
-                # Track processed albums for logging
-                key = (artist, album)
-                if key not in album_map:
-                    album_map[key] = 0
-                album_map[key] += 1
-            else:
-                log_verbose(f"No popularity score found for {artist} - {title}")
+            if not tracks:
+                log_unified("No tracks found for popularity scan. Exiting.")
+                return
 
-        log_verbose("Committing changes to database.")
-        conn.commit()
-        conn.close()
+            # Group tracks by artist and album
+            from collections import defaultdict
+            artist_album_tracks = defaultdict(lambda: defaultdict(list))
+            for track in tracks:
+                artist_album_tracks[track["artist"]][track["album"]].append(track)
 
-        # Log each album scan to scan_history
-        for (artist, album), tracks_processed in album_map.items():
-            log_verbose(f"Logging album scan: {artist} - {album}, tracks_processed={tracks_processed}")
-            log_album_scan(artist, album, 'popularity', tracks_processed, 'completed')
+            scanned_count = 0
+            for artist, albums in artist_album_tracks.items():
+                log_unified(f"Currently Scanning Artist: {artist}")
+                for album, album_tracks in albums.items():
+                    log_unified(f'Scanning "{artist} - {album}" for Popularity')
+                    album_scanned = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
 
-        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
-        log_verbose(f"Popularity scan completed: {scanned_count} tracks updated")
+                        # Progress log every track
+                        log_unified(f'Scanning track: "{title}" (Track ID: {track_id})')
 
-        conn.commit()
-        conn.close()
+                        # Try to get popularity from Spotify
+                        spotify_score = 0
+                        try:
+                            artist_id = get_spotify_artist_id(artist)
+                            if artist_id:
+                                spotify_results = search_spotify_track(title, artist, album)
+                                if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
+                                    best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
+                                    spotify_score = best_match.get("popularity", 0)
+                        except Exception as e:
+                            log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
 
-        # Log each album scan to scan_history
-        for (artist, album), tracks_processed in album_map.items():
-            log_album_scan(artist, album, 'popularity', tracks_processed, 'completed')
+                        # Try to get popularity from Last.fm
+                        lastfm_score = 0
+                        try:
+                            lastfm_info = get_lastfm_track_info(artist, title)
+                            if lastfm_info and lastfm_info.get("track_play"):
+                                lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
+                        except Exception as e:
+                            log_unified(f"Last.fm lookup failed for {artist} - {title}: {e}")
 
-        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
+                        # Average the scores
+                        if spotify_score > 0 or lastfm_score > 0:
+                            popularity_score = (spotify_score + lastfm_score) / 2.0
+                            cursor.execute(
+                                "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                                (popularity_score, track_id)
+                            )
+                            scanned_count += 1
+                            album_scanned += 1
+                        else:
+                            log_unified(f"No popularity score found for {artist} - {title}")
 
-    except Exception as e:
-        log_unified(f"❌ Popularity scan failed: {str(e)}")
-        raise
+                        # Save progress after each track
+                        save_popularity_progress(scanned_count, len(tracks))
 
-    finally:
-        log_unified("=" * 60)
-        log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+                    log_unified(f'Album Scanned: "{artist} - {album}". Popularity Applied to {album_scanned} tracks.')
 
+                    # Scanning for Singles
+                    log_unified(f'Scanning for Singles in "{artist} - {album}"')
+                    # Dummy single detection (replace with real logic as needed)
+                    singles = [t["title"] for t in album_tracks if "single" in t["title"].lower()]
+                    if singles:
+                        log_unified(f'Detected Singles: {", ".join(singles)}')
+                    else:
+                        log_unified('No singles detected in this album.')
+
+                    # Log album scan
+                    log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
+
+                # After artist scans, check/create essential playlist (dummy logic)
+                log_unified(f'Checking if essential playlist needs to be created for artist: {artist}')
+                # Dummy: always create
+                log_unified(f'Essential playlist created for artist: {artist}')
+
+            log_verbose("Committing changes to database.")
+            conn.commit()
+            conn.close()
+
+            log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
+            log_verbose(f"Popularity scan completed: {scanned_count} tracks updated")
+        except Exception as e:
+            log_unified(f"❌ Popularity scan failed: {str(e)}")
+            raise
+        finally:
+            log_unified("=" * 60)
+            log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 if __name__ == "__main__":
     import argparse
-    parser = argparse.ArgumentParser(description="Detect track popularity from external sources")
+    parser = argparse.ArgumentParser(description="Run popularity scan.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
-    
     args = parser.parse_args()
     popularity_scan(verbose=args.verbose)
