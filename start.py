@@ -1,4 +1,8 @@
+
 ﻿
+
+
+
 #!/usr/bin/env python3
 # SPTNR – Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
 
@@ -34,6 +38,7 @@ from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor
 from scan_history import log_album_scan
 
+<<<<<<< HEAD
 # âœ… Import modular API clients
 from api_clients.navidrome import NavidromeClient
 from api_clients.spotify import SpotifyClient
@@ -2479,3 +2484,6 @@ def enrich_genres_aggressively(artist_name: str, verbose: bool = False):
     return genres_collected
 
 
+=======
+# ...existing code...
+>>>>>>> 43ebd8fe39cad1bf4e1b080d451f7065f92dec50
