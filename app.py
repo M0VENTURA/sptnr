@@ -42,9 +42,6 @@ from metadata_reader import aggregate_genres_from_tracks
 from check_db import update_schema
 from start import save_to_db
 from scan_helpers import scan_artist_to_db
-
-import os
-import sys
 from beets_integration import _get_beets_client
 import secrets
 import subprocess
@@ -61,113 +58,12 @@ import unicodedata
 import requests
 import hashlib
 
+# Diagnostic: Print which start.py is being imported
+import importlib.util
+spec = importlib.util.find_spec("start")
+if spec and spec.origin:
+    print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
+else:
+    print("[DIAGNOSTIC] start.py module not found in import path!")
 
-# Unified logging setup
-
-import logging
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-VERBOSE = (
-    os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
-) == "1"
-SERVICE_PREFIX = "WebUI_"
-
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-def log_basic(msg):
-    if VERBOSE:
-        logging.info(msg)
-
-def log_verbose(msg):
-    if VERBOSE:
-        logging.info(f"[VERBOSE] {msg}")
-
-app = Flask(__name__)
-
-# ...existing code...
-
-def _baseline_config():
-    """Return a config structure with sensible defaults for first-run."""
-    existing, _ = _read_yaml(CONFIG_PATH)
-    if existing:
-        return existing
-
-    sample, _ = _read_yaml(DEFAULT_CONFIG_PATH)
-    if sample:
-        return sample
-
-    return {
-        "navidrome": {"base_url": "", "user": "", "pass": ""},
-        "api_integrations": {
-            "spotify": {"enabled": False, "client_id": "", "client_secret": ""},
-            "lastfm": {"enabled": False, "api_key": ""},
-            "listenbrainz": {"enabled": True},
-            "discogs": {"enabled": False, "token": ""},
-            "musicbrainz": {"enabled": True},
-            "audiodb": {"enabled": False, "api_key": ""},
-            "google": {"enabled": False, "api_key": "", "cse_id": ""},
-            "youtube": {"enabled": False, "api_key": ""}
-        },
-        "qbittorrent": {
-            "enabled": False,
-            "web_url": "http://localhost:8080",
-            "username": "",
-            "password": ""
-        },
-        "slskd": {
-            "enabled": False,
-            "web_url": "http://localhost:5030",
-            "api_key": ""
-        },
-        "bookmarks": {
-            "enabled": True,
-            "max_bookmarks": 100,
-            "custom_links": []
-        },
-        "downloads": {
-            "folder": "/downloads/Music"
-        },
-        "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
-        "database": {"path": DB_PATH, "vacuum_on_start": False},
-        "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
-        "features": {
-            "dry_run": False,
-            "sync": True,
-            "force": False,
-            "verbose": False,
-            "perpetual": True,
-            "batchrate": False,
-            "artist": [],
-            "album_skip_days": 7,
-            "album_skip_min_tracks": 1,
-            "clamp_min": 0.75,
-            "clamp_max": 1.25,
-            "cap_top4_pct": 0.25,
-            "title_sim_threshold": 0.92,
-            "short_release_counts_as_match": False,
-            "secondary_single_lookup_enabled": True,
-            "secondary_lookup_metric": "score",
-            "secondary_lookup_delta": 0.05,
-            "secondary_required_strong_sources": 2,
-            "median_gate_strategy": "hard",
-            "use_lastfm_single": True,
-            "refresh_artist_index_on_start": False,
-            "discogs_min_interval_sec": 0.35,
-            "include_user_ratings_on_scan": True,
-            "scan_worker_threads": 4,
-            "spotify_prefetch_timeout": 30
-        }
-    }
 # ...existing code...
