@@ -144,37 +144,37 @@ def popularity_scan(verbose: bool = False):
     configure_popularity_helpers()
     log_unified("✅ Spotify client configured")
 
-
     log_verbose("Connecting to database for popularity scan...")
-    conn = get_db_connection()
-    cursor = conn.cursor()
-
-    # Get all tracks that need popularity detection
-    sql = ("""
-        SELECT id, artist, title, album
-        FROM tracks
-        WHERE popularity_score IS NULL OR popularity_score = 0
-        ORDER BY artist, album, title
-    """)
-    log_verbose(f"Executing SQL: {sql.strip()}")
-    cursor.execute(sql)
-
-    tracks = cursor.fetchall()
-    log_unified(f"Found {len(tracks)} tracks to scan for popularity")
-    log_verbose(f"Fetched {len(tracks)} tracks from database.")
-
-    if not tracks:
-        log_unified("No tracks found for popularity scan. Exiting.")
-        return
-
-    # Group tracks by artist and album
-    from collections import defaultdict
-    artist_album_tracks = defaultdict(lambda: defaultdict(list))
-    for track in tracks:
-        artist_album_tracks[track["artist"]][track["album"]].append(track)
-
-    scanned_count = 0
+    conn = None
     try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+
+        # Get all tracks that need popularity detection
+        sql = ("""
+            SELECT id, artist, title, album
+            FROM tracks
+            WHERE popularity_score IS NULL OR popularity_score = 0
+            ORDER BY artist, album, title
+        """)
+        log_verbose(f"Executing SQL: {sql.strip()}")
+        cursor.execute(sql)
+
+        tracks = cursor.fetchall()
+        log_unified(f"Found {len(tracks)} tracks to scan for popularity")
+        log_verbose(f"Fetched {len(tracks)} tracks from database.")
+
+        if not tracks:
+            log_unified("No tracks found for popularity scan. Exiting.")
+            return
+
+        # Group tracks by artist and album
+        from collections import defaultdict
+        artist_album_tracks = defaultdict(lambda: defaultdict(list))
+        for track in tracks:
+            artist_album_tracks[track["artist"]][track["album"]].append(track)
+
+        scanned_count = 0
         for artist, albums in artist_album_tracks.items():
             log_unified(f"Currently Scanning Artist: {artist}")
             for album, album_tracks in albums.items():
@@ -244,7 +244,6 @@ def popularity_scan(verbose: bool = False):
 
         log_verbose("Committing changes to database.")
         conn.commit()
-        conn.close()
 
         log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
         log_verbose(f"Popularity scan completed: {scanned_count} tracks updated")
@@ -252,8 +251,11 @@ def popularity_scan(verbose: bool = False):
         log_unified(f"❌ Popularity scan failed: {str(e)}")
         raise
     finally:
+        if conn:
+            conn.close()
         log_unified("=" * 60)
         log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run popularity scan.")
