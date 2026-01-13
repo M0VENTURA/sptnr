@@ -124,9 +124,34 @@ def rate_track_single_detection(
                     logging.info("❌ Discogs single not found")
     except Exception as e:
         logging.exception(f"is_discogs_single failed for '{title}': {e}")
+    
+    # Determine if track is a single based on multiple criteria
+    is_single = False
+    confidence = "low"
+    
+    # High confidence: Discogs confirms AND track is canonical
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
-        track["is_single"] = True
-    # Minimal: just return track for now (full logic can be re-integrated as needed)
+        is_single = True
+        confidence = "high"
+    # Medium confidence: Spotify single match
+    elif spotify_matched and canonical:
+        is_single = True
+        confidence = "medium"
+    # Low confidence: Short release (1-2 tracks) if configured to count them
+    elif short_release and count_short_release_as_match and canonical:
+        is_single = True
+        confidence = "low"
+    
+    # Update track fields
+    track["is_single"] = is_single
+    track["single_sources"] = list(sources)
+    track["single_confidence"] = confidence
+    
+    if verbose and is_single:
+        logging.info(f"✅ Single detected: {title} (confidence={confidence}, sources={sources})")
+    elif verbose:
+        logging.info(f"❌ Not a single: {title}")
+    
     return track
 #!/usr/bin/env python3
 """
