@@ -1,3 +1,5 @@
+# Explicitly export the main API for importers
+__all__ = ["rate_track_single_detection", "WEIGHTS"]
 
 # --- DB Helper for single detection state ---
 import sqlite3
