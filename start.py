@@ -1744,6 +1744,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             t["is_single"] = False
             t["single_sources"] = []
             t["single_confidence"] = "low"
+            t["spotify_id"] = None
             
             # Get Spotify popularity
             try:
