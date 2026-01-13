@@ -454,9 +454,6 @@ def save_channel_cache(cache):
     with open(CHANNEL_CACHE_FILE, "w", encoding="utf-8") as f:
         json.dump(cache, f, indent=2)
 
-import os
-import requests
-import time
 from typing import List, Dict
 
 API_KEY = os.getenv("YOUTUBE_API_KEY")
@@ -891,13 +888,7 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
 
 
 import math
-from datetime import datetime
-from statistics import mean
-
-from statistics import median
-from datetime import datetime, timedelta
-import os
-import requests
+from statistics import mean, median
 
 DEV_BOOST_WEIGHT = float(os.getenv("DEV_BOOST_WEIGHT", "0.5"))
 

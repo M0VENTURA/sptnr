@@ -1,4 +1,3 @@
-<<<<<<< HEAD
 #!/usr/bin/env python3
 """
 Popularity Scanner - Detects track popularity from external sources (Spotify, Last.fm, ListenBrainz).
@@ -283,6 +282,3 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     args = parser.parse_args()
     popularity_scan(verbose=args.verbose)
-=======
-[full content of popularity.py as in previous attachment]
->>>>>>> 43ebd8fe39cad1bf4e1b080d451f7065f92dec50
