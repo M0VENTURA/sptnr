@@ -1903,6 +1903,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
             else:
                 trk["is_single"] = False
 
+
             # Finalize 5★ grant only after gate
             if trk.get("is_single"):
                 if strong_ok:
@@ -1911,20 +1912,35 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     current_stars = int(trk.get("stars", 0))
                     trk["stars"] = min(SPOTIFY_SOLO_MAX_STARS, current_stars + SPOTIFY_SOLO_MAX_BOOST)
             else:
-                # Assign stars based on z-score bands relative to album
-                album_scores = [track.get("score", 0) for track in album_tracks]
-                track_score = trk.get("score", 0)
-                sorted_scores = sorted(album_scores, reverse=True)
-                if track_score in sorted_scores:
-                    percentile = sorted_scores.index(track_score) / len(sorted_scores) if sorted_scores else 0.5
-                    if percentile < 0.1:
-                        trk["stars"] = 4
-                    elif percentile < 0.3:
-                        trk["stars"] = 3
-                    elif percentile < 0.7:
-                        trk["stars"] = 2
-                    else:
-                        trk["stars"] = 1
+                # --- Z-BANDS (robust z-score with MAD, cap 4★ density) ---
+                sorted_album = sorted(album_tracks, key=lambda x: x["score"], reverse=True)
+                EPS = 1e-6
+                scores_all = [t["score"] for t in sorted_album]
+                med = median(scores_all)
+                mad_val = max(median([abs(v - med) for v in scores_all]), EPS)
+
+                def zrobust(x): return (x - med) / mad_val
+
+                BANDS = [
+                    (-float("inf"), -1.0, 1),
+                    (-1.0, -0.3, 2),
+                    (-0.3, 0.6, 3),
+                    (0.6, float("inf"), 4)
+                ]
+
+                z = zrobust(trk["score"])
+                for lo, hi, stars in BANDS:
+                    if lo <= z < hi:
+                        trk["stars"] = stars
+                        break
+
+                # Cap density of 4★ among non-singles
+                non_single_tracks = [t for t in sorted_album if not t.get("is_single")]
+                top4 = [t for t in non_single_tracks if t.get("stars") == 4]
+                max_top4 = max(1, round(len(non_single_tracks) * CAP_TOP4_PCT))
+                if len(top4) > max_top4:
+                    for t in sorted(top4, key=lambda x: zrobust(x["score"]), reverse=True)[max_top4:]:
+                        t["stars"] = 3
         
         # Save all tracks to database
         for t in album_tracks:
