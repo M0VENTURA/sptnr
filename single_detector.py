@@ -39,7 +39,6 @@ def get_current_single_detection(track_id: str) -> dict:
         logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
         return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
-# --- Import the advanced single detection logic from singledetection.py if needed ---
 def rate_track_single_detection(
     track: dict,
     artist_name: str,
@@ -56,8 +55,9 @@ def rate_track_single_detection(
     - is_single (bool)
     - single_sources (list)
     - single_confidence (str): 'high', 'medium', 'low'
-    - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
-    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
+    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed
+    
+    Note: Stars are assigned later in the calling code based on is_single status and popularity scores.
     """
     from start import (
         _base_title,
@@ -81,11 +81,9 @@ def rate_track_single_detection(
     # ✅ Store canonical title audit fields
     track['is_canonical_title'] = 1 if canonical else 0
     track['title_similarity_to_base'] = sim_to_base
-    # ✅ Get track ID for caching detection results
+    # Get track ID
     track_id = track.get("id", "")
-    # ✅ Try to get cached source detection results
-    # (Assume get_cached_source_detections is available in singledetection.py if needed)
-    # For now, skip cache for minimal move
+    # Check for existing Spotify single detection results
     spotify_matched = bool(track.get("is_spotify_single"))
     tot = track.get("spotify_total_tracks")
     short_release = (tot is not None and tot > 0 and tot <= 2)
