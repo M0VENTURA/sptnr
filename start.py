@@ -1545,9 +1545,13 @@ def infer_album_context(album_name: str) -> dict:
     Returns:
         dict with 'is_live' and 'is_unplugged' boolean flags
     """
+    import re
     album_lower = album_name.lower()
-    is_live = "live" in album_lower
-    is_unplugged = "unplugged" in album_lower or "acoustic" in album_lower
+    
+    # Use word boundaries to avoid false positives like "delivery" or "ecclesiastic"
+    is_live = bool(re.search(r'\blive\b', album_lower))
+    is_unplugged = bool(re.search(r'\b(unplugged|acoustic)\b', album_lower))
+    
     return {
         "is_live": is_live,
         "is_unplugged": is_unplugged
