@@ -826,14 +826,6 @@ def _is_variant_of(base: str, candidate: str) -> bool:
     return (b in c) or any(tok in c for tok in ok)
 
 
-def _has_official_on_release(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
-    """Compatibility alias to the shared inspect helper."""
-    # Import here to avoid circular dependency
-    from singledetection import _has_official_on_release_top
-    return _has_official_on_release_top(data, nav_title, allow_live=allow_live, min_ratio=min_ratio)
-
-
-
 
 def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, float]:
     """Get suggested MusicBrainz ID (wrapper using MusicBrainzClient)."""
@@ -1542,6 +1534,29 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
+def infer_album_context(album_name: str) -> dict:
+    """
+    Infer album context (is_live, is_unplugged) from album name.
+    Used to determine if live/remix versions should be allowed for single detection.
+    
+    Args:
+        album_name: The album name to analyze
+        
+    Returns:
+        dict with 'is_live' and 'is_unplugged' boolean flags
+    """
+    import re
+    album_lower = album_name.lower()
+    
+    # Use word boundaries to avoid false positives like "delivery" or "ecclesiastic"
+    is_live = bool(re.search(r'\blive\b', album_lower))
+    is_unplugged = bool(re.search(r'\b(unplugged|acoustic)\b', album_lower))
+    
+    return {
+        "is_live": is_live,
+        "is_unplugged": is_unplugged
+    }
+
 def rate_artist(artist_id, artist_name, verbose=False, force=False):
     """
     Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
@@ -1570,8 +1585,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         logging.info(f"Skipping singles/rating for {artist_name} (Navidrome import-only mode)")
         return []
 
-    # Import helpers from singledetection module
-    from singledetection import infer_album_context
+    # Import helpers from single_detector module
     from single_detector import get_current_single_detection, rate_track_single_detection
     
     # ----- Tunables & feature flags ------------------------------------------
