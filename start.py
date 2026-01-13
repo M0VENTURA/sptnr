@@ -826,16 +826,6 @@ def _is_variant_of(base: str, candidate: str) -> bool:
     return (b in c) or any(tok in c for tok in ok)
 
 
-def _has_official_on_release(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
-    """
-    Compatibility stub - checks if track has official release.
-    This is a legacy function that's no longer actively used.
-    """
-    # TODO: Implement or remove if not needed
-    return False
-
-
-
 
 def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, float]:
     """Get suggested MusicBrainz ID (wrapper using MusicBrainzClient)."""
