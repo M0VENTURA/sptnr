@@ -1719,6 +1719,14 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
         # Infer album context (is_live, is_unplugged, etc.)
         album_ctx = infer_album_context(album_name)
         
+        # Retrieve the singles_set if it was being fetched in the background
+        if singles_set_future and not singles_set:
+            try:
+                singles_set = singles_set_future.result(timeout=10)
+            except Exception as e:
+                logging.debug(f"Failed to retrieve singles set for '{artist_name}': {e}")
+                singles_set = set()
+        
         # Collect popularity scores for all tracks in the album
         for t in album_tracks:
             track_id = t.get("id", "")
@@ -1745,11 +1753,21 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
                     t["spotify_score"] = best_match.get("popularity", 0)
                     t["spotify_popularity"] = best_match.get("popularity", 0)
                     
+                    # Store Spotify track ID
+                    spotify_track_id = best_match.get("id")
+                    t["spotify_id"] = spotify_track_id
+                    
                     # Check if it's a Spotify single
                     spotify_album = best_match.get("album", {})
                     if spotify_album.get("album_type") == "single":
                         t["is_spotify_single"] = True
                         t["spotify_album_type"] = "single"
+                    
+                    # Also check if track ID is in the artist's singles set
+                    if spotify_track_id and spotify_track_id in singles_set:
+                        t["is_spotify_single"] = True
+                        t["spotify_album_type"] = "single"
+                    
                     t["spotify_total_tracks"] = spotify_album.get("total_tracks", 0)
             except Exception as e:
                 if verbose:
