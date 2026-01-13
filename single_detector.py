@@ -52,9 +52,9 @@ def rate_track_single_detection(
     """
     Perform single detection on a track and update its fields with single status, sources, and star assignment.
     Returns the updated track dict with:
-    - is_single (bool)
-    - single_sources (list)
-    - single_confidence (str): 'high', 'medium', 'low'
+    - is_single (bool): Whether the track is detected as a single
+    - single_sources (list): List of sources that confirmed single status  
+    - single_confidence (str): Confidence level - 'high', 'medium', or 'low'
     - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed
     
     Note: Stars are assigned later in the calling code based on is_single status and popularity scores.
@@ -125,7 +125,7 @@ def rate_track_single_detection(
     
     # Determine if track is a single based on multiple criteria
     is_single = False
-    confidence = "low"
+    confidence = "low"  # Default to 'low' when no strong indicators are found
     
     # High confidence: Discogs confirms AND track is canonical
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:

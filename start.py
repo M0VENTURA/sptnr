@@ -1545,7 +1545,6 @@ def infer_album_context(album_name: str) -> dict:
     Returns:
         dict with 'is_live' and 'is_unplugged' boolean flags
     """
-    import re
     album_lower = album_name.lower()
     
     # Use word boundaries to avoid false positives like "delivery" or "ecclesiastic"
