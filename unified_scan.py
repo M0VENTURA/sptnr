@@ -329,6 +329,7 @@ def unified_scan_pipeline(
                 logging.info(f"      → Phase: Popularity detection")
                 if verbose:
                     log_verbose(f"Starting popularity scan for album {album_name} by {artist_name}")
+                api_skipped = []
                 try:
                     popularity_scan(verbose=verbose)
                     # Log popularity scan for this album
@@ -338,6 +339,16 @@ def unified_scan_pipeline(
                     logging.error(f"      ✗ Popularity scan failed: {e}")
                     log_album_scan(artist_name, album_name, 'popularity', 0, 'error', str(e))
                     logging.info(f"      ✗ Popularity scan failed for album '{album_name}': {e}")
+                    # Try to parse which API failed from the error message
+                    err_str = str(e).lower()
+                    if 'spotify' in err_str:
+                        api_skipped.append('Spotify')
+                    if 'last.fm' in err_str or 'lastfm' in err_str:
+                        api_skipped.append('Last.fm')
+                    if 'listenbrainz' in err_str:
+                        api_skipped.append('ListenBrainz')
+                if api_skipped:
+                    log_unified(f"      ⚠️ Skipped APIs for album '{album_name}': {', '.join(api_skipped)} (connection issue)")
                 # Phase 2: Single Detection & Rating
                 progress.current_phase = "singles"
                 progress.save()
