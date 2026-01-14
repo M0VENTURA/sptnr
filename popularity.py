@@ -129,13 +129,38 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         True if successful, False otherwise
     """
     try:
-        # Get Navidrome credentials from environment
+        # Get Navidrome credentials from environment first, then fall back to config file
         nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
         nav_user = os.environ.get("NAV_USER", "")
         nav_pass = os.environ.get("NAV_PASS", "")
         
+        # If not in environment, try loading from config file
         if not all([nav_url, nav_user, nav_pass]):
-            log_verbose("Navidrome credentials not configured (NAV_BASE_URL, NAV_USER, NAV_PASS), skipping rating sync")
+            try:
+                import yaml
+                config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f)
+                
+                # Try navidrome_users first (multi-user config)
+                nav_users = config.get('navidrome_users', [])
+                if nav_users and len(nav_users) > 0:
+                    first_user = nav_users[0]
+                    nav_url = first_user.get('base_url', '').strip('/')
+                    nav_user = first_user.get('user', '')
+                    nav_pass = first_user.get('pass', '')
+                else:
+                    # Fall back to single navidrome config
+                    nav_config = config.get('navidrome', {})
+                    nav_url = nav_config.get('base_url', '').strip('/')
+                    nav_user = nav_config.get('user', '')
+                    nav_pass = nav_config.get('pass', '')
+            except Exception as e:
+                log_verbose(f"Failed to load Navidrome config from file: {e}")
+                return False
+        
+        if not all([nav_url, nav_user, nav_pass]):
+            log_verbose("Navidrome credentials not configured, skipping rating sync")
             return False
         
         # Build Subsonic API parameters
