@@ -1,5 +1,5 @@
 # ...existing code...
-from popularity import get_current_single_detection
+
 import os
 import math
 from datetime import datetime, timedelta
