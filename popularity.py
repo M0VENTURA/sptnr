@@ -135,12 +135,12 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
     """
     try:
         # Get Navidrome credentials from environment
-        nav_url = os.environ.get("NAVIDROME_URL", "").strip("/")
-        nav_user = os.environ.get("NAVIDROME_USER", "")
-        nav_pass = os.environ.get("NAVIDROME_PASS", "")
+        nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
+        nav_user = os.environ.get("NAV_USER", "")
+        nav_pass = os.environ.get("NAV_PASS", "")
         
         if not all([nav_url, nav_user, nav_pass]):
-            log_verbose("Navidrome credentials not configured, skipping rating sync")
+            log_verbose("Navidrome credentials not configured (NAV_BASE_URL, NAV_USER, NAV_PASS), skipping rating sync")
             return False
         
         # Build Subsonic API parameters
@@ -164,11 +164,11 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
             return True
         else:
             error_msg = result.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
-            log_verbose(f"Navidrome API error: {error_msg}")
+            log_basic(f"Navidrome API error for track {track_id}: {error_msg}")
             return False
             
     except Exception as e:
-        log_verbose(f"Failed to sync rating to Navidrome: {e}")
+        log_basic(f"Failed to sync rating to Navidrome for track {track_id}: {e}")
         return False
 
 def save_popularity_progress(processed_artists: int, total_artists: int):
