@@ -22,14 +22,19 @@ from api_clients import session
 try:
     from api_clients.musicbrainz import is_musicbrainz_single
     HAVE_MUSICBRAINZ = True
-except ImportError:
+except ImportError as e:
     HAVE_MUSICBRAINZ = False
+    logging.debug(f"MusicBrainz client unavailable: {e}")
     
 try:
     from api_clients.discogs import is_discogs_single
     HAVE_DISCOGS = True
-except ImportError:
+except ImportError as e:
     HAVE_DISCOGS = False
+    logging.debug(f"Discogs client unavailable: {e}")
+
+# Keyword filter for non-singles (defined at module level for performance)
+IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 
 # Dedicated popularity logger (no propagation to root)
 
@@ -324,7 +329,6 @@ def popularity_scan(verbose: bool = False):
                     title = track["title"]
                     
                     # Ignore obvious non-singles by keywords (matching start.py Jan 2nd logic)
-                    IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
                     if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
                         log_verbose(f"   ⊗ Skipping non-single: {title} (keyword filter)")
                         continue
@@ -338,6 +342,7 @@ def popularity_scan(verbose: bool = False):
                     # First check: Spotify single detection
                     try:
                         # Match Jan 2nd logic: call search_spotify_track with title and artist only
+                        # (album parameter is optional and defaults to None per function signature)
                         spotify_results = search_spotify_track(title, artist)
                         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                             for result in spotify_results:
