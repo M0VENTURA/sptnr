@@ -238,7 +238,6 @@ def popularity_scan(verbose: bool = False):
                     # Try to get popularity from Spotify
                     spotify_score = 0
                     spotify_album_type = None
-                    spotify_album_name = None
                     try:
                         artist_id = get_spotify_artist_id(artist)
                         if artist_id:
@@ -246,9 +245,8 @@ def popularity_scan(verbose: bool = False):
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
-                                # Extract album_type and name for single detection
+                                # Extract album_type for single detection
                                 spotify_album_type = best_match.get("album", {}).get("album_type", "").lower()
-                                spotify_album_name = best_match.get("album", {}).get("name", "").lower()
                     except Exception as e:
                         log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
 
@@ -265,10 +263,18 @@ def popularity_scan(verbose: bool = False):
                     if spotify_score > 0 or lastfm_score > 0:
                         popularity_score = (spotify_score + lastfm_score) / 2.0
                         if spotify_album_type:
-                            cursor.execute(
-                                "UPDATE tracks SET popularity_score = ?, spotify_album_type = ? WHERE id = ?",
-                                (popularity_score, spotify_album_type, track_id)
-                            )
+                            try:
+                                cursor.execute(
+                                    "UPDATE tracks SET popularity_score = ?, spotify_album_type = ? WHERE id = ?",
+                                    (popularity_score, spotify_album_type, track_id)
+                                )
+                            except sqlite3.OperationalError as e:
+                                # Fallback if spotify_album_type column doesn't exist yet
+                                log_basic(f"Warning: Could not update spotify_album_type (column may not exist): {e}")
+                                cursor.execute(
+                                    "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                                    (popularity_score, track_id)
+                                )
                         else:
                             cursor.execute(
                                 "UPDATE tracks SET popularity_score = ? WHERE id = ?",
