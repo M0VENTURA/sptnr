@@ -1,3 +1,5 @@
+# ...existing code...
+from popularity import get_current_single_detection
 import os
 import math
 from datetime import datetime, timedelta
@@ -22,7 +24,6 @@ YOUTUBE_ENABLED = False
 AUDIODB_ENABLED = False
 load_config = None
 import logging
-from popularity import get_current_single_detection
 import sqlite3
 import time
 import json
@@ -250,8 +251,8 @@ def get_current_single_detection(track_id: str) -> dict:
     import sqlite3
     import json
     import logging
+    DB_PATH = 'database/sptnr.db'  # Or use your config/env
     try:
-        from start import DB_PATH
         conn = sqlite3.connect(DB_PATH, timeout=120.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
