@@ -27,7 +27,6 @@ from datetime import datetime
 import copy
 from functools import wraps
 from scan_helpers import scan_artist_to_db
-from popularity import rate_artist
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
 # --- Utility: Aggregate genres from tracks in DB ---
@@ -2490,7 +2489,6 @@ def album_rescan(artist, album):
             popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
-            rate_artist(artist_id, artist_name, verbose=True, force=True)
         except Exception as e:
             logging.error(f"Album rescan failed for {artist_name}: {e}")
 
@@ -2532,7 +2530,6 @@ def scan_track_rescan(artist, album, track_id):
             popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
-            rate_artist(artist_id, artist_name, verbose=True, force=True)
             
             logging.info(f"Track rescan completed for {track_identifier}")
         except Exception as e:
