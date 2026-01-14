@@ -302,62 +302,78 @@ def popularity_scan(verbose: bool = False):
                 # Perform singles detection for album tracks
                 log_unified(f'Detecting singles for "{artist} - {album}"')
                 singles_detected = 0
+                
+                # Get album track count for context-based confidence adjustment
+                album_track_count = len(album_tracks)
+                
                 for track in album_tracks:
                     track_id = track["id"]
                     title = track["title"]
                     
+                    # Ignore obvious non-singles by keywords (matching start.py Jan 2nd logic)
+                    IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
+                    if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
+                        log_verbose(f"   ⊗ Skipping non-single: {title} (keyword filter)")
+                        continue
+                    
                     # Check for singles using multiple sources with confidence levels
-                    # Priority: Discogs single (high confidence, first check) > Discogs video (medium) > Spotify (medium)
-                    is_single = False
-                    single_confidence = "low"
+                    # Matching start.py logic from Jan 2nd: Spotify, MusicBrainz, Discogs
+                    # Confidence: 2+ sources = high, 1 source = medium, 0 sources = low
+                    # Album context: downgrade medium → low if album has >3 tracks
                     single_sources = []
                     
-                    # First check: Discogs single (high confidence, requires only one hit)
+                    # First check: Spotify single detection
+                    try:
+                        spotify_results = search_spotify_track(title, artist, album)
+                        if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
+                            for result in spotify_results:
+                                album_info = result.get("album", {})
+                                album_type = album_info.get("album_type", "").lower()
+                                album_name = album_info.get("name", "").lower()
+                                
+                                # Match Jan 2nd logic: exclude live/remix singles
+                                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
+                                    single_sources.append("spotify")
+                                    log_verbose(f"   ✓ Spotify confirms single: {title}")
+                                    break
+                    except Exception as e:
+                        log_verbose(f"Spotify single check failed for {title}: {e}")
+                    
+                    # Second check: MusicBrainz single detection (missing from current code)
+                    try:
+                        from api_clients.musicbrainz import is_musicbrainz_single
+                        if is_musicbrainz_single(title, artist):
+                            single_sources.append("musicbrainz")
+                            log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
+                    except Exception as e:
+                        log_verbose(f"MusicBrainz single check failed for {title}: {e}")
+                    
+                    # Third check: Discogs single detection
                     discogs_token = os.environ.get("DISCOGS_TOKEN", "")
                     if discogs_token:
                         try:
                             from api_clients.discogs import is_discogs_single
                             if is_discogs_single(title, artist, album_context=None, token=discogs_token):
-                                is_single = True
-                                single_confidence = "high"
-                                single_sources.append("discogs_single")
-                                log_unified(f"   ✓ Single detected (Discogs): {title}")
+                                single_sources.append("discogs")
+                                log_verbose(f"   ✓ Discogs confirms single: {title}")
                         except Exception as e:
                             log_verbose(f"Discogs single check failed for {title}: {e}")
                     
-                    # Second check: Discogs video (medium confidence, hint only)
-                    # Video alone is not conclusive for single detection
-                    if discogs_token:
-                        try:
-                            from api_clients.discogs import has_discogs_video
-                            if has_discogs_video(title, artist, token=discogs_token):
-                                single_sources.append("discogs_video")
-                                log_unified(f"   ✓ Single hint (Discogs video): {title}")
-                        except Exception as e:
-                            log_verbose(f"Discogs video check failed for {title}: {e}")
+                    # Calculate confidence based on number of sources (Jan 2nd logic)
+                    if len(single_sources) >= 2:
+                        single_confidence = "high"
+                    elif len(single_sources) == 1:
+                        single_confidence = "medium"
+                    else:
+                        single_confidence = "low"
                     
-                    # Third check: Spotify single detection
-                    if not is_single:
-                        try:
-                            spotify_results = search_spotify_track(title, artist, album)
-                            if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-                                for result in spotify_results:
-                                    album_info = result.get("album", {})
-                                    if album_info.get("album_type", "").lower() == "single":
-                                        single_sources.append("spotify")
-                                        # Spotify single detection
-                                        # If we also have Discogs video, upgrade to medium confidence
-                                        if "discogs_video" in single_sources:
-                                            is_single = True
-                                            single_confidence = "medium"
-                                            log_unified(f"   ✓ Single detected (Spotify + Discogs video): {title}")
-                                        else:
-                                            is_single = True
-                                            single_confidence = "medium"
-                                            log_unified(f"   ✓ Single detected (Spotify): {title}")
-                                        break
-                        except Exception as e:
-                            log_verbose(f"Spotify single check failed for {title}: {e}")
+                    # Album context rule: downgrade medium → low if album has >3 tracks
+                    if single_confidence == "medium" and album_track_count > 3:
+                        single_confidence = "low"
+                        log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
+                    
+                    # is_single = True if confidence is high or medium
+                    is_single = single_confidence in ["high", "medium"]
                     
                     # Update track with single detection results
                     if is_single or single_sources:
@@ -369,6 +385,8 @@ def popularity_scan(verbose: bool = False):
                         )
                         if is_single:
                             singles_detected += 1
+                            source_str = ", ".join(single_sources)
+                            log_unified(f"   ✓ Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
                 
                 log_unified(f'Singles Detection Complete: {singles_detected} single(s) detected for "{artist} - {album}"')
 
