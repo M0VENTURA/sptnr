@@ -388,5 +388,4 @@ __all__ = [
     "load_artist_map",
     "get_album_last_scanned_from_db",
     "get_album_track_count_in_db",
-    "rate_artist",
 ]

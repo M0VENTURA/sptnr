@@ -1021,7 +1021,7 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
-from popularity_helpers import rate_artist
+# Removed: rate_artist import, now only in popularity.py
 
 def _self_test_single_gate():
     """
@@ -1190,10 +1190,6 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
                 conn.close()
                 print(f"âœ… Cache cleared for artist '{name}'")
 
-            log_unified(f"🎤 Starting rating for artist: {name} (ID: {artist_info['id']}) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
-            print(f"âœ… Completed rating for {name}. Tracks rated: {len(rated)}")
-            log_unified(f"🎤 Completed rating for artist: {name} (ID: {artist_info['id']}) at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Tracks rated: {len(rated)}")
 
             album_count = len(fetch_artist_albums(artist_info['id']))
             track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
@@ -1303,8 +1299,6 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
                     print(f"ðŸ‘€ Dry run: would scan '{name}' (ID {artist_info['id']})")
                     continue
 
-                rated = rate_artist(artist_info['id'], name, verbose=verbose, force=force)
-                print(f"âœ… Completed rating for {name}. Tracks rated: {len(rated)}")
 
                 album_count = len(fetch_artist_albums(artist_info['id']))
                 track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
@@ -1358,8 +1352,6 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
             print(f"ðŸ”„ Starting scheduled scan for {len(rows)} stale artists...")
             for artist_id, artist_name in rows:
                 print(f"ðŸŽ¨ Processing artist: {artist_name} (ID: {artist_id})")
-                rated = rate_artist(artist_id, artist_name, verbose=verbose, force=force)
-                print(f"âœ… Completed rating for {artist_name}. Tracks rated: {len(rated)}")
 
                 update_artist_stats(artist_id, artist_name)
                 time.sleep(1.5)
