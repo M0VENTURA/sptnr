@@ -155,6 +155,84 @@ class DiscogsClient:
             self._single_cache[cache_key] = False
             return False
     
+    def has_official_video(self, title: str, artist: str, timeout: int = 10) -> bool:
+        """
+        Check if track has an official video on Discogs.
+        
+        This provides a secondary confidence signal for single detection.
+        Note: Video presence alone is not conclusive, as some artists release
+        videos for non-singles.
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            timeout: Request timeout
+            
+        Returns:
+            True if official video found
+        """
+        if not self.enabled or not self.token:
+            return False
+        
+        try:
+            # Search for videos with retry on rate limit
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {"q": f"{artist} {title}", "type": "master", "per_page": 10}
+            
+            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                # Retry the request after sleeping
+                _throttle_discogs()
+                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            res.raise_for_status()
+            
+            results = res.json().get("results", [])
+            if not results:
+                return False
+            
+            # Check for video-related releases
+            nav_title_lower = title.lower()
+            for r in results[:5]:
+                master_id = r.get("id")
+                if not master_id:
+                    continue
+                
+                # Fetch master release details with retry on rate limit
+                _throttle_discogs()
+                master_url = f"{self.base_url}/masters/{master_id}"
+                master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                if master_res.status_code == 429:
+                    retry_after = int(master_res.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    # Retry the request after sleeping
+                    _throttle_discogs()
+                    master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                master_res.raise_for_status()
+                master_data = master_res.json()
+                
+                # Check videos in the master release
+                videos = master_data.get("videos", []) or []
+                for video in videos:
+                    video_title = (video.get("title") or "").lower()
+                    video_desc = (video.get("description") or "").lower()
+                    
+                    # Check if it's an official video for this track
+                    is_official = ("official" in video_title or "official" in video_desc)
+                    matches_title = (nav_title_lower in video_title or nav_title_lower in video_desc)
+                    
+                    if is_official and matches_title:
+                        logger.debug(f"Found official video for '{title}' by '{artist}' on Discogs")
+                        return True
+            
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Discogs video check failed for '{title}' by '{artist}': {e}")
+            return False
+    
     def get_genres(self, title: str, artist: str, timeout: int = 10) -> list[str]:
         """
         Fetch genres and styles from Discogs API.
@@ -210,3 +288,8 @@ def get_discogs_genres(title: str, artist: str, token: str = "", enabled: bool =
     """Backward-compatible wrapper."""
     client = _get_discogs_client(token, enabled=enabled)
     return client.get_genres(title, artist, timeout)
+
+def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = True, timeout: int = 10) -> bool:
+    """Backward-compatible wrapper for video detection."""
+    client = _get_discogs_client(token, enabled=enabled)
+    return client.has_official_video(title, artist, timeout)
