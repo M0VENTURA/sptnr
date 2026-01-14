@@ -13,6 +13,7 @@ import logging
 import json
 import math
 from datetime import datetime
+from statistics import median
 
 # Import single detection
 from single_detector import rate_track_single_detection, WEIGHTS as singles_config
@@ -225,15 +226,107 @@ def popularity_scan(verbose: bool = False):
 
                 log_unified(f'Album Scanned: "{artist} - {album}". Popularity Applied to {album_scanned} tracks.')
 
-                # Scanning for Singles
-                log_unified(f'Scanning for Singles in "{artist} - {album}"')
-                # Dummy single detection (replace with real logic as needed)
-                singles = [t["title"] for t in album_tracks if "single" in t["title"].lower()]
-                if singles:
-                    log_unified(f'Detected Singles: {", ".join(singles)}')
-                else:
-                    log_unified('No singles detected in this album.')
-
+                # Calculate star ratings and detect singles
+                log_unified(f'Calculating star ratings and detecting singles for "{artist} - {album}"')
+                
+                # Get all tracks for this album with their popularity scores
+                cursor.execute(
+                    "SELECT id, title, popularity_score FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    (artist, album)
+                )
+                album_tracks_with_scores = cursor.fetchall()
+                
+                if album_tracks_with_scores:
+                    # Calculate star ratings using the same logic as sptnr.py
+                    total_tracks = len(album_tracks_with_scores)
+                    band_size = math.ceil(total_tracks / 4)
+                    
+                    # Calculate median score for threshold
+                    scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
+                    median_score = median(scores) if scores else 10
+                    if median_score == 0:
+                        median_score = 10
+                    jump_threshold = median_score * 1.7
+                    
+                    singles_detected = []
+                    star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    
+                    for i, track_row in enumerate(album_tracks_with_scores):
+                        track_id = track_row["id"]
+                        title = track_row["title"]
+                        popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
+                        
+                        # Calculate band-based star rating
+                        band_index = i // band_size if band_size > 0 else 0
+                        stars = max(1, 4 - band_index)
+                        
+                        # Boost to 5 stars if score exceeds threshold
+                        if popularity_score >= jump_threshold:
+                            stars = 5
+                        
+                        # Detect if track is a single (basic detection based on high popularity)
+                        is_single = False
+                        single_confidence = "low"
+                        single_sources = []
+                        
+                        # Simple heuristic: tracks with popularity >= 70 are likely singles
+                        if popularity_score >= 70:
+                            is_single = True
+                            single_confidence = "high"
+                            single_sources.append("high_popularity")
+                            stars = 5  # Singles get 5 stars
+                        elif popularity_score >= 50:
+                            is_single = True
+                            single_confidence = "medium"
+                            single_sources.append("medium_popularity")
+                            stars = min(stars + 1, 5)
+                        
+                        # Ensure at least 1 star
+                        stars = max(stars, 1)
+                        
+                        # Update track in database
+                        cursor.execute(
+                            """UPDATE tracks 
+                               SET stars = ?, is_single = ?, single_confidence = ?, single_sources = ?
+                               WHERE id = ?""",
+                            (stars, 1 if is_single else 0, single_confidence, ','.join(single_sources), track_id)
+                        )
+                        
+                        star_distribution[stars] += 1
+                        
+                        # Log track with star rating
+                        star_display = "★" * stars + "☆" * (5 - stars)
+                        log_unified(f"   {star_display} ({stars}/5) - {title} (popularity: {popularity_score:.1f})")
+                        
+                        # Sync to Navidrome
+                        try:
+                            from start import set_track_rating_for_all
+                            set_track_rating_for_all(track_id, stars)
+                            log_unified(f"      ✓ Synced to Navidrome")
+                        except Exception as e:
+                            log_unified(f"      ✗ Failed to sync to Navidrome: {e}")
+                        
+                        if is_single:
+                            singles_detected.append({
+                                "title": title,
+                                "confidence": single_confidence,
+                                "sources": single_sources,
+                                "score": popularity_score
+                            })
+                    
+                    # Log singles summary
+                    if singles_detected:
+                        log_unified(f'✓ Detected {len(singles_detected)} singles in "{album}":')
+                        for single in singles_detected:
+                            sources_str = ', '.join(single["sources"])
+                            log_unified(f'   → "{single["title"]}" [{single["confidence"]} confidence from {sources_str}] (score: {single["score"]:.1f})')
+                    else:
+                        log_unified(f'No singles detected in "{album}"')
+                    
+                    # Log star distribution
+                    dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
+                    log_unified(f'Star distribution for "{album}": {dist_str}')
+                
                 # Log album scan
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
 
