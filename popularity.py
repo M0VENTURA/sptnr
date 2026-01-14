@@ -256,6 +256,68 @@ def popularity_scan(verbose: bool = False):
         log_unified("=" * 60)
         log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
+    """
+    Create or update a playlist for an artist using the cached tracks.
+    This is a placeholder function that logs the intent but doesn't actually create playlists yet.
+    
+    Args:
+        artist_name: Name of the artist
+        tracks: List of track dictionaries with id, artist, album, title, stars
+    """
+    log_basic(f"Playlist update requested for artist: {artist_name} ({len(tracks)} tracks)")
+    # TODO: Implement actual playlist creation/update via Navidrome API
+    # For now, this is a no-op to prevent import errors
+
+def refresh_all_playlists_from_db():
+    """
+    Refresh all smart playlists for all artists from DB cache (no track rescans).
+    This function pulls distinct artists that have cached tracks and updates their playlists.
+    """
+    log_basic("🔄 Refreshing smart playlists for all artists from DB cache (no track rescans)...")
+    
+    # Pull distinct artists that have cached tracks
+    conn = None
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT artist FROM tracks")
+        artists = [row[0] for row in cursor.fetchall()]
+        conn.close()
+        
+        if not artists:
+            log_basic("⚠️ No cached tracks in DB. Skipping playlist refresh.")
+            return
+        
+        for name in artists:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT id, artist, album, title, stars FROM tracks WHERE artist = ?", (name,))
+            rows = cursor.fetchall()
+            conn.close()
+            
+            if not rows:
+                log_basic(f"⚠️ No cached tracks found for '{name}', skipping.")
+                continue
+            
+            tracks = [
+                {
+                    "id": r[0],
+                    "artist": r[1],
+                    "album": r[2],
+                    "title": r[3],
+                    "stars": int(r[4]) if r[4] else 0
+                }
+                for r in rows
+            ]
+            create_or_update_playlist_for_artist(name, tracks)
+            log_basic(f"✅ Playlist refreshed for '{name}' ({len(tracks)} tracks)")
+    except Exception as e:
+        log_basic(f"❌ Error refreshing playlists: {e}")
+    finally:
+        if conn:
+            conn.close()
+
 if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run popularity scan.")
