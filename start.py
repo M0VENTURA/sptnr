@@ -32,6 +32,7 @@ import difflib
 from statistics import median
 from collections import defaultdict
 from helpers import strip_parentheses
+from popularity import create_or_update_playlist_for_artist, refresh_all_playlists_from_db
 # Dummy/placeholder clients for external APIs (replace with actual imports as needed)
 musicbrainz_client = None
 discogs_client = None
@@ -251,44 +252,6 @@ except Exception:
 # --- Helpers (reuse your existing normalizers) ---
 _DEF_USER_AGENT = "sptnr-cli/2.0"
 
-def _canon(s: str) -> str:
-    """Lowercase, strip parentheses and punctuation, normalize whitespace."""
-    s = (s or "").lower()
-    s = re.sub(r"\(.*?\)", " ", s)            # drop parenthetical
-    s = re.sub(r"[^\w\s]", " ", s)            # strip punctuation
-    s = re.sub(r"\s+", " ", s).strip()
-    return s
-
-
-# --- Title helpers (centralized to avoid duplicated nested versions) -----
-def _similar(a: str, b: str) -> float:
-
-
-def _release_title_core(rel_title: str, artist_name: str) -> str:
-    """Discogs search 'title' often looks like 'Artist - Title / B-side'.
-    Keep only the 'Title' part for fair similarity vs. track title.
-    """
-    t = (rel_title or "").strip()
-    parts = t.split(" - ", 1)
-    if len(parts) == 2 and _canon(parts[0]) == _canon(artist_name):
-        t = parts[1].strip()
-    return t.split(" / ")[0].strip()
-
-
-def _is_variant_of(base: str, candidate: str) -> bool:
-    """Treat instrumental/radio edit/remaster as benign; ban live/remix."""
-    b = _canon(strip_parentheses(base)); c = _canon(candidate)
-    if "live" in c or "remix" in c:
-        return False
-    ok = {"instrumental", "radio edit", "edit", "remaster"}
-    return (b in c) or any(tok in c for tok in ok)
-
-
-def _has_official_on_release(data: dict, nav_title: str, *, allow_live: bool, min_ratio: float = 0.50) -> bool:
-    """Compatibility alias to the shared inspect helper."""
-    # Import here to avoid circular dependency
-    from singledetection import _has_official_on_release_top
-    return _has_official_on_release_top(data, nav_title, allow_live=allow_live, min_ratio=min_ratio)
 
 
 
@@ -325,20 +288,20 @@ def is_valid_version(track_title, allow_live_remix=False):
 # `strip_parentheses` moved to `helpers.py` for reuse across modules
 # --- Last.fm Helpers ---
 
+
 def get_lastfm_track_info(artist: str, title: str) -> dict:
-    """Fetch Last.fm track playcount (wrapper using LastFmClient)."""
-    return lastfm_client.get_track_info(artist, title)
+    pass  # Implementation moved to popularity.py
+
 
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
-    """Fetch ListenBrainz listen count (wrapper using ListenBrainzClient)."""
-    return listenbrainz_client.get_listen_count(mbid, artist, title)
+    pass  # Implementation moved to popularity.py
+
 
 def score_by_age(playcount, release_str):
-    """Apply age decay to score based on release date (wrapper)."""
-    from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
-    return _score_by_age(playcount, release_str)
+    pass  # Implementation moved to popularity.py
 
 # --- Genre Handling ---
+
 GENRE_WEIGHTS = {
     "musicbrainz": 0.40,
     "discogs": 0.25,
@@ -390,27 +353,6 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
     return online_top, nav_cleaned
 
 def set_track_rating_for_all(track_id, stars):
-    targets = NAV_USERS if NAV_USERS else (
-        [{"base_url": NAV_BASE_URL, "user": USERNAME, "pass": PASSWORD}] if NAV_BASE_URL and USERNAME else []
-    )
-    for user_cfg in targets:
-        url = f"{user_cfg['base_url']}/rest/setRating.view"
-        params = {
-            "u": user_cfg["user"],
-            "p": user_cfg["pass"],
-            "v": "1.16.1",
-            "c": "sptnr",
-            "id": track_id,
-            "rating": stars
-        }
-        try:
-            res = session.get(url, params=params, timeout=10)
-            res.raise_for_status()
-            logging.info(f"âœ… Set rating {stars}/5 for track {track_id} (user {user_cfg['user']})")
-        except Exception as e:
-            logging.error(f"âŒ Failed for {user_cfg['user']}: {e}")
-
-def refresh_all_playlists_from_db():
     print("ðŸ”„ Refreshing smart playlists for all artists from DB cache (no track rescans)...")
     # Pull distinct artists that have cached tracks
     conn = get_db_connection()
@@ -434,125 +376,6 @@ def refresh_all_playlists_from_db():
                   for r in rows]
         create_or_update_playlist_for_artist(name, tracks)
         print(f"âœ… Playlist refreshed for '{name}' ({len(tracks)} tracks)")
-
-def _normalize_name(name: str) -> str:
-    # Normalize typographic quotes and trim spaces
-    return (
-        (name or "")
-        .replace("â€œ", '"').replace("â€", '"').replace("â€™", "'")
-        .strip()
-    )
-
-def _log_resp(resp, action, name):
-    try:
-        txt = resp.text[:500]
-    except Exception:
-        txt = "<no text>"
-    logging.info(f"{action} '{name}' â†’ {resp.status_code}: {txt}")
-
-# --- NSP Playlist Helpers (Consolidated) ---
-def _sanitize_playlist_name(name: str) -> str:
-    """Sanitize playlist name for filesystem use."""
-    return "".join(c for c in name if c.isalnum() or c in ('-', '_', ' ')).strip()
-
-def _delete_nsp_file(playlist_name: str) -> None:
-    """Delete an NSP playlist file if it exists."""
-    try:
-        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
-        playlists_dir = os.path.join(music_folder, "Playlists")
-        safe_name = _sanitize_playlist_name(playlist_name)
-        file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
-        if os.path.exists(file_path):
-            os.remove(file_path)
-            logging.info(f"ðŸ—‘ï¸ Deleted playlist: {playlist_name}")
-    except Exception as e:
-        logging.warning(f"Failed to delete playlist '{playlist_name}': {e}")
-
-def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
-    """Create an NSP playlist file. Returns True on success."""
-    try:
-        music_folder = os.environ.get("MUSIC_FOLDER", "/Music")
-        playlists_dir = os.path.join(music_folder, "Playlists")
-        os.makedirs(playlists_dir, exist_ok=True)
-        
-        safe_name = _sanitize_playlist_name(playlist_name)
-        file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
-        
-        # Skip if file exists
-        if os.path.exists(file_path):
-            logging.warning(f"Playlist file already exists: {file_path}")
-            return False
-        
-        with open(file_path, 'w', encoding='utf-8') as f:
-            json.dump(playlist_data, f, indent=2, ensure_ascii=False)
-        
-        logging.info(f"ðŸ“ NSP created: {file_path}")
-        return True
-    except Exception as e:
-        logging.error(f"Failed to create NSP playlist '{playlist_name}': {e}")
-        return False
-
-
-def create_or_update_playlist_for_artist(artist: str, tracks: list[dict]):
-    """
-    Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0â€“5 rating scale.
-
-    Logic:
-      - Case A: if artist has >= 10 five-star tracks, build a pure 5â˜… essentials playlist.
-      - Case B: if total tracks >= 100, build top 10% essentials sorted by rating.
-    """
-
-    total_tracks = len(tracks)
-    five_star_tracks = [t for t in tracks if (t.get("stars") or 0) == 5]
-    playlist_name = f"Essential {artist}"
-
-    # CASE A â€” 10+ five-star tracks â†’ purely 5â˜… essentials
-    if len(five_star_tracks) >= 10:
-        _delete_nsp_file(playlist_name)
-        playlist_data = {
-            "name": playlist_name,
-            "comment": "Auto-generated by SPTNR",
-            "all": [{"is": {"artist": artist, "rating": 5}}],
-            "sort": "random"
-        }
-        _create_nsp_file(playlist_name, playlist_data)
-        log_unified(f"Essential playlist created for '{artist}' (5â˜… essentials)")
-        return
-
-    # CASE B â€” 100+ total tracks â†’ top 10% by rating
-    if total_tracks >= 100:
-        _delete_nsp_file(playlist_name)
-        limit = max(1, math.ceil(total_tracks * 0.10))
-        playlist_data = {
-            "name": playlist_name,
-            "comment": "Auto-generated by SPTNR",
-            "all": [{"is": {"artist": artist}}],
-            "sort": "-rating,random",
-            "limit": limit
-        }
-        _create_nsp_file(playlist_name, playlist_data)
-        log_unified(f"Essential playlist created for '{artist}' (top 10% by rating)")
-        return
-
-    log_unified(
-        f"No Essential playlist created for '{artist}' "
-        f"(total={total_tracks}, fiveâ˜…={len(five_star_tracks)})"
-    )
-
-
-# --- Navidrome API wrappers (now using NavidromeClient) ---
-
-def fetch_artist_albums(artist_id):
-    """Fetch albums for an artist (wrapper using NavidromeClient)."""
-    return nav_client.fetch_artist_albums(artist_id)
-
-def fetch_album_tracks(album_id):
-    """
-    Fetch all tracks for an album using Subsonic API (wrapper using NavidromeClient).
-    :param album_id: Album ID in Navidrome
-    :return: List of track objects
-    """
-    return nav_client.fetch_album_tracks(album_id)
 
 def build_artist_index(verbose: bool = False):
     """Build artist index from Navidrome (wrapper using NavidromeClient)."""
@@ -1002,47 +825,6 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
 
 # Removed: rate_artist import, now only in popularity.py
 
-def _self_test_single_gate():
-    """
-    Sanity tests for Discogs-first single gate logic (HIGH confidence required).
-    No network calls; uses synthetic combinations of sources.
-    """
-    SINGLE_SOURCE_WEIGHTS = {
-        "discogs": 2, "discogs_video": 2,
-        "spotify": 1, "short_release": 1,
-        "musicbrainz": 1, "youtube": 1, "lastfm": 1,
-    }
-
-    def confidence_for(sources_set, spotify_source=False, short_release_source=False):
-        weighted_count = sum(SINGLE_SOURCE_WEIGHTS.get(s, 0) for s in sources_set)
-        high_combo     = (spotify_source and short_release_source)
-        discogs_strong = any(s in sources_set for s in ("discogs", "discogs_video"))
-        if discogs_strong or high_combo or weighted_count >= 3:
-            return "high"
-        elif weighted_count >= 2:
-            return "medium"
-        else:
-            return "low"
-
-    cases = [
-        ("Discogs Single only",                 True, {"discogs"},          True),
-        ("Discogs Official Video only",         True, {"discogs_video"},    True),
-        ("YouTube + Last.fm (two sources)",     True, {"youtube","lastfm"}, False),  # medium -> NOT single
-        ("Spotify single + short (combo)",      True, {"spotify","short_release"}, True),
-        ("Short release only",                  True, {"short_release"},    False),
-        ("Spotify single only",                 True, {"spotify"},          False),   # high confidence policy
-        ("Discogs strong but non-canonical",    False, {"discogs"},         False),
-    ]
-
-    print("\nðŸ§ª Self-test: HIGH confidence required")
-    passes = 0
-    for name, canonical, sset, expected in cases:
-        conf = confidence_for(sset, "spotify" in sset, "short_release" in sset)
-        decision = canonical and (conf == "high")
-        ok = (decision == expected)
-        passes += int(ok)
-        print(f" - {name:<35} â†’ conf={conf}, decision={decision}  [{'PASS' if ok else 'FAIL'}]")
-    print(f"âœ… {passes}/{len(cases)} cases passed.\n")
 
 
 # âœ… Main scan function that can be called from app.py
@@ -1539,4 +1321,7 @@ def enrich_genres_aggressively(artist_name: str, verbose: bool = False):
 
 
 # ...existing code...
+
+    import difflib
+    return difflib.SequenceMatcher(None, _canon(a), _canon(b)).ratio()
 
