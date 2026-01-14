@@ -141,6 +141,19 @@ class DiscogsClient:
                     self._single_cache[cache_key] = True
                     return True
                 
+                # Strong path 3: Check for music videos in the release
+                # If a release has a video for the matched track, it's likely a single
+                videos = data.get("videos", []) or []
+                for video in videos:
+                    video_title = (video.get("title") or "").lower()
+                    video_desc = (video.get("description") or "").lower()
+                    # Check if video title/desc contains the track title
+                    if nav_title in video_title or nav_title in video_desc:
+                        # Video for this track found - likely a single
+                        logger.debug(f"Found video for '{title}' in Discogs release {rid}")
+                        self._single_cache[cache_key] = True
+                        return True
+                
                 # Structural fallback: 1-2 tracks
                 if 1 <= len(tracks) <= 2:
                     if best_idx == 0:

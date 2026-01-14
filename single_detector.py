@@ -234,6 +234,28 @@ def rate_track_single_detection(
         except Exception as e:
             logging.exception(f"Last.fm tag check failed for '{title}': {e}")
     
+    # --- Discogs Video - Check online ---
+    discogs_video_hit = False
+    try:
+        if verbose:
+            logging.info("🔍 Checking Discogs music video (online)...")
+        logging.debug(f"Checking Discogs music video for '{title}' by '{artist_name}'")
+        from api_clients.discogs import has_discogs_video
+        if DISCOGS_ENABLED and DISCOGS_TOKEN:
+            discogs_video_hit = has_discogs_video(title, artist_name, token=DISCOGS_TOKEN)
+            if discogs_video_hit:
+                sources.add("discogs_video")
+                track['discogs_video_found'] = 1
+                logging.debug(f"Discogs music video detected for '{title}' (sources={sources})")
+                if verbose:
+                    logging.info("✅ Discogs music video FOUND")
+            else:
+                logging.debug(f"Discogs music video not detected for '{title}'")
+                if verbose:
+                    logging.info("❌ Discogs music video not found")
+    except Exception as e:
+        logging.exception(f"Discogs video check failed for '{title}': {e}")
+    
     # --- Calculate confidence and is_single ---
     # Discogs is a hard guarantee if canonical
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
