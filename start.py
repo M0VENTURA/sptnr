@@ -22,7 +22,7 @@ YOUTUBE_ENABLED = False
 AUDIODB_ENABLED = False
 load_config = None
 import logging
-from popularity import get_current_single_detection
+from scan_helpers import get_current_single_detection
 import sqlite3
 import time
 import json

@@ -30,7 +30,41 @@ from scan_helpers import scan_artist_to_db
 from start import rate_artist
 from popularity import popularity_scan
 from start import build_artist_index
-from metadata_reader import aggregate_genres_from_tracks
+# --- Utility: Aggregate genres from tracks in DB ---
+def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
+    """
+    Aggregate unique genres from all tracks by an artist.
+    Args:
+        artist_name: Artist name
+        db_path: Path to database
+    Returns:
+        list: Sorted list of unique genres
+    """
+    genres = set()
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        cursor.execute("SELECT genres FROM tracks WHERE artist = ?", (artist_name,))
+        rows = cursor.fetchall()
+        conn.close()
+        for row in rows:
+            if row[0]:
+                genre_str = row[0]
+                if isinstance(genre_str, str):
+                    try:
+                        import json
+                        genre_list = json.loads(genre_str)
+                        if isinstance(genre_list, list):
+                            genres.update(genre_list)
+                    except:
+                        for g in genre_str.split(','):
+                            g = g.strip().strip('"\'[]')
+                            if g:
+                                genres.add(g)
+    except:
+        pass
+    return sorted(list(genres))
 from check_db import update_schema
 from start import save_to_db
 
