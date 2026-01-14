@@ -105,7 +105,122 @@
           {% endfor %}
         {% else %}
           <!-- No users yet, show empty message -->
+          <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle"></i> <strong>No users configured.</strong> Click "Add Another User" above to create your first user, or use the Setup Wizard for guided configuration.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
 
+  <!-- qBittorrent Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-download"></i> qBittorrent</h5>
+          <small class="text-muted">Torrent download client integration</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
+          <label class="form-check-label" for="qbit_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Username</label>
+          <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Password</label>
+          <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- slskd Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-music-note-list"></i> slskd (Soulseek)</h5>
+          <small class="text-muted">Peer-to-peer music sharing client</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="slskd_enabled" {% if config.get('slskd', {}).get('enabled') %}checked{% endif %}>
+          <label class="form-check-label" for="slskd_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label">API Key</label>
+          <input type="password" class="form-control" id="slskd_api_key" placeholder="API Key" value="{{ config.get('slskd', {}).get('api_key', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Authentik Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-shield-lock"></i> Authentik (SSO)</h5>
+          <small class="text-muted">Single Sign-On authentication</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="authentik_enabled" {% if config.get('authentik', {}).get('enabled') %}checked{% endif %}>
+          <label class="form-check-label" for="authentik_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Server URL</label>
+          <input type="text" class="form-control" id="authentik_server_url" placeholder="https://auth.example.com" value="{{ config.get('authentik', {}).get('server_url', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client ID</label>
+          <input type="text" class="form-control" id="authentik_client_id" placeholder="client_id" value="{{ config.get('authentik', {}).get('client_id', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Client Secret</label>
+          <input type="password" class="form-control" id="authentik_client_secret" placeholder="••••••••" value="{{ config.get('authentik', {}).get('client_secret', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bookmarks Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-bookmark-star"></i> Bookmarks</h5>
+          <small class="text-muted">Custom bookmarks and links</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="bookmarks_enabled" {% if config.get('bookmarks', {}).get('enabled', true) %}checked{% endif %}>
+          <label class="form-check-label" for="bookmarks_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
         <div class="col-12">
           <label class="form-label">Max Bookmarks</label>
           <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
@@ -453,6 +568,17 @@ function showToast(title, message, type = 'info') {
 }
 
 function buildConfigObject() {
+  // Helper function to safely get element value
+  function getValue(id, defaultValue = '') {
+    const el = document.getElementById(id);
+    return el ? el.value : defaultValue;
+  }
+  
+  function getChecked(id, defaultValue = false) {
+    const el = document.getElementById(id);
+    return el ? el.checked : defaultValue;
+  }
+  
   // Build multi-user array
   const navidrome_users = [];
   const userCards = document.querySelectorAll('.user-card');
@@ -476,25 +602,25 @@ function buildConfigObject() {
   return {
     navidrome_users: navidrome_users,
     qbittorrent: {
-      enabled: document.getElementById('qbit_enabled').checked,
-      web_url: document.getElementById('qbit_web_url').value,
-      username: document.getElementById('qbit_username').value,
-      password: document.getElementById('qbit_password').value
+      enabled: getChecked('qbit_enabled', false),
+      web_url: getValue('qbit_web_url', ''),
+      username: getValue('qbit_username', ''),
+      password: getValue('qbit_password', '')
     },
     slskd: {
-      enabled: document.getElementById('slskd_enabled').checked,
-      web_url: document.getElementById('slskd_web_url').value,
-      api_key: document.getElementById('slskd_api_key').value
+      enabled: getChecked('slskd_enabled', false),
+      web_url: getValue('slskd_web_url', ''),
+      api_key: getValue('slskd_api_key', '')
     },
     authentik: {
-      enabled: document.getElementById('authentik_enabled').checked,
-      server_url: document.getElementById('authentik_server_url').value,
-      client_id: document.getElementById('authentik_client_id').value,
-      client_secret: document.getElementById('authentik_client_secret').value
+      enabled: getChecked('authentik_enabled', false),
+      server_url: getValue('authentik_server_url', ''),
+      client_id: getValue('authentik_client_id', ''),
+      client_secret: getValue('authentik_client_secret', '')
     },
     bookmarks: {
-      enabled: document.getElementById('bookmarks_enabled').checked,
-      max_bookmarks: parseInt(document.getElementById('bookmarks_max').value) || 100,
+      enabled: getChecked('bookmarks_enabled', true),
+      max_bookmarks: parseInt(getValue('bookmarks_max', '100')) || 100,
       custom_links: getCustomBookmarkLinks()
     },
     api_integrations: {
