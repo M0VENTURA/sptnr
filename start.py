@@ -9,7 +9,7 @@ from concurrent.futures import ThreadPoolExecutor
 # Placeholders for undefined variables/objects (replace with actual implementations as needed)
 session = None
 nav_client = None
-CONFIG_PATH = 'config/config.yaml'
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 get_spotify_artist_id = None
 get_spotify_artist_single_track_ids = None
 parse_datetime_flexible = None
@@ -57,7 +57,7 @@ from db_utils import get_db_connection
 
 # --- Navidrome user config ---
 import yaml
-with open('config/config.yaml', 'r') as f:
+with open(CONFIG_PATH, 'r') as f:
     _cfg = yaml.safe_load(f)
 _nav = _cfg.get('navidrome', {})
 _nav_users = _cfg.get('navidrome_users', None)
