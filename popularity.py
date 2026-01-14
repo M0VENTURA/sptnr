@@ -2,6 +2,7 @@
 """
 Popularity Scanner - Detects track popularity from external sources (Spotify, Last.fm, ListenBrainz).
 Calculates popularity scores and updates database.
+Note: Singles detection is handled separately by sptnr.py rate_artist() function.
 """
 
 
@@ -15,12 +16,6 @@ import math
 from datetime import datetime
 from statistics import median
 from api_clients import session
-
-# --- Singles Detection Thresholds ---
-# Tracks with popularity >= this threshold are considered high-confidence singles
-HIGH_POPULARITY_THRESHOLD = 70
-# Tracks with popularity >= this threshold get a bonus star
-MEDIUM_POPULARITY_THRESHOLD = 50
 
 # Dedicated popularity logger (no propagation to root)
 
@@ -279,8 +274,8 @@ def popularity_scan(verbose: bool = False):
 
                 log_unified(f'Album Scanned: "{artist} - {album}". Popularity Applied to {album_scanned} tracks.')
 
-                # Calculate star ratings and detect singles
-                log_unified(f'Calculating star ratings and detecting singles for "{artist} - {album}"')
+                # Calculate star ratings for album tracks
+                log_unified(f'Calculating star ratings for "{artist} - {album}"')
                 
                 # Get all tracks for this album with their popularity scores
                 cursor.execute(
@@ -301,7 +296,6 @@ def popularity_scan(verbose: bool = False):
                         median_score = 10
                     jump_threshold = median_score * 1.7
                     
-                    singles_detected = []
                     star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
@@ -317,32 +311,17 @@ def popularity_scan(verbose: bool = False):
                         if popularity_score >= jump_threshold:
                             stars = 5
                         
-                        # Detect if track is a single (basic detection based on high popularity)
-                        is_single = False
-                        single_confidence = "low"
-                        single_sources = []
-                        
-                        # Simple heuristic: tracks with high popularity are likely singles
-                        if popularity_score >= HIGH_POPULARITY_THRESHOLD:
-                            is_single = True
-                            single_confidence = "high"
-                            single_sources.append("high_popularity")
-                            stars = 5  # Singles get 5 stars
-                        elif popularity_score >= MEDIUM_POPULARITY_THRESHOLD:
-                            is_single = True
-                            single_confidence = "medium"
-                            single_sources.append("medium_popularity")
-                            stars = min(stars + 1, 5)
-                        
                         # Ensure at least 1 star
                         stars = max(stars, 1)
                         
-                        # Update track in database
+                        # Update track in database with star rating only
+                        # Note: Singles detection is handled separately by rate_artist() in sptnr.py
+                        # Do NOT update is_single, single_confidence, or single_sources here
                         cursor.execute(
                             """UPDATE tracks 
-                            SET stars = ?, is_single = ?, single_confidence = ?, single_sources = ?
+                            SET stars = ?
                             WHERE id = ?""",
-                            (stars, 1 if is_single else 0, single_confidence, ','.join(single_sources), track_id)
+                            (stars, track_id)
                         )
                         
                         star_distribution[stars] += 1
@@ -356,23 +335,6 @@ def popularity_scan(verbose: bool = False):
                             log_unified(f"      ✓ Synced to Navidrome")
                         else:
                             log_unified(f"      ⚠ Skipped Navidrome sync (not configured or failed)")
-                        
-                        if is_single:
-                            singles_detected.append({
-                                "title": title,
-                                "confidence": single_confidence,
-                                "sources": single_sources,
-                                "score": popularity_score
-                            })
-                    
-                    # Log singles summary
-                    if singles_detected:
-                        log_unified(f'✓ Detected {len(singles_detected)} singles in "{album}":')
-                        for single in singles_detected:
-                            sources_str = ', '.join(single["sources"]) if single["sources"] else "unknown"
-                            log_unified(f'   → "{single["title"]}" [{single["confidence"]} confidence from {sources_str}] (score: {single["score"]:.1f})')
-                    else:
-                        log_unified(f'No singles detected in "{album}"')
                     
                     # Log star distribution
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
