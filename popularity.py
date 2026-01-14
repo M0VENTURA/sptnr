@@ -135,9 +135,9 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
     """
     try:
         # Get Navidrome credentials from environment
-        nav_url = os.environ.get("NAVIDROME_URL", "").strip("/")
-        nav_user = os.environ.get("NAVIDROME_USER", "")
-        nav_pass = os.environ.get("NAVIDROME_PASS", "")
+        nav_url = os.environ.get("NAV_BASE_URL", "").strip("/")
+        nav_user = os.environ.get("NAV_USER", "")
+        nav_pass = os.environ.get("NAV_PASS", "")
         
         if not all([nav_url, nav_user, nav_pass]):
             log_verbose("Navidrome credentials not configured, skipping rating sync")
