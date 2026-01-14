@@ -16,12 +16,6 @@ from datetime import datetime
 from statistics import median
 from api_clients import session
 
-# --- Singles Detection Thresholds ---
-# Tracks with popularity >= this threshold are considered high-confidence singles
-HIGH_POPULARITY_THRESHOLD = 70
-# Tracks with popularity >= this threshold get a bonus star
-MEDIUM_POPULARITY_THRESHOLD = 50
-
 # Dedicated popularity logger (no propagation to root)
 
 
@@ -244,6 +238,7 @@ def popularity_scan(verbose: bool = False):
                     # Try to get popularity from Spotify
                     spotify_score = 0
                     spotify_album_type = None
+                    spotify_album_name = None
                     try:
                         artist_id = get_spotify_artist_id(artist)
                         if artist_id:
@@ -251,8 +246,9 @@ def popularity_scan(verbose: bool = False):
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
-                                # Extract album_type for single detection
+                                # Extract album_type and name for single detection
                                 spotify_album_type = best_match.get("album", {}).get("album_type", "").lower()
+                                spotify_album_name = best_match.get("album", {}).get("name", "").lower()
                     except Exception as e:
                         log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
 
