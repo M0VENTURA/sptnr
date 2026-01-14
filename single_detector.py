@@ -5,6 +5,8 @@ __all__ = ["rate_track_single_detection", "WEIGHTS"]
 import sqlite3
 import json
 import logging
+import re
+import difflib
 
 def get_db_connection():
     from start import DB_PATH
@@ -41,6 +43,61 @@ def get_current_single_detection(track_id: str) -> dict:
         logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
         return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
+# --- Helper functions for title analysis ---
+def _base_title(title: str) -> str:
+    """Remove common subtitle patterns to get base title."""
+    # Remove anything in parentheses or brackets
+    cleaned = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
+    # Remove common suffixes
+    cleaned = re.sub(r'\s*-\s*(Live|Remix|Remaster|Edit|Mix|Version).*$', '', cleaned, flags=re.IGNORECASE)
+    return cleaned.strip()
+
+def _has_subtitle_variant(title: str) -> bool:
+    """Check if title has subtitle indicators (parentheses, brackets, dashes)."""
+    return bool(re.search(r'[\(\[\-]', title))
+
+def _similar(a: str, b: str) -> float:
+    """Calculate similarity ratio between two strings."""
+    return difflib.SequenceMatcher(None, a.lower(), b.lower()).ratio()
+
+def is_valid_version(title: str, allow_live_remix: bool = False) -> bool:
+    """
+    Check if track title is a valid canonical version.
+    Returns True if it's not a live/remix/etc variant (unless allow_live_remix=True).
+    """
+    lower_title = title.lower()
+    
+    # Patterns that indicate non-canonical versions
+    non_canonical_patterns = [
+        r'\bremix\b',
+        r'\bedit\b',
+        r'\bmix\b',
+        r'\bremaster\b',
+        r'\bacoustic\b',
+        r'\bdemo\b',
+        r'\bkaraoke\b',
+        r'\binstrumental\b',
+    ]
+    
+    # Live/unplugged patterns (allowed if allow_live_remix=True)
+    live_patterns = [
+        r'\blive\b',
+        r'\bunplugged\b',
+    ]
+    
+    # Check non-canonical patterns
+    for pattern in non_canonical_patterns:
+        if re.search(pattern, lower_title):
+            return False
+    
+    # Check live patterns
+    if not allow_live_remix:
+        for pattern in live_patterns:
+            if re.search(pattern, lower_title):
+                return False
+    
+    return True
+
 # --- Import the advanced single detection logic from singledetection.py if needed ---
 def rate_track_single_detection(
     track: dict,
@@ -62,13 +119,6 @@ def rate_track_single_detection(
     - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
     """
     import os
-    from start import (
-        _base_title,
-        _has_subtitle_variant,
-        _similar,
-        is_valid_version,
-        config as global_config,
-    )
     
     # Get API configuration from environment
     DISCOGS_ENABLED = bool(os.getenv("DISCOGS_TOKEN"))
