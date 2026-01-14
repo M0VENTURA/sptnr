@@ -33,7 +33,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
     for attempt in range(max_retries):
         try:
             # Use higher timeout and WAL mode for better concurrency
-            conn = sqlite3.connect(DB_PATH, timeout=30.0)
+            conn = sqlite3.connect(DB_PATH, timeout=120.0)
             conn.execute("PRAGMA journal_mode=WAL")
             conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
             
@@ -102,7 +102,7 @@ def get_recent_album_scans(limit: int = 10):
         List of dicts with scan information
     """
     try:
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn = sqlite3.connect(DB_PATH, timeout=120.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
         conn.row_factory = sqlite3.Row

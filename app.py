@@ -344,8 +344,14 @@ def setup():
 
 
 
+
 # Standardized config/database/log path variables
-CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+# Always default to /config/config.yaml unless CONFIG_PATH is explicitly set (not just empty)
+_env_config_path = os.environ.get("CONFIG_PATH")
+if _env_config_path and _env_config_path.strip():
+    CONFIG_PATH = _env_config_path
+else:
+    CONFIG_PATH = "/config/config.yaml"
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 LOG_PATH = os.environ.get("LOG_PATH", "/config/app.log")
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
@@ -800,7 +806,7 @@ def get_db():
         if not _schema_updated:
             update_schema(DB_PATH)
             _schema_updated = True
-        conn = sqlite3.connect(DB_PATH, timeout=30.0)
+        conn = sqlite3.connect(DB_PATH, timeout=120.0)
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
@@ -818,45 +824,48 @@ def dashboard():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        
+
         cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
         artist_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
         album_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(*) FROM tracks")
         track_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
         five_star_count = cursor.fetchone()[0]
-        
+
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
         singles_count = cursor.fetchone()[0]
-        
+
         conn.close()
-        
+
         # Get recent scans from scan_history table
         from scan_history import get_recent_album_scans
         recent_scans = get_recent_album_scans(limit=10)
-        
+
         with scan_lock:
             web_ui_running = scan_process is not None and scan_process.poll() is None
-        
+
         # Check if background scan from start.py is running
         lock_file_path = os.path.join(os.path.dirname(CONFIG_PATH), ".scan_lock")
         background_running = os.path.exists(lock_file_path)
-        
+
         scan_running = web_ui_running or background_running
-        
+
         # Get Navidrome users from config
         cfg, _ = _read_yaml(CONFIG_PATH)
         nav_users_list = cfg.get("navidrome_users", [])
         if not nav_users_list and cfg.get("navidrome"):
             # Single user mode - convert to list format for consistency
             nav_users_list = [cfg.get("navidrome")]
-        
-        return render_template("dashboard.html",
+
+        db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
+        dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
+
+        return render_template(dashboard_template,
                              artist_count=artist_count,
                              album_count=album_count,
                              track_count=track_count,
@@ -869,8 +878,10 @@ def dashboard():
         logging.error(f"Dashboard error: {e}")
         import traceback
         traceback.print_exc()
-        # Render a minimal dashboard with error message instead of redirecting
-        return render_template("dashboard.html",
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
+        dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
+        return render_template(dashboard_template,
                              artist_count=0,
                              album_count=0,
                              track_count=0,

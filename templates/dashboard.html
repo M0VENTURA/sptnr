@@ -120,7 +120,7 @@
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                        <form method="POST" action="{{ url_for('scan_stop_navidrome') }}">
                             <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
@@ -162,7 +162,7 @@
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                        <form method="POST" action="{{ url_for('scan_stop_popularity') }}">
                             <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
@@ -204,7 +204,7 @@
                                 <i class="bi bi-play-fill"></i> Start
                             </button>
                         </form>
-                        <form method="POST" action="{{ url_for('scan_stop') }}">
+                        <form method="POST" action="{{ url_for('scan_stop_mp3') }}">
                             <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
                                 <i class="bi bi-stop-fill"></i> Stop
                             </button>
@@ -252,8 +252,9 @@
                     </div>
                     <!-- Unified Log Area -->
                     <div class="card mt-4">
-                        <div class="card-header py-2 px-3">
+                        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
                             <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
+                            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
                         </div>
                         <div class="card-body p-2">
                             <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
@@ -769,7 +770,17 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Update unified log area
+    let logPaused = false;
+    const pauseLogBtn = document.getElementById('pauseLogBtn');
+    if (pauseLogBtn) {
+        pauseLogBtn.addEventListener('click', function() {
+            logPaused = !logPaused;
+            pauseLogBtn.innerHTML = logPaused ? '<i class="bi bi-play"></i> Resume' : '<i class="bi bi-pause"></i> Pause';
+        });
+    }
+
     function updateUnifiedLog() {
+        if (logPaused) return;
         fetch('/api/unified-log?lines=40')
             .then(response => response.json())
             .then(data => {

@@ -3,7 +3,7 @@ import sqlite3
 
 DB_PATH = '/database/sptnr.db'
 try:
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    conn = sqlite3.connect(DB_PATH, timeout=120.0)
     conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
     
