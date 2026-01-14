@@ -175,7 +175,7 @@ class DiscogsClient:
             return False
         
         try:
-            # Search for videos
+            # Search for videos with retry on rate limit
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {"q": f"{artist} {title}", "type": "master", "per_page": 10}
@@ -184,6 +184,9 @@ class DiscogsClient:
             if res.status_code == 429:
                 retry_after = int(res.headers.get("Retry-After", 60))
                 time.sleep(retry_after)
+                # Retry the request after sleeping
+                _throttle_discogs()
+                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             res.raise_for_status()
             
             results = res.json().get("results", [])
@@ -197,10 +200,16 @@ class DiscogsClient:
                 if not master_id:
                     continue
                 
-                # Fetch master release details
+                # Fetch master release details with retry on rate limit
                 _throttle_discogs()
                 master_url = f"{self.base_url}/masters/{master_id}"
                 master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                if master_res.status_code == 429:
+                    retry_after = int(master_res.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    # Retry the request after sleeping
+                    _throttle_discogs()
+                    master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
                 master_res.raise_for_status()
                 master_data = master_res.json()
                 

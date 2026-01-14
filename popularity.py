@@ -300,17 +300,14 @@ def popularity_scan(verbose: bool = False):
                         except Exception as e:
                             log_verbose(f"Discogs single check failed for {title}: {e}")
                     
-                    # Second check: Discogs video (medium confidence, secondary source)
-                    if not is_single and discogs_token:
+                    # Second check: Discogs video (medium confidence, hint only)
+                    # Video alone is not conclusive for single detection
+                    if discogs_token:
                         try:
                             from api_clients.discogs import has_discogs_video
                             if has_discogs_video(title, artist, token=discogs_token):
                                 single_sources.append("discogs_video")
-                                # Video alone is not conclusive, need additional evidence
-                                if len(single_sources) >= 1:
-                                    is_single = True
-                                    single_confidence = "medium"
-                                    log_unified(f"   ✓ Single hint (Discogs video): {title}")
+                                log_unified(f"   ✓ Single hint (Discogs video): {title}")
                         except Exception as e:
                             log_verbose(f"Discogs video check failed for {title}: {e}")
                     
@@ -323,16 +320,22 @@ def popularity_scan(verbose: bool = False):
                                     album_info = result.get("album", {})
                                     if album_info.get("album_type", "").lower() == "single":
                                         single_sources.append("spotify")
-                                        is_single = True
-                                        single_confidence = "medium"
-                                        log_unified(f"   ✓ Single detected (Spotify): {title}")
+                                        # Spotify single detection
+                                        # If we also have Discogs video, upgrade to medium confidence
+                                        if "discogs_video" in single_sources:
+                                            is_single = True
+                                            single_confidence = "medium"
+                                            log_unified(f"   ✓ Single detected (Spotify + Discogs video): {title}")
+                                        else:
+                                            is_single = True
+                                            single_confidence = "medium"
+                                            log_unified(f"   ✓ Single detected (Spotify): {title}")
                                         break
                         except Exception as e:
                             log_verbose(f"Spotify single check failed for {title}: {e}")
                     
                     # Update track with single detection results
                     if is_single or single_sources:
-                        import json
                         cursor.execute(
                             """UPDATE tracks 
                             SET is_single = ?, single_confidence = ?, single_sources = ?
