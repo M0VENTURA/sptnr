@@ -283,18 +283,14 @@ def refresh_all_playlists_from_db():
         cursor = conn.cursor()
         cursor.execute("SELECT DISTINCT artist FROM tracks")
         artists = [row[0] for row in cursor.fetchall()]
-        conn.close()
         
         if not artists:
             log_basic("⚠️ No cached tracks in DB. Skipping playlist refresh.")
             return
         
         for name in artists:
-            conn = get_db_connection()
-            cursor = conn.cursor()
             cursor.execute("SELECT id, artist, album, title, stars FROM tracks WHERE artist = ?", (name,))
             rows = cursor.fetchall()
-            conn.close()
             
             if not rows:
                 log_basic(f"⚠️ No cached tracks found for '{name}', skipping.")
