@@ -29,7 +29,7 @@ class LastFmClient:
             title: Track title
             
         Returns:
-            Dict with 'track_play' and other metadata
+            Dict with 'track_play' and other metadata including 'toptags'
         """
         if not self.api_key:
             logger.warning("Last.fm API key missing. Skipping lookup.")
@@ -48,10 +48,14 @@ class LastFmClient:
             res.raise_for_status()
             data = res.json().get("track", {})
             track_play = int(data.get("playcount", 0))
-            return {"track_play": track_play}
+            toptags = data.get("toptags", {})
+            return {
+                "track_play": track_play,
+                "toptags": toptags
+            }
         except Exception as e:
             logger.error(f"Last.fm fetch failed for '{title}' by '{artist}': {e}")
-            return {"track_play": 0}
+            return {"track_play": 0, "toptags": {}}
     
     def get_recommendations(self) -> dict:
         """
