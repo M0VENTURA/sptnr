@@ -243,6 +243,7 @@ def popularity_scan(verbose: bool = False):
 
                     # Try to get popularity from Spotify
                     spotify_score = 0
+                    spotify_album_type = None
                     try:
                         artist_id = get_spotify_artist_id(artist)
                         if artist_id:
@@ -250,6 +251,8 @@ def popularity_scan(verbose: bool = False):
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
+                                # Extract album_type for single detection
+                                spotify_album_type = best_match.get("album", {}).get("album_type", "").lower()
                     except Exception as e:
                         log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
 
@@ -262,13 +265,19 @@ def popularity_scan(verbose: bool = False):
                     except Exception as e:
                         log_unified(f"Last.fm lookup failed for {artist} - {title}: {e}")
 
-                    # Average the scores
+                    # Average the scores and save album_type if available
                     if spotify_score > 0 or lastfm_score > 0:
                         popularity_score = (spotify_score + lastfm_score) / 2.0
-                        cursor.execute(
-                            "UPDATE tracks SET popularity_score = ? WHERE id = ?",
-                            (popularity_score, track_id)
-                        )
+                        if spotify_album_type:
+                            cursor.execute(
+                                "UPDATE tracks SET popularity_score = ?, spotify_album_type = ? WHERE id = ?",
+                                (popularity_score, spotify_album_type, track_id)
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                                (popularity_score, track_id)
+                            )
                         scanned_count += 1
                         album_scanned += 1
                     else:
@@ -282,9 +291,9 @@ def popularity_scan(verbose: bool = False):
                 # Calculate star ratings and detect singles
                 log_unified(f'Calculating star ratings and detecting singles for "{artist} - {album}"')
                 
-                # Get all tracks for this album with their popularity scores
+                # Get all tracks for this album with their popularity scores and spotify_album_type
                 cursor.execute(
-                    "SELECT id, title, popularity_score FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, spotify_album_type FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
@@ -308,6 +317,7 @@ def popularity_scan(verbose: bool = False):
                         track_id = track_row["id"]
                         title = track_row["title"]
                         popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
+                        spotify_album_type = track_row["spotify_album_type"] if track_row["spotify_album_type"] else ""
                         
                         # Calculate band-based star rating
                         band_index = i // band_size
@@ -317,22 +327,17 @@ def popularity_scan(verbose: bool = False):
                         if popularity_score >= jump_threshold:
                             stars = 5
                         
-                        # Detect if track is a single (basic detection based on high popularity)
+                        # Detect if track is a single using Spotify's album_type field
                         is_single = False
                         single_confidence = "low"
                         single_sources = []
                         
-                        # Simple heuristic: tracks with high popularity are likely singles
-                        if popularity_score >= HIGH_POPULARITY_THRESHOLD:
+                        # Check if Spotify identifies this as a single (most reliable method)
+                        if spotify_album_type == "single":
                             is_single = True
                             single_confidence = "high"
-                            single_sources.append("high_popularity")
+                            single_sources.append("spotify")
                             stars = 5  # Singles get 5 stars
-                        elif popularity_score >= MEDIUM_POPULARITY_THRESHOLD:
-                            is_single = True
-                            single_confidence = "medium"
-                            single_sources.append("medium_popularity")
-                            stars = min(stars + 1, 5)
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
