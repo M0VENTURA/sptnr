@@ -27,7 +27,7 @@ from datetime import datetime
 import copy
 from functools import wraps
 from scan_helpers import scan_artist_to_db
-from start import rate_artist
+from popularity import rate_artist
 from popularity import popularity_scan
 from start import build_artist_index
 # --- Utility: Aggregate genres from tracks in DB ---
