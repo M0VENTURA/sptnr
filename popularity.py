@@ -18,6 +18,19 @@ from datetime import datetime
 from statistics import median
 from api_clients import session
 
+# Import API clients for single detection at module level
+try:
+    from api_clients.musicbrainz import is_musicbrainz_single
+    HAVE_MUSICBRAINZ = True
+except ImportError:
+    HAVE_MUSICBRAINZ = False
+    
+try:
+    from api_clients.discogs import is_discogs_single
+    HAVE_DISCOGS = True
+except ImportError:
+    HAVE_DISCOGS = False
+
 # Dedicated popularity logger (no propagation to root)
 
 
@@ -324,7 +337,8 @@ def popularity_scan(verbose: bool = False):
                     
                     # First check: Spotify single detection
                     try:
-                        spotify_results = search_spotify_track(title, artist, album)
+                        # Match Jan 2nd logic: call search_spotify_track with title and artist only
+                        spotify_results = search_spotify_track(title, artist)
                         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                             for result in spotify_results:
                                 album_info = result.get("album", {})
@@ -340,19 +354,18 @@ def popularity_scan(verbose: bool = False):
                         log_verbose(f"Spotify single check failed for {title}: {e}")
                     
                     # Second check: MusicBrainz single detection (missing from current code)
-                    try:
-                        from api_clients.musicbrainz import is_musicbrainz_single
-                        if is_musicbrainz_single(title, artist):
-                            single_sources.append("musicbrainz")
-                            log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
-                    except Exception as e:
-                        log_verbose(f"MusicBrainz single check failed for {title}: {e}")
+                    if HAVE_MUSICBRAINZ:
+                        try:
+                            if is_musicbrainz_single(title, artist):
+                                single_sources.append("musicbrainz")
+                                log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
+                        except Exception as e:
+                            log_verbose(f"MusicBrainz single check failed for {title}: {e}")
                     
                     # Third check: Discogs single detection
                     discogs_token = os.environ.get("DISCOGS_TOKEN", "")
-                    if discogs_token:
+                    if HAVE_DISCOGS and discogs_token:
                         try:
-                            from api_clients.discogs import is_discogs_single
                             if is_discogs_single(title, artist, album_context=None, token=discogs_token):
                                 single_sources.append("discogs")
                                 log_verbose(f"   ✓ Discogs confirms single: {title}")
@@ -372,7 +385,7 @@ def popularity_scan(verbose: bool = False):
                         single_confidence = "low"
                         log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
                     
-                    # is_single = True if confidence is high or medium
+                    # is_single = True if confidence is high or medium (matching sptnr.py Jan 2nd logic)
                     is_single = single_confidence in ["high", "medium"]
                     
                     # Update track with single detection results
