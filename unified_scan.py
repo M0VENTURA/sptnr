@@ -360,29 +360,29 @@ def unified_scan_pipeline(
                     rate_artist(artist_id, artist_name, verbose=verbose, force=force)
                     # Log singles detection scan - source will be added by rate_artist
                     log_unified(f"      ✓ Singles detection and rating complete for album '{album_name}'")
-                        # --- Navidrome Sync and Logging ---
-                        from start import set_track_rating_for_all, get_db_connection
-                        conn = get_db_connection()
-                        cursor = conn.cursor()
-                        cursor.execute("SELECT id, title, stars, is_single FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
-                        updated_count = 0
-                        singles_count = 0
-                        for row in cursor.fetchall():
-                            track_id, title, stars, is_single = row
-                            # Only update if star rating changed or new single detected
-                            # For this patch, assume rate_artist updates DB, so we just push current DB value
-                            # Log only if star rating was updated or is_single is True
-                            # (You may want to track previous stars in a future version)
-                            if is_single or stars >= 1:
-                                set_track_rating_for_all(track_id, stars)
-                                if is_single:
-                                    log_unified(f"         ★ Single detected: '{title}' set to {stars}★ (Navidrome updated)")
-                                    singles_count += 1
-                                else:
-                                    log_unified(f"         ★ Rating updated: '{title}' set to {stars}★ (Navidrome updated)")
-                                    updated_count += 1
-                        conn.close()
-                        log_unified(f"      ✅ Navidrome ratings synced for album '{album_name}' ({updated_count} ratings, {singles_count} singles)")
+                    # --- Navidrome Sync and Logging ---
+                    from start import set_track_rating_for_all, get_db_connection
+                    conn = get_db_connection()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT id, title, stars, is_single FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
+                    updated_count = 0
+                    singles_count = 0
+                    for row in cursor.fetchall():
+                        track_id, title, stars, is_single = row
+                        # Only update if star rating changed or new single detected
+                        # For this patch, assume rate_artist updates DB, so we just push current DB value
+                        # Log only if star rating was updated or is_single is True
+                        # (You may want to track previous stars in a future version)
+                        if is_single or stars >= 1:
+                            set_track_rating_for_all(track_id, stars)
+                            if is_single:
+                                log_unified(f"         ★ Single detected: '{title}' set to {stars}★ (Navidrome updated)")
+                                singles_count += 1
+                            else:
+                                log_unified(f"         ★ Rating updated: '{title}' set to {stars}★ (Navidrome updated)")
+                                updated_count += 1
+                    conn.close()
+                    log_unified(f"      ✅ Navidrome ratings synced for album '{album_name}' ({updated_count} ratings, {singles_count} singles)")
                 except Exception as e:
                     logging.error(f"      ✗ Rating failed: {e}")
                     log_album_scan(artist_name, album_name, 'singles', 0, 'error', str(e))
