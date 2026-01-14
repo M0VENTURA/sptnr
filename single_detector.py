@@ -61,17 +61,21 @@ def rate_track_single_detection(
     - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
     - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
     """
+    import os
     from start import (
         _base_title,
         _has_subtitle_variant,
         _similar,
         is_valid_version,
-        DISCOGS_ENABLED,
-        DISCOGS_TOKEN,
-        MUSICBRAINZ_ENABLED,
-        CONTEXT_FALLBACK_STUDIO,
         config as global_config,
     )
+    
+    # Get API configuration from environment
+    DISCOGS_ENABLED = bool(os.getenv("DISCOGS_TOKEN"))
+    DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
+    MUSICBRAINZ_ENABLED = True  # MusicBrainz doesn't require auth
+    LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "")
+    
     title = track.get("title", "")
     canonical_base = _base_title(title)
     sim_to_base = _similar(title, canonical_base)
@@ -105,6 +109,7 @@ def rate_track_single_detection(
             hints.append(f"short release ({tot} tracks)")
         if hints:
             logging.info(f"💡 Initial hints: {', '.join(hints)}")
+    
     # --- Discogs Single (hard stop) - Check online and cache the result ---
     discogs_single_hit = False
     try:
@@ -126,9 +131,92 @@ def rate_track_single_detection(
                     logging.info("❌ Discogs single not found")
     except Exception as e:
         logging.exception(f"is_discogs_single failed for '{title}': {e}")
+    
+    # --- MusicBrainz Single - Check online ---
+    musicbrainz_single_hit = False
+    try:
+        if verbose:
+            logging.info("🔍 Checking MusicBrainz single (online)...")
+        logging.debug(f"Checking MusicBrainz single for '{title}' by '{artist_name}'")
+        from api_clients.musicbrainz import is_musicbrainz_single
+        if MUSICBRAINZ_ENABLED:
+            musicbrainz_single_hit = is_musicbrainz_single(title, artist_name, enabled=True)
+            if musicbrainz_single_hit:
+                sources.add("musicbrainz")
+                logging.debug(f"MusicBrainz single detected for '{title}' (sources={sources})")
+                if verbose:
+                    logging.info("✅ MusicBrainz single FOUND")
+            else:
+                logging.debug(f"MusicBrainz single not detected for '{title}'")
+                if verbose:
+                    logging.info("❌ MusicBrainz single not found")
+    except Exception as e:
+        logging.exception(f"is_musicbrainz_single failed for '{title}': {e}")
+    
+    # --- Last.fm Single Tag - Check online ---
+    lastfm_single_hit = False
+    if use_lastfm_single and LASTFM_API_KEY:
+        try:
+            if verbose:
+                logging.info("🔍 Checking Last.fm tags (online)...")
+            logging.debug(f"Checking Last.fm tags for '{title}' by '{artist_name}'")
+            from api_clients.lastfm import LastFmClient
+            lastfm_client = LastFmClient(api_key=LASTFM_API_KEY)
+            # Get track info with tags
+            track_info = lastfm_client.get_track_info(artist_name, title)
+            # Check if 'single' tag is present in toptags
+            if track_info and 'toptags' in track_info:
+                tags = [t.get("name", "").lower() for t in track_info.get("toptags", {}).get("tag", [])]
+                if "single" in tags:
+                    lastfm_single_hit = True
+                    sources.add("lastfm")
+                    logging.debug(f"Last.fm single tag detected for '{title}' (sources={sources})")
+                    if verbose:
+                        logging.info("✅ Last.fm single tag FOUND")
+                else:
+                    logging.debug(f"Last.fm single tag not detected for '{title}'")
+                    if verbose:
+                        logging.info("❌ Last.fm single tag not found")
+        except Exception as e:
+            logging.exception(f"Last.fm tag check failed for '{title}': {e}")
+    
+    # --- Calculate confidence and is_single ---
+    # Discogs is a hard guarantee if canonical
     if discogs_single_hit and canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
         track["is_single"] = True
-    # Minimal: just return track for now (full logic can be re-integrated as needed)
+        track["single_confidence"] = "high"
+        track["single_sources"] = json.dumps(list(sources))
+        if verbose:
+            logging.info(f"✅ SINGLE (Discogs guarantee): {title}")
+    # Multiple sources indicate high confidence
+    elif len(sources) >= 2:
+        track["is_single"] = True
+        track["single_confidence"] = "high"
+        track["single_sources"] = json.dumps(list(sources))
+        if verbose:
+            logging.info(f"✅ SINGLE (multiple sources): {title}")
+    # Single source indicates medium confidence
+    elif len(sources) == 1:
+        # For medium confidence, only mark as single if canonical
+        if canonical:
+            track["is_single"] = True
+            track["single_confidence"] = "medium"
+            track["single_sources"] = json.dumps(list(sources))
+            if verbose:
+                logging.info(f"✅ SINGLE (single source, canonical): {title}")
+        else:
+            track["is_single"] = False
+            track["single_confidence"] = "low"
+            track["single_sources"] = json.dumps(list(sources))
+            if verbose:
+                logging.info(f"❌ NOT SINGLE (single source, non-canonical): {title}")
+    else:
+        track["is_single"] = False
+        track["single_confidence"] = "low"
+        track["single_sources"] = json.dumps(list(sources))
+        if verbose:
+            logging.info(f"❌ NOT SINGLE (no sources): {title}")
+    
     return track
 #!/usr/bin/env python3
 """
