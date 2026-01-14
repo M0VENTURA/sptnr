@@ -3238,9 +3238,43 @@ def api_delete_bookmark(bookmark_id):
 
 
 
-@app.route("/config")
+@app.route("/config", methods=["GET", "POST"])
 def config_editor():
     """View/edit config.yaml. Always allow access, show warning if setup incomplete."""
+    if request.method == "POST":
+        # Require authentication for config changes
+        if 'username' not in session:
+            flash("Authentication required to save configuration", "error")
+            return redirect(url_for("login", next=request.url))
+        
+        # Handle raw YAML save from modal
+        try:
+            config_content = request.form.get('config_content', '')
+            if not config_content:
+                flash("No configuration content provided", "error")
+                return redirect(url_for("config_editor"))
+            
+            # Validate YAML before saving
+            try:
+                yaml.safe_load(config_content)
+            except yaml.YAMLError as e:
+                flash(f"Invalid YAML: {str(e)}", "error")
+                return redirect(url_for("config_editor"))
+            
+            # Save to file
+            cfg_dir = os.path.dirname(CONFIG_PATH)
+            if cfg_dir:
+                os.makedirs(cfg_dir, exist_ok=True)
+            with open(CONFIG_PATH, "w", encoding="utf-8") as f:
+                f.write(config_content)
+            
+            flash("Configuration saved successfully", "success")
+            return redirect(url_for("config_editor"))
+        except Exception as e:
+            flash(f"Error saving configuration: {str(e)}", "error")
+            return redirect(url_for("config_editor"))
+    
+    # GET request - show config editor
     config, raw = _read_yaml(CONFIG_PATH)
     # Check for required keys in navidrome_users (for warning only)
     navidrome_users = config.get('navidrome_users', [])
