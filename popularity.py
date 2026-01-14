@@ -447,6 +447,9 @@ def popularity_scan(verbose: bool = False):
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_unified(f'Star distribution for "{album}": {dist_str}')
                 
+                # Commit changes before logging to scan_history to avoid database lock conflicts
+                conn.commit()
+                
                 # Log album scan
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
 
