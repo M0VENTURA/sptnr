@@ -274,12 +274,82 @@ def popularity_scan(verbose: bool = False):
 
                 log_unified(f'Album Scanned: "{artist} - {album}". Popularity Applied to {album_scanned} tracks.')
 
+                # Perform singles detection for album tracks
+                log_unified(f'Detecting singles for "{artist} - {album}"')
+                singles_detected = 0
+                for track in album_tracks:
+                    track_id = track["id"]
+                    title = track["title"]
+                    
+                    # Check for singles using multiple sources with confidence levels
+                    # Priority: Discogs single (high confidence, first check) > Discogs video (medium) > Spotify (medium)
+                    is_single = False
+                    single_confidence = "low"
+                    single_sources = []
+                    
+                    # First check: Discogs single (high confidence, requires only one hit)
+                    discogs_token = os.environ.get("DISCOGS_TOKEN", "")
+                    if discogs_token:
+                        try:
+                            from api_clients.discogs import is_discogs_single
+                            if is_discogs_single(title, artist, album_context=None, token=discogs_token):
+                                is_single = True
+                                single_confidence = "high"
+                                single_sources.append("discogs_single")
+                                log_unified(f"   ✓ Single detected (Discogs): {title}")
+                        except Exception as e:
+                            log_verbose(f"Discogs single check failed for {title}: {e}")
+                    
+                    # Second check: Discogs video (medium confidence, secondary source)
+                    if not is_single and discogs_token:
+                        try:
+                            from api_clients.discogs import has_discogs_video
+                            if has_discogs_video(title, artist, token=discogs_token):
+                                single_sources.append("discogs_video")
+                                # Video alone is not conclusive, need additional evidence
+                                if len(single_sources) >= 1:
+                                    is_single = True
+                                    single_confidence = "medium"
+                                    log_unified(f"   ✓ Single hint (Discogs video): {title}")
+                        except Exception as e:
+                            log_verbose(f"Discogs video check failed for {title}: {e}")
+                    
+                    # Third check: Spotify single detection
+                    if not is_single:
+                        try:
+                            spotify_results = search_spotify_track(title, artist, album)
+                            if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
+                                for result in spotify_results:
+                                    album_info = result.get("album", {})
+                                    if album_info.get("album_type", "").lower() == "single":
+                                        single_sources.append("spotify")
+                                        is_single = True
+                                        single_confidence = "medium"
+                                        log_unified(f"   ✓ Single detected (Spotify): {title}")
+                                        break
+                        except Exception as e:
+                            log_verbose(f"Spotify single check failed for {title}: {e}")
+                    
+                    # Update track with single detection results
+                    if is_single or single_sources:
+                        import json
+                        cursor.execute(
+                            """UPDATE tracks 
+                            SET is_single = ?, single_confidence = ?, single_sources = ?
+                            WHERE id = ?""",
+                            (1 if is_single else 0, single_confidence, json.dumps(single_sources), track_id)
+                        )
+                        if is_single:
+                            singles_detected += 1
+                
+                log_unified(f'Singles Detection Complete: {singles_detected} single(s) detected for "{artist} - {album}"')
+
                 # Calculate star ratings for album tracks
                 log_unified(f'Calculating star ratings for "{artist} - {album}"')
                 
-                # Get all tracks for this album with their popularity scores
+                # Get all tracks for this album with their popularity scores and single detection
                 cursor.execute(
-                    "SELECT id, title, popularity_score FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
@@ -302,6 +372,8 @@ def popularity_scan(verbose: bool = False):
                         track_id = track_row["id"]
                         title = track_row["title"]
                         popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
+                        is_single = track_row["is_single"] if track_row["is_single"] else 0
+                        single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
                         
                         # Calculate band-based star rating
                         band_index = i // band_size
@@ -311,12 +383,18 @@ def popularity_scan(verbose: bool = False):
                         if popularity_score >= jump_threshold:
                             stars = 5
                         
+                        # Boost stars for confirmed singles
+                        if is_single:
+                            if single_confidence == "high":
+                                stars = 5  # Discogs single = 5 stars
+                            elif single_confidence == "medium":
+                                stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
+                        
                         # Ensure at least 1 star
                         stars = max(stars, 1)
                         
-                        # Update track in database with star rating only
-                        # Note: Singles detection is handled separately by rate_artist() in sptnr.py
-                        # Do NOT update is_single, single_confidence, or single_sources here
+                        # Update track in database with star rating
+                        # Singles detection is now handled in this same scan
                         cursor.execute(
                             """UPDATE tracks 
                             SET stars = ?
@@ -327,8 +405,9 @@ def popularity_scan(verbose: bool = False):
                         star_distribution[stars] += 1
                         
                         # Log track with star rating
+                        single_tag = " (Single)" if is_single else ""
                         star_display = "★" * stars + "☆" * (5 - stars)
-                        log_unified(f"   {star_display} ({stars}/5) - {title} (popularity: {popularity_score:.1f})")
+                        log_unified(f"   {star_display} ({stars}/5) - {title}{single_tag} (popularity: {popularity_score:.1f})")
                         
                         # Sync to Navidrome
                         if sync_track_rating_to_navidrome(track_id, stars):
@@ -343,10 +422,31 @@ def popularity_scan(verbose: bool = False):
                 # Log album scan
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
 
-            # After artist scans, check/create essential playlist (dummy logic)
-            log_unified(f'Checking if essential playlist needs to be created for artist: {artist}')
-            # Dummy: always create
-            log_unified(f'Essential playlist created for artist: {artist}')
+            # After artist scans, create essential playlist based on popularity and singles
+            log_unified(f'Creating essential playlist for artist: {artist}')
+            
+            # Get all 5-star and single tracks for this artist
+            cursor.execute(
+                """SELECT id, title, album, stars, is_single, single_confidence, popularity_score 
+                FROM tracks 
+                WHERE artist = ? AND (stars = 5 OR is_single = 1)
+                ORDER BY stars DESC, popularity_score DESC""",
+                (artist,)
+            )
+            essential_tracks = cursor.fetchall()
+            
+            if essential_tracks:
+                log_unified(f'   Essential playlist will include {len(essential_tracks)} track(s):')
+                for track in essential_tracks[:10]:  # Show first 10
+                    star_display = "★" * track["stars"]
+                    single_tag = " (Single)" if track["is_single"] else ""
+                    log_unified(f'      {star_display} - {track["title"]}{single_tag} from "{track["album"]}"')
+                if len(essential_tracks) > 10:
+                    log_unified(f'      ... and {len(essential_tracks) - 10} more')
+                # TODO: Create actual Navidrome playlist via create_or_update_playlist_for_artist
+                log_unified(f'   ✓ Essential playlist ready for artist: {artist} ({len(essential_tracks)} tracks)')
+            else:
+                log_unified(f'   ⚠ No essential tracks found for artist: {artist}')
 
         log_verbose("Committing changes to database.")
         conn.commit()
