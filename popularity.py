@@ -14,9 +14,17 @@ import json
 import math
 from datetime import datetime
 from statistics import median
+import requests
+from api_clients import session
 
 # Import single detection
 from single_detector import rate_track_single_detection, WEIGHTS as singles_config
+
+# --- Singles Detection Thresholds ---
+# Tracks with popularity >= this threshold are considered high-confidence singles
+HIGH_POPULARITY_THRESHOLD = 70
+# Tracks with popularity >= this threshold get a bonus star
+MEDIUM_POPULARITY_THRESHOLD = 50
 
 # Dedicated popularity logger (no propagation to root)
 
@@ -130,9 +138,6 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         True if successful, False otherwise
     """
     try:
-        import requests
-        from api_clients import session
-        
         # Get Navidrome credentials from environment
         nav_url = os.environ.get("NAVIDROME_URL", "").strip("/")
         nav_user = os.environ.get("NAVIDROME_USER", "")
@@ -288,7 +293,7 @@ def popularity_scan(verbose: bool = False):
                 )
                 album_tracks_with_scores = cursor.fetchall()
                 
-                if album_tracks_with_scores:
+                if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
                     # Calculate star ratings using the same logic as sptnr.py
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
@@ -309,7 +314,7 @@ def popularity_scan(verbose: bool = False):
                         popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
                         
                         # Calculate band-based star rating
-                        band_index = i // band_size if band_size > 0 else 0
+                        band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
                         # Boost to 5 stars if score exceeds threshold
@@ -321,13 +326,13 @@ def popularity_scan(verbose: bool = False):
                         single_confidence = "low"
                         single_sources = []
                         
-                        # Simple heuristic: tracks with popularity >= 70 are likely singles
-                        if popularity_score >= 70:
+                        # Simple heuristic: tracks with high popularity are likely singles
+                        if popularity_score >= HIGH_POPULARITY_THRESHOLD:
                             is_single = True
                             single_confidence = "high"
                             single_sources.append("high_popularity")
                             stars = 5  # Singles get 5 stars
-                        elif popularity_score >= 50:
+                        elif popularity_score >= MEDIUM_POPULARITY_THRESHOLD:
                             is_single = True
                             single_confidence = "medium"
                             single_sources.append("medium_popularity")
