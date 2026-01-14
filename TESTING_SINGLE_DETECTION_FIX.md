@@ -149,7 +149,6 @@ If the track still isn't detected:
 1. **Check title variations**: Try different capitalizations or formats
    - "When Your Heart Stops Beating"
    - "When your heart stops beating"
-   - "When Your Heart Stops Beating"
 
 2. **Check artist name**: Try variations
    - "+44"
