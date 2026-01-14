@@ -29,35 +29,6 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
-def get_current_single_detection(track_id: str) -> dict:
-    """Query the current single detection values from the database.
-    Returns dict with is_single, single_confidence, single_sources, and stars.
-    This is used to preserve user-edited single detection and star ratings across rescans.
-    """
-    import json
-    import logging
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
-            (track_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            is_single, confidence, sources_json, stars = row
-            sources = json.loads(sources_json) if sources_json else []
-            return {
-                "is_single": bool(is_single),
-                "single_confidence": confidence or "low",
-                "single_sources": sources,
-                "stars": stars or 0
-            }
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
-    except Exception as e:
-        logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
 # Color constants
 LIGHT_RED = Fore.RED + Style.BRIGHT
