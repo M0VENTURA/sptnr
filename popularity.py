@@ -118,6 +118,58 @@ def _navidrome_scan_running() -> bool:
         log_verbose(f"Could not read Navidrome progress file: {e}")
     return False
 
+def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
+    """
+    Sync a single track rating to Navidrome using the Subsonic API.
+    
+    Args:
+        track_id: Navidrome track ID
+        stars: Star rating (1-5)
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        import requests
+        from api_clients import session
+        
+        # Get Navidrome credentials from environment
+        nav_url = os.environ.get("NAVIDROME_URL", "").strip("/")
+        nav_user = os.environ.get("NAVIDROME_USER", "")
+        nav_pass = os.environ.get("NAVIDROME_PASS", "")
+        
+        if not all([nav_url, nav_user, nav_pass]):
+            log_verbose("Navidrome credentials not configured, skipping rating sync")
+            return False
+        
+        # Build Subsonic API parameters
+        params = {
+            "u": nav_user,
+            "p": nav_pass,
+            "v": "1.16.1",
+            "c": "sptnr",
+            "f": "json",
+            "id": track_id,
+            "rating": stars
+        }
+        
+        # Call setRating API
+        response = session.get(f"{nav_url}/rest/setRating.view", params=params, timeout=10)
+        response.raise_for_status()
+        
+        # Check if response indicates success
+        result = response.json()
+        if result.get("subsonic-response", {}).get("status") == "ok":
+            return True
+        else:
+            error_msg = result.get("subsonic-response", {}).get("error", {}).get("message", "Unknown error")
+            log_verbose(f"Navidrome API error: {error_msg}")
+            return False
+            
+    except Exception as e:
+        log_verbose(f"Failed to sync rating to Navidrome: {e}")
+        return False
+
 def save_popularity_progress(processed_artists: int, total_artists: int):
     """Save popularity scan progress to file"""
     try:
@@ -299,12 +351,10 @@ def popularity_scan(verbose: bool = False):
                         log_unified(f"   {star_display} ({stars}/5) - {title} (popularity: {popularity_score:.1f})")
                         
                         # Sync to Navidrome
-                        try:
-                            from start import set_track_rating_for_all
-                            set_track_rating_for_all(track_id, stars)
+                        if sync_track_rating_to_navidrome(track_id, stars):
                             log_unified(f"      ✓ Synced to Navidrome")
-                        except Exception as e:
-                            log_unified(f"      ✗ Failed to sync to Navidrome: {e}")
+                        else:
+                            log_unified(f"      ⚠ Skipped Navidrome sync (not configured or failed)")
                         
                         if is_single:
                             singles_detected.append({
