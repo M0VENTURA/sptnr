@@ -7,6 +7,7 @@ import json
 import logging
 import re
 import difflib
+import os
 
 def get_db_connection():
     from start import DB_PATH
@@ -118,8 +119,6 @@ def rate_track_single_detection(
     - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
     - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
     """
-    import os
-    
     # Get API configuration from environment
     DISCOGS_ENABLED = bool(os.getenv("DISCOGS_TOKEN"))
     DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
@@ -216,7 +215,12 @@ def rate_track_single_detection(
             track_info = lastfm_client.get_track_info(artist_name, title)
             # Check if 'single' tag is present in toptags
             if track_info and 'toptags' in track_info:
-                tags = [t.get("name", "").lower() for t in track_info.get("toptags", {}).get("tag", [])]
+                toptags = track_info.get("toptags", {})
+                tag_list = toptags.get("tag", [])
+                # Ensure tag_list is a list (API can return a single dict if there's only one tag)
+                if isinstance(tag_list, dict):
+                    tag_list = [tag_list]
+                tags = [t.get("name", "").lower() for t in tag_list if isinstance(t, dict)]
                 if "single" in tags:
                     lastfm_single_hit = True
                     sources.add("lastfm")
