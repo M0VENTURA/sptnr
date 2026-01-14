@@ -205,7 +205,8 @@ def unified_scan_pipeline(
         progress_callback: Optional callback function for progress updates
     """
     from popularity import popularity_scan
-    from start import rate_artist, build_artist_index
+    from sptnr import rate_artist
+    from start import build_artist_index
     from scan_history import log_album_scan
     
     log_unified("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
