@@ -13,6 +13,7 @@ import sqlite3
 import logging
 import json
 import math
+import yaml
 from datetime import datetime
 from statistics import median
 from api_clients import session
@@ -137,7 +138,6 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         # If not in environment, try loading from config file
         if not all([nav_url, nav_user, nav_pass]):
             try:
-                import yaml
                 config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f)

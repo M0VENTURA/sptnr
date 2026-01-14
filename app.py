@@ -3242,6 +3242,11 @@ def api_delete_bookmark(bookmark_id):
 def config_editor():
     """View/edit config.yaml. Always allow access, show warning if setup incomplete."""
     if request.method == "POST":
+        # Require authentication for config changes
+        if 'username' not in session:
+            flash("Authentication required to save configuration", "error")
+            return redirect(url_for("login", next=request.url))
+        
         # Handle raw YAML save from modal
         try:
             config_content = request.form.get('config_content', '')
