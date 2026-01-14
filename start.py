@@ -40,193 +40,48 @@ lastfm_client = None
 listenbrainz_client = None
 # Placeholder config values (replace with actual config loading as needed)
 LOG_PATH = 'app.log'
-UNIFIED_LOG_PATH = 'unified_scan.log'
-formatter = logging.Formatter('%(asctime)s %(levelname)s %(message)s')
-VERBOSE = False
-DB_PATH = 'database/sptnr.db'
-NAV_USERS = []
-NAV_BASE_URL = ''
-USERNAME = ''
-PASSWORD = ''
 
+# Import shared helpers from popularity_helpers
+from popularity_helpers import (
+    fetch_artist_albums,
+    fetch_album_tracks,
+    save_to_db,
+    build_artist_index,
+    load_artist_map,
+    get_album_last_scanned_from_db,
+    get_album_track_count_in_db,
+)
+# Import DB connection helper
+from db_utils import get_db_connection
 
-#!/usr/bin/env python3
-# SPTNR – Navidrome Rating CLI with Spotify + Last.fm + Navidrome API Integration
+# --- Navidrome user config ---
+import yaml
+with open('config/config.yaml', 'r') as f:
+    _cfg = yaml.safe_load(f)
+_nav = _cfg.get('navidrome', {})
+_nav_users = _cfg.get('navidrome_users', None)
+if _nav_users:
+    NAV_USERS = [
+        {"base_url": u["base_url"], "user": u["user"], "pass": u["pass"]}
+        for u in _nav_users
+    ]
+else:
+    NAV_USERS = None
+NAV_BASE_URL = _nav.get("base_url")
+USERNAME = _nav.get("user")
+PASSWORD = _nav.get("pass")
 
+# --- log_unified fallback ---
+try:
+    from popularity_helpers import log_unified
+except ImportError:
+    def log_unified(msg):
+        print(f"[LOG] {msg}")
+
+# --- argparse import ---
 import argparse
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-# Dedicated logger for unified_scan.log
-unified_logger = logging.getLogger("unified_scan")
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(formatter)
-unified_logger.setLevel(logging.INFO)
-if not unified_logger.hasHandlers():
-    unified_logger.addHandler(unified_file_handler)
-
-def log_basic(msg):
-    logging.info(msg)
-
-def log_unified(msg):
-    unified_logger.info(msg)
-
-def log_verbose(msg):
-    if VERBOSE:
-        logging.info(msg)
-
-
-# âœ… Database connection helper with WAL mode and increased timeout
-def get_db_connection():
-    """
-    Create a database connection with WAL mode for better concurrency.
-    WAL mode allows multiple readers and one writer simultaneously.
-    """
-    conn = sqlite3.connect(DB_PATH, timeout=120.0, isolation_level=None)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA busy_timeout=60000")  # 60 seconds
-    conn.execute("PRAGMA synchronous=NORMAL")
-    return conn
-
-
-def save_to_db(track_data, max_retries=3):
-    """Save track data to database with retry logic for handling locks."""
-    for attempt in range(max_retries):
-        try:
-            log_verbose(f"Attempting to get DB connection for save_to_db (attempt {attempt+1})")
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            break
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e) and attempt < max_retries - 1:
-                log_verbose(f"Database locked, retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(0.5 * (attempt + 1))  # Exponential backoff
-                continue
-            log_verbose(f"Database error in save_to_db: {e}")
-            raise
-    else:
-        log_verbose("Failed to acquire database connection after retries")
-        logging.error("Failed to acquire database connection after retries")
-        return
-
-    # Preserve existing file path if the incoming payload does not provide one (Navidrome import is metadata-only)
-    incoming_path = track_data.get("file_path")
-    if not incoming_path:
-        try:
-            log_verbose(f"Fetching file_path and album_folder for track id {track_data['id']}")
-            cursor.execute("SELECT file_path, album_folder FROM tracks WHERE id = ?", (track_data["id"],))
-            row = cursor.fetchone()
-            if row:
-                if row[0]:
-                    track_data["file_path"] = row[0]
-                if row[1]:
-                    track_data["album_folder"] = row[1]
-        except Exception as e:
-            log_verbose(f"Error fetching file_path/album_folder: {e}")
-            pass
-
-    # Prepare multi-value fields
-    genres             = ",".join(track_data.get("genres", []))
-    navidrome_genres   = ",".join(track_data.get("navidrome_genres", []))
-    spotify_genres     = ",".join(track_data.get("spotify_genres", []))
-    lastfm_tags        = ",".join(track_data.get("lastfm_tags", []))
-    discogs_genres     = ",".join(track_data.get("discogs_genres", []) or [])
-    audiodb_genres     = ",".join(track_data.get("audiodb_genres", []) or [])
-    musicbrainz_genres = ",".join(track_data.get("musicbrainz_genres", []) or [])
-    single_sources_json = json.dumps(track_data.get("single_sources", []), ensure_ascii=False)
-
-    columns = [
-        "id","artist","album","title",
-        "spotify_score","lastfm_score","listenbrainz_score","age_score","final_score","stars",
-        "genres","navidrome_genres","spotify_genres","lastfm_tags",
-        "discogs_genres","audiodb_genres","musicbrainz_genres",
-        "spotify_album","spotify_artist","spotify_popularity","spotify_release_date","spotify_album_art_url",
-        "lastfm_track_playcount","lastfm_artist_playcount","file_path","album_folder",
-        "duration","track_number","disc_number","year","album_artist","bitrate","sample_rate",
-        "is_single","single_confidence","last_scanned",
-        "mbid","suggested_mbid","suggested_mbid_confidence","single_sources",
-        "is_spotify_single","spotify_total_tracks","spotify_album_type",
-        "lastfm_ratio",
-        # âœ… Audit and scoring context fields
-        "discogs_single_confirmed","discogs_video_found","is_canonical_title","title_similarity_to_base",
-        "album_context_live","adaptive_weight_spotify","adaptive_weight_lastfm","adaptive_weight_listenbrainz",
-        "album_median_score","spotify_release_age_days",
-    ]
-
-    values = [
-        track_data["id"],
-        track_data.get("artist",""),
-        track_data.get("album",""),
-        track_data.get("title",""),
-        float(track_data.get("spotify_score",0) or 0),
-        float(track_data.get("lastfm_score",0) or 0),
-        float(track_data.get("listenbrainz_score",0) or 0),
-        float(track_data.get("age_score",0) or 0),
-        float(track_data.get("score",0) or 0),  # final_score
-        int(track_data.get("stars",0) or 0),
-        genres, navidrome_genres, spotify_genres, lastfm_tags,
-        discogs_genres, audiodb_genres, musicbrainz_genres,
-        track_data.get("spotify_album",""),
-        track_data.get("spotify_artist",""),
-        int(track_data.get("spotify_popularity",0) or 0),
-        track_data.get("spotify_release_date",""),
-        track_data.get("spotify_album_art_url",""),
-        int(track_data.get("lastfm_track_playcount",0) or 0),
-        int(track_data.get("lastfm_artist_playcount",0) or 0),
-        track_data.get("file_path",""),
-        track_data.get("album_folder",""),
-        track_data.get("duration"),
-        track_data.get("track_number"),
-        track_data.get("disc_number"),
-        track_data.get("year"),
-        track_data.get("album_artist",""),
-        track_data.get("bitrate"),
-        track_data.get("sample_rate"),
-        int(bool(track_data.get("is_single",False))),
-        track_data.get("single_confidence",""),
-        track_data.get("last_scanned",""),
-        track_data.get("mbid","") or "",
-        track_data.get("suggested_mbid","") or "",
-        float(track_data.get("suggested_mbid_confidence",0.0) or 0.0),
-        single_sources_json,
-        int(bool(track_data.get("is_spotify_single",False))),
-        int(track_data.get("spotify_total_tracks",0) or 0),
-        track_data.get("spotify_album_type",""),
-        float(track_data.get("lastfm_ratio",0.0) or 0.0),
-        # âœ… Audit and context values
-        int(track_data.get("discogs_single_confirmed", 0) or 0),
-        int(track_data.get("discogs_video_found", 0) or 0),
-        int(track_data.get("is_canonical_title", 0) or 0),
-        float(track_data.get("title_similarity_to_base", 0.0) or 0.0),
-        int(track_data.get("album_context_live", 0) or 0),
-        float(track_data.get("adaptive_weight_spotify", 0.0) or 0.0),
-        float(track_data.get("adaptive_weight_lastfm", 0.0) or 0.0),
-        float(track_data.get("adaptive_weight_listenbrainz", 0.0) or 0.0),
-        float(track_data.get("album_median_score", 0.0) or 0.0),
-        int(track_data.get("spotify_release_age_days", 0) or 0),
-    ]
-
-    try:
-        placeholders = ", ".join(["?"] * len(columns))
-        sql = f"INSERT OR REPLACE INTO tracks ({', '.join(columns)}) VALUES ({placeholders})"
-        log_verbose(f"Executing SQL: {sql} with values for track id {track_data['id']}")
-        cursor.execute(sql, values)
-        conn.commit()
-        log_verbose(f"Track {track_data['id']} committed to DB.")
-    except sqlite3.OperationalError as e:
-        if "locked" in str(e):
-            log_verbose(f"Database locked during save for track {track_data.get('id')}, will retry on next scan")
-            logging.warning(f"Database locked during save for track {track_data.get('id')}, will retry on next scan")
-        else:
-            log_verbose(f"Database error saving track {track_data.get('id')}: {e}")
-            logging.error(f"Database error saving track {track_data.get('id')}: {e}")
-        raise
-    finally:
-        conn.close()
-        log_verbose(f"DB connection closed for track {track_data['id']}")
+# Import DB connection helper
+from db_utils import get_db_connection
 
 
 def get_current_track_rating(track_id: str) -> int:

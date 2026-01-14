@@ -161,6 +161,113 @@ def score_by_age(playcount: Any, release_str: str):
     return _score_by_age(playcount, release_str)
 
 
+
+# --- Shared DB/API/Helper Functions (moved from start.py) ---
+import math
+import logging
+import json
+import time
+from datetime import datetime
+from collections import defaultdict
+from db_utils import get_db_connection
+
+def fetch_artist_albums(artist_id):
+    """Fetch albums for an artist (wrapper using NavidromeClient)."""
+    from start import nav_client
+    return nav_client.fetch_artist_albums(artist_id)
+
+def fetch_album_tracks(album_id):
+    """
+    Fetch all tracks for an album using Subsonic API (wrapper using NavidromeClient).
+    :param album_id: Album ID in Navidrome
+    :return: List of track objects
+    """
+    from start import nav_client
+    return nav_client.fetch_album_tracks(album_id)
+
+def save_to_db(track_data):
+    """Save or update a track in the database."""
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    columns = ', '.join(track_data.keys())
+    placeholders = ', '.join(['?'] * len(track_data))
+    update_clause = ', '.join([f"{k}=excluded.{k}" for k in track_data.keys()])
+    sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
+    cursor.execute(sql, list(track_data.values()))
+    conn.commit()
+    conn.close()
+
+def build_artist_index(verbose: bool = False):
+    """Build artist index from Navidrome (wrapper using NavidromeClient)."""
+    from start import nav_client
+    artist_map_from_api = nav_client.build_artist_index()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            for artist_name, info in artist_map_from_api.items():
+                artist_id = info.get("id")
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (artist_id, artist_name, 0, 0, None))
+                if verbose:
+                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
+                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
+            conn.commit()
+            conn.close()
+            break
+        except Exception as e:
+            if "locked" in str(e) and attempt < max_retries - 1:
+                logging.debug(f"Database locked during artist index build, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            else:
+                logging.error(f"Failed to build artist index after {max_retries} attempts: {e}")
+                raise
+    logging.info(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    print(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    return artist_map_from_api
+
+def load_artist_map():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
+
+def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | None:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return (row[0] if row and row[0] else None)
+    except Exception as e:
+        logging.debug(f"get_album_last_scanned_from_db failed for '{artist_name} / {album_name}': {e}")
+        return None
+
+def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        count = cursor.fetchone()[0] or 0
+        conn.close()
+        return count
+    except Exception as e:
+        logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
+        return 0
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -173,4 +280,11 @@ __all__ = [
     "LASTFM_WEIGHT",
     "LISTENBRAINZ_WEIGHT",
     "AGE_WEIGHT",
+    "fetch_artist_albums",
+    "fetch_album_tracks",
+    "save_to_db",
+    "build_artist_index",
+    "load_artist_map",
+    "get_album_last_scanned_from_db",
+    "get_album_track_count_in_db",
 ]
