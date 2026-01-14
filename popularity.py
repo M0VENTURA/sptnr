@@ -14,11 +14,7 @@ import json
 import math
 from datetime import datetime
 from statistics import median
-import requests
 from api_clients import session
-
-# Import single detection
-from single_detector import rate_track_single_detection, WEIGHTS as singles_config
 
 # --- Singles Detection Thresholds ---
 # Tracks with popularity >= this threshold are considered high-confidence singles
@@ -344,8 +340,8 @@ def popularity_scan(verbose: bool = False):
                         # Update track in database
                         cursor.execute(
                             """UPDATE tracks 
-                               SET stars = ?, is_single = ?, single_confidence = ?, single_sources = ?
-                               WHERE id = ?""",
+                            SET stars = ?, is_single = ?, single_confidence = ?, single_sources = ?
+                            WHERE id = ?""",
                             (stars, 1 if is_single else 0, single_confidence, ','.join(single_sources), track_id)
                         )
                         
@@ -373,7 +369,7 @@ def popularity_scan(verbose: bool = False):
                     if singles_detected:
                         log_unified(f'✓ Detected {len(singles_detected)} singles in "{album}":')
                         for single in singles_detected:
-                            sources_str = ', '.join(single["sources"])
+                            sources_str = ', '.join(single["sources"]) if single["sources"] else "unknown"
                             log_unified(f'   → "{single["title"]}" [{single["confidence"]} confidence from {sources_str}] (score: {single["score"]:.1f})')
                     else:
                         log_unified(f'No singles detected in "{album}"')
