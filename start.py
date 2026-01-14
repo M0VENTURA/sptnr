@@ -261,28 +261,7 @@ def _canon(s: str) -> str:
 
 
 # --- Title helpers (centralized to avoid duplicated nested versions) -----
-def _base_title(s: str) -> str:
-    """Return title without parenthetical subtitle and without ' - ' suffix."""
-    s1 = re.sub(r"\s*\(.*?\)\s*", " ", s or "")
-    s1 = re.sub(r"\s-\s.*$", "", s1).strip()
-    return s1
-
-
-def _has_subtitle_variant(s: str) -> bool:
-    t = (s or "").lower()
-    if re.search(r"\(.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit).*?\)", t):
-        if "radio edit" in t or "remaster" in t:
-            return False
-        return True
-    if re.search(r"\s-\s.*?(version|remix|mix|live|acoustic|orchestral|demo|alt|instrumental|edit)", t):
-        if "radio edit" in t or "remaster" in t:
-            return False
-        return True
-    return False
-
-
 def _similar(a: str, b: str) -> float:
-    return difflib.SequenceMatcher(None, _canon(a), _canon(b)).ratio()
 
 
 def _release_title_core(rel_title: str, artist_name: str) -> str:
