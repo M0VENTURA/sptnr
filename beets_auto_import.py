@@ -490,6 +490,8 @@ class BeetsAutoImporter:
                 if current_album != (album_artist, track['album']):
                     # Log the previous album if we were processing one
                     if current_album is not None and album_tracks > 0:
+                        # Commit changes before logging to scan_history to avoid database lock conflicts
+                        sptnr_conn.commit()
                         try:
                             log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
                             logger.info(f"Logged beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
@@ -557,6 +559,9 @@ class BeetsAutoImporter:
                     updated_count += 1
                     album_tracks += 1
             
+            # Commit changes before logging the final album to avoid database lock conflicts
+            sptnr_conn.commit()
+            
             # Log the final album after the loop completes
             if current_album is not None and album_tracks > 0:
                 try:
@@ -565,7 +570,6 @@ class BeetsAutoImporter:
                 except Exception as e:
                     logger.error(f"Failed to log final album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
             
-            sptnr_conn.commit()
             logger.info(f"Updated {updated_count} tracks with beets metadata")
 
             # Mark completion for dashboard
