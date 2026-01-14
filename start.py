@@ -1021,7 +1021,7 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
-from popularity import rate_artist
+from popularity_helpers import rate_artist
 
 def _self_test_single_gate():
     """

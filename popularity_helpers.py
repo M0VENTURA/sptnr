@@ -268,6 +268,107 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
+def rate_artist(artist_id, artist_name, verbose=False, force=False):
+    """
+    Rate all tracks for a given artist and build a single smart "Essential {artist}" playlist.
+    """
+    import os
+    import logging
+    from datetime import datetime, timedelta
+    from statistics import median
+    from concurrent.futures import ThreadPoolExecutor
+    from popularity_helpers import (
+        get_spotify_artist_id,
+        get_spotify_artist_single_track_ids,
+        search_spotify_track,
+        get_lastfm_track_info,
+        get_listenbrainz_score,
+        score_by_age,
+        SPOTIFY_WEIGHT,
+        LASTFM_WEIGHT,
+        LISTENBRAINZ_WEIGHT,
+        AGE_WEIGHT,
+        fetch_artist_albums,
+        fetch_album_tracks,
+        save_to_db,
+        get_album_track_count_in_db,
+    )
+    from popularity_helpers import compute_adaptive_weights
+    from popularity_helpers import _base_title, _has_subtitle_variant, _similar
+    from popularity_helpers import is_valid_version, create_or_update_playlist_for_artist, enrich_genres_aggressively
+    from sptnr import parse_datetime_flexible
+    from db_utils import get_db_connection
+    from scan_history import log_album_scan
+    from singledetection import infer_album_context
+
+    if not _clients_configured:
+        configure_popularity_helpers()
+
+    if not _spotify_enabled or _spotify_client is None:
+        return
+
+    if not _listenbrainz_enabled or _listenbrainz_client is None:
+        return
+
+    if not artist_id or not artist_name:
+        return
+
+    if not force:
+        # Check if the artist already has a playlist
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT playlist_id FROM playlists WHERE artist = ? AND name = ?", (artist_id, artist_name))
+        result = cursor.fetchone()
+        conn.close()
+        if result:
+            print(f"Playlist for {artist_name} already exists.")
+            return
+
+    # Fetch all albums for the artist
+    albums = fetch_artist_albums(artist_id)
+    if not albums:
+        print(f"No albums found for {artist_name}")
+        return
+
+    # Rate each album
+    for album in albums:
+        album_id = album["id"]
+        album_name = album["name"]
+        album_release_date = album["release_date"]
+        album_tracks = fetch_album_tracks(album_id)
+        if not album_tracks:
+            print(f"No tracks found for {album_name}")
+            continue
+
+        # Rate each track
+        for track in album_tracks:
+            track_id = track["id"]
+            track_name = track["name"]
+            track_release_date = track["release_date"]
+            track_playcount = track["playcount"]
+            track_score = score_by_age(track_playcount, track_release_date)
+            track_weight = SPOTIFY_WEIGHT * track_score
+            track_weight += LASTFM_WEIGHT * get_lastfm_track_info(artist_name, track_name)
+            track_weight += LISTENBRAINZ_WEIGHT * get_listenbrainz_score(track_id, artist_name, track_name)
+            track_weight += AGE_WEIGHT * (time.time() - track_release_date)
+            track_weight = track_weight / 4
+
+            # Save the track to the database
+            track_data = {
+                "track_id": track_id,
+                "track_name": track_name,
+                "album_id": album_id,
+                "album_name": album_name,
+                "release_date": track_release_date,
+                "playcount": track_playcount,
+                "score": track_score,
+                "weight": track_weight,
+            }
+            save_to_db(track_data)
+
+    print(f"Finished rating artist {artist_name}")
+    return
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -287,4 +388,5 @@ __all__ = [
     "load_artist_map",
     "get_album_last_scanned_from_db",
     "get_album_track_count_in_db",
+    "rate_artist",
 ]
