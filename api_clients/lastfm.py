@@ -55,7 +55,7 @@ class LastFmClient:
             }
         except Exception as e:
             logger.error(f"Last.fm fetch failed for '{title}' by '{artist}': {e}")
-            return {"track_play": 0}
+            return {"track_play": 0, "toptags": {}}
     
     def get_recommendations(self) -> dict:
         """
