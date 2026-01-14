@@ -284,6 +284,7 @@ def popularity_scan(verbose: bool = False):
                     try:
                         artist_id = get_spotify_artist_id(artist)
                         if artist_id:
+                            # For popularity scoring, we pass album for better matching accuracy
                             spotify_results = search_spotify_track(title, artist, album)
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
@@ -341,8 +342,9 @@ def popularity_scan(verbose: bool = False):
                     
                     # First check: Spotify single detection
                     try:
-                        # Match Jan 2nd logic: call search_spotify_track with title and artist only
-                        # (album parameter is optional and defaults to None per function signature)
+                        # For single detection, match Jan 2nd logic: call with title and artist only
+                        # (reference implementation in sptnr.py doesn't use album parameter)
+                        # This differs from popularity scoring (line 287) which uses album for better matching
                         spotify_results = search_spotify_track(title, artist)
                         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                             for result in spotify_results:
