@@ -29,7 +29,7 @@ from functools import wraps
 from scan_helpers import scan_artist_to_db
 from popularity import rate_artist
 from popularity import popularity_scan
-from start import build_artist_index
+from popularity_helpers import build_artist_index
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     """
@@ -66,7 +66,7 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         pass
     return sorted(list(genres))
 from check_db import update_schema
-from start import save_to_db
+from popularity_helpers import save_to_db
 
 import sys
 
