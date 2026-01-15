@@ -53,6 +53,7 @@ def _cleanup_timeout_executor():
     global _timeout_executor
     if _timeout_executor:
         _timeout_executor.shutdown(wait=False)
+        _timeout_executor = None
 
 
 # Register cleanup handler to shutdown executor on exit
@@ -85,6 +86,10 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     Raises:
         TimeoutError: If execution exceeds timeout_seconds
     """
+    global _timeout_executor
+    if _timeout_executor is None:
+        raise RuntimeError("Timeout executor has been shut down")
+    
     future = _timeout_executor.submit(func, *args, **kwargs)
     try:
         return future.result(timeout=timeout_seconds)
