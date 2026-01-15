@@ -643,6 +643,9 @@ def popularity_scan(verbose: bool = False):
                 star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
                 album_distributions = {}  # Track per-album distribution for logging
                 
+                # Batch updates for better performance
+                updates = []
+                
                 for i, track_row in enumerate(artist_tracks_with_scores):
                     track_id = track_row["id"]
                     title = track_row["title"]
@@ -669,14 +672,8 @@ def popularity_scan(verbose: bool = False):
                     # Ensure at least 1 star
                     stars = max(stars, 1)
                     
-                    # Update track in database with star rating
-                    cursor.execute(
-                        """UPDATE tracks 
-                        SET stars = ?
-                        WHERE id = ?""",
-                        (stars, track_id)
-                    )
-                    conn.commit()  # Commit immediately to prevent database locks
+                    # Collect update for batch processing
+                    updates.append((stars, track_id))
                     
                     star_distribution[stars] += 1
                     
@@ -689,12 +686,21 @@ def popularity_scan(verbose: bool = False):
                     single_tag = " (Single)" if is_single else ""
                     star_display = "★" * stars + "☆" * (5 - stars)
                     log_unified(f"   {star_display} ({stars}/5) - {title}{single_tag} from \"{album}\" (popularity: {popularity_score:.1f})")
-                    
-                    # Sync to Navidrome
+                
+                # Batch update all tracks at once for better performance
+                cursor.executemany(
+                    """UPDATE tracks SET stars = ? WHERE id = ?""",
+                    updates
+                )
+                conn.commit()
+                log_unified(f'   ✓ Updated {len(updates)} tracks with star ratings')
+                
+                # Sync to Navidrome after batch update
+                for stars, track_id in updates:
                     if sync_track_rating_to_navidrome(track_id, stars):
-                        log_unified(f"      ✓ Synced to Navidrome")
+                        log_verbose(f"      ✓ Synced track {track_id} to Navidrome")
                     else:
-                        log_unified(f"      ⚠ Skipped Navidrome sync (not configured or failed)")
+                        log_verbose(f"      ⚠ Skipped Navidrome sync for track {track_id}")
                 
                 # Log global star distribution for artist
                 dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
