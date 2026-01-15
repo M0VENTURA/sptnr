@@ -91,6 +91,50 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             logging.error(traceback.format_exc())
             return
 
+def was_album_scanned(artist: str, album: str, scan_type: str) -> bool:
+    """
+    Check if an album was already successfully scanned by a specific scan type.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        scan_type: Type of scan to check ('navidrome', 'popularity', 'singles', 'unified', 'beets')
+        
+    Returns:
+        True if album was already successfully scanned, False otherwise
+    """
+    try:
+        conn = sqlite3.connect(DB_PATH, timeout=120.0)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=5000")  # 5 second busy timeout
+        cursor = conn.cursor()
+        
+        # Check if scan_history table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='scan_history'
+        """)
+        
+        if not cursor.fetchone():
+            # Table doesn't exist yet, assume not scanned
+            conn.close()
+            return False
+        
+        # Check for successful scans of this album with this scan type
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM scan_history
+            WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+        """, (artist, album, scan_type))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result[0] > 0 if result else False
+    except Exception as e:
+        logging.error(f"Error checking album scan history: {e}")
+        logging.error(f"DB_PATH={DB_PATH}")
+        return False  # On error, assume not scanned to be safe
+
 def get_recent_album_scans(limit: int = 10):
     """
     Get recent album scans with scan type information.
