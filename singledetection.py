@@ -6,10 +6,13 @@ Uses the existing Discogs client and rate limiting from api_clients.discogs.
 
 import logging
 import time
-from api_clients import session
+from api_clients import session as api_session
 from api_clients.discogs import _throttle_discogs
 
 logger = logging.getLogger(__name__)
+
+# Discogs API limits
+DISCOGS_MAX_PER_PAGE = 100
 
 
 def _get_discogs_session():
@@ -17,7 +20,7 @@ def _get_discogs_session():
     Get or create a requests session for Discogs API calls.
     Returns the shared session from api_clients module.
     """
-    return session
+    return api_session
 
 
 def _discogs_search(session, headers, query, kind="release", per_page=15, timeout=(5, 10)):
@@ -45,7 +48,7 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
     params = {
         "q": query,
         "type": kind,
-        "per_page": min(per_page, 100)
+        "per_page": min(per_page, DISCOGS_MAX_PER_PAGE)
     }
     
     try:

@@ -102,11 +102,12 @@ def test_discogs_rate_limiting():
     elapsed = time.time() - start
     
     # Should take at least 0.35 seconds due to rate limiting
-    if elapsed >= 0.30:  # Allow some tolerance
-        print(f"✓ Rate limiting enforced ({elapsed:.3f}s >= 0.30s)")
+    # Allow 0.33s tolerance for timing variations
+    if elapsed >= 0.33:
+        print(f"✓ Rate limiting enforced ({elapsed:.3f}s >= 0.33s)")
         return True
     else:
-        print(f"✗ Rate limiting may not be working ({elapsed:.3f}s < 0.30s)")
+        print(f"✗ Rate limiting may not be working ({elapsed:.3f}s < 0.33s)")
         return False
 
 
