@@ -14,6 +14,7 @@ import logging
 import json
 import math
 import yaml
+import atexit
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
@@ -42,6 +43,21 @@ IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 # Timeout configuration for API calls (in seconds)
 API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
+# Shared thread pool for timeout enforcement (prevents resource exhaustion)
+# Using a larger pool to handle multiple concurrent API calls without blocking
+_timeout_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="api_timeout")
+
+
+def _cleanup_timeout_executor():
+    """Cleanup function to shutdown the timeout executor gracefully."""
+    global _timeout_executor
+    if _timeout_executor:
+        _timeout_executor.shutdown(wait=False)
+
+
+# Register cleanup handler to shutdown executor on exit
+atexit.register(_cleanup_timeout_executor)
+
 
 class TimeoutError(Exception):
     """Raised when an API call exceeds the timeout limit"""
@@ -50,9 +66,11 @@ class TimeoutError(Exception):
 
 def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     """
-    Execute a function with a timeout using ThreadPoolExecutor.
+    Execute a function with a timeout using a shared ThreadPoolExecutor.
     
     This is thread-safe and works in background threads (unlike signal-based timeout).
+    Uses a shared thread pool to prevent resource exhaustion from creating new
+    executors for each call.
     
     Args:
         func: Function to execute
@@ -67,12 +85,13 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     Raises:
         TimeoutError: If execution exceeds timeout_seconds
     """
-    with ThreadPoolExecutor(max_workers=1) as executor:
-        future = executor.submit(func, *args, **kwargs)
-        try:
-            return future.result(timeout=timeout_seconds)
-        except concurrent.futures.TimeoutError:
-            raise TimeoutError(error_message)
+    future = _timeout_executor.submit(func, *args, **kwargs)
+    try:
+        return future.result(timeout=timeout_seconds)
+    except concurrent.futures.TimeoutError:
+        # Note: The task will continue running in the background, but we won't wait for it
+        # This is acceptable as the thread pool will handle cleanup
+        raise TimeoutError(error_message)
 
 
 @contextmanager
