@@ -1135,16 +1135,18 @@ def artist_detail(name):
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
         
-        # Get qBittorrent config
+        # Get qBittorrent and slskd configs
         cfg, _ = _read_yaml(CONFIG_PATH)
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
+        slskd_config = cfg.get("slskd", {"enabled": False})
         
         return render_template("artist.html", 
                              artist_name=name,
                              albums=albums_data,
                              stats=artist_stats,
                              genres=genres,
-                             qbit_config=qbit_config)
+                             qbit_config=qbit_config,
+                             slskd_config=slskd_config)
     except Exception as e:
         logging.error(f"Error loading artist details: {str(e)}")
         flash(f"Error loading artist: {str(e)}", "error")
