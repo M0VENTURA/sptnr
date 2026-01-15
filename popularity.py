@@ -74,24 +74,26 @@ unified_logger.addHandler(unified_file_handler)
 unified_logger.propagate = False
 print("unified_logger handlers:", unified_logger.handlers)
 
+def _flush_handlers(logger_obj):
+    """Flush all handlers for a logger to ensure messages are written immediately"""
+    try:
+        for handler in logger_obj.handlers:
+            handler.flush()
+    except Exception:
+        pass  # Silently ignore flush errors to prevent blocking
+
 def log_basic(msg):
     logging.info(msg)
-    # Flush all handlers to ensure messages are written immediately
-    for handler in logging.getLogger().handlers:
-        handler.flush()
+    _flush_handlers(logging.getLogger())
 
 def log_unified(msg):
     unified_logger.info(msg)
-    # Flush all handlers to ensure messages are written immediately
-    for handler in unified_logger.handlers:
-        handler.flush()
+    _flush_handlers(unified_logger)
 
 def log_verbose(msg):
     if VERBOSE:
         logging.info(msg)
-        # Flush all handlers to ensure messages are written immediately
-        for handler in logging.getLogger().handlers:
-            handler.flush()
+        _flush_handlers(logging.getLogger())
 
 
 
