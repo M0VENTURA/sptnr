@@ -47,11 +47,20 @@ class TimeoutError(Exception):
     pass
 
 
+# Thread lock for signal handler (signal handlers are process-wide, not thread-specific)
+import threading
+_timeout_lock = threading.Lock()
+
+
 @contextmanager
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
     Context manager to enforce a timeout on blocking operations.
     Uses signal.alarm on Unix-like systems (Linux, macOS, BSD), falls back to no timeout on Windows.
+    
+    Note: This uses process-wide signal handlers, so it's not fully thread-safe if multiple
+    threads use it simultaneously. The popularity scanner runs in a single background thread,
+    so this limitation doesn't affect normal operation.
     
     Args:
         seconds: Timeout in seconds
@@ -60,11 +69,27 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
     Raises:
         TimeoutError: If the operation takes longer than `seconds`
     """
-    def timeout_handler(signum, frame):
-        raise TimeoutError(error_message)
-    
     # Check if signal.alarm is available (Unix-like systems: Linux, macOS, BSD)
-    if hasattr(signal, 'alarm'):
+    if not hasattr(signal, 'alarm'):
+        # Windows or other platforms without signal.alarm - no timeout enforcement
+        yield
+        return
+    
+    # Acquire lock to prevent multiple threads from interfering with signal handlers
+    # This is a best-effort protection; ideally only one thread should use this at a time
+    acquired = _timeout_lock.acquire(blocking=False)
+    if not acquired:
+        # Another thread is using timeout, skip timeout enforcement for this call
+        yield
+        return
+    
+    try:
+        # Capture error_message in handler's local scope to ensure it's accessible
+        _error_msg = error_message
+        
+        def timeout_handler(signum, frame):
+            raise TimeoutError(_error_msg)
+        
         # Set the signal handler and alarm
         old_handler = signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(seconds)
@@ -74,9 +99,8 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
             # Disable the alarm and restore old handler
             signal.alarm(0)
             signal.signal(signal.SIGALRM, old_handler)
-    else:
-        # Windows or other platforms without signal.alarm - no timeout enforcement
-        yield
+    finally:
+        _timeout_lock.release()
 
 
 # Dedicated popularity logger (no propagation to root)
