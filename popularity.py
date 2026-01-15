@@ -511,10 +511,9 @@ def popularity_scan(verbose: bool = False):
                     if HAVE_DISCOGS and discogs_token:
                         try:
                             result = _run_with_timeout(
-                                is_discogs_single,
+                                lambda: is_discogs_single(title, artist, album_context=None, token=discogs_token),
                                 API_CALL_TIMEOUT,
-                                f"Discogs single detection timed out after {API_CALL_TIMEOUT}s",
-                                title, artist, None, discogs_token
+                                f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
                             )
                             if result:
                                 single_sources.append("discogs")
