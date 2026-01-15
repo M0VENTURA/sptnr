@@ -827,6 +827,30 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
 
 
 
+def rate_artist_single_detection(artist_id: str, artist_name: str, verbose: bool = False, force: bool = False):
+    """
+    Run single detection and rating for a specific artist.
+    This is a wrapper around unified_scan_pipeline filtered to a single artist.
+    
+    Args:
+        artist_id: Navidrome artist ID
+        artist_name: Artist name
+        verbose: Enable verbose logging
+        force: Force re-scan even if recently scanned
+    
+    Returns:
+        None (updates database directly)
+    """
+    try:
+        from unified_scan import unified_scan_pipeline
+        log_unified(f"Starting single detection and rating for artist: {artist_name}")
+        unified_scan_pipeline(verbose=verbose, force=force, artist_filter=artist_name)
+        log_unified(f"Completed single detection and rating for artist: {artist_name}")
+    except Exception as e:
+        logging.error(f"Failed to run single detection for {artist_name}: {e}")
+        raise
+
+
 # âœ… Main scan function that can be called from app.py
 def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
     """

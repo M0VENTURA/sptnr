@@ -29,7 +29,7 @@ from functools import wraps
 from scan_helpers import scan_artist_to_db
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
-from sptnr import rate_artist
+from start import rate_artist_single_detection
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     """
@@ -2499,7 +2499,7 @@ def _run_artist_scan_pipeline(artist_name: str):
 
         # Step 3: single detection & scoring
         logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
-        rate_artist(artist_id, artist_name, verbose=True, force=True)
+        rate_artist_single_detection(artist_id, artist_name, verbose=True, force=True)
         
         logging.info(f"Scan complete for artist '{artist_name}'")
     except Exception as e:
