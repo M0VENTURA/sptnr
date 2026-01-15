@@ -14,8 +14,6 @@ import logging
 import json
 import math
 import yaml
-import signal
-import threading
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
@@ -44,65 +42,28 @@ API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
 
 class TimeoutError(Exception):
-    """Raised when an API call exceeds the timeout limit"""
+    """Raised when an API call exceeds the timeout limit (legacy, kept for compatibility)"""
     pass
-
-
-# Thread lock for signal handler (signal handlers are process-wide, not thread-specific)
-_timeout_lock = threading.Lock()
 
 
 @contextmanager
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
-    Context manager to enforce a timeout on blocking operations.
-    Uses signal.alarm on Unix-like systems (Linux, macOS, BSD), falls back to no timeout on Windows.
+    Context manager for API timeout enforcement.
     
-    Note: This uses process-wide signal handlers, so it's not fully thread-safe if multiple
-    threads use it simultaneously. The popularity scanner runs in a single background thread,
-    so this limitation doesn't affect normal operation.
+    This is a no-op implementation that relies on request-level timeouts configured
+    in the individual API client functions (typically 5-10 seconds for connect/read).
+    
+    The previous signal-based implementation caused "signal only works in main thread"
+    errors when used in background threads. Since all API calls already have their
+    own timeout parameters, this wrapper is kept for API compatibility but does not
+    enforce additional timeouts.
     
     Args:
-        seconds: Timeout in seconds
-        error_message: Error message to include in TimeoutError
-        
-    Raises:
-        TimeoutError: If the operation takes longer than `seconds`
+        seconds: Timeout in seconds (ignored, for compatibility only)
+        error_message: Error message (ignored, for compatibility only)
     """
-    # Check if signal.alarm is available (Unix-like systems: Linux, macOS, BSD)
-    if not hasattr(signal, 'alarm'):
-        # Windows or other platforms without signal.alarm - no timeout enforcement
-        yield
-        return
-    
-    # Acquire lock to prevent multiple threads from interfering with signal handlers
-    # This is a best-effort protection; ideally only one thread should use this at a time
-    acquired = _timeout_lock.acquire(blocking=False)
-    if not acquired:
-        # Another thread is using timeout, skip timeout enforcement for this call
-        # This is rare since the scanner runs in a single thread, but log it for debugging
-        logging.debug("Timeout lock held by another thread, skipping timeout enforcement")
-        yield
-        return
-    
-    try:
-        # Capture error_message in handler's local scope to ensure it's accessible
-        _error_msg = error_message
-        
-        def timeout_handler(signum, frame):
-            raise TimeoutError(_error_msg)
-        
-        # Set the signal handler and alarm
-        old_handler = signal.signal(signal.SIGALRM, timeout_handler)
-        signal.alarm(seconds)
-        try:
-            yield
-        finally:
-            # Disable the alarm and restore old handler
-            signal.alarm(0)
-            signal.signal(signal.SIGALRM, old_handler)
-    finally:
-        _timeout_lock.release()
+    yield
 
 
 # Dedicated popularity logger (no propagation to root)

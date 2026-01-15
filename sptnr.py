@@ -5,6 +5,16 @@ from dotenv import load_dotenv
 from colorama import init, Fore, Style
 from helpers import strip_parentheses, create_retry_session
 
+# Import API clients for single detection
+try:
+    from api_clients.musicbrainz import is_musicbrainz_single
+    from api_clients.discogs import is_discogs_single, has_discogs_video
+except ImportError:
+    # API clients not available - single detection will be limited
+    is_musicbrainz_single = None
+    is_discogs_single = None
+    has_discogs_video = None
+
 # 🎨 Colorama setup
 init(autoreset=True)
 LIGHT_RED = Fore.RED + Style.BRIGHT
@@ -834,19 +844,29 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
     except Exception as e:
         print(f"⚠️ Spotify check failed: {e}")
 
-    # MusicBrainz check
+    # MusicBrainz check using comprehensive API client
     try:
-        if is_musicbrainz_single(title, artist):
+        if is_musicbrainz_single and is_musicbrainz_single(title, artist, enabled=True):
             sources.append("MusicBrainz")
     except Exception as e:
         print(f"⚠️ MusicBrainz check failed: {e}")
 
-    # Discogs check
-    try:
-        if is_discogs_single(title, artist):
-            sources.append("Discogs")
-    except Exception as e:
-        print(f"⚠️ Discogs check failed: {e}")
+    # Discogs single check using comprehensive API client
+    discogs_token = os.getenv("DISCOGS_TOKEN", "")
+    if discogs_token:
+        try:
+            # Pass None for album_context - sptnr.py doesn't have that info
+            if is_discogs_single and is_discogs_single(title, artist, album_context=None, token=discogs_token):
+                sources.append("Discogs")
+        except Exception as e:
+            print(f"⚠️ Discogs single check failed: {e}")
+        
+        # Discogs music video check
+        try:
+            if has_discogs_video and has_discogs_video(title, artist, token=discogs_token):
+                sources.append("Discogs (video)")
+        except Exception as e:
+            print(f"⚠️ Discogs video check failed: {e}")
 
     # Google fallback
     if use_google and not sources:
