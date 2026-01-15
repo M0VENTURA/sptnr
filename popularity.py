@@ -15,6 +15,7 @@ import json
 import math
 import yaml
 import signal
+import threading
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
@@ -48,7 +49,6 @@ class TimeoutError(Exception):
 
 
 # Thread lock for signal handler (signal handlers are process-wide, not thread-specific)
-import threading
 _timeout_lock = threading.Lock()
 
 
@@ -80,6 +80,8 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
     acquired = _timeout_lock.acquire(blocking=False)
     if not acquired:
         # Another thread is using timeout, skip timeout enforcement for this call
+        # This is rare since the scanner runs in a single thread, but log it for debugging
+        logging.debug("Timeout lock held by another thread, skipping timeout enforcement")
         yield
         return
     
