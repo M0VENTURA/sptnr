@@ -92,8 +92,10 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
         Tasks that timeout will continue running in the background until completion
         or until the executor shuts down. This can lead to thread pool exhaustion
         if API calls hang for extended periods despite having their own timeouts.
-        To mitigate this, use the timeout_safe_session from api_clients which has
-        reduced retry counts for time-sensitive operations.
+        
+        To mitigate this, the api_clients module provides timeout_safe_session with
+        reduced retry counts. Future enhancement: modify API clients to use this
+        session for calls made within _run_with_timeout.
     """
     global _timeout_executor
     if _timeout_executor is None:
@@ -345,7 +347,9 @@ def popularity_scan(verbose: bool = False):
     except Exception as e:
         log_unified(f"⚠ Warning: Failed to configure Spotify client: {e}")
         log_unified("Popularity scan will continue but Spotify lookups may fail")
-        log_verbose(f"Configuration error details:", exc_info=True)
+        if VERBOSE:
+            import traceback
+            logging.error(f"Configuration error details: {traceback.format_exc()}")
 
     log_verbose("Connecting to database for popularity scan...")
     conn = None
@@ -433,7 +437,9 @@ def popularity_scan(verbose: bool = False):
                         # Catch all exceptions to prevent scanner from hanging
                         log_unified(f"⚠ Spotify lookup failed for {artist} - {title}: {e}")
                         log_verbose(f"Spotify error details: {type(e).__name__}: {str(e)}")
-                        log_verbose(f"[DEBUG] Exception traceback:", exc_info=True)
+                        if VERBOSE:
+                            import traceback
+                            logging.error(f"Exception traceback: {traceback.format_exc()}")
                         # Continue with next step even if Spotify fails
 
                     # Try to get popularity from Last.fm
