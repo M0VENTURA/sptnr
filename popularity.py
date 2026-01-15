@@ -51,7 +51,7 @@ class TimeoutError(Exception):
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
     Context manager to enforce a timeout on blocking operations.
-    Uses signal.alarm on Unix systems, falls back to no timeout on Windows.
+    Uses signal.alarm on Unix-like systems (Linux, macOS, BSD), falls back to no timeout on Windows.
     
     Args:
         seconds: Timeout in seconds
@@ -63,7 +63,7 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
     def timeout_handler(signum, frame):
         raise TimeoutError(error_message)
     
-    # Check if signal.alarm is available (Unix only)
+    # Check if signal.alarm is available (Unix-like systems: Linux, macOS, BSD)
     if hasattr(signal, 'alarm'):
         # Set the signal handler and alarm
         old_handler = signal.signal(signal.SIGALRM, timeout_handler)
