@@ -125,9 +125,38 @@ def _ensure_clients_from_config() -> None:
 
 
 def get_spotify_artist_id(artist_name: str) -> str | None:
+    """
+    Get Spotify artist ID with database caching.
+    First checks the database for a cached ID, then queries Spotify API if needed.
+    
+    Args:
+        artist_name: Artist name to lookup
+        
+    Returns:
+        Spotify artist ID or None
+    """
     _ensure_clients_from_config()
     if not _spotify_enabled or _spotify_client is None:
         return None
+    
+    # First, try to get from database cache
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT spotify_artist_id FROM tracks WHERE artist = ? AND spotify_artist_id IS NOT NULL LIMIT 1",
+            (artist_name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            logging.debug(f"Using cached Spotify artist ID for '{artist_name}': {row[0]}")
+            return row[0]
+    except Exception as e:
+        logging.debug(f"Failed to lookup cached Spotify artist ID for '{artist_name}': {e}")
+    
+    # If not in database, query Spotify API
     return _spotify_client.get_artist_id(artist_name)
 
 

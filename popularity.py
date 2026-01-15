@@ -647,6 +647,7 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
 
                     # Try to get popularity from Spotify
                     spotify_score = 0
+                    spotify_artist_id = None  # Track the artist ID for caching
                     try:
                         log_unified(f'Getting Spotify artist ID for: {artist}')
                         log_verbose(f"[TIMEOUT DEBUG] About to call _run_with_timeout for get_spotify_artist_id")
@@ -659,6 +660,7 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                         log_verbose(f"[TIMEOUT DEBUG] _run_with_timeout returned successfully")
                         log_unified(f'Spotify artist ID result: {artist_id}')
                         if artist_id:
+                            spotify_artist_id = artist_id  # Save for database caching
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
                             spotify_results = _run_with_timeout(
@@ -726,10 +728,17 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # Average the scores
                     if spotify_score > 0 or lastfm_score > 0:
                         popularity_score = (spotify_score + lastfm_score) / 2.0
-                        cursor.execute(
-                            "UPDATE tracks SET popularity_score = ? WHERE id = ?",
-                            (popularity_score, track_id)
-                        )
+                        # Update with popularity score and cache Spotify artist ID if available
+                        if spotify_artist_id:
+                            cursor.execute(
+                                "UPDATE tracks SET popularity_score = ?, spotify_artist_id = ? WHERE id = ?",
+                                (popularity_score, spotify_artist_id, track_id)
+                            )
+                        else:
+                            cursor.execute(
+                                "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                                (popularity_score, track_id)
+                            )
                         # Commit immediately to prevent database locks.
                         # Frequent commits are beneficial for SQLite WAL mode concurrency,
                         # allowing other processes (like dashboard) to read during scan.

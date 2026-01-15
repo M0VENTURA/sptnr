@@ -211,57 +211,18 @@
                         </form>
                     </div>
                 </div>
-
-                <!-- Missing Releases (MusicBrainz) -->
-                <div class="scan-card-large">
-                    <div class="d-flex align-items-center justify-content-between mb-3">
-                        <div>
-                            <h6 class="mb-1">
-                                <i class="bi bi-flag"></i> Missing Releases (MusicBrainz)
-                            </h6>
-                            <small class="text-muted" style="display: block;">Scan all artists for releases not in your library</small>
-                        </div>
-                        <span class="scan-badge" data-scan-type="missing_releases_scan" style="display: none;">
-                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
-                        </span>
-                    </div>
-                    
-                    <div class="scan-progress-container" data-scan-type="missing_releases_scan" style="margin-bottom: 1rem;">
-                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-warning" 
-                                 role="progressbar" style="width: 0%;" 
-                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
-                            </div>
-                        </div>
-                        <div class="d-flex justify-content-between mb-1">
-                            <small class="text-muted"><span class="scan-progress-text">Ready to scan...</span></small>
-                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
-                        </div>
-                        <!-- Unified log area will be shown below all scan cards -->
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <button type="button" class="btn btn-warning btn-sm flex-grow-1 px-2 py-1" onclick="startMissingReleasesScan()">
-                            <i class="bi bi-play-fill"></i> Start Scan
-                        </button>
-                        <form method="POST" action="{{ url_for('scan_stop') }}">
-                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
-                                <i class="bi bi-stop-fill"></i> Stop
-                            </button>
-                        </form>
-                    </div>
-                    <!-- Unified Log Area -->
-                    <div class="card mt-4">
-                        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
-                            <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
-                            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
-                        </div>
-                        <div class="card-body p-2">
-                            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
-                        </div>
-                    </div>
-                </div>
             </div>
+        </div>
+    </div>
+    
+    <!-- Unified Log Area (shared across all scans) -->
+    <div class="card mb-4">
+        <div class="card-header py-2 px-3 d-flex justify-content-between align-items-center">
+            <span class="fw-semibold"><i class="bi bi-terminal"></i> Unified Log</span>
+            <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
+        </div>
+        <div class="card-body p-2">
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
         </div>
     </div>
     
@@ -351,21 +312,6 @@
         <a href="{{ url_for('config_editor') }}" class="btn btn-outline-secondary flex-grow-1">
             <i class="bi bi-gear"></i> <span class="d-none d-sm-inline">Settings</span>
         </a>
-    </div>
-</div>
-
-<!-- Missing Releases Modal -->
-<div class="modal fade" id="missingReleasesModal" tabindex="-1" aria-labelledby="missingReleasesModalLabel" aria-hidden="true">
-    <div class="modal-dialog modal-lg">
-        <div class="modal-content">
-            <div class="modal-header">
-                <h5 class="modal-title" id="missingReleasesModalLabel"><i class="bi bi-flag"></i> Missing Releases</h5>
-                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
-            </div>
-            <div class="modal-body">
-                <div id="missingReleasesList" style="max-height: 420px; overflow-y: auto;"></div>
-            </div>
-        </div>
     </div>
 </div>
 
@@ -807,87 +753,6 @@ document.addEventListener('DOMContentLoaded', function() {
     // Poll every 3 seconds (reduced from multiple intervals)
     setInterval(updateAll, 3000);
 });
-
-function startMissingReleasesScan() {
-    if (!confirm('This will scan all artists in your database for missing releases from MusicBrainz. This may take a while. Continue?')) {
-        return;
-    }
-    
-    fetch('/api/artist/scan-all-missing-releases', {
-        method: 'POST',
-        headers: {
-            'Content-Type': 'application/json'
-        }
-    })
-    .then(response => response.json())
-    .then(data => {
-        if (data.success) {
-            alert('✅ Missing releases scan started. Check the progress bar above.');
-        } else {
-            alert('❌ Error: ' + (data.error || 'Failed to start scan'));
-        }
-    })
-    .catch(error => {
-        alert('❌ Network error: ' + error.message);
-    });
-}
-
-function runMissingReleasesCheck() {
-    const artistInput = document.getElementById('missingReleasesArtist');
-    const statusEl = document.getElementById('missingReleasesStatus');
-    const listEl = document.getElementById('missingReleasesList');
-    if (!artistInput || !statusEl || !listEl) return;
-
-    const artist = artistInput.value.trim();
-    if (!artist) {
-        statusEl.textContent = 'Please enter an artist name.';
-        return;
-    }
-
-    statusEl.textContent = 'Checking MusicBrainz...';
-    listEl.innerHTML = '';
-
-    fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artist))
-        .then(r => r.json())
-        .then(data => {
-            if (data.error) {
-                statusEl.textContent = 'Error: ' + data.error;
-                return;
-            }
-
-            const missing = data.missing || [];
-            if (missing.length === 0) {
-                statusEl.textContent = 'All MusicBrainz releases are present in your library for this artist.';
-            } else {
-                statusEl.textContent = `${missing.length} missing release(s) found.`;
-            }
-
-            listEl.innerHTML = missing.map(item => {
-                const year = (item.first_release_date || '').slice(0, 4);
-                return `
-                    <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
-                        <div>
-                            <div class="fw-semibold">${escapeHtml(item.title)}</div>
-                            <div class="text-muted small">${escapeHtml(item.primary_type || 'Release')}${year ? ' · ' + year : ''}</div>
-                        </div>
-                        <span class="badge bg-warning text-dark">Missing</span>
-                    </div>
-                `;
-            }).join('');
-
-            const modal = new bootstrap.Modal(document.getElementById('missingReleasesModal'));
-            modal.show();
-        })
-        .catch(err => {
-            statusEl.textContent = 'Error: ' + err.message;
-        });
-}
-
-function escapeHtml(text) {
-    const div = document.createElement('div');
-    div.textContent = text;
-    return div.innerHTML;
-}
 
 // Switch between Navidrome users
 function switchUser(userIndex) {
