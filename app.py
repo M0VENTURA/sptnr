@@ -29,6 +29,7 @@ from functools import wraps
 from scan_helpers import scan_artist_to_db
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
+from sptnr import rate_artist
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     """
@@ -2458,6 +2459,49 @@ def album_detail(artist, album):
                              error=f"Error loading album: {str(e)}")
 
 
+def _run_artist_scan_pipeline(artist_name: str):
+    """
+    Helper function to run the complete scan pipeline for an artist:
+    1. Navidrome scan (with force=True)
+    2. Popularity detection
+    3. Single detection and rating
+    
+    This is used by artist scan, album rescan, and track rescan routes.
+    """
+    try:
+        # Look up artist_id from cache; rebuild index if missing
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+        row = cursor.fetchone()
+        conn.close()
+        artist_id = row[0] if row else None
+
+        if not artist_id:
+            idx = build_artist_index()
+            artist_id = (idx.get(artist_name, {}) or {}).get("id")
+
+        if not artist_id:
+            logging.error(f"Scan aborted: no artist_id for {artist_name}")
+            return
+
+        # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
+        logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
+        scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
+
+        # Step 2: popularity detection (for all tracks)
+        logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
+        popularity_scan(verbose=True)
+
+        # Step 3: single detection & scoring
+        logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
+        rate_artist(artist_id, artist_name, verbose=True, force=True)
+        
+        logging.info(f"Scan complete for artist '{artist_name}'")
+    except Exception as e:
+        logging.error(f"Scan failed for {artist_name}: {e}")
+
+
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-album pipeline: Navidrome fetch -> popularity -> single detection."""
@@ -2465,42 +2509,7 @@ def album_rescan(artist, album):
     artist = unquote(artist)
     album = unquote(album)
 
-    def _worker(artist_name: str):
-        try:
-            # Look up artist_id from cache; rebuild index if missing
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
-            row = cursor.fetchone()
-            conn.close()
-            artist_id = row[0] if row else None
-
-            if not artist_id:
-                idx = build_artist_index()
-                artist_id = (idx.get(artist_name, {}) or {}).get("id")
-
-            if not artist_id:
-                logging.error(f"Rescan aborted: no artist_id for {artist_name}")
-                return
-
-            # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
-            logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
-            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
-
-            # Step 2: popularity detection (for all tracks)
-            logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
-            popularity_scan(verbose=True)
-
-            # Step 3: single detection & scoring
-            logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
-            from sptnr import rate_artist
-            rate_artist(artist_id, artist_name, verbose=True, force=True)
-            
-            logging.info(f"Album rescan complete for artist '{artist_name}'")
-        except Exception as e:
-            logging.error(f"Album rescan failed for {artist_name}: {e}")
-
-    threading.Thread(target=_worker, args=(artist,), daemon=True).start()
+    threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
     flash(f"Rescan started for {artist}", "info")
     return redirect(url_for("album_detail", artist=artist, album=album))
 
@@ -2513,42 +2522,7 @@ def scan_track_rescan(artist, album, track_id):
     album = unquote(album)
     track_id = unquote(track_id)
 
-    def _worker(artist_name: str, track_identifier: str):
-        try:
-            # Look up artist_id
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
-            row = cursor.fetchone()
-            conn.close()
-            artist_id = row[0] if row else None
-
-            if not artist_id:
-                idx = build_artist_index()
-                artist_id = (idx.get(artist_name, {}) or {}).get("id")
-
-            if not artist_id:
-                logging.error(f"Track rescan aborted: no artist_id for {artist_name}")
-                return
-
-            # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
-            logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
-            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
-
-            # Step 2: popularity detection (for all tracks)
-            logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
-            popularity_scan(verbose=True)
-
-            # Step 3: single detection & scoring
-            logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
-            from sptnr import rate_artist
-            rate_artist(artist_id, artist_name, verbose=True, force=True)
-            
-            logging.info(f"Track rescan completed for {track_identifier}")
-        except Exception as e:
-            logging.error(f"Track rescan failed for {track_identifier}: {e}")
-
-    threading.Thread(target=_worker, args=(artist, track_id), daemon=True).start()
+    threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
     flash(f"Track rescan started for {artist}", "info")
     return redirect(url_for("track_detail", track_id=track_id))
 
@@ -2663,42 +2637,7 @@ def scan_start():
     if scan_type == "artist":
         artist = request.form.get("artist")
         if artist:
-            def _worker(artist_name: str):
-                try:
-                    # Look up artist_id from cache; rebuild index if missing
-                    conn = get_db()
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
-                    row = cursor.fetchone()
-                    conn.close()
-                    artist_id = row[0] if row else None
-
-                    if not artist_id:
-                        idx = build_artist_index()
-                        artist_id = (idx.get(artist_name, {}) or {}).get("id")
-
-                    if not artist_id:
-                        logging.error(f"Rescan aborted: no artist_id for {artist_name}")
-                        return
-
-                    # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
-                    logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
-                    scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
-
-                    # Step 2: popularity detection (for all tracks)
-                    logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
-                    popularity_scan(verbose=True)
-
-                    # Step 3: single detection & scoring
-                    logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
-                    from sptnr import rate_artist
-                    rate_artist(artist_id, artist_name, verbose=True, force=True)
-                    
-                    logging.info(f"Artist scan complete for '{artist_name}'")
-                except Exception as e:
-                    logging.error(f"Artist scan failed for {artist_name}: {e}")
-
-            threading.Thread(target=_worker, args=(artist,), daemon=True).start()
+            threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
             flash(f"Scan started for artist: {artist}", "success")
             return redirect(url_for("artist_detail", name=artist))
     
