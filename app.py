@@ -413,7 +413,8 @@ _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "webui.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "sptnr.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "mp3scanner.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"))
-_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"))
+# Note: singledetection.py has been integrated into popularity.py
+# Singles detection logs go to popularity.log
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log"))
 
@@ -1926,7 +1927,7 @@ def api_album_search_art():
         
         elif source == "discogs":
             # Search Discogs for release
-            from singledetection import _discogs_search, _get_discogs_session
+            from popularity import _discogs_search, _get_discogs_session
             from helpers import _read_yaml
             
             config_data, _ = _read_yaml(CONFIG_PATH)
@@ -2875,18 +2876,9 @@ def scan_singles():
             flash("Single detection scan is already running", "warning")
             return redirect(url_for("dashboard"))
         
-        try:
-            cmd = [sys.executable, "singledetection.py", "--verbose"]
-            scan_process_singles = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                bufsize=1
-            )
-            flash("✅ Single detection scan started", "success")
-        except Exception as e:
-            flash(f"❌ Error starting single detection: {str(e)}", "danger")
+        # Note: Standalone singles detection script is not available.
+        # Singles are detected during popularity scans via is_discogs_single() in api_clients.discogs
+        flash("❌ Standalone single detection is not available. Singles are detected during popularity scans.", "warning")
     
     return redirect(url_for("dashboard"))
 
@@ -3577,7 +3569,7 @@ def api_scan_logs():
     log_files = {
         "navidrome": LOG_PATH,  # Navidrome scans log to main app log
         "popularity": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),
-        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "singledetection.log"),
+        "singles": os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"),  # Singles detection integrated into popularity.py
         # Beets auto-import now drives the file-path scan; read its log instead of the old mp3scanner log
         "file_paths": os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log")
     }
@@ -7025,7 +7017,7 @@ if __name__ == "__main__":
     def api_album_discogs_lookup():
         """Lookup album on Discogs for better metadata and genres"""
         try:
-            from singledetection import _discogs_search, _get_discogs_session
+            from popularity import _discogs_search, _get_discogs_session
             import difflib
             
             data = request.get_json()
