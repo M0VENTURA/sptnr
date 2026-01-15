@@ -14,11 +14,9 @@ import logging
 import json
 import math
 import yaml
-import threading
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from api_clients import session
 
 # Import API clients for single detection at module level
@@ -44,32 +42,27 @@ API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
 
 class TimeoutError(Exception):
-    """Raised when an API call exceeds the timeout limit"""
+    """Raised when an API call exceeds the timeout limit (legacy, kept for compatibility)"""
     pass
-
-
-# Thread pool executor for timeout handling (reused across calls)
-_timeout_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="api_timeout")
 
 
 @contextmanager
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
-    Context manager to enforce a timeout on blocking operations using ThreadPoolExecutor.
-    Thread-safe alternative to signal-based timeout.
+    Context manager for API timeout enforcement.
+    
+    This is a no-op implementation that relies on request-level timeouts configured
+    in the individual API client functions (typically 5-10 seconds for connect/read).
+    
+    The previous signal-based implementation caused "signal only works in main thread"
+    errors when used in background threads. Since all API calls already have their
+    own timeout parameters, this wrapper is kept for API compatibility but does not
+    enforce additional timeouts.
     
     Args:
-        seconds: Timeout in seconds
-        error_message: Error message to include in TimeoutError
-        
-    Raises:
-        TimeoutError: If the operation takes longer than `seconds`
+        seconds: Timeout in seconds (ignored, for compatibility only)
+        error_message: Error message (ignored, for compatibility only)
     """
-    # This implementation wraps the code block in a lambda and runs it in a thread pool
-    # The timeout is enforced by the Future.result() call
-    # We need to use a different approach - just yield and let the caller handle timeout
-    # Actually, this won't work as a context manager wrapper
-    # Instead, we'll just skip timeout enforcement for now and rely on request-level timeouts
     yield
 
 
