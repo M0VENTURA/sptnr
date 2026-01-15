@@ -9,6 +9,47 @@ def strip_parentheses(s: str) -> str:
     return re.sub(r"\s*\(.*?\)\s*", " ", (s or "")).strip()
 
 
+def detect_live_album(album_title: str) -> dict:
+    """
+    Detect if an album is a live or unplugged album based on its title.
+    
+    Args:
+        album_title: Album title to analyze
+        
+    Returns:
+        dict with is_live and is_unplugged boolean flags
+    """
+    if not album_title:
+        return {"is_live": False, "is_unplugged": False}
+    
+    title_lower = album_title.lower()
+    
+    # Check for live indicators
+    live_patterns = [
+        r'\blive\b',
+        r'\bconcert\b',
+        r'\bon stage\b',
+        r'\bin concert\b',
+        r'\blive at\b',
+        r'\blive in\b',
+        r'\blive from\b',
+        r'\blive session\b',
+    ]
+    
+    is_live = any(re.search(pattern, title_lower) for pattern in live_patterns)
+    
+    # Check for unplugged specifically
+    unplugged_patterns = [
+        r'\bunplugged\b',
+        r'\bacoustic\b',
+        r'\bacoustic session\b',
+    ]
+    
+    is_unplugged = any(re.search(pattern, title_lower) for pattern in unplugged_patterns)
+    
+    return {"is_live": is_live, "is_unplugged": is_unplugged}
+
+
 def create_retry_session(user_agent: str | None = None, retries: int = 5, backoff: float = 1.2,
                          status_forcelist: tuple = (429, 500, 502, 503, 504),
                          allowed_methods: tuple = ("GET", "POST")) -> requests.Session:
