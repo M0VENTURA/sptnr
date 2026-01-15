@@ -2471,15 +2471,18 @@ def _run_artist_scan_pipeline(artist_name: str):
     try:
         # Look up artist_id from cache; rebuild index if missing
         conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
-        row = cursor.fetchone()
-        conn.close()
-        artist_id = row[0] if row else None
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            row = cursor.fetchone()
+            artist_id = row[0] if row else None
+        finally:
+            conn.close()
 
         if not artist_id:
             idx = build_artist_index()
-            artist_id = (idx.get(artist_name, {}) or {}).get("id")
+            artist_data = idx.get(artist_name, {})
+            artist_id = artist_data.get("id") if artist_data else None
 
         if not artist_id:
             logging.error(f"Scan aborted: no artist_id for {artist_name}")
@@ -2490,6 +2493,7 @@ def _run_artist_scan_pipeline(artist_name: str):
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
         # Step 2: popularity detection (for all tracks)
+        # Note: This scans all tracks in the database, not just this artist
         logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
         popularity_scan(verbose=True)
 
