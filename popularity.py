@@ -311,8 +311,14 @@ def popularity_scan(verbose: bool = False):
                                 log_unified(f'No Spotify results found for: {title}')
                         else:
                             log_unified(f'No Spotify artist ID found for: {artist}')
+                    except KeyboardInterrupt:
+                        # Allow user to interrupt the scan
+                        raise
                     except Exception as e:
-                        log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
+                        # Catch all exceptions to prevent scanner from hanging
+                        log_unified(f"⚠ Spotify lookup failed for {artist} - {title}: {e}")
+                        log_verbose(f"Spotify error details: {type(e).__name__}: {str(e)}")
+                        # Continue with next step even if Spotify fails
 
                     # Try to get popularity from Last.fm
                     lastfm_score = 0
@@ -325,8 +331,14 @@ def popularity_scan(verbose: bool = False):
                             log_unified(f'Last.fm play count: {lastfm_info.get("track_play")} (score: {lastfm_score})')
                         else:
                             log_unified(f'No Last.fm play count found for: {title}')
+                    except KeyboardInterrupt:
+                        # Allow user to interrupt the scan
+                        raise
                     except Exception as e:
-                        log_unified(f"Last.fm lookup failed for {artist} - {title}: {e}")
+                        # Catch all exceptions to prevent scanner from hanging
+                        log_unified(f"⚠ Last.fm lookup failed for {artist} - {title}: {e}")
+                        log_verbose(f"Last.fm error details: {type(e).__name__}: {str(e)}")
+                        # Continue with next step even if Last.fm fails
 
                     # Average the scores
                     if spotify_score > 0 or lastfm_score > 0:
@@ -341,8 +353,9 @@ def popularity_scan(verbose: bool = False):
                         conn.commit()
                         scanned_count += 1
                         album_scanned += 1
+                        log_unified(f'✓ Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
                     else:
-                        log_unified(f"No popularity score found for {artist} - {title}")
+                        log_unified(f"⚠ No popularity score found for {artist} - {title}")
 
                     # Save progress after each track
                     save_popularity_progress(scanned_count, len(tracks))
