@@ -240,30 +240,38 @@
     </div>
   </div>
 
-  {% if albums and albums|length > 0 %}
-    <div class="card">
-      <div class="card-header">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-collection-play"></i> Albums
-        </h5>
+  <!-- Unified Albums and Releases Section (Discovered + Missing) -->
+  <div class="card mb-4" id="albumsSection">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection-play"></i> Albums & Releases
+      </h5>
+      <div class="d-flex gap-2 align-items-center">
+        <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+          <i class="bi bi-flag"></i> Check for Missing
+        </button>
+        <span id="albumsStatus" class="text-muted small">Showing discovered albums</span>
       </div>
-      <div class="table-responsive">
-        <table class="table table-hover mb-0">
-          <thead class="d-none d-md-table-header-group">
-            <tr>
-              <th style="width: 120px;">Art</th>
-              <th>Album</th>
-              <th class="text-center">Year</th>
-              <th class="text-center">Tracks</th>
-              <th class="text-center">Avg ★</th>
-              <th class="text-center">Singles</th>
-              <th class="text-center">Last Scanned</th>
-              <th class="text-center">Actions</th>
-            </tr>
-          </thead>
-          <tbody>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="albumsTable">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 120px;">Album Art</th>
+            <th>Album Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 80px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 80px;">Singles</th>
+            <th class="text-center" style="width: 150px;">Last Scanned</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="albumsTableBody">
+          {% if albums and albums|length > 0 %}
             {% for album in albums %}
-              <tr class="d-flex flex-column d-md-table-row">
+              <tr class="d-flex flex-column d-md-table-row album-row" data-year="{{ album.album_year or 9999 }}" data-status="discovered">
                 <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
                   <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
                        alt="{{ album.album }}" 
@@ -280,6 +288,10 @@
                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                   <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
                   {{ album.album_year or '—' }}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+                  <span class="badge bg-success">Available</span>
                 </td>
                 <td class="d-flex justify-content-between d-md-table-cell text-center">
                   <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
@@ -318,54 +330,21 @@
                 </td>
               </tr>
             {% endfor %}
-          </tbody>
-        </table>
-      </div>
-    </div>
-  {% else %}
-    <div class="alert alert-secondary">
-      <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>.
-    </div>
-  {% endif %}
-
-  <!-- Missing Releases Section -->
-  <div class="card mb-4" id="missingReleasesSection">
-    <div class="card-header d-flex justify-content-between align-items-center">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-flag"></i> Missing Releases
-      </h5>
-      <span id="missingReleasesStatus" class="text-muted small">Click Missing to scan MusicBrainz and populate this list.</span>
-    </div>
-    <div class="card-body">
-      <div class="mb-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">Albums</h6>
-          <span class="badge bg-secondary" id="missingAlbumsCount">0</span>
-        </div>
-        <div class="row g-3" id="missingAlbumsGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
-      <div class="mb-4">
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">EPs</h6>
-          <span class="badge bg-secondary" id="missingEpsCount">0</span>
-        </div>
-        <div class="row g-3" id="missingEpsGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
-      <div>
-        <div class="d-flex justify-content-between align-items-center mb-2">
-          <h6 class="mb-0">Singles</h6>
-          <span class="badge bg-secondary" id="missingSinglesCount">0</span>
-        </div>
-        <div class="row g-3" id="missingSinglesGrid">
-          <div class="col-12 text-muted small">No data yet. Press Missing to scan.</div>
-        </div>
-      </div>
+          {% else %}
+            <tr>
+              <td colspan="9" class="text-center text-muted">
+                <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>. Click "Check for Missing" to find releases.
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
     </div>
   </div>
+
+  <!-- Hidden: Old Missing Releases Section - now merged into albums table above -->
+  <div style="display: none;" id="oldMissingReleasesSection"></div>
+
 </div>
 
 <!-- qBittorrent Search Modal -->
@@ -572,86 +551,6 @@ document.addEventListener('DOMContentLoaded', function() {
   }
 });
 
-function setMissingGridLoading() {
-  ['missingAlbumsGrid', 'missingEpsGrid', 'missingSinglesGrid'].forEach(id => {
-    const el = document.getElementById(id);
-    if (el) {
-      el.innerHTML = '<div class="col-12 text-center text-muted"><span class="spinner-border spinner-border-sm"></span> Loading...</div>';
-    }
-  });
-}
-
-function renderMissingCategory(containerId, countId, items, emptyText) {
-  const container = document.getElementById(containerId);
-  const countBadge = document.getElementById(countId);
-  if (!container || !countBadge) return;
-
-  countBadge.textContent = items.length;
-
-  if (!items.length) {
-    container.innerHTML = `<div class="col-12 text-muted small">${emptyText}</div>`;
-    return;
-  }
-
-  // Sort items by year (newest first)
-  const sorted = [...items].sort((a, b) => {
-    const yearA = parseInt((a.first_release_date || '0000').slice(0, 4));
-    const yearB = parseInt((b.first_release_date || '0000').slice(0, 4));
-    return yearB - yearA;
-  });
-
-  const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect width%3D%2280%22 height%3D%2280%22 fill%3D%22%232a2a2a%22/%3E%3Ctext x%3D%2250%25%22 y%3D%2250%25%22 dy%3D%22.3em%22 text-anchor%3D%22middle%22 fill%3D%22%23666%22 font-size%3D%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';
-
-  // Group by year
-  const byYear = {};
-  sorted.forEach(item => {
-    const year = (item.first_release_date || '').slice(0, 4) || '????';
-    if (!byYear[year]) byYear[year] = [];
-    byYear[year].push(item);
-  });
-
-  let html = '';
-  Object.keys(byYear).sort().reverse().forEach(year => {
-    html += `<div class="col-12 mb-3"><h6 class="text-muted mb-3"><i class="bi bi-calendar"></i> ${year}</h6>`;
-    html += '<div class="row g-2">';
-    
-    byYear[year].forEach(item => {
-      const art = item.cover_art_url || fallbackArt;
-      const typeLabel = item.primary_type || item.category || 'Release';
-      html += `
-        <div class="col-12 col-sm-6 col-lg-4">
-          <div class="missing-release-card h-100 d-flex flex-column">
-            <div class="d-flex gap-3 flex-grow-1">
-              <div class="missing-release-art">
-                <img src="${escapeHtml(art)}" alt="${escapeHtml(item.title || 'Release art')}" onerror="this.onerror=null;this.src='${fallbackArt}';">
-              </div>
-              <div class="flex-grow-1">
-                <div class="fw-semibold text-break">${escapeHtml(item.title || 'Unknown')}</div>
-                <div class="text-muted small">${escapeHtml(typeLabel)}</div>
-              </div>
-            </div>
-            <div class="mt-2 d-flex gap-2" style="flex-wrap: wrap;">
-              <button class="btn btn-sm btn-primary flex-grow-1" onclick="importMissingRelease('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
-                <i class="bi bi-download"></i> Import
-              </button>
-              <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.title)}')" title="Search qBittorrent for this album">
-                <i class="bi bi-search"></i> qBit
-              </button>
-              <button class="btn btn-sm btn-secondary" onclick="openSlskdSearch('${escapeHtml(item.title)}', '${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}')" title="Search Soulseek for this album">
-                <i class="bi bi-search"></i> SLSKD
-              </button>
-            </div>
-          </div>
-        </div>
-      `;
-    });
-    
-    html += '</div></div>';
-  });
-
-  container.innerHTML = html;
-}
-
 function importMissingRelease(artistName, releaseId, releaseTitle) {
   if (!confirm(`Import all tracks from "${releaseTitle}"?`)) return;
   
@@ -693,17 +592,12 @@ function importMissingRelease(artistName, releaseId, releaseTitle) {
 }
 
 function checkMissingReleases(artistName) {
-  const statusEl = document.getElementById('missingReleasesStatus');
-  const section = document.getElementById('missingReleasesSection');
-  if (section) {
-    section.scrollIntoView({ behavior: 'smooth', block: 'start' });
-  }
-
+  const statusEl = document.getElementById('albumsStatus');
+  const tableBody = document.getElementById('albumsTableBody');
+  
   if (statusEl) {
     statusEl.textContent = 'Loading missing releases...';
   }
-
-  setMissingGridLoading();
 
   // First try to load from cache
   fetch('/api/artist/cached-missing-releases?artist=' + encodeURIComponent(artistName))
@@ -721,37 +615,101 @@ function checkMissingReleases(artistName) {
     .then(data => {
       if (data.error) {
         if (statusEl) statusEl.textContent = 'Error: ' + data.error;
-        renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', [], 'Unable to load missing albums');
-        renderMissingCategory('missingEpsGrid', 'missingEpsCount', [], 'Unable to load missing EPs');
-        renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', [], 'Unable to load missing singles');
         return;
       }
 
       const missing = data.missing || [];
       if (statusEl) {
         const cacheMsg = data.from_cache ? ' (from cache)' : '';
-        statusEl.textContent = missing.length ? `${missing.length} missing release(s) found${cacheMsg}.` : 'All MusicBrainz releases are present in your library.';
+        const currentRows = tableBody.querySelectorAll('tr[data-status="discovered"]').length;
+        statusEl.textContent = missing.length ? 
+          `Showing ${currentRows} discovered + ${missing.length} missing release(s)${cacheMsg}` : 
+          `Showing ${currentRows} discovered releases. All MusicBrainz releases are present.`;
       }
 
-      const grouped = { Album: [], EP: [], Single: [] };
+      // Add missing releases to the table
       missing.forEach(item => {
-        const category = item.category || item.primary_type || 'Album';
-        if (category.toLowerCase() === 'ep') grouped.EP.push(item);
-        else if (category.toLowerCase() === 'single') grouped.Single.push(item);
-        else grouped.Album.push(item);
+        const year = (item.first_release_date || '').slice(0, 4) || '????';
+        const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';
+        const artUrl = item.cover_art_url || fallbackArt;
+        
+        const row = document.createElement('tr');
+        row.className = 'd-flex flex-column d-md-table-row album-row';
+        row.setAttribute('data-year', year === '????' ? '9999' : year);
+        row.setAttribute('data-status', 'missing');
+        
+        row.innerHTML = `
+          <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+            <img src="${artUrl}" 
+                 alt="${escapeHtml(item.title)}" 
+                 class="img-thumbnail"
+                 style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                 onerror="this.src='${fallbackArt}';">
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
+            <span>${escapeHtml(item.title)}</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+            ${year}
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+            <span class="badge bg-warning text-dark">Missing</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
+            <span class="text-muted">Not in library</span>
+          </td>
+          <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+            <button class="btn btn-sm btn-primary" onclick="importMissingRelease('${escapeHtml(artistName)}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
+              <i class="bi bi-download"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="openQbitSearch('${escapeHtml(artistName)}', '${escapeHtml(item.title)}')" title="Search qBittorrent">
+              <i class="bi bi-search"></i>
+            </button>
+          </td>
+        `;
+        
+        tableBody.appendChild(row);
       });
 
-      renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', grouped.Album, 'No missing albums');
-      renderMissingCategory('missingEpsGrid', 'missingEpsCount', grouped.EP, 'No missing EPs');
-      renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', grouped.Single, 'No missing singles');
+      // Sort all rows by year (newest first)
+      sortAlbumsByYear();
     })
     .catch(err => {
       if (statusEl) statusEl.textContent = 'Error: ' + err.message;
-      renderMissingCategory('missingAlbumsGrid', 'missingAlbumsCount', [], 'Unable to load missing albums');
-      renderMissingCategory('missingEpsGrid', 'missingEpsCount', [], 'Unable to load missing EPs');
-      renderMissingCategory('missingSinglesGrid', 'missingSinglesCount', [], 'Unable to load missing singles');
     });
 }
+
+function sortAlbumsByYear() {
+  const tableBody = document.getElementById('albumsTableBody');
+  const rows = Array.from(tableBody.querySelectorAll('tr.album-row'));
+  
+  rows.sort((a, b) => {
+    const yearA = parseInt(a.getAttribute('data-year')) || 9999;
+    const yearB = parseInt(b.getAttribute('data-year')) || 9999;
+    // Sort descending (newest first)
+    return yearB - yearA;
+  });
+  
+  // Clear and re-append in sorted order
+  tableBody.innerHTML = '';
+  rows.forEach(row => tableBody.appendChild(row));
+}
+
 
 // Load artist bio on page load
 document.addEventListener('DOMContentLoaded', () => {
