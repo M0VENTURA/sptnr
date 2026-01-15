@@ -86,22 +86,40 @@
   </div>
 
   <!-- Genre Display -->
-  {% if genres %}
   <div class="mb-4">
     <div class="card">
       <div class="card-body">
         <h5 class="card-title mb-3">
           <i class="bi bi-collection"></i> Genres
         </h5>
-        <div class="d-flex flex-wrap gap-2">
-          {% for genre in genres %}
-          <span class="badge badge-success">{{ genre }}</span>
-          {% endfor %}
+        
+        <!-- Current Genres from Library -->
+        <div class="mb-3">
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Current Genres (from Library)</h6>
+          <div class="d-flex flex-wrap gap-2" id="currentArtistGenres">
+            {% if genres %}
+              {% for genre in genres %}
+              <span class="badge badge-success">{{ genre }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="text-muted small">No genres found in library</span>
+            {% endif %}
+          </div>
+        </div>
+        
+        <!-- Recommended Genres -->
+        <div>
+          <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres (from External Sources)</h6>
+          <div class="d-flex flex-wrap gap-2 mb-2" id="recommendedArtistGenres">
+            <span class="text-muted small">Click "Fetch Recommendations" to get genre suggestions</span>
+          </div>
+          <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
+            <i class="bi bi-cloud-download"></i> Fetch Recommendations
+          </button>
         </div>
       </div>
     </div>
   </div>
-  {% endif %}
 
   <!-- Statistics Cards -->
   <div class="row g-2 g-md-3 mb-4">
@@ -387,9 +405,10 @@
 {% endif %}
 
 <script>
-function openQbitSearch(artistName) {
-  document.getElementById('qbitArtistName').textContent = artistName;
-  document.getElementById('qbitSearchInput').value = artistName + ' discography';
+function openQbitSearch(artistName, albumName) {
+  document.getElementById('qbitArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
+  // If albumName is provided, search for "artist + album", otherwise just artist name
+  document.getElementById('qbitSearchInput').value = albumName ? artistName + ' ' + albumName : artistName;
   document.getElementById('qbitResults').innerHTML = '';
   
   const modal = new bootstrap.Modal(document.getElementById('qbitModal'));
@@ -615,10 +634,10 @@ function renderMissingCategory(containerId, countId, items, emptyText) {
               <button class="btn btn-sm btn-primary flex-grow-1" onclick="importMissingRelease('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
                 <i class="bi bi-download"></i> Import
               </button>
-              <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(item.title)}')" title="Search qBittorrent">
+              <button class="btn btn-sm btn-secondary" onclick="openQbitSearch('${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}', '${escapeHtml(item.title)}')" title="Search qBittorrent for this album">
                 <i class="bi bi-search"></i> qBit
               </button>
-              <button class="btn btn-sm btn-secondary" onclick="openSlskdSearch('${escapeHtml(item.title)}')" title="Search Soulseek">
+              <button class="btn btn-sm btn-secondary" onclick="openSlskdSearch('${escapeHtml(item.title)}', '${escapeHtml(document.querySelector('[data-artist-name]')?.getAttribute('data-artist-name') || '')}')" title="Search Soulseek for this album">
                 <i class="bi bi-search"></i> SLSKD
               </button>
             </div>
@@ -921,8 +940,57 @@ function applyArtistImage(artistName, imageUrl) {
     .catch(err => alert('❌ Network error: ' + err.message));
 }
 
-function openSlskdSearch(query) {
-  window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+function openSlskdSearch(query, artistName) {
+  // If artistName is provided, search for "artist + query", otherwise just query
+  const searchQuery = artistName ? artistName + ' ' + query : query;
+  window.location.href = `/downloads?search=${encodeURIComponent(searchQuery)}`;
+}
+
+function fetchArtistGenreRecommendations() {
+  const artistName = '{{ artist_name }}';
+  const btn = document.getElementById('fetchArtistGenresBtn');
+  const container = document.getElementById('recommendedArtistGenres');
+  
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+  container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
+  
+  // Fetch artist info from MusicBrainz to get genres/tags
+  fetch(`https://musicbrainz.org/ws/2/artist?query=artist:"${encodeURIComponent(artistName)}"&fmt=json&limit=5`, {
+    headers: { 'User-Agent': 'sptnr-web/1.0' }
+  })
+    .then(r => r.json())
+    .then(data => {
+      const genres = new Set();
+      
+      // MusicBrainz artists have tags which can be used as genres
+      if (data.artists && data.artists.length > 0) {
+        const artist = data.artists[0];
+        if (artist.tags) {
+          artist.tags.slice(0, 10).forEach(tag => {
+            if (tag.name) genres.add(tag.name);
+          });
+        }
+      }
+      
+      if (genres.size === 0) {
+        container.innerHTML = '<span class="text-muted small">No genre recommendations found. Genres are aggregated from albums in your library.</span>';
+      } else {
+        let html = '';
+        Array.from(genres).sort().forEach(genre => {
+          html += `<span class="badge badge-info">${escapeHtml(genre)}</span>`;
+        });
+        container.innerHTML = html;
+      }
+      
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+    })
+    .catch(error => {
+      container.innerHTML = '<span class="text-danger small">Error fetching recommendations</span>';
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+    });
 }
 </script>
 <style>

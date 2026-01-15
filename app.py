@@ -7215,6 +7215,102 @@ if __name__ == "__main__":
             logger.error(f"Apply Discogs ID error: {e}")
             return jsonify({"error": str(e)}), 500
 
+    @app.route("/api/album/apply-genres", methods=["POST"])
+    def api_album_apply_genres():
+        """Apply selected genres to all MP3 files in an album"""
+        logger = logging.getLogger('sptnr')
+        try:
+            data = request.get_json()
+            artist = data.get("artist", "").strip()
+            album = data.get("album", "").strip()
+            genres = data.get("genres", [])
+            
+            if not artist or not album or not genres:
+                return jsonify({"error": "Missing required fields"}), 400
+            
+            # Get all tracks in the album from database
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, title, beets_path, file_path
+                FROM tracks
+                WHERE artist = ? AND album = ?
+            """, (artist, album))
+            tracks = cursor.fetchall()
+            
+            if not tracks:
+                conn.close()
+                return jsonify({"error": "No tracks found in album"}), 404
+            
+            # Update database with new genres
+            genres_str = ','.join(genres)
+            cursor.execute("""
+                UPDATE tracks
+                SET genres = ?
+                WHERE artist = ? AND album = ?
+            """, (genres_str, artist, album))
+            conn.commit()
+            conn.close()
+            
+            # Write genres to MP3 files using mutagen
+            updated_count = 0
+            failed_files = []
+            
+            try:
+                from mutagen.id3 import ID3, TCON
+                from mutagen.mp3 import MP3
+                
+                for track in tracks:
+                    # Prefer beets_path, fallback to file_path
+                    file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                    
+                    if not file_path or not os.path.exists(file_path):
+                        failed_files.append(track['title'])
+                        continue
+                    
+                    try:
+                        # Load MP3 file
+                        audio = MP3(file_path, ID3=ID3)
+                        
+                        # Add ID3 tag if it doesn't exist
+                        if audio.tags is None:
+                            audio.add_tags()
+                        
+                        # Set genre tag (TCON frame in ID3v2)
+                        audio.tags['TCON'] = TCON(encoding=3, text=genres)
+                        
+                        # Save changes
+                        audio.save()
+                        updated_count += 1
+                        
+                    except Exception as file_error:
+                        logger.error(f"Failed to update {file_path}: {file_error}")
+                        failed_files.append(track['title'])
+                
+            except ImportError:
+                return jsonify({
+                    "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
+                }), 500
+            
+            message = f"Updated {updated_count} MP3 file(s) with genres: {', '.join(genres)}"
+            if failed_files:
+                message += f". Failed to update {len(failed_files)} file(s): {', '.join(failed_files[:5])}"
+            
+            logger.info(f"Applied genres {genres} to album '{album}' by {artist}: {updated_count} files updated")
+            
+            return jsonify({
+                "success": True,
+                "message": message,
+                "updated_count": updated_count,
+                "failed_count": len(failed_files)
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Apply genres error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
+            return jsonify({"error": str(e)}), 500
+
     @app.route("/api/track/musicbrainz", methods=["POST"])
     def api_track_musicbrainz_lookup():
         """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
