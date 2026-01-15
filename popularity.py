@@ -87,6 +87,13 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     
     Raises:
         TimeoutError: If execution exceeds timeout_seconds
+    
+    Note:
+        Tasks that timeout will continue running in the background until completion
+        or until the executor shuts down. This can lead to thread pool exhaustion
+        if API calls hang for extended periods despite having their own timeouts.
+        To mitigate this, use the timeout_safe_session from api_clients which has
+        reduced retry counts for time-sensitive operations.
     """
     global _timeout_executor
     if _timeout_executor is None:
@@ -100,9 +107,10 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
         log_verbose(f"[TIMEOUT DEBUG] Task completed successfully")
         return result
     except concurrent.futures.TimeoutError:
-        # Note: The task will continue running in the background, but we won't wait for it
-        # This is acceptable as the thread pool will handle cleanup
-        log_verbose(f"[TIMEOUT DEBUG] Task timed out after {timeout_seconds}s")
+        # Task will continue running in the background but we won't wait for it.
+        # WARNING: This can lead to thread pool exhaustion if many tasks timeout
+        # and continue running. Monitor thread pool health if this happens frequently.
+        log_verbose(f"[TIMEOUT DEBUG] Task timed out after {timeout_seconds}s, continuing in background")
         raise TimeoutError(error_message)
 
 
@@ -331,8 +339,13 @@ def popularity_scan(verbose: bool = False):
 
     # Initialize popularity helpers to configure Spotify client
     from popularity_helpers import configure_popularity_helpers
-    configure_popularity_helpers()
-    log_unified("✅ Spotify client configured")
+    try:
+        configure_popularity_helpers()
+        log_unified("✅ Spotify client configured")
+    except Exception as e:
+        log_unified(f"⚠ Warning: Failed to configure Spotify client: {e}")
+        log_unified("Popularity scan will continue but Spotify lookups may fail")
+        log_verbose(f"Configuration error details:", exc_info=True)
 
     log_verbose("Connecting to database for popularity scan...")
     conn = None
