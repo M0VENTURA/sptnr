@@ -76,13 +76,22 @@ print("unified_logger handlers:", unified_logger.handlers)
 
 def log_basic(msg):
     logging.info(msg)
+    # Flush all handlers to ensure messages are written immediately
+    for handler in logging.getLogger().handlers:
+        handler.flush()
 
 def log_unified(msg):
     unified_logger.info(msg)
+    # Flush all handlers to ensure messages are written immediately
+    for handler in unified_logger.handlers:
+        handler.flush()
 
 def log_verbose(msg):
     if VERBOSE:
         logging.info(msg)
+        # Flush all handlers to ensure messages are written immediately
+        for handler in logging.getLogger().handlers:
+            handler.flush()
 
 
 
@@ -118,8 +127,8 @@ if __name__ == "__main__":
         print("log_unified() test failed:", e)
 
 def get_db_connection():
-    """Get database connection with WAL mode"""
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    """Get database connection with WAL mode and extended timeout for concurrent access"""
+    conn = sqlite3.connect(DB_PATH, timeout=60.0)
     conn.execute("PRAGMA journal_mode=WAL")
     conn.row_factory = sqlite3.Row
     return conn
