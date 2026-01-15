@@ -74,7 +74,8 @@ class SpotifyClient:
         data = {"grant_type": "client_credentials"}
         
         try:
-            res = requests.post(
+            # Use self.session instead of requests directly to benefit from retry logic
+            res = self.session.post(
                 "https://accounts.spotify.com/api/token",
                 headers=headers,
                 data=data,
