@@ -896,7 +896,7 @@ def detect_single_status(title, artist, cache={}, force=False, use_google=False,
         confidence = "low"
 
     result = {
-        "is_single": confidence in ["high", "medium"],
+        "is_single": confidence == "high",  # Only mark as single if high confidence (5*)
         "confidence": confidence,
         "sources": sources,
         "last_scanned": datetime.now().strftime("%Y-%m-%dT%H:%M:%S")

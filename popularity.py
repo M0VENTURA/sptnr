@@ -684,8 +684,8 @@ def popularity_scan(verbose: bool = False):
                         single_confidence = "low"
                         log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
                     
-                    # is_single = True if confidence is high or medium (matching sptnr.py Jan 2nd logic)
-                    is_single = single_confidence in ["high", "medium"]
+                    # is_single = True only for high confidence singles (5* singles)
+                    is_single = single_confidence == "high"
                     
                     # Update track with single detection results
                     if is_single or single_sources:
