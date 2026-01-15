@@ -32,14 +32,122 @@ except ImportError as e:
     logging.debug(f"MusicBrainz client unavailable: {e}")
     
 try:
-    from api_clients.discogs import is_discogs_single
+    from api_clients.discogs import is_discogs_single, has_discogs_video
     HAVE_DISCOGS = True
+    HAVE_DISCOGS_VIDEO = True
 except ImportError as e:
     HAVE_DISCOGS = False
+    HAVE_DISCOGS_VIDEO = False
     logging.debug(f"Discogs client unavailable: {e}")
 
 # Module-level logger
 logger = logging.getLogger(__name__)
+
+# Keyword filter for non-singles (defined at module level for performance)
+IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
+
+# Genre weighting configuration for multi-source aggregation
+GENRE_WEIGHTS = {
+    "musicbrainz": 0.40,   # Most trusted
+    "discogs": 0.25,       # Still strong
+    "audiodb": 0.20,       # Good for fallback
+    "lastfm": 0.10,        # Reduce slightly (tags can be messy)
+    "spotify": 0.05        # Keep low (too granular)
+}
+
+
+def normalize_genre(genre):
+    """
+    Normalize genre names to avoid duplicates and inconsistencies.
+    """
+    genre = genre.lower().strip()
+    synonyms = {
+        "hip hop": "hip-hop",
+        "r&b": "rnb"
+    }
+    return synonyms.get(genre, genre)
+
+
+def clean_conflicting_genres(genres):
+    """
+    Remove conflicting or irrelevant genres based on dominant tags.
+    Example: If 'punk' exists, drop 'electronic'.
+    """
+    genres_lower = [g.lower() for g in genres]
+
+    # If punk dominates, remove electronic/electro
+    if any("punk" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["electronic", "electro"]]
+
+    # If metal dominates, remove electronic
+    if any("metal" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["electronic", "electro"]]
+
+    # Remove generic tags if specific ones exist
+    if any("progressive metal" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["metal", "heavy metal"]]
+
+    return genres_lower
+
+
+def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
+    """
+    Combine online-sourced genres with Navidrome genres for comparison.
+    Uses weighted scoring, contextual filtering, and deduplication.
+    
+    Args:
+        sources: Dict of {source_name: [genres]} from various APIs
+        nav_genres: List of genres from Navidrome
+        title: Track title for contextual boosts
+        album: Album name for contextual boosts
+        
+    Returns:
+        Tuple of (online_top_genres, navidrome_cleaned_genres)
+    """
+    from collections import defaultdict
+
+    genre_scores = defaultdict(float)
+
+    # Aggregate weighted genres from sources
+    for source, genres in sources.items():
+        weight = GENRE_WEIGHTS.get(source, 0)
+        for genre in genres:
+            norm = normalize_genre(genre)
+            genre_scores[norm] += weight
+
+    # Apply contextual boosts
+    if "live" in title.lower() or "live" in album.lower():
+        genre_scores["live"] += 0.5
+    if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
+        genre_scores["christmas"] += 0.5
+
+    # Sort by weighted score
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    filtered = [g for g, _ in sorted_genres]
+
+    # Contextual filtering
+    filtered = clean_conflicting_genres(filtered)
+
+    # Deduplicate and normalize
+    filtered = list(dict.fromkeys(filtered))
+
+    # Remove "heavy metal" if other metal sub-genres exist
+    metal_subgenres = [g for g in filtered if "metal" in g.lower() and g.lower() != "heavy metal"]
+    if metal_subgenres:
+        filtered = [g for g in filtered if g.lower() != "heavy metal"]
+
+    # Fallback if filtering removes everything
+    if not filtered:
+        filtered = [g for g, _ in sorted_genres]
+
+    # Pick top 3
+    online_top = [g.capitalize() for g in filtered[:3]]
+
+    # Clean Navidrome genres
+    nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
+
+    return online_top, nav_cleaned
+
 
 # Keyword filter for non-singles (defined at module level for performance)
 IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
@@ -413,7 +521,39 @@ def save_popularity_progress(processed_artists: int, total_artists: int):
     except Exception as e:
         log_basic(f"Error saving popularity progress: {e}")
 
-def popularity_scan(verbose: bool = False):
+
+def get_resume_artist_from_db():
+    """
+    Get the last artist that was scanned from the database scan history.
+    This allows resuming a popularity scan from where it left off.
+    Returns the artist name if found, None otherwise.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get the most recently scanned artist from scan_history table
+        cursor.execute("""
+            SELECT artist_name, MAX(scan_timestamp) as last_scan
+            FROM scan_history
+            WHERE scan_type = 'popularity'
+            GROUP BY artist_name
+            ORDER BY last_scan DESC
+            LIMIT 1
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            return result[0]
+        return None
+    except Exception as e:
+        log_basic(f"Error getting resume artist from database: {e}")
+        return None
+
+
+def popularity_scan(verbose: bool = False, resume_from: str = None):
     """Detect track popularity from external sources (legacy function)"""
     log_unified("=" * 60)
     log_unified("Popularity Scanner Started")
@@ -468,9 +608,26 @@ def popularity_scan(verbose: bool = False):
         for track in tracks:
             artist_album_tracks[track["artist"]][track["album"]].append(track)
 
+        # Handle resume logic
+        resume_hit = False if resume_from else True
+        if resume_from:
+            log_unified(f"⏩ Resuming scan from artist: {resume_from}")
+        
         scanned_count = 0
         skipped_count = 0
         for artist, albums in artist_album_tracks.items():
+            # Skip until resume match
+            if not resume_hit:
+                if artist.lower() == resume_from.lower():
+                    resume_hit = True
+                    log_unified(f"🎯 Resuming from: {artist}")
+                elif resume_from.lower() in artist.lower():
+                    resume_hit = True
+                    log_unified(f"🔍 Fuzzy resume match: {resume_from} → {artist}")
+                else:
+                    log_verbose(f"⏭ Skipping {artist} (before resume point)")
+                    continue
+            
             log_unified(f"Currently Scanning Artist: {artist}")
             for album, album_tracks in albums.items():
                 # Check if album was already scanned (unless force rescan is enabled)
@@ -671,6 +828,26 @@ def popularity_scan(verbose: bool = False):
                         except Exception as e:
                             log_verbose(f"Discogs single check failed for {title}: {e}")
                     
+                    # Fourth check: Discogs video detection (requires second source for confirmation)
+                    if HAVE_DISCOGS_VIDEO and discogs_token:
+                        try:
+                            result = _run_with_timeout(
+                                lambda: has_discogs_video(title, artist, token=discogs_token),
+                                API_CALL_TIMEOUT,
+                                f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
+                            )
+                            if result:
+                                # Only add if we have at least one other source
+                                if len(single_sources) >= 1:
+                                    single_sources.append("discogs_video")
+                                    log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
+                                else:
+                                    log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
+                        except TimeoutError as e:
+                            log_verbose(f"Discogs video check timed out for {title}: {e}")
+                        except Exception as e:
+                            log_verbose(f"Discogs video check failed for {title}: {e}")
+                    
                     # Calculate confidence based on number of sources (Jan 2nd logic)
                     if len(single_sources) >= 2:
                         single_confidence = "high"
@@ -829,18 +1006,94 @@ def popularity_scan(verbose: bool = False):
         log_unified("=" * 60)
         log_unified(f"✅ Popularity scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
+def _sanitize_playlist_name(name: str) -> str:
+    """Sanitize playlist name for filesystem use."""
+    return "".join(c for c in name if c.isalnum() or c in ('-', '_', ' ')).strip()
+
+
+def _delete_nsp_file(playlist_name: str) -> None:
+    """Delete an NSP playlist file if it exists."""
+    try:
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        playlists_dir = os.path.join(music_folder, "Playlists")
+        safe_name = _sanitize_playlist_name(playlist_name)
+        file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
+        if os.path.exists(file_path):
+            os.remove(file_path)
+            log_basic(f"🗑️ Deleted playlist: {playlist_name}")
+    except Exception as e:
+        log_basic(f"Failed to delete playlist '{playlist_name}': {e}")
+
+
+def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
+    """Create an NSP playlist file. Returns True on success."""
+    try:
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        playlists_dir = os.path.join(music_folder, "Playlists")
+        os.makedirs(playlists_dir, exist_ok=True)
+        
+        safe_name = _sanitize_playlist_name(playlist_name)
+        file_path = os.path.join(playlists_dir, f"{safe_name}.nsp")
+        
+        # Overwrite if exists (allow updates)
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(playlist_data, f, indent=2, ensure_ascii=False)
+        
+        log_basic(f"📝 NSP created/updated: {file_path}")
+        return True
+    except Exception as e:
+        log_basic(f"Failed to create playlist '{playlist_name}': {e}")
+        return False
+
+
 def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     """
-    Create or update a playlist for an artist using the cached tracks.
-    This is a placeholder function that logs the intent but doesn't actually create playlists yet.
+    Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0–5 rating scale.
+
+    Logic:
+      - Case A: if artist has >= 10 five-star tracks, build a pure 5★ essentials playlist.
+      - Case B: if total tracks >= 100, build top 10% essentials sorted by rating.
     
     Args:
         artist_name: Name of the artist
         tracks: List of track dictionaries with id, artist, album, title, stars
     """
-    log_basic(f"Playlist update requested for artist: {artist_name} ({len(tracks)} tracks)")
-    # TODO: Implement actual playlist creation/update via Navidrome API
-    # For now, this is a no-op to prevent import errors
+    total_tracks = len(tracks)
+    five_star_tracks = [t for t in tracks if (t.get("stars") or 0) == 5]
+    playlist_name = f"Essential {artist_name}"
+
+    # CASE A – 10+ five-star tracks → purely 5★ essentials
+    if len(five_star_tracks) >= 10:
+        _delete_nsp_file(playlist_name)
+        playlist_data = {
+            "name": playlist_name,
+            "comment": "Auto-generated by SPTNR",
+            "all": [{"is": {"artist": artist_name, "rating": 5}}],
+            "sort": "random"
+        }
+        _create_nsp_file(playlist_name, playlist_data)
+        log_basic(f"Essential playlist created for '{artist_name}' (5★ essentials)")
+        return
+
+    # CASE B – 100+ total tracks → top 10% by rating
+    if total_tracks >= 100:
+        _delete_nsp_file(playlist_name)
+        limit = max(1, math.ceil(total_tracks * 0.10))
+        playlist_data = {
+            "name": playlist_name,
+            "comment": "Auto-generated by SPTNR",
+            "all": [{"is": {"artist": artist_name}}],
+            "sort": "-rating,random",
+            "limit": limit
+        }
+        _create_nsp_file(playlist_name, playlist_data)
+        log_basic(f"Essential playlist created for '{artist_name}' (top 10% by rating)")
+        return
+
+    log_basic(
+        f"No Essential playlist created for '{artist_name}' "
+        f"(total={total_tracks}, five★={len(five_star_tracks)})"
+    )
 
 def refresh_all_playlists_from_db():
     """
