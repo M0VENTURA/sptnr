@@ -121,19 +121,23 @@ def was_album_scanned(artist: str, album: str, scan_type: str) -> bool:
             return False
         
         # Check for successful scans of this album with this scan type
+        # Using LIMIT 1 for efficiency - we only need to know if any record exists
         cursor.execute("""
-            SELECT COUNT(*) as count FROM scan_history
+            SELECT 1 FROM scan_history
             WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+            LIMIT 1
         """, (artist, album, scan_type))
         
         result = cursor.fetchone()
         conn.close()
         
-        return result[0] > 0 if result else False
+        return result is not None
     except Exception as e:
         logging.error(f"Error checking album scan history: {e}")
         logging.error(f"DB_PATH={DB_PATH}")
-        return False  # On error, assume not scanned to be safe
+        # Return False on error to ensure albums will be scanned even if there's a database error,
+        # preventing data loss at the cost of potential duplicate scans
+        return False
 
 def get_recent_album_scans(limit: int = 10):
     """
