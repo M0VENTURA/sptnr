@@ -33,7 +33,7 @@ def test_discogs_token_update():
     # Test 4: Wrapper function passes token correctly
     # This won't make actual API calls since we're using fake tokens
     result = is_discogs_single('Test Song', 'Test Artist', None, token='wrapper_token_xyz', enabled=True)
-    assert result == False, "Expected False (no actual API call with fake token)"
+    assert result is False, "Expected False (no actual API call with fake token)"
     
     from api_clients.discogs import _discogs_client
     assert _discogs_client.token == 'wrapper_token_xyz', f"Expected wrapper token to be used, got '{_discogs_client.token}'"
@@ -51,7 +51,7 @@ def test_has_discogs_video_token():
     
     # Call with a new token (different from previous test)
     result = has_discogs_video('Test Video Track', 'Test Artist', token='video_token_456', enabled=True)
-    assert result == False, "Expected False (no actual API call with fake token)"
+    assert result is False, "Expected False (no actual API call with fake token)"
     
     # Get the client to check its token
     client = _get_discogs_client('video_token_456')
