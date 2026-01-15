@@ -26,6 +26,9 @@ _token_lock = threading.Lock()
 class SpotifyClient:
     """Client for interacting with Spotify Web API."""
     
+    # Safety limits
+    MAX_PAGINATION_ITERATIONS = 100  # Maximum iterations for paginated API calls to prevent infinite loops
+    
     def __init__(self, client_id: str, client_secret: str, http_session=None, worker_threads: int = 4):
         """
         Initialize SpotifyClient.
@@ -150,8 +153,11 @@ class SpotifyClient:
         url = f"https://api.spotify.com/v1/artists/{artist_id}/albums"
         params = {"include_groups": "single", "limit": 50}
         
+        iteration = 0
+        
         try:
-            while True:
+            while iteration < self.MAX_PAGINATION_ITERATIONS:
+                iteration += 1
                 res = self.session.get(url, headers=headers, params=params, timeout=12)
                 res.raise_for_status()
                 payload = res.json()
@@ -164,6 +170,9 @@ class SpotifyClient:
                     url, params = next_url, None  # 'next' already has full query
                 else:
                     break
+            
+            if iteration >= self.MAX_PAGINATION_ITERATIONS:
+                logger.warning(f"Reached max iterations ({self.MAX_PAGINATION_ITERATIONS}) fetching singles for artist {artist_id}")
         except Exception as e:
             logger.debug(f"Spotify singles album fetch failed for '{artist_id}': {e}")
         

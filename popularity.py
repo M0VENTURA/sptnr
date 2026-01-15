@@ -282,22 +282,29 @@ def popularity_scan(verbose: bool = False):
                     # Try to get popularity from Spotify
                     spotify_score = 0
                     try:
+                        log_unified(f'Getting Spotify artist ID for: {artist}')
                         artist_id = get_spotify_artist_id(artist)
                         if artist_id:
+                            log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
                             spotify_results = search_spotify_track(title, artist, album)
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
+                                log_unified(f'Spotify popularity score: {spotify_score}')
+                        else:
+                            log_unified(f'No Spotify artist ID found for: {artist}')
                     except Exception as e:
                         log_unified(f"Spotify lookup failed for {artist} - {title}: {e}")
 
                     # Try to get popularity from Last.fm
                     lastfm_score = 0
                     try:
+                        log_unified(f'Getting Last.fm info for: {title} by {artist}')
                         lastfm_info = get_lastfm_track_info(artist, title)
                         if lastfm_info and lastfm_info.get("track_play"):
                             lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
+                            log_unified(f'Last.fm play count: {lastfm_info.get("track_play")} (score: {lastfm_score})')
                     except Exception as e:
                         log_unified(f"Last.fm lookup failed for {artist} - {title}: {e}")
 
@@ -308,6 +315,10 @@ def popularity_scan(verbose: bool = False):
                             "UPDATE tracks SET popularity_score = ? WHERE id = ?",
                             (popularity_score, track_id)
                         )
+                        # Commit immediately to prevent database locks.
+                        # Frequent commits are beneficial for SQLite WAL mode concurrency,
+                        # allowing other processes (like dashboard) to read during scan.
+                        conn.commit()
                         scanned_count += 1
                         album_scanned += 1
                     else:
@@ -403,6 +414,7 @@ def popularity_scan(verbose: bool = False):
                             WHERE id = ?""",
                             (1 if is_single else 0, single_confidence, json.dumps(single_sources), track_id)
                         )
+                        conn.commit()  # Commit immediately to prevent database locks
                         if is_single:
                             singles_detected += 1
                             source_str = ", ".join(single_sources)
@@ -467,6 +479,7 @@ def popularity_scan(verbose: bool = False):
                             WHERE id = ?""",
                             (stars, track_id)
                         )
+                        conn.commit()  # Commit immediately to prevent database locks
                         
                         star_distribution[stars] += 1
                         
