@@ -143,6 +143,8 @@ UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_POPULARITY") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
+# Force rescan of albums even if they were already scanned
+FORCE_RESCAN = os.environ.get("SPTNR_FORCE_RESCAN", "0") == "1"
 SERVICE_PREFIX = "popularity_"
 
 class ServicePrefixFormatter(logging.Formatter):
@@ -213,10 +215,12 @@ from popularity_helpers import (
 
 # Import scan history tracker
 try:
-    from scan_history import log_album_scan
+    from scan_history import log_album_scan, was_album_scanned
 except ImportError:
     def log_album_scan(*args, **kwargs):
         pass  # Fallback if scan_history not available
+    def was_album_scanned(*args, **kwargs):
+        return False  # Fallback if scan_history not available
 
 # --- DEBUG: Test log_unified and print log path ---
 if __name__ == "__main__":
@@ -339,6 +343,12 @@ def popularity_scan(verbose: bool = False):
     log_unified("Popularity Scanner Started")
     log_unified("=" * 60)
     log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Log scan mode
+    if FORCE_RESCAN:
+        log_unified("⚠ Force rescan mode enabled - will rescan all albums regardless of scan history")
+    else:
+        log_unified("📋 Normal scan mode - will skip albums that were already scanned")
 
     # Initialize popularity helpers to configure Spotify client
     from popularity_helpers import configure_popularity_helpers
@@ -383,9 +393,16 @@ def popularity_scan(verbose: bool = False):
             artist_album_tracks[track["artist"]][track["album"]].append(track)
 
         scanned_count = 0
+        skipped_count = 0
         for artist, albums in artist_album_tracks.items():
             log_unified(f"Currently Scanning Artist: {artist}")
             for album, album_tracks in albums.items():
+                # Check if album was already scanned (unless force rescan is enabled)
+                if not FORCE_RESCAN and was_album_scanned(artist, album, 'popularity'):
+                    log_unified(f'⏭ Skipping already-scanned album: "{artist} - {album}"')
+                    skipped_count += 1
+                    continue
+                
                 log_unified(f'Scanning "{artist} - {album}" for Popularity')
                 album_scanned = 0
                 for track in album_tracks:
@@ -725,8 +742,8 @@ def popularity_scan(verbose: bool = False):
         log_verbose("Committing changes to database.")
         conn.commit()
 
-        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated")
-        log_verbose(f"Popularity scan completed: {scanned_count} tracks updated")
+        log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
+        log_verbose(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped")
     except Exception as e:
         log_unified(f"❌ Popularity scan failed: {str(e)}")
         raise
