@@ -89,7 +89,12 @@ required_columns = {
     "source_musicbrainz_single": "INTEGER",   # 1 if MusicBrainz reports single
     "source_lastfm_single": "INTEGER",        # 1 if Last.fm reports single
     "source_short_release": "INTEGER",        # 1 if album has 2 or fewer tracks
-    "source_detection_date": "TEXT"           # When these source detections were last checked
+    "source_detection_date": "TEXT",          # When these source detections were last checked
+    # ✅ Artist ID caching columns (to reduce redundant API calls)
+    "spotify_artist_id": "TEXT",              # Spotify artist ID for this track's artist
+    "lastfm_artist_mbid": "TEXT",             # Last.fm artist MBID (if available)
+    "discogs_artist_id": "TEXT",              # Discogs artist ID
+    "musicbrainz_artist_id": "TEXT"           # MusicBrainz artist ID
 }
 
 # ✅ Define columns for the artists table
@@ -340,7 +345,11 @@ def update_schema(db_path):
         ("idx_user_loved_artists_user", "user_loved_artists(user_id)"),
         ("idx_user_loved_artists_name", "user_loved_artists(artist)"),
         ("idx_albums_artist_album", "albums(artist, album)"),
-        ("idx_navidrome_users_username", "navidrome_users(username)")
+        ("idx_navidrome_users_username", "navidrome_users(username)"),
+        # Artist ID indexes for fast cache lookups
+        ("idx_tracks_spotify_artist_id", "tracks(spotify_artist_id)"),
+        ("idx_tracks_musicbrainz_artist_id", "tracks(musicbrainz_artist_id)"),
+        ("idx_tracks_discogs_artist_id", "tracks(discogs_artist_id)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
