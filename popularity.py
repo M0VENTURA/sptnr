@@ -413,7 +413,39 @@ def save_popularity_progress(processed_artists: int, total_artists: int):
     except Exception as e:
         log_basic(f"Error saving popularity progress: {e}")
 
-def popularity_scan(verbose: bool = False):
+
+def get_resume_artist_from_db():
+    """
+    Get the last artist that was scanned from the database scan history.
+    This allows resuming a popularity scan from where it left off.
+    Returns the artist name if found, None otherwise.
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get the most recently scanned artist from scan_history table
+        cursor.execute("""
+            SELECT artist_name, MAX(scan_timestamp) as last_scan
+            FROM scan_history
+            WHERE scan_type = 'popularity'
+            GROUP BY artist_name
+            ORDER BY last_scan DESC
+            LIMIT 1
+        """)
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        if result and result[0]:
+            return result[0]
+        return None
+    except Exception as e:
+        log_basic(f"Error getting resume artist from database: {e}")
+        return None
+
+
+def popularity_scan(verbose: bool = False, resume_from: str = None):
     """Detect track popularity from external sources (legacy function)"""
     log_unified("=" * 60)
     log_unified("Popularity Scanner Started")
@@ -468,9 +500,26 @@ def popularity_scan(verbose: bool = False):
         for track in tracks:
             artist_album_tracks[track["artist"]][track["album"]].append(track)
 
+        # Handle resume logic
+        resume_hit = False if resume_from else True
+        if resume_from:
+            log_unified(f"⏩ Resuming scan from artist: {resume_from}")
+        
         scanned_count = 0
         skipped_count = 0
         for artist, albums in artist_album_tracks.items():
+            # Skip until resume match
+            if not resume_hit:
+                if artist.lower() == resume_from.lower():
+                    resume_hit = True
+                    log_unified(f"🎯 Resuming from: {artist}")
+                elif resume_from.lower() in artist.lower():
+                    resume_hit = True
+                    log_unified(f"🔍 Fuzzy resume match: {resume_from} → {artist}")
+                else:
+                    log_verbose(f"⏭ Skipping {artist} (before resume point)")
+                    continue
+            
             log_unified(f"Currently Scanning Artist: {artist}")
             for album, album_tracks in albums.items():
                 # Check if album was already scanned (unless force rescan is enabled)

@@ -42,9 +42,11 @@ load_dotenv()
 client_id = os.getenv("SPOTIFY_CLIENT_ID")
 client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
+# Don't exit on import - let individual functions handle missing credentials
 if not client_id or not client_secret:
-    logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
-    sys.exit(1)
+    logging.warning("Missing Spotify credentials - Spotify features will be unavailable")
+    client_id = None
+    client_secret = None
 
 # ⚙️ Global constants
 try:
