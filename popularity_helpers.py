@@ -125,10 +125,69 @@ def _ensure_clients_from_config() -> None:
 
 
 def get_spotify_artist_id(artist_name: str) -> str | None:
+    """
+    Get Spotify artist ID with database caching.
+    
+    First checks the artist_stats table for a cached Spotify ID.
+    If not found, looks up via Spotify API and stores in database.
+    
+    Args:
+        artist_name: Name of the artist to lookup
+        
+    Returns:
+        Spotify artist ID or None if not found
+    """
     _ensure_clients_from_config()
     if not _spotify_enabled or _spotify_client is None:
         return None
-    return _spotify_client.get_artist_id(artist_name)
+    
+    # Check database cache first
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT spotify_artist_id FROM artist_stats WHERE artist_name = ? AND spotify_artist_id IS NOT NULL",
+            (artist_name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            logging.debug(f"Found cached Spotify artist ID for '{artist_name}': {row[0]}")
+            return row[0]
+    except Exception as e:
+        logging.debug(f"Database lookup failed for artist '{artist_name}': {e}")
+        # Fall through to API lookup
+    
+    # Not in cache, lookup via Spotify API
+    artist_id = _spotify_client.get_artist_id(artist_name)
+    
+    # Store in database cache if found
+    if artist_id:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                """UPDATE artist_stats 
+                   SET spotify_artist_id = ?, spotify_id_cached_at = ? 
+                   WHERE artist_name = ?""",
+                (artist_id, datetime.now().isoformat(), artist_name)
+            )
+            # If artist_stats doesn't have this artist yet, insert it
+            if cursor.rowcount == 0:
+                cursor.execute(
+                    """INSERT OR IGNORE INTO artist_stats 
+                       (artist_name, spotify_artist_id, spotify_id_cached_at) 
+                       VALUES (?, ?, ?)""",
+                    (artist_name, artist_id, datetime.now().isoformat())
+                )
+            conn.commit()
+            conn.close()
+            logging.debug(f"Cached Spotify artist ID for '{artist_name}': {artist_id}")
+        except Exception as e:
+            logging.debug(f"Failed to cache Spotify artist ID for '{artist_name}': {e}")
+    
+    return artist_id
 
 
 def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
