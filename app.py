@@ -3361,10 +3361,10 @@ def config_save_json():
         # Read existing config to preserve features and weights if not provided in request
         existing_config, _ = _read_yaml(CONFIG_PATH)
         if existing_config:
-            # Only preserve features/weights if not provided in the request
-            if not config_dict.get('features') and 'features' in existing_config:
+            # Only preserve features/weights if not explicitly provided in the request
+            if 'features' not in data and 'features' in existing_config:
                 config_dict['features'] = existing_config['features']
-            if not config_dict.get('weights') and 'weights' in existing_config:
+            if 'weights' not in data and 'weights' in existing_config:
                 config_dict['weights'] = existing_config['weights']
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):

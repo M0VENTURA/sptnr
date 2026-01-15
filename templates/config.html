@@ -1081,11 +1081,13 @@ function saveFeaturesWeights() {
 window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
 document.addEventListener('DOMContentLoaded', function() {
   // Render features/weights section
-  const features = window.currentConfig.features || {};
-  const weights = window.currentConfig.weights || {};
-  const container = document.getElementById('featuresWeightsContainer');
-  if (container) {
-    container.innerHTML = renderFeaturesWeights(features, weights);
+  if (window.currentConfig) {
+    const features = window.currentConfig.features || {};
+    const weights = window.currentConfig.weights || {};
+    const container = document.getElementById('featuresWeightsContainer');
+    if (container) {
+      container.innerHTML = renderFeaturesWeights(features, weights);
+    }
   }
 });
 </script>
