@@ -87,7 +87,6 @@ class SpotifyClient:
             
             # Only acquire lock to update the cached token
             with _token_lock:
-                global _spotify_token, _spotify_token_exp
                 _spotify_token = new_token
                 _spotify_token_exp = new_exp
             
