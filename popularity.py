@@ -47,6 +47,7 @@ API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 # Using a larger pool to handle multiple concurrent API calls without blocking.
 # Increased from 10 to 20 to reduce risk of thread pool exhaustion when API calls
 # with retry logic occupy threads longer than the _run_with_timeout() timeout.
+# Example: API_CALL_TIMEOUT=30s, but HTTP request with 3 retries can take 46-61s.
 _timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_timeout")
 
 
@@ -398,14 +399,14 @@ def popularity_scan(verbose: bool = False):
                     spotify_score = 0
                     try:
                         log_unified(f'Getting Spotify artist ID for: {artist}')
-                        log_verbose(f"[DEBUG] About to call _run_with_timeout for get_spotify_artist_id")
+                        log_verbose(f"[TIMEOUT DEBUG] About to call _run_with_timeout for get_spotify_artist_id")
                         artist_id = _run_with_timeout(
                             get_spotify_artist_id, 
                             API_CALL_TIMEOUT, 
                             f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
                             artist
                         )
-                        log_verbose(f"[DEBUG] _run_with_timeout returned successfully")
+                        log_verbose(f"[TIMEOUT DEBUG] _run_with_timeout returned successfully")
                         log_unified(f'Spotify artist ID result: {artist_id}')
                         if artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
