@@ -1926,7 +1926,7 @@ def api_album_search_art():
         
         elif source == "discogs":
             # Search Discogs for release
-            from singledetection import _discogs_search, _get_discogs_session
+            from popularity import _discogs_search, _get_discogs_session
             from helpers import _read_yaml
             
             config_data, _ = _read_yaml(CONFIG_PATH)
@@ -7025,7 +7025,7 @@ if __name__ == "__main__":
     def api_album_discogs_lookup():
         """Lookup album on Discogs for better metadata and genres"""
         try:
-            from singledetection import _discogs_search, _get_discogs_session
+            from popularity import _discogs_search, _get_discogs_session
             import difflib
             
             data = request.get_json()

@@ -15,7 +15,7 @@ def test_imports():
     print("="*60)
     
     try:
-        from singledetection import _discogs_search, _get_discogs_session
+        from popularity import _discogs_search, _get_discogs_session
         print("✓ Successfully imported _discogs_search")
         print("✓ Successfully imported _get_discogs_session")
         return True
@@ -31,7 +31,7 @@ def test_session_creation():
     print("="*60)
     
     try:
-        from singledetection import _get_discogs_session
+        from popularity import _get_discogs_session
         session = _get_discogs_session()
         print(f"✓ Session created: {type(session)}")
         return True
@@ -47,7 +47,7 @@ def test_discogs_search_structure():
     print("="*60)
     
     try:
-        from singledetection import _discogs_search, _get_discogs_session
+        from popularity import _discogs_search, _get_discogs_session
         import inspect
         
         # Check function signature
@@ -81,7 +81,7 @@ def test_app_imports():
     
     try:
         # This simulates what app.py does
-        from singledetection import _discogs_search, _get_discogs_session
+        from popularity import _discogs_search, _get_discogs_session
         
         session = _get_discogs_session()
         headers = {"User-Agent": "Sptnr/1.0"}
