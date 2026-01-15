@@ -64,8 +64,6 @@ class SpotifyClient:
             # Double-check after acquiring lock - another thread may have refreshed
             if _spotify_token and time.time() < (_spotify_token_exp - 60):
                 return _spotify_token
-            # Mark that we're refreshing by setting a flag (prevent concurrent refreshes)
-            refreshing = True
         
         # Perform token request outside the lock to prevent blocking other threads
         auth_str = f"{self.client_id}:{self.client_secret}"
@@ -89,6 +87,7 @@ class SpotifyClient:
             
             # Only acquire lock to update the cached token
             with _token_lock:
+                global _spotify_token, _spotify_token_exp
                 _spotify_token = new_token
                 _spotify_token_exp = new_exp
             

@@ -79,8 +79,10 @@ def _flush_handlers(logger_obj):
     try:
         for handler in logger_obj.handlers:
             handler.flush()
-    except Exception:
-        pass  # Silently ignore flush errors to prevent blocking
+    except Exception as e:
+        # Log flush errors at debug level to aid troubleshooting
+        import logging
+        logging.debug(f"Failed to flush log handlers: {e}")
 
 def log_basic(msg):
     logging.info(msg)
