@@ -650,9 +650,9 @@ def popularity_scan(verbose: bool = False):
                     track_id = track_row["id"]
                     title = track_row["title"]
                     album = track_row["album"]
-                    popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
-                    is_single = track_row["is_single"] if track_row["is_single"] else 0
-                    single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
+                    popularity_score = track_row["popularity_score"] or 0
+                    is_single = track_row["is_single"] or 0
+                    single_confidence = track_row["single_confidence"] or "low"
                     
                     # Calculate band-based star rating using GLOBAL position
                     band_index = i // band_size
