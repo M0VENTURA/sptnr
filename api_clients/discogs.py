@@ -288,7 +288,7 @@ _discogs_client = None
 def _get_discogs_client(token: str, enabled: bool = True):
     """Get or create singleton Discogs client."""
     global _discogs_client
-    if _discogs_client is None:
+    if _discogs_client is None or _discogs_client.token != token:
         _discogs_client = DiscogsClient(token, enabled=enabled)
     return _discogs_client
 
