@@ -44,8 +44,10 @@ IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
 # Shared thread pool for timeout enforcement (prevents resource exhaustion)
-# Using a larger pool to handle multiple concurrent API calls without blocking
-_timeout_executor = ThreadPoolExecutor(max_workers=10, thread_name_prefix="api_timeout")
+# Using a larger pool to handle multiple concurrent API calls without blocking.
+# Increased from 10 to 20 to reduce risk of thread pool exhaustion when API calls
+# with retry logic occupy threads longer than the _run_with_timeout() timeout.
+_timeout_executor = ThreadPoolExecutor(max_workers=20, thread_name_prefix="api_timeout")
 
 
 def _cleanup_timeout_executor():
@@ -90,12 +92,17 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
     if _timeout_executor is None:
         raise RuntimeError("Timeout executor has been shut down")
     
+    log_verbose(f"[TIMEOUT DEBUG] Submitting task {func.__name__} with timeout {timeout_seconds}s")
     future = _timeout_executor.submit(func, *args, **kwargs)
+    log_verbose(f"[TIMEOUT DEBUG] Task submitted, waiting for result...")
     try:
-        return future.result(timeout=timeout_seconds)
+        result = future.result(timeout=timeout_seconds)
+        log_verbose(f"[TIMEOUT DEBUG] Task completed successfully")
+        return result
     except concurrent.futures.TimeoutError:
         # Note: The task will continue running in the background, but we won't wait for it
         # This is acceptable as the thread pool will handle cleanup
+        log_verbose(f"[TIMEOUT DEBUG] Task timed out after {timeout_seconds}s")
         raise TimeoutError(error_message)
 
 
@@ -374,12 +381,14 @@ def popularity_scan(verbose: bool = False):
                     spotify_score = 0
                     try:
                         log_unified(f'Getting Spotify artist ID for: {artist}')
+                        log_verbose(f"[DEBUG] About to call _run_with_timeout for get_spotify_artist_id")
                         artist_id = _run_with_timeout(
                             get_spotify_artist_id, 
                             API_CALL_TIMEOUT, 
                             f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
                             artist
                         )
+                        log_verbose(f"[DEBUG] _run_with_timeout returned successfully")
                         log_unified(f'Spotify artist ID result: {artist_id}')
                         if artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
@@ -411,6 +420,7 @@ def popularity_scan(verbose: bool = False):
                         # Catch all exceptions to prevent scanner from hanging
                         log_unified(f"⚠ Spotify lookup failed for {artist} - {title}: {e}")
                         log_verbose(f"Spotify error details: {type(e).__name__}: {str(e)}")
+                        log_verbose(f"[DEBUG] Exception traceback:", exc_info=True)
                         # Continue with next step even if Spotify fails
 
                     # Try to get popularity from Last.fm
