@@ -1,26 +1,15 @@
 """
 Helper functions for Discogs API integration.
 This module provides backward-compatible functions for Discogs search operations.
+Uses the existing Discogs client and rate limiting from api_clients.discogs.
 """
 
 import logging
 import time
 from api_clients import session
+from api_clients.discogs import _throttle_discogs
 
 logger = logging.getLogger(__name__)
-
-# Rate limiting for Discogs API
-_DISCOGS_LAST_REQUEST_TIME = 0
-_DISCOGS_MIN_INTERVAL = 0.35
-
-
-def _throttle_discogs():
-    """Respect Discogs rate limit (1 request per 0.35 seconds per token)."""
-    global _DISCOGS_LAST_REQUEST_TIME
-    elapsed = time.time() - _DISCOGS_LAST_REQUEST_TIME
-    if elapsed < _DISCOGS_MIN_INTERVAL:
-        time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
-    _DISCOGS_LAST_REQUEST_TIME = time.time()
 
 
 def _get_discogs_session():
@@ -49,6 +38,7 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
     Raises:
         Exception on API errors or rate limiting
     """
+    # Use the centralized rate limiting from api_clients.discogs
     _throttle_discogs()
     
     search_url = "https://api.discogs.com/database/search"
