@@ -17,7 +17,8 @@ import yaml
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
-from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
+from concurrent.futures import ThreadPoolExecutor
+import concurrent.futures
 from api_clients import session
 
 # Import API clients for single detection at module level
@@ -70,7 +71,7 @@ def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
         future = executor.submit(func, *args, **kwargs)
         try:
             return future.result(timeout=timeout_seconds)
-        except FuturesTimeoutError:
+        except concurrent.futures.TimeoutError:
             raise TimeoutError(error_message)
 
 
