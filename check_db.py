@@ -155,6 +155,22 @@ def update_schema(db_path):
         );
     """)
     
+    # ✅ Add spotify_artist_id columns to artist_stats if they don't exist
+    cursor.execute("PRAGMA table_info(artist_stats);")
+    existing_artist_stats_columns = [row[1] for row in cursor.fetchall()]
+    
+    artist_stats_columns_added = []
+    if "spotify_artist_id" not in existing_artist_stats_columns:
+        cursor.execute("ALTER TABLE artist_stats ADD COLUMN spotify_artist_id TEXT;")
+        artist_stats_columns_added.append("spotify_artist_id")
+    
+    if "spotify_id_cached_at" not in existing_artist_stats_columns:
+        cursor.execute("ALTER TABLE artist_stats ADD COLUMN spotify_id_cached_at TEXT;")
+        artist_stats_columns_added.append("spotify_id_cached_at")
+    
+    if artist_stats_columns_added:
+        print(f"✅ Added {len(artist_stats_columns_added)} missing artist_stats column(s): {', '.join(artist_stats_columns_added)}")
+    
     # ✅ Ensure navidrome_users table exists (for per-user features)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS navidrome_users (
