@@ -35,9 +35,9 @@
       <button class="btn btn-outline-warning" onclick="updateArtistAlbumsWithBeets('{{ artist_name }}')" title="Update all albums with beets (write tags and organize files)">
         <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
       </button>
-      {% if qbit_config.enabled and qbit_config.web_url %}
-      <button class="btn btn-outline-info" onclick="openQbitSearch('{{ artist_name }}')" title="Search for {{ artist_name }} releases in qBittorrent">
-        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">qBittorrent</span>
+      {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
+      <button class="btn btn-outline-info" onclick="openDownloadSearch('{{ artist_name }}')" title="Download {{ artist_name }} releases">
+        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
@@ -347,36 +347,91 @@
 
 </div>
 
-<!-- qBittorrent Search Modal -->
-{% if qbit_config.enabled %}
-<div class="modal fade" id="qbitModal" tabindex="-1" aria-labelledby="qbitModalLabel" aria-hidden="true">
+<!-- Download Search Modal (qBittorrent & Soulseek) -->
+{% if qbit_config.enabled or slskd_config.enabled %}
+<div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel" aria-hidden="true">
   <div class="modal-dialog modal-xl">
     <div class="modal-content">
       <div class="modal-header">
-        <h5 class="modal-title" id="qbitModalLabel">
-          <i class="bi bi-download"></i> Search qBittorrent for <span id="qbitArtistName"></span>
+        <h5 class="modal-title" id="downloadModalLabel">
+          <i class="bi bi-download"></i> Download Album: <span id="downloadArtistName"></span>
         </h5>
         <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
       </div>
       <div class="modal-body">
-        <div class="mb-3">
-          <div class="input-group">
-            <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search query...">
-            <button class="btn btn-primary" onclick="performQbitSearch()">
-              <i class="bi bi-search"></i> Search
+        <!-- Tabs Navigation -->
+        <ul class="nav nav-tabs mb-3" id="downloadTabs" role="tablist">
+          {% if qbit_config.enabled and qbit_config.web_url %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="qbit-tab" data-bs-toggle="tab" data-bs-target="#qbit-content" 
+                    type="button" role="tab" aria-controls="qbit-content" aria-selected="true">
+              <i class="bi bi-cloud-download"></i> qBittorrent
             </button>
+          </li>
+          {% endif %}
+          {% if slskd_config.enabled %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if not (qbit_config.enabled and qbit_config.web_url) %}active{% endif %}" 
+                    id="slskd-tab" data-bs-toggle="tab" data-bs-target="#slskd-content" 
+                    type="button" role="tab" aria-controls="slskd-content" 
+                    aria-selected="{% if not (qbit_config.enabled and qbit_config.web_url) %}true{% else %}false{% endif %}">
+              <i class="bi bi-music-note-list"></i> Soulseek
+            </button>
+          </li>
+          {% endif %}
+        </ul>
+
+        <!-- Tabs Content -->
+        <div class="tab-content" id="downloadTabsContent">
+          <!-- qBittorrent Tab -->
+          {% if qbit_config.enabled and qbit_config.web_url %}
+          <div class="tab-pane fade show active" id="qbit-content" role="tabpanel" aria-labelledby="qbit-tab">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search query...">
+                <button class="btn btn-primary" onclick="performQbitSearch()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <div class="form-text">Search for albums, discographies, or specific releases</div>
+            </div>
+            
+            <div id="qbitLoading" class="text-center py-4" style="display: none;">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Searching...</span>
+              </div>
+              <p class="mt-2">Searching qBittorrent...</p>
+            </div>
+            
+            <div id="qbitResults"></div>
           </div>
-          <div class="form-text">Search for albums, discographies, or specific releases</div>
-        </div>
-        
-        <div id="qbitLoading" class="text-center py-4" style="display: none;">
-          <div class="spinner-border text-primary" role="status">
-            <span class="visually-hidden">Searching...</span>
+          {% endif %}
+
+          <!-- Soulseek Tab -->
+          {% if slskd_config.enabled %}
+          <div class="tab-pane fade {% if not (qbit_config.enabled and qbit_config.web_url) %}show active{% endif %}" 
+               id="slskd-content" role="tabpanel" aria-labelledby="slskd-tab">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search query...">
+                <button class="btn btn-primary" onclick="performSlskdSearch()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <div class="form-text">Search for albums or tracks on Soulseek network</div>
+            </div>
+            
+            <div id="slskdLoading" class="text-center py-4" style="display: none;">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Searching...</span>
+              </div>
+              <p class="mt-2">Searching Soulseek...</p>
+            </div>
+            
+            <div id="slskdResults"></div>
           </div>
-          <p class="mt-2">Searching qBittorrent...</p>
+          {% endif %}
         </div>
-        
-        <div id="qbitResults"></div>
       </div>
     </div>
   </div>
@@ -384,17 +439,202 @@
 {% endif %}
 
 <script>
-function openQbitSearch(artistName, albumName) {
-  document.getElementById('qbitArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
-  // If albumName is provided, search for "artist + album", otherwise just artist name
-  document.getElementById('qbitSearchInput').value = albumName ? artistName + ' ' + albumName : artistName;
-  document.getElementById('qbitResults').innerHTML = '';
+// Constants for slskd search polling
+const SLSKD_MAX_POLL_ATTEMPTS = 20;
+const SLSKD_POLL_INTERVAL_MS = 2000;
+const BYTES_TO_MB = 1024 * 1024;
+
+function openDownloadSearch(artistName, albumName) {
+  document.getElementById('downloadArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
   
-  const modal = new bootstrap.Modal(document.getElementById('qbitModal'));
+  // Set search query for both tabs
+  const query = albumName ? artistName + ' ' + albumName : artistName;
+  
+  const qbitInput = document.getElementById('qbitSearchInput');
+  if (qbitInput) {
+    qbitInput.value = query;
+    document.getElementById('qbitResults').innerHTML = '';
+  }
+  
+  const slskdInput = document.getElementById('slskdSearchInput');
+  if (slskdInput) {
+    slskdInput.value = query;
+    document.getElementById('slskdResults').innerHTML = '';
+  }
+  
+  const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
   modal.show();
   
-  // Auto-search on open
-  setTimeout(() => performQbitSearch(), 300);
+  // Auto-search on the active tab
+  setTimeout(() => {
+    const activeTab = document.querySelector('#downloadTabs .nav-link.active');
+    if (activeTab && activeTab.id === 'qbit-tab') {
+      performQbitSearch();
+    } else if (activeTab && activeTab.id === 'slskd-tab') {
+      performSlskdSearch();
+    }
+  }, 300);
+}
+
+function performSlskdSearch() {
+  const query = document.getElementById('slskdSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('slskdLoading').style.display = 'block';
+  document.getElementById('slskdResults').innerHTML = '';
+  
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      document.getElementById('slskdLoading').style.display = 'none';
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${escapeHtml(data.error)}
+        </div>
+      `;
+      return;
+    }
+    
+    const searchId = data.searchId;
+    // Poll for results
+    pollSlskdResults(searchId, query);
+  })
+  .catch(error => {
+    document.getElementById('slskdLoading').style.display = 'none';
+    document.getElementById('slskdResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Network error: ${escapeHtml(error.message)}
+      </div>
+    `;
+  });
+}
+
+function pollSlskdResults(searchId, query, pollCount = 0) {
+  if (pollCount > SLSKD_MAX_POLL_ATTEMPTS) {
+    document.getElementById('slskdLoading').style.display = 'none';
+    document.getElementById('slskdResults').innerHTML = `
+      <div class="alert alert-warning">
+        <i class="bi bi-clock"></i> Search timed out. Try again or check Downloads page.
+      </div>
+    `;
+    return;
+  }
+  
+  fetch(`/api/slskd/search/${searchId}`)
+    .then(response => response.json())
+    .then(data => {
+      if (!data.isComplete) {
+        setTimeout(() => pollSlskdResults(searchId, query, pollCount + 1), SLSKD_POLL_INTERVAL_MS);
+        return;
+      }
+      
+      document.getElementById('slskdLoading').style.display = 'none';
+      
+      if (data.fileCount === 0 || !data.results || data.results.length === 0) {
+        document.getElementById('slskdResults').innerHTML = `
+          <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> No results found. Try a different search query.
+          </div>
+        `;
+        return;
+      }
+      
+      let html = `
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th class="text-center">User</th>
+                <th class="text-center">Size</th>
+                <th class="text-center">Bitrate</th>
+                <th class="text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      
+      data.results.forEach((result, idx) => {
+        const sizeMB = result.size_mb || (result.size ? (result.size / BYTES_TO_MB).toFixed(2) : 'N/A');
+        const bitrate = result.bitrate || 'unknown';
+        
+        html += `
+          <tr>
+            <td>
+              <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
+                ${escapeHtml(result.filename || 'Unknown')}
+              </div>
+            </td>
+            <td class="text-center">
+              <small class="text-muted">${escapeHtml(result.username || 'N/A')}</small>
+            </td>
+            <td class="text-center">${sizeMB} MB</td>
+            <td class="text-center">
+              <small class="text-muted">${bitrate}</small>
+            </td>
+            <td class="text-center">
+              <button class="btn btn-sm btn-success" 
+                      onclick="downloadSlskdFile('${escapeJsString(result.username)}', '${escapeJsString(result.filename)}', ${parseInt(result.size) || 0})">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+      
+      html += `
+            </tbody>
+          </table>
+        </div>
+        <div class="text-muted small mt-2">
+          Found ${data.results.length} result(s)
+        </div>
+      `;
+      
+      document.getElementById('slskdResults').innerHTML = html;
+    })
+    .catch(error => {
+      document.getElementById('slskdLoading').style.display = 'none';
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${escapeHtml(error.message)}
+        </div>
+      `;
+    });
+}
+
+function downloadSlskdFile(username, filename, size) {
+  if (!confirm('Download this file from Soulseek?')) return;
+  
+  fetch('/api/slskd/download-single', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      username: username,
+      filename: filename,
+      size: parseInt(size)
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      alert('❌ Error: ' + data.error);
+    } else {
+      alert('✅ Download started! Check the Downloads page for progress.');
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
 }
 
 function performQbitSearch() {
@@ -472,7 +712,7 @@ function performQbitSearch() {
             <i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}
           </td>
           <td class="text-center">
-            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeHtml(result.fileUrl)}')"
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeJsString(result.fileUrl)}')"
               ${!result.fileUrl ? 'disabled' : ''}>
               <i class="bi bi-plus-circle"></i> Add
             </button>
@@ -539,13 +779,31 @@ function escapeHtml(text) {
   return div.innerHTML;
 }
 
+function escapeJsString(str) {
+  if (!str) return '';
+  return str.replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+}
+
 // Allow Enter key to trigger search
 document.addEventListener('DOMContentLoaded', function() {
-  const searchInput = document.getElementById('qbitSearchInput');
-  if (searchInput) {
-    searchInput.addEventListener('keypress', function(e) {
+  const qbitSearchInput = document.getElementById('qbitSearchInput');
+  if (qbitSearchInput) {
+    qbitSearchInput.addEventListener('keypress', function(e) {
       if (e.key === 'Enter') {
         performQbitSearch();
+      }
+    });
+  }
+  
+  const slskdSearchInput = document.getElementById('slskdSearchInput');
+  if (slskdSearchInput) {
+    slskdSearchInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        performSlskdSearch();
       }
     });
   }
@@ -674,10 +932,10 @@ function checkMissingReleases(artistName) {
             <span class="text-muted">Not in library</span>
           </td>
           <td class="d-flex justify-content-end gap-1 d-md-table-cell">
-            <button class="btn btn-sm btn-primary" onclick="importMissingRelease('${escapeHtml(artistName)}', '${escapeHtml(item.id)}', '${escapeHtml(item.title)}')" title="Import full tracklisting">
+            <button class="btn btn-sm btn-primary" onclick="importMissingRelease('${escapeJsString(artistName)}', '${escapeJsString(item.id)}', '${escapeJsString(item.title)}')" title="Import full tracklisting">
               <i class="bi bi-download"></i>
             </button>
-            <button class="btn btn-sm btn-outline-secondary" onclick="openQbitSearch('${escapeHtml(artistName)}', '${escapeHtml(item.title)}')" title="Search qBittorrent">
+            <button class="btn btn-sm btn-outline-secondary" onclick="openDownloadSearch('${escapeJsString(artistName)}', '${escapeJsString(item.title)}')" title="Search for download">
               <i class="bi bi-search"></i>
             </button>
           </td>
@@ -806,16 +1064,16 @@ function openArtistImageModal(artistName) {
               <input type="text" class="form-control" id="manualImageUrl" placeholder="https://example.com/image.jpg">
             </div>
             <div class="d-flex gap-2 mb-4 flex-wrap">
-              <button class="btn btn-primary" onclick="applyManualImage('${escapeHtml(artistName)}')">
+              <button class="btn btn-primary" onclick="applyManualImage('${escapeJsString(artistName)}')">
                 <i class="bi bi-check"></i> Apply URL
               </button>
-              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'musicbrainz')">
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'musicbrainz')">
                 <i class="bi bi-search"></i> MusicBrainz
               </button>
-              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'discogs')">
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'discogs')">
                 <i class="bi bi-disc"></i> Discogs
               </button>
-              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeHtml(artistName)}', 'spotify')">
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'spotify')">
                 <i class="bi bi-spotify"></i> Spotify
               </button>
             </div>
@@ -863,7 +1121,7 @@ function searchArtistImages(artistName, source) {
             <div class="card">
               <img src="${escapeHtml(img.url)}" class="card-img-top" style="height: 200px; object-fit: cover;">
               <div class="card-body p-2">
-                <button class="btn btn-sm btn-primary w-100" onclick="applyArtistImage('${escapeHtml(artistName)}', '${escapeHtml(img.url)}')">
+                <button class="btn btn-sm btn-primary w-100" onclick="applyArtistImage('${escapeJsString(artistName)}', '${escapeJsString(img.url)}')">
                   <i class="bi bi-check"></i> Use This
                 </button>
               </div>

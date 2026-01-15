@@ -125,6 +125,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if not album_id:
                 continue
             logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
+            
+            # Detect if this is a live/unplugged album
+            from helpers import detect_live_album
+            album_context = detect_live_album(album_name)
+            if album_context.get("is_live") or album_context.get("is_unplugged"):
+                logging.info(f"      🎤 Detected live/unplugged album: {album_name}")
             try:
                 tracks = fetch_album_tracks(album_id)
             except Exception as e:
@@ -161,6 +167,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
                 raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
+                
+                # Extract genre from Navidrome and use it as the initial genres value
+                navidrome_genre = t.get("genre", "")
+                navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -171,8 +182,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": [],
-                    "navidrome_genres": [t.get("genre")] if t.get("genre") else [],
+                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
+                    "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
+                    "navidrome_genre": navidrome_genre,  # Also store in single genre field
                     "spotify_genres": [],
                     "lastfm_tags": [],
                     "discogs_genres": [],
@@ -205,6 +217,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "album_artist": t.get("albumArtist", ""),
                     "bitrate": t.get("bitRate"),
                     "sample_rate": t.get("samplingRate"),
+                    # Store album context for single detection
+                    "album_context_live": 1 if album_context.get("is_live") else 0,
+                    "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
                 }
                 save_to_db(td)
                 album_tracks_processed += 1
