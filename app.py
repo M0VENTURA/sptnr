@@ -5600,6 +5600,67 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
     return None
 
 
+def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | None:
+    """
+    Fetch album art from iTunes/Apple Music API.
+    
+    Args:
+        artist_name: Artist name
+        album_name: Album name
+        
+    Returns:
+        Image bytes if found, None otherwise
+    """
+    try:
+        # Search iTunes API
+        search_url = "https://itunes.apple.com/search"
+        params = {
+            "term": f"{artist_name} {album_name}",
+            "entity": "album",
+            "limit": 5
+        }
+        
+        resp = requests.get(search_url, params=params, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        results = data.get("results", [])
+        if not results:
+            return None
+        
+        # Try to find the best match
+        for result in results:
+            result_artist = result.get("artistName", "").lower()
+            result_album = result.get("collectionName", "").lower()
+            
+            # Simple matching - check if artist and album are in the result
+            if artist_name.lower() in result_artist and album_name.lower() in result_album:
+                artwork_url = result.get("artworkUrl100", "")
+                if artwork_url:
+                    # Replace 100x100 with higher resolution
+                    artwork_url = artwork_url.replace("100x100", "600x600")
+                    
+                    # Fetch the artwork
+                    art_resp = requests.get(artwork_url, timeout=5)
+                    if art_resp.status_code == 200:
+                        return art_resp.content
+        
+        # If no exact match, try the first result if it exists
+        if results:
+            artwork_url = results[0].get("artworkUrl100", "")
+            if artwork_url:
+                artwork_url = artwork_url.replace("100x100", "600x600")
+                art_resp = requests.get(artwork_url, timeout=5)
+                if art_resp.status_code == 200:
+                    return art_resp.content
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Failed to fetch album art from iTunes: {e}")
+        return None
+
+
+
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
     """Get album art from custom table, database, Navidrome, MusicBrainz, or Discogs"""
@@ -5720,7 +5781,15 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 4. Fallback to Discogs
+        # 4. Try iTunes/Apple Music
+        art_bytes = _fetch_album_art_from_itunes(artist, album)
+        if art_bytes:
+            return send_file(
+                io.BytesIO(art_bytes),
+                mimetype='image/jpeg'
+            )
+        
+        # 5. Fallback to Discogs
         art_bytes = _fetch_album_art_from_discogs(artist, album)
         if art_bytes:
             return send_file(
@@ -5728,7 +5797,7 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 5. No art found
+        # 6. No art found
         return Response(status=404)
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
