@@ -43,7 +43,7 @@ class ListenBrainzUserClient:
                 "recording_mbid": mbid,
                 "score": 1  # 1 = love
             }
-            res = self.session.post(url, json=payload, headers=self.headers, timeout=10)
+            res = self.session.post(url, json=payload, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             logger.info(f"Marked {mbid} as loved on ListenBrainz")
             return True
@@ -67,7 +67,7 @@ class ListenBrainzUserClient:
                 "recording_mbid": mbid,
                 "score": 0  # 0 = remove feedback
             }
-            res = self.session.post(url, json=payload, headers=self.headers, timeout=10)
+            res = self.session.post(url, json=payload, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             logger.info(f"Removed love from {mbid} on ListenBrainz")
             return True
@@ -109,7 +109,7 @@ class ListenBrainzUserClient:
         """
         try:
             url = f"{self.base_url}/metadata/recording/{mbid}/tags"
-            res = self.session.get(url, timeout=10)
+            res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             data = res.json()
             tags = data.get("tag", {}).get("recording", [])
@@ -133,7 +133,7 @@ class ListenBrainzUserClient:
         """
         try:
             url = f"{self.base_url}/metadata/artist/{mbid}/tags"
-            res = self.session.get(url, timeout=10)
+            res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             data = res.json()
             tags = data.get("tag", {}).get("artist", [])
@@ -193,7 +193,7 @@ class ListenBrainzClient:
         if mbid:
             try:
                 url = f"{self.base_url}/stats/recording/{mbid}"
-                res = self.session.get(url, timeout=10)
+                res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
                 res.raise_for_status()
                 data = res.json()
                 payload = data.get("payload", {})
@@ -247,7 +247,7 @@ class AudioDbClient:
         
         try:
             url = f"{self.base_url}/{self.api_key}/search.php"
-            res = self.session.get(url, params={"s": artist}, timeout=10)
+            res = self.session.get(url, params={"s": artist}, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             
             data = res.json().get("artists", [])

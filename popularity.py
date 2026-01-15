@@ -284,14 +284,18 @@ def popularity_scan(verbose: bool = False):
                     try:
                         log_unified(f'Getting Spotify artist ID for: {artist}')
                         artist_id = get_spotify_artist_id(artist)
+                        log_unified(f'Spotify artist ID result: {artist_id}')
                         if artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
                             spotify_results = search_spotify_track(title, artist, album)
+                            log_unified(f'Spotify search completed. Results count: {len(spotify_results) if spotify_results else 0}')
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
                                 log_unified(f'Spotify popularity score: {spotify_score}')
+                            else:
+                                log_unified(f'No Spotify results found for: {title}')
                         else:
                             log_unified(f'No Spotify artist ID found for: {artist}')
                     except Exception as e:
@@ -302,9 +306,12 @@ def popularity_scan(verbose: bool = False):
                     try:
                         log_unified(f'Getting Last.fm info for: {title} by {artist}')
                         lastfm_info = get_lastfm_track_info(artist, title)
+                        log_unified(f'Last.fm lookup completed. Result: {lastfm_info}')
                         if lastfm_info and lastfm_info.get("track_play"):
                             lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
                             log_unified(f'Last.fm play count: {lastfm_info.get("track_play")} (score: {lastfm_score})')
+                        else:
+                            log_unified(f'No Last.fm play count found for: {title}')
                     except Exception as e:
                         log_unified(f"Last.fm lookup failed for {artist} - {title}: {e}")
 
