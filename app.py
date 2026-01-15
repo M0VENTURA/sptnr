@@ -2460,7 +2460,7 @@ def album_detail(artist, album):
 
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
-    """Trigger per-artist pipeline: Navidrome fetch -> popularity -> single detection."""
+    """Trigger per-album pipeline: Navidrome fetch -> popularity -> single detection."""
     from urllib.parse import unquote
     artist = unquote(artist)
     album = unquote(album)
@@ -2483,13 +2483,20 @@ def album_rescan(artist, album):
                 logging.error(f"Rescan aborted: no artist_id for {artist_name}")
                 return
 
-            # Step 1: refresh Navidrome cache for this artist
+            # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
+            logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
-            # Step 2: popularity (per-artist)
+            # Step 2: popularity detection (for all tracks)
+            logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
             popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
+            logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
+            from sptnr import rate_artist
+            rate_artist(artist_id, artist_name, verbose=True, force=True)
+            
+            logging.info(f"Album rescan complete for artist '{artist_name}'")
         except Exception as e:
             logging.error(f"Album rescan failed for {artist_name}: {e}")
 
@@ -2647,6 +2654,50 @@ def scan_start():
     
     scan_type = request.form.get("scan_type", "batchrate")
     
+    # Handle artist-specific scan differently - use threaded worker instead of subprocess
+    if scan_type == "artist":
+        artist = request.form.get("artist")
+        if artist:
+            def _worker(artist_name: str):
+                try:
+                    # Look up artist_id from cache; rebuild index if missing
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+                    row = cursor.fetchone()
+                    conn.close()
+                    artist_id = row[0] if row else None
+
+                    if not artist_id:
+                        idx = build_artist_index()
+                        artist_id = (idx.get(artist_name, {}) or {}).get("id")
+
+                    if not artist_id:
+                        logging.error(f"Rescan aborted: no artist_id for {artist_name}")
+                        return
+
+                    # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
+                    logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
+                    scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
+
+                    # Step 2: popularity detection (for all tracks)
+                    logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
+                    popularity_scan(verbose=True)
+
+                    # Step 3: single detection & scoring
+                    logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
+                    from sptnr import rate_artist
+                    rate_artist(artist_id, artist_name, verbose=True, force=True)
+                    
+                    logging.info(f"Artist scan complete for '{artist_name}'")
+                except Exception as e:
+                    logging.error(f"Artist scan failed for {artist_name}: {e}")
+
+            threading.Thread(target=_worker, args=(artist,), daemon=True).start()
+            flash(f"Scan started for artist: {artist}", "success")
+            return redirect(url_for("artist_detail", name=artist))
+    
+    # For batch/force scans, use subprocess as before
     with scan_lock:
         if scan_process and scan_process.poll() is None:
             flash("A scan is already running", "warning")
@@ -2659,10 +2710,6 @@ def scan_start():
             cmd.append("--batchrate")
         elif scan_type == "force":
             cmd.extend(["--batchrate", "--force"])
-        elif scan_type == "artist":
-            artist = request.form.get("artist")
-            if artist:
-                cmd.extend(["--artist", artist, "--sync"])
         
         # Start process
         scan_process = subprocess.Popen(
