@@ -315,7 +315,10 @@ def popularity_scan(verbose: bool = False):
                             "UPDATE tracks SET popularity_score = ? WHERE id = ?",
                             (popularity_score, track_id)
                         )
-                        conn.commit()  # Commit immediately to prevent database locks
+                        # Commit immediately to prevent database locks.
+                        # Frequent commits are beneficial for SQLite WAL mode concurrency,
+                        # allowing other processes (like dashboard) to read during scan.
+                        conn.commit()
                         scanned_count += 1
                         album_scanned += 1
                     else:
