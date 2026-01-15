@@ -64,7 +64,7 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
         raise TimeoutError(error_message)
     
     # Check if signal.alarm is available (Unix only)
-    if hasattr(signal, 'SIGALRM'):
+    if hasattr(signal, 'alarm'):
         # Set the signal handler and alarm
         old_handler = signal.signal(signal.SIGALRM, timeout_handler)
         signal.alarm(seconds)
