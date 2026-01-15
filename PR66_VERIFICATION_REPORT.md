@@ -229,7 +229,7 @@ def is_single(self, title: str, artist: str, album_context: dict | None = None, 
     
     try:
         # Search for releases
-        _throttle_discogs()
+        self._throttle_discogs()
         search_url = f"{self.base_url}/database/search"
         params = {"q": f"{artist} {title}", "type": "release", "per_page": 15}
         
@@ -399,6 +399,7 @@ PR #66 is focused exclusively on **preventing duplicate album scans** in the pop
 ### What PR #66 Does NOT Do
 
 PR #66 does NOT:
+
 - Modify single detection algorithms
 - Change API client implementations
 - Alter Last.FM or Discogs API calls
