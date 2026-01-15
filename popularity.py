@@ -17,6 +17,7 @@ import yaml
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError
 from api_clients import session
 
 # Import API clients for single detection at module level
@@ -42,26 +43,48 @@ API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
 
 class TimeoutError(Exception):
-    """Raised when an API call exceeds the timeout limit (legacy, kept for compatibility)"""
+    """Raised when an API call exceeds the timeout limit"""
     pass
+
+
+def _run_with_timeout(func, timeout_seconds, error_message, *args, **kwargs):
+    """
+    Execute a function with a timeout using ThreadPoolExecutor.
+    
+    This is thread-safe and works in background threads (unlike signal-based timeout).
+    
+    Args:
+        func: Function to execute
+        timeout_seconds: Timeout in seconds
+        error_message: Error message if timeout occurs
+        *args: Positional arguments for func
+        **kwargs: Keyword arguments for func
+    
+    Returns:
+        Result of func(*args, **kwargs)
+    
+    Raises:
+        TimeoutError: If execution exceeds timeout_seconds
+    """
+    with ThreadPoolExecutor(max_workers=1) as executor:
+        future = executor.submit(func, *args, **kwargs)
+        try:
+            return future.result(timeout=timeout_seconds)
+        except FuturesTimeoutError:
+            raise TimeoutError(error_message)
 
 
 @contextmanager
 def api_timeout(seconds: int, error_message: str = "API call timed out"):
     """
-    Context manager for API timeout enforcement.
+    Context manager for API timeout enforcement (no-op for backwards compatibility).
     
-    This is a no-op implementation that relies on request-level timeouts configured
-    in the individual API client functions (typically 5-10 seconds for connect/read).
-    
-    The previous signal-based implementation caused "signal only works in main thread"
-    errors when used in background threads. Since all API calls already have their
-    own timeout parameters, this wrapper is kept for API compatibility but does not
-    enforce additional timeouts.
+    Note: This is kept for backwards compatibility but doesn't enforce timeouts.
+    Use _run_with_timeout() function for actual timeout enforcement on API calls.
     
     Args:
-        seconds: Timeout in seconds (ignored, for compatibility only)
-        error_message: Error message (ignored, for compatibility only)
+        seconds: Timeout in seconds (ignored)
+        error_message: Error message (ignored)
     """
     yield
 
@@ -326,14 +349,22 @@ def popularity_scan(verbose: bool = False):
                     spotify_score = 0
                     try:
                         log_unified(f'Getting Spotify artist ID for: {artist}')
-                        with api_timeout(API_CALL_TIMEOUT, f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s"):
-                            artist_id = get_spotify_artist_id(artist)
+                        artist_id = _run_with_timeout(
+                            get_spotify_artist_id, 
+                            API_CALL_TIMEOUT, 
+                            f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
+                            artist
+                        )
                         log_unified(f'Spotify artist ID result: {artist_id}')
                         if artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
-                            with api_timeout(API_CALL_TIMEOUT, f"Spotify track search timed out after {API_CALL_TIMEOUT}s"):
-                                spotify_results = search_spotify_track(title, artist, album)
+                            spotify_results = _run_with_timeout(
+                                search_spotify_track,
+                                API_CALL_TIMEOUT,
+                                f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
+                                title, artist, album
+                            )
                             log_unified(f'Spotify search completed. Results count: {len(spotify_results) if spotify_results else 0}')
                             if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                                 best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
@@ -361,8 +392,12 @@ def popularity_scan(verbose: bool = False):
                     lastfm_score = 0
                     try:
                         log_unified(f'Getting Last.fm info for: {title} by {artist}')
-                        with api_timeout(API_CALL_TIMEOUT, f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s"):
-                            lastfm_info = get_lastfm_track_info(artist, title)
+                        lastfm_info = _run_with_timeout(
+                            get_lastfm_track_info,
+                            API_CALL_TIMEOUT,
+                            f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
+                            artist, title
+                        )
                         log_unified(f'Last.fm lookup completed. Result: {lastfm_info}')
                         if lastfm_info and lastfm_info.get("track_play"):
                             lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
@@ -432,8 +467,12 @@ def popularity_scan(verbose: bool = False):
                         # For single detection, match Jan 2nd logic: call with title and artist only
                         # (reference implementation in sptnr.py doesn't use album parameter)
                         # This differs from popularity scoring (line 287) which uses album for better matching
-                        with api_timeout(API_CALL_TIMEOUT, f"Spotify single detection timed out after {API_CALL_TIMEOUT}s"):
-                            spotify_results = search_spotify_track(title, artist)
+                        spotify_results = _run_with_timeout(
+                            search_spotify_track,
+                            API_CALL_TIMEOUT,
+                            f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
+                            title, artist
+                        )
                         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                             for result in spotify_results:
                                 album_info = result.get("album", {})
@@ -453,10 +492,15 @@ def popularity_scan(verbose: bool = False):
                     # Second check: MusicBrainz single detection (missing from current code)
                     if HAVE_MUSICBRAINZ:
                         try:
-                            with api_timeout(API_CALL_TIMEOUT, f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s"):
-                                if is_musicbrainz_single(title, artist):
-                                    single_sources.append("musicbrainz")
-                                    log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
+                            result = _run_with_timeout(
+                                is_musicbrainz_single,
+                                API_CALL_TIMEOUT,
+                                f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
+                                title, artist
+                            )
+                            if result:
+                                single_sources.append("musicbrainz")
+                                log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
                         except TimeoutError as e:
                             log_verbose(f"MusicBrainz single check timed out for {title}: {e}")
                         except Exception as e:
@@ -466,10 +510,15 @@ def popularity_scan(verbose: bool = False):
                     discogs_token = os.environ.get("DISCOGS_TOKEN", "")
                     if HAVE_DISCOGS and discogs_token:
                         try:
-                            with api_timeout(API_CALL_TIMEOUT, f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"):
-                                if is_discogs_single(title, artist, album_context=None, token=discogs_token):
-                                    single_sources.append("discogs")
-                                    log_verbose(f"   ✓ Discogs confirms single: {title}")
+                            result = _run_with_timeout(
+                                is_discogs_single,
+                                API_CALL_TIMEOUT,
+                                f"Discogs single detection timed out after {API_CALL_TIMEOUT}s",
+                                title, artist, None, discogs_token
+                            )
+                            if result:
+                                single_sources.append("discogs")
+                                log_verbose(f"   ✓ Discogs confirms single: {title}")
                         except TimeoutError as e:
                             log_verbose(f"Discogs single check timed out for {title}: {e}")
                         except Exception as e:
