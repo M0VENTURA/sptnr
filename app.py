@@ -3347,8 +3347,8 @@ def config_save_json():
             'api_integrations': data.get('api_integrations', {}),
             'database': data.get('database', {}),
             'logging': data.get('logging', {}),
-            'features': {},  # Preserve features section if it exists
-            'weights': {}  # Preserve weights section if it exists
+            'features': data.get('features', {}),  # Accept features from request
+            'weights': data.get('weights', {})  # Accept weights from request
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:
@@ -3358,12 +3358,13 @@ def config_save_json():
                 'pass': navidrome_users[0].get('pass', ''),
             }
         
-        # Read existing config to preserve features and weights
+        # Read existing config to preserve features and weights if not provided in request
         existing_config, _ = _read_yaml(CONFIG_PATH)
         if existing_config:
-            if 'features' in existing_config:
+            # Only preserve features/weights if not provided in the request
+            if not config_dict.get('features') and 'features' in existing_config:
                 config_dict['features'] = existing_config['features']
-            if 'weights' in existing_config:
+            if not config_dict.get('weights') and 'weights' in existing_config:
                 config_dict['weights'] = existing_config['weights']
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
