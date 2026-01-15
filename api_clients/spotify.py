@@ -59,34 +59,48 @@ class SpotifyClient:
         if _spotify_token and time.time() < (_spotify_token_exp - 60):
             return _spotify_token
         
+        # Acquire lock briefly to check if we need to refresh
         with _token_lock:
-            # Double-check after acquiring lock
+            # Double-check after acquiring lock - another thread may have refreshed
             if _spotify_token and time.time() < (_spotify_token_exp - 60):
                 return _spotify_token
+        
+        # Perform token request outside the lock to prevent blocking other threads
+        auth_str = f"{self.client_id}:{self.client_secret}"
+        headers = {
+            "Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(),
+            "Content-Type": "application/x-www-form-urlencoded"
+        }
+        data = {"grant_type": "client_credentials"}
+        
+        try:
+            res = requests.post(
+                "https://accounts.spotify.com/api/token",
+                headers=headers,
+                data=data,
+                timeout=(5, 10)  # (connect_timeout, read_timeout)
+            )
+            res.raise_for_status()
+            payload = res.json()
+            new_token = payload["access_token"]
+            new_exp = time.time() + int(payload.get("expires_in", 3600))
             
-            auth_str = f"{self.client_id}:{self.client_secret}"
-            headers = {
-                "Authorization": "Basic " + base64.b64encode(auth_str.encode()).decode(),
-                "Content-Type": "application/x-www-form-urlencoded"
-            }
-            data = {"grant_type": "client_credentials"}
+            # Only acquire lock to update the cached token
+            with _token_lock:
+                global _spotify_token, _spotify_token_exp
+                _spotify_token = new_token
+                _spotify_token_exp = new_exp
             
-            try:
-                res = requests.post(
-                    "https://accounts.spotify.com/api/token",
-                    headers=headers,
-                    data=data,
-                    timeout=(5, 10)  # (connect_timeout, read_timeout)
-                )
-                res.raise_for_status()
-                payload = res.json()
-                _spotify_token = payload["access_token"]
-                _spotify_token_exp = time.time() + int(payload.get("expires_in", 3600))
-                logger.info("✅ Spotify token refreshed")
+            logger.info("✅ Spotify token refreshed")
+            return new_token
+        except Exception as e:
+            # Log error without holding any locks
+            logger.error(f"❌ Spotify Token Error: {e}")
+            # Return cached token if available, even if expired
+            if _spotify_token:
+                logger.warning("Using potentially expired token due to refresh failure")
                 return _spotify_token
-            except Exception as e:
-                logger.error(f"❌ Spotify Token Error: {e}")
-                raise
+            raise
     
     def _headers(self) -> dict:
         """Build auth headers for Spotify API."""
