@@ -44,7 +44,7 @@ class LastFmClient:
         }
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=10)
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             data = res.json().get("track", {})
             track_play = int(data.get("playcount", 0))
@@ -90,7 +90,7 @@ class LastFmClient:
         }
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=10)
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             artists = []
             for item in res.json().get("topartists", {}).get("artist", []):
@@ -125,7 +125,7 @@ class LastFmClient:
         }
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=10)
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             albums = []
             
@@ -143,7 +143,7 @@ class LastFmClient:
                     "limit": 3
                 }
                 
-                track_res = self.session.get(self.base_url, params=track_params, timeout=10)
+                track_res = self.session.get(self.base_url, params=track_params, timeout=(5, 10))  # (connect_timeout, read_timeout)
                 if track_res.status_code == 200:
                     for track in track_res.json().get("toptracks", {}).get("track", []):
                         album_info = track.get("album", {})
@@ -179,7 +179,7 @@ class LastFmClient:
         }
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=10)
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             tracks = []
             for item in res.json().get("tracks", {}).get("track", []):

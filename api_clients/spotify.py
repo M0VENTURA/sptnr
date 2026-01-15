@@ -76,7 +76,7 @@ class SpotifyClient:
                     "https://accounts.spotify.com/api/token",
                     headers=headers,
                     data=data,
-                    timeout=10
+                    timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
                 res.raise_for_status()
                 payload = res.json()
@@ -115,7 +115,7 @@ class SpotifyClient:
                 "https://api.spotify.com/v1/search",
                 headers=self._headers(),
                 params=params,
-                timeout=10
+                timeout=(5, 10)  # (connect_timeout, read_timeout)
             )
             res.raise_for_status()
             items = res.json().get("artists", {}).get("items", [])
@@ -158,7 +158,7 @@ class SpotifyClient:
         try:
             while iteration < self.MAX_PAGINATION_ITERATIONS:
                 iteration += 1
-                res = self.session.get(url, headers=headers, params=params, timeout=12)
+                res = self.session.get(url, headers=headers, params=params, timeout=(5, 12))  # (connect_timeout, read_timeout)
                 res.raise_for_status()
                 payload = res.json()
                 singles_album_ids.extend([
@@ -186,7 +186,7 @@ class SpotifyClient:
                     f"https://api.spotify.com/v1/albums/{album_id}/tracks",
                     headers=headers,
                     params={"limit": 50},
-                    timeout=12
+                    timeout=(5, 12)  # (connect_timeout, read_timeout)
                 )
                 res.raise_for_status()
                 return [
@@ -228,7 +228,7 @@ class SpotifyClient:
             params = {"limit": 100}
             
             while url:
-                res = self.session.get(url, headers=headers, params=params, timeout=15)
+                res = self.session.get(url, headers=headers, params=params, timeout=(5, 15))  # (connect_timeout, read_timeout)
                 res.raise_for_status()
                 payload = res.json()
                 
@@ -277,7 +277,7 @@ class SpotifyClient:
                     "https://api.spotify.com/v1/search",
                     headers=headers,
                     params=params,
-                    timeout=10
+                    timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
                 res.raise_for_status()
                 return res.json().get("tracks", {}).get("items", []) or []
@@ -331,7 +331,7 @@ def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]
             
             while next_url and len(playlists) < 100:  # Limit to 100 playlists
                 try:
-                    res = requests.get(next_url, headers=headers, timeout=10)
+                    res = requests.get(next_url, headers=headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
                     if res.status_code == 404:
                         logger.error(f"Spotify API endpoint not found: {next_url}")
                         break
@@ -368,7 +368,7 @@ def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]
             
             while next_url:
                 try:
-                    res = requests.get(next_url, headers=headers, timeout=10)
+                    res = requests.get(next_url, headers=headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
                     res.raise_for_status()
                     data = res.json()
                     
