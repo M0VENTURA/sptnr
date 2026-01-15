@@ -5600,6 +5600,67 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
     return None
 
 
+def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | None:
+    """
+    Fetch album art from iTunes/Apple Music API.
+    
+    Args:
+        artist_name: Artist name
+        album_name: Album name
+        
+    Returns:
+        Image bytes if found, None otherwise
+    """
+    try:
+        # Search iTunes API
+        search_url = "https://itunes.apple.com/search"
+        params = {
+            "term": f"{artist_name} {album_name}",
+            "entity": "album",
+            "limit": 5
+        }
+        
+        resp = requests.get(search_url, params=params, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        results = data.get("results", [])
+        if not results:
+            return None
+        
+        # Try to find the best match
+        for result in results:
+            result_artist = result.get("artistName", "").lower()
+            result_album = result.get("collectionName", "").lower()
+            
+            # Simple matching - check if artist and album are in the result
+            if artist_name.lower() in result_artist and album_name.lower() in result_album:
+                artwork_url = result.get("artworkUrl100", "")
+                if artwork_url:
+                    # Replace 100x100 with higher resolution
+                    artwork_url = artwork_url.replace("100x100", "600x600")
+                    
+                    # Fetch the artwork
+                    art_resp = requests.get(artwork_url, timeout=5)
+                    if art_resp.status_code == 200:
+                        return art_resp.content
+        
+        # If no exact match, try the first result if it exists
+        if results:
+            artwork_url = results[0].get("artworkUrl100", "")
+            if artwork_url:
+                artwork_url = artwork_url.replace("100x100", "600x600")
+                art_resp = requests.get(artwork_url, timeout=5)
+                if art_resp.status_code == 200:
+                    return art_resp.content
+        
+        return None
+    except Exception as e:
+        logging.debug(f"Failed to fetch album art from iTunes: {e}")
+        return None
+
+
+
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
     """Get album art from custom table, database, Navidrome, MusicBrainz, or Discogs"""
@@ -5720,7 +5781,15 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 4. Fallback to Discogs
+        # 4. Try iTunes/Apple Music
+        art_bytes = _fetch_album_art_from_itunes(artist, album)
+        if art_bytes:
+            return send_file(
+                io.BytesIO(art_bytes),
+                mimetype='image/jpeg'
+            )
+        
+        # 5. Fallback to Discogs
         art_bytes = _fetch_album_art_from_discogs(artist, album)
         if art_bytes:
             return send_file(
@@ -5728,7 +5797,7 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 5. No art found
+        # 6. No art found
         return Response(status=404)
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
@@ -7213,6 +7282,102 @@ if __name__ == "__main__":
         except Exception as e:
             logger = logging.getLogger('sptnr')
             logger.error(f"Apply Discogs ID error: {e}")
+            return jsonify({"error": str(e)}), 500
+
+    @app.route("/api/album/apply-genres", methods=["POST"])
+    def api_album_apply_genres():
+        """Apply selected genres to all MP3 files in an album"""
+        logger = logging.getLogger('sptnr')
+        try:
+            data = request.get_json()
+            artist = data.get("artist", "").strip()
+            album = data.get("album", "").strip()
+            genres = data.get("genres", [])
+            
+            if not artist or not album or not genres:
+                return jsonify({"error": "Missing required fields"}), 400
+            
+            # Get all tracks in the album from database
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT id, title, beets_path, file_path
+                FROM tracks
+                WHERE artist = ? AND album = ?
+            """, (artist, album))
+            tracks = cursor.fetchall()
+            
+            if not tracks:
+                conn.close()
+                return jsonify({"error": "No tracks found in album"}), 404
+            
+            # Update database with new genres
+            genres_str = ','.join(genres)
+            cursor.execute("""
+                UPDATE tracks
+                SET genres = ?
+                WHERE artist = ? AND album = ?
+            """, (genres_str, artist, album))
+            conn.commit()
+            conn.close()
+            
+            # Write genres to MP3 files using mutagen
+            updated_count = 0
+            failed_files = []
+            
+            try:
+                from mutagen.id3 import ID3, TCON
+                from mutagen.mp3 import MP3
+                
+                for track in tracks:
+                    # Prefer beets_path, fallback to file_path
+                    file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                    
+                    if not file_path or not os.path.exists(file_path):
+                        failed_files.append(track['title'])
+                        continue
+                    
+                    try:
+                        # Load MP3 file
+                        audio = MP3(file_path, ID3=ID3)
+                        
+                        # Add ID3 tag if it doesn't exist
+                        if audio.tags is None:
+                            audio.add_tags()
+                        
+                        # Set genre tag (TCON frame in ID3v2)
+                        audio.tags['TCON'] = TCON(encoding=3, text=genres)
+                        
+                        # Save changes
+                        audio.save()
+                        updated_count += 1
+                        
+                    except Exception as file_error:
+                        logger.error(f"Failed to update {file_path}: {file_error}")
+                        failed_files.append(track['title'])
+                
+            except ImportError:
+                return jsonify({
+                    "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
+                }), 500
+            
+            message = f"Updated {updated_count} MP3 file(s) with genres: {', '.join(genres)}"
+            if failed_files:
+                message += f". Failed to update {len(failed_files)} file(s): {', '.join(failed_files[:5])}"
+            
+            logger.info(f"Applied genres {genres} to album '{album}' by {artist}: {updated_count} files updated")
+            
+            return jsonify({
+                "success": True,
+                "message": message,
+                "updated_count": updated_count,
+                "failed_count": len(failed_files)
+            }), 200
+            
+        except Exception as e:
+            logger.error(f"Apply genres error: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return jsonify({"error": str(e)}), 500
 
     @app.route("/api/track/musicbrainz", methods=["POST"])

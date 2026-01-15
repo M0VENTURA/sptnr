@@ -222,16 +222,41 @@
     {% endif %}
     
     <!-- Genres with Track Fit -->
-    {% if album_genres %}
+    {% if album_genres or True %}
     <div class="card mb-4">
         <div class="card-body">
             <h5 class="card-title mb-3">
                 <i class="bi bi-tags"></i> Genres
             </h5>
-            <div class="d-flex flex-wrap gap-2 mb-4">
-                {% for genre in album_genres %}
-                <span class="badge badge-secondary">{{ genre }}</span>
-                {% endfor %}
+            
+            <!-- Current Genres from Navidrome -->
+            <div class="mb-4">
+                <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Current Genres (from Navidrome/Files)</h6>
+                <div class="d-flex flex-wrap gap-2 mb-2" id="currentGenres">
+                    {% if album_genres %}
+                        {% for genre in album_genres %}
+                        <span class="badge badge-secondary">{{ genre }}</span>
+                        {% endfor %}
+                    {% else %}
+                        <span class="text-muted small">No genres set</span>
+                    {% endif %}
+                </div>
+            </div>
+            
+            <!-- Recommended Genres from External Sources -->
+            <div class="mb-4">
+                <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres (from MusicBrainz/Discogs)</h6>
+                <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedGenres">
+                    <span class="text-muted small">Click "Fetch Recommendations" to get genre suggestions</span>
+                </div>
+                <div class="d-flex gap-2 flex-wrap">
+                    <button class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                        <i class="bi bi-cloud-download"></i> Fetch Recommendations
+                    </button>
+                    <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
+                        <i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files
+                    </button>
+                </div>
             </div>
             
             <!-- Genre Track Fit Matrix -->
@@ -328,13 +353,13 @@
             <table class="table table-hover mb-0">
                 <thead class="d-none d-md-table-header-group">
                     <tr>
-                        <th style="width: 3rem;">#</th>
-                        <th>Title</th>
-                        <th class="text-center" style="width: 5rem;">Duration</th>
-                        <th class="text-center" style="width: 4rem;">★</th>
-                        <th class="text-center d-none d-lg-table-cell">Single</th>
-                        <th class="text-center d-none d-lg-table-cell">Conf</th>
-                        <th class="d-none d-xl-table-cell" style="max-width: 200px;">File Path</th>
+                        <th style="width: 3rem;" title="Track Number">#</th>
+                        <th>Track Title</th>
+                        <th class="text-center" style="width: 5rem;" title="Track Duration">Duration</th>
+                        <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
+                        <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
+                        <th class="text-center d-none d-lg-table-cell" title="Single Detection Confidence">Confidence</th>
+                        <th class="d-none d-xl-table-cell" style="max-width: 200px;" title="File location on disk (from Beets)">File Location (Beets)</th>
                         <th class="text-center" style="width: 3rem;">Actions</th>
                     </tr>
                 </thead>
@@ -935,6 +960,145 @@
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    // Genre recommendation functions
+    let selectedGenres = new Set();
+
+    function fetchGenreRecommendations() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const btn = document.getElementById('fetchGenresBtn');
+        const container = document.getElementById('recommendedGenres');
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+        container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
+        
+        // Fetch from both MusicBrainz and Discogs
+        Promise.all([
+            fetch('/api/album/musicbrainz', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album: albumName, artist: artistName })
+            }).then(r => r.json()).catch(() => ({results: []})),
+            
+            fetch('/api/album/discogs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album: albumName, artist: artistName })
+            }).then(r => r.json()).catch(() => ({results: []}))
+        ])
+        .then(([mbData, discogsData]) => {
+            const genres = new Set();
+            
+            // Extract genres from MusicBrainz results
+            if (mbData.results && mbData.results.length > 0) {
+                // MusicBrainz doesn't typically include genres in release-group results
+                // So we'll mainly rely on Discogs
+            }
+            
+            // Extract genres from Discogs results
+            if (discogsData.results && discogsData.results.length > 0) {
+                discogsData.results.forEach(result => {
+                    if (result.genre) {
+                        result.genre.forEach(g => genres.add(g));
+                    }
+                    if (result.style) {
+                        result.style.forEach(s => genres.add(s));
+                    }
+                });
+            }
+            
+            if (genres.size === 0) {
+                container.innerHTML = '<span class="text-muted small">No genre recommendations found</span>';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+                return;
+            }
+            
+            // Display genres as selectable badges
+            let html = '';
+            Array.from(genres).sort().forEach(genre => {
+                html += `<span class="badge badge-outline-primary genre-badge" 
+                    onclick="toggleGenreSelection('${escapeHtml(genre)}')" 
+                    data-genre="${escapeHtml(genre)}"
+                    style="cursor: pointer; border: 2px solid #0d6efd; background-color: transparent; color: #0d6efd;">
+                    ${escapeHtml(genre)}
+                </span>`;
+            });
+            container.innerHTML = html;
+            
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+            document.getElementById('applyGenresBtn').style.display = 'inline-block';
+        })
+        .catch(error => {
+            container.innerHTML = '<span class="text-danger small">Error: ' + error.message + '</span>';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+        });
+    }
+
+    function toggleGenreSelection(genre) {
+        const badge = document.querySelector(`[data-genre="${escapeHtml(genre)}"]`);
+        if (!badge) return;
+        
+        if (selectedGenres.has(genre)) {
+            selectedGenres.delete(genre);
+            badge.style.backgroundColor = 'transparent';
+            badge.style.color = '#0d6efd';
+        } else {
+            selectedGenres.add(genre);
+            badge.style.backgroundColor = '#0d6efd';
+            badge.style.color = '#fff';
+        }
+    }
+
+    function applySelectedGenres() {
+        if (selectedGenres.size === 0) {
+            alert('Please select at least one genre to apply');
+            return;
+        }
+        
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const genresArray = Array.from(selectedGenres);
+        
+        if (!confirm(`Apply genres [${genresArray.join(', ')}] to all MP3 files in this album?`)) {
+            return;
+        }
+        
+        const btn = document.getElementById('applyGenresBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+        
+        fetch('/api/album/apply-genres', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: artistName,
+                album: albumName,
+                genres: genresArray
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ ${data.message || 'Genres applied successfully'}`);
+                // Refresh the page to show updated genres
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply genres'));
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
+        });
     }
 </script>
 {% endblock %}
