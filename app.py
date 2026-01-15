@@ -2531,13 +2531,18 @@ def scan_track_rescan(artist, album, track_id):
                 logging.error(f"Track rescan aborted: no artist_id for {artist_name}")
                 return
 
-            # Step 1: refresh Navidrome cache for this artist
+            # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
+            logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
             scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
-            # Step 2: popularity (per-artist, which includes the track)
+            # Step 2: popularity detection (for all tracks)
+            logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
             popularity_scan(verbose=True)
 
             # Step 3: single detection & scoring
+            logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
+            from sptnr import rate_artist
+            rate_artist(artist_id, artist_name, verbose=True, force=True)
             
             logging.info(f"Track rescan completed for {track_identifier}")
         except Exception as e:
