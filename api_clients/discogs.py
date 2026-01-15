@@ -42,7 +42,7 @@ class DiscogsClient:
         }
         self._single_cache = {}  # (artist, title, context) -> bool
     
-    def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: int = 10) -> bool:
+    def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:
         """
         Discogs single detection (best-effort, rate-limit safe).
         
@@ -168,7 +168,7 @@ class DiscogsClient:
             self._single_cache[cache_key] = False
             return False
     
-    def has_official_video(self, title: str, artist: str, timeout: int = 10) -> bool:
+    def has_official_video(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> bool:
         """
         Check if track has an official video on Discogs.
         
@@ -246,7 +246,7 @@ class DiscogsClient:
             logger.debug(f"Discogs video check failed for '{title}' by '{artist}': {e}")
             return False
     
-    def get_genres(self, title: str, artist: str, timeout: int = 10) -> list[str]:
+    def get_genres(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
         """
         Fetch genres and styles from Discogs API.
         
@@ -292,17 +292,17 @@ def _get_discogs_client(token: str, enabled: bool = True):
         _discogs_client = DiscogsClient(token, enabled=enabled)
     return _discogs_client
 
-def is_discogs_single(title: str, artist: str, album_context: dict | None = None, timeout: int = 10, token: str = "", enabled: bool = True) -> bool:
+def is_discogs_single(title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10), token: str = "", enabled: bool = True) -> bool:
     """Backward-compatible wrapper."""
     client = _get_discogs_client(token, enabled=enabled)
     return client.is_single(title, artist, album_context, timeout)
 
-def get_discogs_genres(title: str, artist: str, token: str = "", enabled: bool = True, timeout: int = 10) -> list[str]:
+def get_discogs_genres(title: str, artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
     """Backward-compatible wrapper."""
     client = _get_discogs_client(token, enabled=enabled)
     return client.get_genres(title, artist, timeout)
 
-def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = True, timeout: int = 10) -> bool:
+def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> bool:
     """Backward-compatible wrapper for video detection."""
     client = _get_discogs_client(token, enabled=enabled)
     return client.has_official_video(title, artist, timeout)

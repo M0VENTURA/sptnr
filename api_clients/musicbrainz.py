@@ -104,7 +104,7 @@ class MusicBrainzClient:
                     f"{self.base_url}release-group/",
                     params=params,
                     headers=self.headers,
-                    timeout=10
+                    timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
                 logger.info(f"MusicBrainz is_single response: status={res.status_code} text={res.text[:200]}")
                 res.raise_for_status()
@@ -155,7 +155,7 @@ class MusicBrainzClient:
                     "limit": 3,
                     "inc": "tags+artist-credits+releases",
                 }
-                r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=5)
+                r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=(3, 5))  # (connect_timeout, read_timeout)
                 r.raise_for_status()
                 recs = r.json().get("recordings", []) or []
                 if not recs:
@@ -176,7 +176,7 @@ class MusicBrainzClient:
                     rel_id = releases[0].get("id")
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "tags"}
-                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=5)
+                        rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=(3, 5))  # (connect_timeout, read_timeout)
                         rr.raise_for_status()
                         rel_tags = rr.json().get("tags", []) or []
                         return [t.get("name", "") for t in rel_tags if t.get("name")]
@@ -236,7 +236,7 @@ class MusicBrainzClient:
                 "limit": limit,
                 "inc": "releases+artist-credits",
             }
-            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=10)
+            r = self.session.get(f"{self.base_url}recording/", params=rec_params, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
             r.raise_for_status()
             recordings = r.json().get("recordings", []) or []
             if not recordings:
@@ -263,7 +263,7 @@ class MusicBrainzClient:
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "release-groups"}
                         try:
-                            rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=10)
+                            rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
                             if rr.ok:
                                 rel_json = rr.json()
                                 rg = rel_json.get("release-group") or {}
