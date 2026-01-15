@@ -167,6 +167,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
                 raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
+                
+                # Extract genre from Navidrome and use it as the initial genres value
+                navidrome_genre = t.get("genre", "")
+                navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
+                
                 td = {
                     "id": track_id,
                     "title": t.get("title", ""),
@@ -177,8 +182,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": [],
-                    "navidrome_genres": [t.get("genre")] if t.get("genre") else [],
+                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
+                    "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
+                    "navidrome_genre": navidrome_genre,  # Also store in single genre field
                     "spotify_genres": [],
                     "lastfm_tags": [],
                     "discogs_genres": [],
