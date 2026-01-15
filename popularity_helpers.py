@@ -11,6 +11,7 @@ from typing import Any, Tuple
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import ListenBrainzClient, score_by_age as _score_by_age
+from api_clients import timeout_safe_session
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
@@ -96,6 +97,7 @@ def configure_popularity_helpers(
         _spotify_client = SpotifyClient(
             spotify_cfg.get("client_id", ""),
             spotify_cfg.get("client_secret", ""),
+            http_session=timeout_safe_session,
             worker_threads=_worker_threads(cfg),
         )
     else:
@@ -105,7 +107,7 @@ def configure_popularity_helpers(
     if lastfm_client is not None:
         _lastfm_client = lastfm_client
     else:
-        _lastfm_client = LastFmClient(lastfm_cfg.get("api_key", ""))
+        _lastfm_client = LastFmClient(lastfm_cfg.get("api_key", ""), http_session=timeout_safe_session)
 
     listenbrainz_cfg = api_cfg.get("listenbrainz") or {}
     _listenbrainz_enabled = bool(listenbrainz_cfg.get("enabled", True))
