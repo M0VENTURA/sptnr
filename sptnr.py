@@ -1,5 +1,6 @@
 # 🎧 SPTNR – Navidrome Rating CLI with Spotify + Last.fm integration
-import argparse, os, sys, requests, time, random, json, logging, base64, re
+import argparse, os, sys, requests, time, random, json, logging, base64, re, math
+from datetime import datetime, timedelta
 from dotenv import load_dotenv
 from colorama import init, Fore, Style
 
@@ -19,19 +20,24 @@ client_id = os.getenv("SPOTIFY_CLIENT_ID")
 client_secret = os.getenv("SPOTIFY_CLIENT_SECRET")
 
 if not client_id or not client_secret:
-    logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
-    sys.exit(1)
+    logging.warning("Missing Spotify credentials - Spotify features will be unavailable")
+    client_id = None
+    client_secret = None
 
 # ⚙️ Global constants
 try:
     SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.5"))
     LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+    AGE_WEIGHT = float(os.getenv("AGE_WEIGHT", "0.1"))
 except ValueError:
     print("⚠️ Invalid weight in .env — using defaults.")
     SPOTIFY_WEIGHT = 0.5
     LASTFM_WEIGHT = 0.5
+    AGE_WEIGHT = 0.1
 
 SLEEP_TIME = 1.5
+SINGLE_BOOST = 1.5  # Boost factor for singles
+LEGACY_BOOST = 0.8  # Adjustment for legacy tracks
 
 # 📁 Cache paths (aligned with mounted volume)
 
