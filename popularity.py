@@ -32,14 +32,122 @@ except ImportError as e:
     logging.debug(f"MusicBrainz client unavailable: {e}")
     
 try:
-    from api_clients.discogs import is_discogs_single
+    from api_clients.discogs import is_discogs_single, has_discogs_video
     HAVE_DISCOGS = True
+    HAVE_DISCOGS_VIDEO = True
 except ImportError as e:
     HAVE_DISCOGS = False
+    HAVE_DISCOGS_VIDEO = False
     logging.debug(f"Discogs client unavailable: {e}")
 
 # Module-level logger
 logger = logging.getLogger(__name__)
+
+# Keyword filter for non-singles (defined at module level for performance)
+IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
+
+# Genre weighting configuration for multi-source aggregation
+GENRE_WEIGHTS = {
+    "musicbrainz": 0.40,   # Most trusted
+    "discogs": 0.25,       # Still strong
+    "audiodb": 0.20,       # Good for fallback
+    "lastfm": 0.10,        # Reduce slightly (tags can be messy)
+    "spotify": 0.05        # Keep low (too granular)
+}
+
+
+def normalize_genre(genre):
+    """
+    Normalize genre names to avoid duplicates and inconsistencies.
+    """
+    genre = genre.lower().strip()
+    synonyms = {
+        "hip hop": "hip-hop",
+        "r&b": "rnb"
+    }
+    return synonyms.get(genre, genre)
+
+
+def clean_conflicting_genres(genres):
+    """
+    Remove conflicting or irrelevant genres based on dominant tags.
+    Example: If 'punk' exists, drop 'electronic'.
+    """
+    genres_lower = [g.lower() for g in genres]
+
+    # If punk dominates, remove electronic/electro
+    if any("punk" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["electronic", "electro"]]
+
+    # If metal dominates, remove electronic
+    if any("metal" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["electronic", "electro"]]
+
+    # Remove generic tags if specific ones exist
+    if any("progressive metal" in g for g in genres_lower):
+        genres_lower = [g for g in genres_lower if g not in ["metal", "heavy metal"]]
+
+    return genres_lower
+
+
+def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
+    """
+    Combine online-sourced genres with Navidrome genres for comparison.
+    Uses weighted scoring, contextual filtering, and deduplication.
+    
+    Args:
+        sources: Dict of {source_name: [genres]} from various APIs
+        nav_genres: List of genres from Navidrome
+        title: Track title for contextual boosts
+        album: Album name for contextual boosts
+        
+    Returns:
+        Tuple of (online_top_genres, navidrome_cleaned_genres)
+    """
+    from collections import defaultdict
+
+    genre_scores = defaultdict(float)
+
+    # Aggregate weighted genres from sources
+    for source, genres in sources.items():
+        weight = GENRE_WEIGHTS.get(source, 0)
+        for genre in genres:
+            norm = normalize_genre(genre)
+            genre_scores[norm] += weight
+
+    # Apply contextual boosts
+    if "live" in title.lower() or "live" in album.lower():
+        genre_scores["live"] += 0.5
+    if any(word in title.lower() or word in album.lower() for word in ["christmas", "xmas"]):
+        genre_scores["christmas"] += 0.5
+
+    # Sort by weighted score
+    sorted_genres = sorted(genre_scores.items(), key=lambda x: x[1], reverse=True)
+    filtered = [g for g, _ in sorted_genres]
+
+    # Contextual filtering
+    filtered = clean_conflicting_genres(filtered)
+
+    # Deduplicate and normalize
+    filtered = list(dict.fromkeys(filtered))
+
+    # Remove "heavy metal" if other metal sub-genres exist
+    metal_subgenres = [g for g in filtered if "metal" in g.lower() and g.lower() != "heavy metal"]
+    if metal_subgenres:
+        filtered = [g for g in filtered if g.lower() != "heavy metal"]
+
+    # Fallback if filtering removes everything
+    if not filtered:
+        filtered = [g for g, _ in sorted_genres]
+
+    # Pick top 3
+    online_top = [g.capitalize() for g in filtered[:3]]
+
+    # Clean Navidrome genres
+    nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
+
+    return online_top, nav_cleaned
+
 
 # Keyword filter for non-singles (defined at module level for performance)
 IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
@@ -719,6 +827,26 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                             log_verbose(f"Discogs single check timed out for {title}: {e}")
                         except Exception as e:
                             log_verbose(f"Discogs single check failed for {title}: {e}")
+                    
+                    # Fourth check: Discogs video detection (requires second source for confirmation)
+                    if HAVE_DISCOGS_VIDEO and discogs_token:
+                        try:
+                            result = _run_with_timeout(
+                                lambda: has_discogs_video(title, artist, token=discogs_token),
+                                API_CALL_TIMEOUT,
+                                f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
+                            )
+                            if result:
+                                # Only add if we have at least one other source
+                                if len(single_sources) >= 1:
+                                    single_sources.append("discogs_video")
+                                    log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
+                                else:
+                                    log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
+                        except TimeoutError as e:
+                            log_verbose(f"Discogs video check timed out for {title}: {e}")
+                        except Exception as e:
+                            log_verbose(f"Discogs video check failed for {title}: {e}")
                     
                     # Calculate confidence based on number of sources (Jan 2nd logic)
                     if len(single_sources) >= 2:
