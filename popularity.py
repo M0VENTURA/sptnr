@@ -391,6 +391,7 @@ from popularity_helpers import (
     get_lastfm_track_info,
     get_listenbrainz_score,
     score_by_age,
+    update_artist_id_for_artist,
     SPOTIFY_WEIGHT,
     LASTFM_WEIGHT,
     LISTENBRAINZ_WEIGHT,
@@ -629,6 +630,28 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     continue
             
             log_unified(f"Currently Scanning Artist: {artist}")
+            
+            # Get Spotify artist ID once per artist (before album loop)
+            spotify_artist_id = None
+            try:
+                log_unified(f'Looking up Spotify artist ID for: {artist}')
+                spotify_artist_id = _run_with_timeout(
+                    get_spotify_artist_id, 
+                    API_CALL_TIMEOUT, 
+                    f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
+                    artist
+                )
+                if spotify_artist_id:
+                    log_unified(f'✓ Spotify artist ID cached: {spotify_artist_id}')
+                    # Batch update all tracks for this artist with the artist ID
+                    update_artist_id_for_artist(artist, spotify_artist_id)
+                else:
+                    log_unified(f'⚠ No Spotify artist ID found for: {artist}')
+            except TimeoutError as e:
+                log_unified(f"⏱ Spotify artist ID lookup timed out for {artist}: {e}")
+            except Exception as e:
+                log_unified(f"⚠ Spotify artist ID lookup failed for {artist}: {e}")
+            
             for album, album_tracks in albums.items():
                 # Check if album was already scanned (unless force rescan is enabled)
                 if not FORCE_RESCAN and was_album_scanned(artist, album, 'popularity'):
@@ -645,22 +668,10 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # Progress log every track
                     log_unified(f'Scanning track: "{title}" (Track ID: {track_id})')
 
-                    # Try to get popularity from Spotify
+                    # Try to get popularity from Spotify (using cached artist ID)
                     spotify_score = 0
-                    spotify_artist_id = None  # Track the artist ID for caching
                     try:
-                        log_unified(f'Getting Spotify artist ID for: {artist}')
-                        log_verbose(f"[TIMEOUT DEBUG] About to call _run_with_timeout for get_spotify_artist_id")
-                        artist_id = _run_with_timeout(
-                            get_spotify_artist_id, 
-                            API_CALL_TIMEOUT, 
-                            f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
-                            artist
-                        )
-                        log_verbose(f"[TIMEOUT DEBUG] _run_with_timeout returned successfully")
-                        log_unified(f'Spotify artist ID result: {artist_id}')
-                        if artist_id:
-                            spotify_artist_id = artist_id  # Save for database caching
+                        if spotify_artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
                             spotify_results = _run_with_timeout(
@@ -728,17 +739,12 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # Average the scores
                     if spotify_score > 0 or lastfm_score > 0:
                         popularity_score = (spotify_score + lastfm_score) / 2.0
-                        # Update with popularity score and cache Spotify artist ID if available
-                        if spotify_artist_id:
-                            cursor.execute(
-                                "UPDATE tracks SET popularity_score = ?, spotify_artist_id = ? WHERE id = ?",
-                                (popularity_score, spotify_artist_id, track_id)
-                            )
-                        else:
-                            cursor.execute(
-                                "UPDATE tracks SET popularity_score = ? WHERE id = ?",
-                                (popularity_score, track_id)
-                            )
+                        # Update track with popularity score
+                        # Note: spotify_artist_id was already batch-updated for all tracks earlier
+                        cursor.execute(
+                            "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                            (popularity_score, track_id)
+                        )
                         # Commit immediately to prevent database locks.
                         # Frequent commits are beneficial for SQLite WAL mode concurrency,
                         # allowing other processes (like dashboard) to read during scan.

@@ -299,6 +299,34 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
+def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
+    """
+    Update all tracks for an artist with the cached Spotify artist ID.
+    This helps populate the cache for existing tracks.
+    
+    Args:
+        artist_name: Artist name
+        artist_id: Spotify artist ID to cache
+        
+    Returns:
+        Number of tracks updated
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET spotify_artist_id = ? WHERE artist = ? AND spotify_artist_id IS NULL",
+            (artist_id, artist_name)
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logging.debug(f"Updated {updated} tracks with Spotify artist ID for '{artist_name}'")
+        return updated
+    except Exception as e:
+        logging.error(f"Failed to update artist ID for '{artist_name}': {e}")
+        return 0
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -318,4 +346,5 @@ __all__ = [
     "load_artist_map",
     "get_album_last_scanned_from_db",
     "get_album_track_count_in_db",
+    "update_artist_id_for_artist",
 ]
