@@ -353,8 +353,9 @@ def popularity_scan(verbose: bool = False):
                         conn.commit()
                         scanned_count += 1
                         album_scanned += 1
+                        log_unified(f'✓ Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
                     else:
-                        log_unified(f"No popularity score found for {artist} - {title}")
+                        log_unified(f"⚠ No popularity score found for {artist} - {title}")
 
                     # Save progress after each track
                     save_popularity_progress(scanned_count, len(tracks))
