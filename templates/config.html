@@ -498,10 +498,12 @@
     </div>
   </div>
 
+  <!-- Features & Weights Section - Dynamically Rendered -->
+  <div id="featuresWeightsContainer"></div>
+
   <!-- Save Button -->
   <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
     <button type="button" class="btn btn-outline-secondary" id="cancelBtn">Cancel</button>
-  </div>
     <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
       <i class="bi bi-check-circle"></i> Save Configuration
     </button>
@@ -624,11 +626,49 @@ function buildConfigObject() {
       custom_links: getCustomBookmarkLinks()
     },
     api_integrations: {
-      // ...existing code for api_integrations if needed...
+      spotify: {
+        enabled: getChecked('spotify_enabled', false),
+        client_id: getValue('spotify_client_id', ''),
+        client_secret: getValue('spotify_client_secret', '')
+      },
+      lastfm: {
+        enabled: getChecked('lastfm_enabled', false),
+        api_key: getValue('lastfm_api_key', '')
+      },
+      listenbrainz: {
+        enabled: getChecked('listenbrainz_enabled', false)
+      },
+      discogs: {
+        enabled: getChecked('discogs_enabled', false),
+        token: getValue('discogs_token', '')
+      },
+      musicbrainz: {
+        enabled: getChecked('musicbrainz_enabled', false)
+      },
+      audiodb: {
+        enabled: getChecked('audiodb_enabled', false),
+        api_key: getValue('audiodb_api_key', '')
+      },
+      google: {
+        enabled: getChecked('google_enabled', false),
+        api_key: getValue('google_api_key', ''),
+        cse_id: getValue('google_cse_id', '')
+      },
+      youtube: {
+        enabled: getChecked('youtube_enabled', false),
+        api_key: getValue('youtube_api_key', '')
+      }
+    },
+    database: {
+      path: getValue('db_path', ''),
+      vacuum_on_start: getChecked('db_vacuum', false)
+    },
+    logging: {
+      level: getValue('log_level', 'INFO'),
+      file: getValue('log_file', ''),
+      console: getValue('log_console', 'true') === 'true'
     }
-    // The following are handled by the new dynamic config editor and do not need to be set here:
-    // youtube, downloads, database, logging
-  // End of returned object
+  };
 }
 
 function saveConfig() {
@@ -973,8 +1013,9 @@ function renderFeaturesWeights(features, weights) {
 }
 
 function saveFeaturesWeights() {
-  // Gather all config data from the page (users, integrations, features, weights)
-  const config = window.currentConfig || {};
+  // Start with the current config from buildConfigObject (all other sections)
+  const config = buildConfigObject();
+  
   // Features
   const features = {};
   document.querySelectorAll('.feature-field').forEach(input => {
@@ -982,13 +1023,14 @@ function saveFeaturesWeights() {
     let val = input.value;
     if (input.tagName === 'SELECT') {
       val = (val === 'true');
-    } else if (Array.isArray(config.features[key])) {
+    } else if (window.currentConfig.features && Array.isArray(window.currentConfig.features[key])) {
       val = val.split(',').map(s => s.trim()).filter(Boolean);
     } else if (!isNaN(val) && val !== '') {
       val = Number(val);
     }
     features[key] = val;
   });
+  
   // Weights
   const weights = {};
   document.querySelectorAll('.weight-field').forEach(input => {
@@ -999,10 +1041,17 @@ function saveFeaturesWeights() {
     }
     weights[key] = val;
   });
+  
   // Merge into config
   config.features = features;
   config.weights = weights;
+  
   // Save via AJAX
+  const saveBtn = event.target;
+  saveBtn.disabled = true;
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Saving...';
+  
   fetch('/config/save-json', {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -1011,11 +1060,18 @@ function saveFeaturesWeights() {
   .then(r => r.json())
   .then(resp => {
     if (resp.success) {
-      alert('Features & weights saved!');
-      location.reload();
+      showToast('Success', 'Features & weights saved successfully', 'success');
+      setTimeout(() => location.reload(), 1000);
     } else {
-      alert('Save failed: ' + (resp.error || 'Unknown error'));
+      showToast('Error', resp.error || 'Unknown error', 'error');
     }
+  })
+  .catch(err => {
+    showToast('Error', 'Network error: ' + err.message, 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalText;
   });
 }
 
@@ -1024,24 +1080,16 @@ function saveFeaturesWeights() {
 // On page load, render features/weights section
 window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
 document.addEventListener('DOMContentLoaded', function() {
-  // Render new all-options config editor at the top
-  const configSection = document.createElement('div');
-  configSection.innerHTML = renderConfigEditor(window.currentConfig);
-  document.body.insertBefore(configSection, document.body.firstChild);
-  // Render features/weights section as before
-  const features = window.currentConfig.features || {};
-  const weights = window.currentConfig.weights || {};
-  const section = document.createElement('div');
-  section.innerHTML = renderFeaturesWeights(features, weights);
-  document.body.appendChild(section);
-  // Add save button for all config
-  const saveBtn = document.createElement('button');
-  saveBtn.className = 'btn btn-primary my-3';
-  saveBtn.textContent = 'Save All Configuration';
-  saveBtn.onclick = saveAllConfig;
-  configSection.appendChild(saveBtn);
+  // Render features/weights section
+  if (window.currentConfig) {
+    const features = window.currentConfig.features || {};
+    const weights = window.currentConfig.weights || {};
+    const container = document.getElementById('featuresWeightsContainer');
+    if (container) {
+      container.innerHTML = renderFeaturesWeights(features, weights);
+    }
+  }
 });
-</script>
 </script>
 
 <style>
