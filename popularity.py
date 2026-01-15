@@ -38,6 +38,9 @@ except ImportError as e:
     HAVE_DISCOGS = False
     logging.debug(f"Discogs client unavailable: {e}")
 
+# Module-level logger
+logger = logging.getLogger(__name__)
+
 # Keyword filter for non-singles (defined at module level for performance)
 IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 
@@ -84,7 +87,6 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
     Raises:
         Exception on API errors or rate limiting
     """
-    logger = logging.getLogger(__name__)
     _throttle_discogs()
     
     search_url = "https://api.discogs.com/database/search"
