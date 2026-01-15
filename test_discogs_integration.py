@@ -51,7 +51,7 @@ def test_discogs_search_api_flow():
     with patch.object(session, 'get', return_value=mock_response) as mock_get:
         headers = {
             "User-Agent": "Sptnr/1.0",
-            "Authorization": "Discogs token=test_token_123"
+            "Authorization": "Discogs token=fake_test_token"
         }
         
         results = _discogs_search(
@@ -122,7 +122,7 @@ def test_app_py_integration_mock():
     # Simulate what app.py does at line 1929 and 7028
     session = _get_discogs_session()
     headers = {"User-Agent": "Sptnr/1.0"}
-    discogs_token = "test_token_abc123"
+    discogs_token = "fake_test_token"
     
     if discogs_token:
         headers["Authorization"] = f"Discogs token={discogs_token}"

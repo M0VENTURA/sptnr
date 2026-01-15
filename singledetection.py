@@ -59,8 +59,7 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
             retry_after = int(response.headers.get("Retry-After", 60))
             logger.warning(f"Discogs rate limit hit, sleeping for {retry_after} seconds")
             time.sleep(retry_after)
-            # Retry once after rate limit
-            _throttle_discogs()
+            # Retry once after rate limit (no additional throttle needed - we just slept)
             response = session.get(search_url, headers=headers, params=params, timeout=timeout)
         
         response.raise_for_status()
