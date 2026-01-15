@@ -609,82 +609,6 @@ def popularity_scan(verbose: bool = False):
                             log_unified(f"   ✓ Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
                 
                 log_unified(f'Singles Detection Complete: {singles_detected} single(s) detected for "{artist} - {album}"')
-
-                # Calculate star ratings for album tracks
-                log_unified(f'Calculating star ratings for "{artist} - {album}"')
-                
-                # Get all tracks for this album with their popularity scores and single detection
-                cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
-                    (artist, album)
-                )
-                album_tracks_with_scores = cursor.fetchall()
-                
-                if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
-                    # Calculate star ratings using the same logic as sptnr.py
-                    total_tracks = len(album_tracks_with_scores)
-                    band_size = math.ceil(total_tracks / 4)
-                    
-                    # Calculate median score for threshold
-                    scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    median_score = median(scores) if scores else 10
-                    if median_score == 0:
-                        median_score = 10
-                    jump_threshold = median_score * 1.7
-                    
-                    star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
-                    
-                    for i, track_row in enumerate(album_tracks_with_scores):
-                        track_id = track_row["id"]
-                        title = track_row["title"]
-                        popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
-                        is_single = track_row["is_single"] if track_row["is_single"] else 0
-                        single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
-                        
-                        # Calculate band-based star rating
-                        band_index = i // band_size
-                        stars = max(1, 4 - band_index)
-                        
-                        # Boost to 5 stars if score exceeds threshold
-                        if popularity_score >= jump_threshold:
-                            stars = 5
-                        
-                        # Boost stars for confirmed singles
-                        if is_single:
-                            if single_confidence == "high":
-                                stars = 5  # Discogs single = 5 stars
-                            elif single_confidence == "medium":
-                                stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
-                        
-                        # Ensure at least 1 star
-                        stars = max(stars, 1)
-                        
-                        # Update track in database with star rating
-                        # Singles detection is now handled in this same scan
-                        cursor.execute(
-                            """UPDATE tracks 
-                            SET stars = ?
-                            WHERE id = ?""",
-                            (stars, track_id)
-                        )
-                        conn.commit()  # Commit immediately to prevent database locks
-                        
-                        star_distribution[stars] += 1
-                        
-                        # Log track with star rating
-                        single_tag = " (Single)" if is_single else ""
-                        star_display = "★" * stars + "☆" * (5 - stars)
-                        log_unified(f"   {star_display} ({stars}/5) - {title}{single_tag} (popularity: {popularity_score:.1f})")
-                        
-                        # Sync to Navidrome
-                        if sync_track_rating_to_navidrome(track_id, stars):
-                            log_unified(f"      ✓ Synced to Navidrome")
-                        else:
-                            log_unified(f"      ⚠ Skipped Navidrome sync (not configured or failed)")
-                    
-                    # Log star distribution
-                    dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
-                    log_unified(f'Star distribution for "{album}": {dist_str}')
                 
                 # Commit changes before logging to scan_history to avoid database lock conflicts
                 conn.commit()
@@ -692,6 +616,95 @@ def popularity_scan(verbose: bool = False):
                 # Log album scan
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
 
+            # After all albums scanned, calculate star ratings globally for this artist
+            log_unified(f'Calculating star ratings globally for artist: {artist}')
+            
+            # Get all tracks for this artist with their popularity scores and single detection
+            cursor.execute(
+                "SELECT id, title, album, popularity_score, is_single, single_confidence FROM tracks WHERE artist = ? AND popularity_score IS NOT NULL ORDER BY popularity_score DESC",
+                (artist,)
+            )
+            artist_tracks_with_scores = cursor.fetchall()
+            
+            if artist_tracks_with_scores and len(artist_tracks_with_scores) > 0:
+                # Calculate star ratings using global normalization across all tracks for this artist
+                total_tracks = len(artist_tracks_with_scores)
+                band_size = math.ceil(total_tracks / 4)
+                
+                # Calculate median score for threshold GLOBALLY across all artist tracks
+                scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in artist_tracks_with_scores]
+                median_score = median(scores) if scores else 10
+                if median_score == 0:
+                    median_score = 10
+                jump_threshold = median_score * 1.7
+                
+                log_unified(f'   Global stats: {total_tracks} tracks, median={median_score:.1f}, 5★ threshold={jump_threshold:.1f}')
+                
+                star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                album_distributions = {}  # Track per-album distribution for logging
+                
+                for i, track_row in enumerate(artist_tracks_with_scores):
+                    track_id = track_row["id"]
+                    title = track_row["title"]
+                    album = track_row["album"]
+                    popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
+                    is_single = track_row["is_single"] if track_row["is_single"] else 0
+                    single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
+                    
+                    # Calculate band-based star rating using GLOBAL position
+                    band_index = i // band_size
+                    stars = max(1, 4 - band_index)
+                    
+                    # Boost to 5 stars if score exceeds GLOBAL threshold
+                    if popularity_score >= jump_threshold:
+                        stars = 5
+                    
+                    # Boost stars for confirmed singles
+                    if is_single:
+                        if single_confidence == "high":
+                            stars = 5  # Discogs single = 5 stars
+                        elif single_confidence == "medium":
+                            stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
+                    
+                    # Ensure at least 1 star
+                    stars = max(stars, 1)
+                    
+                    # Update track in database with star rating
+                    cursor.execute(
+                        """UPDATE tracks 
+                        SET stars = ?
+                        WHERE id = ?""",
+                        (stars, track_id)
+                    )
+                    conn.commit()  # Commit immediately to prevent database locks
+                    
+                    star_distribution[stars] += 1
+                    
+                    # Track per-album distribution
+                    if album not in album_distributions:
+                        album_distributions[album] = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+                    album_distributions[album][stars] += 1
+                    
+                    # Log track with star rating
+                    single_tag = " (Single)" if is_single else ""
+                    star_display = "★" * stars + "☆" * (5 - stars)
+                    log_unified(f"   {star_display} ({stars}/5) - {title}{single_tag} from \"{album}\" (popularity: {popularity_score:.1f})")
+                    
+                    # Sync to Navidrome
+                    if sync_track_rating_to_navidrome(track_id, stars):
+                        log_unified(f"      ✓ Synced to Navidrome")
+                    else:
+                        log_unified(f"      ⚠ Skipped Navidrome sync (not configured or failed)")
+                
+                # Log global star distribution for artist
+                dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
+                log_unified(f'Global star distribution for "{artist}": {dist_str}')
+                
+                # Log per-album distributions
+                for album_name, album_dist in album_distributions.items():
+                    album_dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(album_dist.items(), reverse=True) if count > 0])
+                    log_unified(f'   Album "{album_name}": {album_dist_str}')
+            
             # After artist scans, create essential playlist based on popularity and singles
             log_unified(f'Creating essential playlist for artist: {artist}')
             
