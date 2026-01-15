@@ -92,7 +92,8 @@ def test_discogs_rate_limiting():
     print("="*60)
     
     import time
-    from singledetection import _throttle_discogs
+    # Import from the centralized rate limiting implementation
+    from api_clients.discogs import _throttle_discogs
     
     # Call throttle twice and measure time
     start = time.time()
