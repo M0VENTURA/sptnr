@@ -439,6 +439,11 @@
 {% endif %}
 
 <script>
+// Constants for slskd search polling
+const SLSKD_MAX_POLL_ATTEMPTS = 20;
+const SLSKD_POLL_INTERVAL_MS = 2000;
+const BYTES_TO_MB = 1024 * 1024;
+
 function openDownloadSearch(artistName, albumName) {
   document.getElementById('downloadArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
   
@@ -512,7 +517,7 @@ function performSlskdSearch() {
 }
 
 function pollSlskdResults(searchId, query, pollCount = 0) {
-  if (pollCount > 20) {
+  if (pollCount > SLSKD_MAX_POLL_ATTEMPTS) {
     document.getElementById('slskdLoading').style.display = 'none';
     document.getElementById('slskdResults').innerHTML = `
       <div class="alert alert-warning">
@@ -526,7 +531,7 @@ function pollSlskdResults(searchId, query, pollCount = 0) {
     .then(response => response.json())
     .then(data => {
       if (!data.isComplete) {
-        setTimeout(() => pollSlskdResults(searchId, query, pollCount + 1), 2000);
+        setTimeout(() => pollSlskdResults(searchId, query, pollCount + 1), SLSKD_POLL_INTERVAL_MS);
         return;
       }
       
@@ -557,7 +562,7 @@ function pollSlskdResults(searchId, query, pollCount = 0) {
       `;
       
       data.results.forEach((result, idx) => {
-        const sizeMB = result.size_mb || (result.size ? (result.size / 1024 / 1024).toFixed(2) : 'N/A');
+        const sizeMB = result.size_mb || (result.size ? (result.size / BYTES_TO_MB).toFixed(2) : 'N/A');
         const bitrate = result.bitrate || 'unknown';
         
         html += `
