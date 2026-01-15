@@ -150,8 +150,12 @@ class SpotifyClient:
         url = f"https://api.spotify.com/v1/artists/{artist_id}/albums"
         params = {"include_groups": "single", "limit": 50}
         
+        max_iterations = 100  # Safety limit to prevent infinite loops
+        iteration = 0
+        
         try:
-            while True:
+            while iteration < max_iterations:
+                iteration += 1
                 res = self.session.get(url, headers=headers, params=params, timeout=12)
                 res.raise_for_status()
                 payload = res.json()
@@ -164,6 +168,9 @@ class SpotifyClient:
                     url, params = next_url, None  # 'next' already has full query
                 else:
                     break
+            
+            if iteration >= max_iterations:
+                logger.warning(f"Reached max iterations ({max_iterations}) fetching singles for artist {artist_id}")
         except Exception as e:
             logger.debug(f"Spotify singles album fetch failed for '{artist_id}': {e}")
         
