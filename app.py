@@ -2506,6 +2506,13 @@ def _run_artist_scan_pipeline(artist_name: str):
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
     """
+    # Write to file immediately to confirm function is called
+    try:
+        with open('/tmp/artist_scan_debug.log', 'a') as f:
+            f.write(f"{datetime.now()}: _run_artist_scan_pipeline called for {artist_name}\n")
+    except:
+        pass
+    
     logging.info(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
         # Look up artist_id from cache; rebuild index if missing
@@ -2677,14 +2684,21 @@ def scan_start():
     global scan_process
     
     scan_type = request.form.get("scan_type", "batchrate")
+    artist = request.form.get("artist")
+    
+    logging.info(f"scan_start called: scan_type={scan_type}, artist={artist}")
     
     # Handle artist-specific scan differently - use threaded worker instead of subprocess
     if scan_type == "artist":
-        artist = request.form.get("artist")
         if artist:
+            logging.info(f"Starting artist scan thread for: {artist}")
             threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
             flash(f"Scan started for artist: {artist}", "success")
             return redirect(url_for("artist_detail", name=artist))
+        else:
+            logging.error("Artist scan requested but no artist name provided")
+            flash("Error: No artist name provided", "danger")
+            return redirect(url_for("dashboard"))
     
     # For batch/force scans, use subprocess as before
     with scan_lock:
