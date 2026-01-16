@@ -27,11 +27,15 @@ class MusicBrainzClient:
             http_session: Optional requests.Session (uses shared if not provided)
             enabled: Whether MusicBrainz is enabled
         """
+        # Track if a custom session was provided (don't override its retry config)
+        custom_session_provided = http_session is not None
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://musicbrainz.org/ws/2/"
         self.headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
-        self._setup_retry_strategy()
+        # Only setup retry strategy if using default session (not a pre-configured one)
+        if not custom_session_provided:
+            self._setup_retry_strategy()
         self._load_cache()
     
     def _load_cache(self):
