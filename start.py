@@ -563,13 +563,13 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": [],
-                    "navidrome_genres": [t.get("genre")] if t.get("genre") else [],
-                    "spotify_genres": [],
-                    "lastfm_tags": [],
-                    "discogs_genres": [],
-                    "audiodb_genres": [],
-                    "musicbrainz_genres": [],
+                    "genres": json.dumps([]),  # Serialize as JSON string
+                    "navidrome_genres": json.dumps([t.get("genre")] if t.get("genre") else []),  # Serialize as JSON string
+                    "spotify_genres": json.dumps([]),  # Serialize as JSON string
+                    "lastfm_tags": json.dumps([]),  # Serialize as JSON string
+                    "discogs_genres": json.dumps([]),  # Serialize as JSON string
+                    "audiodb_genres": json.dumps([]),  # Serialize as JSON string
+                    "musicbrainz_genres": json.dumps([]),  # Serialize as JSON string
                     "spotify_album": "",
                     "spotify_artist": "",
                     "spotify_popularity": 0,
@@ -584,7 +584,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "is_spotify_single": False,
                     "is_single": False,
                     "single_confidence": "low",
-                    "single_sources": [],
+                    "single_sources": json.dumps([]),  # Serialize as JSON string
                     "stars": 0,
                     "mbid": t.get("mbid", "") or "",
                     "suggested_mbid": "",

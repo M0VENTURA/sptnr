@@ -1416,7 +1416,7 @@ def api_import_release():
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": [],
+                    "genres": json.dumps([]),  # Serialize as JSON string
                     "file_path": None,
                     "stars": 0,
                     "last_scanned": datetime.now().isoformat(),
