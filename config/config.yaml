@@ -88,6 +88,7 @@ features:
   verbose: false
   perpetual: true
   batchrate: false
+  full_scan: false  # When enabled, automatically run Navidrome import → Popularity → Beets import in sequence
   artist: []
   # Single-detection and scoring knobs
   album_skip_days: 7
