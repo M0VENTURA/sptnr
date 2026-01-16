@@ -68,6 +68,29 @@ Create a `.env` file in the root directory with your API keys and Navidrome acce
     NAV_USER=admin
     NAV_PASS=yourpassword
 
+### config.yaml Configuration (Optional)
+You can also configure settings in `config/config.yaml`:
+
+```yaml
+spotify:
+  client_id: "your_spotify_client_id"
+  client_secret: "your_spotify_client_secret"
+  user_id: ""  # Optional: Your Spotify user ID for importing playlists
+
+weights:
+  spotify: 0.4
+  lastfm: 0.3
+  listenbrainz: 0.2
+  age: 0.1
+
+features:
+  clamp_min: 0.75
+  clamp_max: 1.25
+  cap_top4_pct: 0.25
+  known_singles:  # Manually specify known singles per artist
+    "Artist Name": ["Single 1", "Single 2"]
+```
+
 ### 🐳 Docker Installation
 
 1.  **Clone the Repo**
@@ -125,18 +148,20 @@ Create your `.env` file and run:
 
     python sptnr.py [options]
 
-| Switch          | Description                                                    |
-| :-------------- | :------------------------------------------------------------- |
-| `--artist`      | Rate one or more artists manually                              |
-| `--batchrate`   | Rate the entire library in one go                              |
-| `--dry-run`     | Preview without syncing stars to Navidrome                     |
-| `--sync`        | Push ratings to Navidrome after scoring                        |
-| `--refresh`     | Rebuild cached artist index from Navidrome                     |
-| `--pipeoutput`  | Print cached artist index (optionally filter with a string)    |
-| `--perpetual`   | Run a full rating scan every 12 hours (headless mode)          |
-| `--verbose`     | Show scoring breakdowns and summary                            |
-| `--resume`      | Resume batch scan from the last synced artist                  |
-| `--force`       | Force re-scan of all tracks (override cache)                   |
+| Switch                        | Description                                                    |
+| :---------------------------- | :------------------------------------------------------------- |
+| `--artist`                    | Rate one or more artists manually                              |
+| `--batchrate`                 | Rate the entire library in one go                              |
+| `--dry-run`                   | Preview without syncing stars to Navidrome                     |
+| `--sync`                      | Push ratings to Navidrome after scoring                        |
+| `--refresh`                   | Rebuild cached artist index from Navidrome                     |
+| `--pipeoutput`                | Print cached artist index (optionally filter with a string)    |
+| `--perpetual`                 | Run a full rating scan every 12 hours (headless mode)          |
+| `--verbose`                   | Show scoring breakdowns and summary                            |
+| `--resume`                    | Resume batch scan from the last synced artist                  |
+| `--force`                     | Force re-scan of all tracks (override cache)                   |
+| `--import-spotify-playlists`  | Import public playlists from a Spotify user ID                 |
+| `--playlist-filter`           | Filter playlists by name when importing (use with --import-spotify-playlists) |
 
 ---
 
@@ -157,6 +182,14 @@ Create your `.env` file and run:
 #### Run auto rating every 12 hours
 
     python sptnr.py --perpetual
+
+#### Import public playlists from a Spotify user
+
+    python sptnr.py --import-spotify-playlists <SPOTIFY_USER_ID>
+
+#### Import and filter playlists by name
+
+    python sptnr.py --import-spotify-playlists <SPOTIFY_USER_ID> --playlist-filter "Rock"
 
 ---
 

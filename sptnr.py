@@ -1025,6 +1025,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
     print(f"\n🎨 Starting rating for artist: {artist_name} ({len(albums)} albums)")
     rated_map = {}
     all_five_star_tracks = []
+    total_singles_count = 0  # Track total singles across all albums
 
     for album in albums:
         album_name = album.get("name", "Unknown Album")
@@ -1259,6 +1260,7 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
         # ---- Finalize, persist, and print prior → new comparison -----------
         single_count      = sum(1 for trk in sorted_album if trk.get("is_single"))
+        total_singles_count += single_count  # Add to artist total
         non_single_fours  = sum(1 for t in non_single_tracks if t.get("stars") == 4)
 
         for trk in sorted_album:
@@ -1307,6 +1309,13 @@ def rate_artist(artist_id, artist_name, verbose=False, force=False):
 
     # ---- Essential playlist (post-artist) ----------------------------------
     all_five_star_tracks = list(dict.fromkeys(all_five_star_tracks))  # dedupe
+    
+    # Print artist summary with total singles count
+    print(f"\n📊 Artist Summary for {artist_name}:")
+    print(f"   Total tracks rated: {len(rated_map)}")
+    print(f"   Total singles detected: {total_singles_count}")
+    print(f"   Total 5★ tracks: {len(all_five_star_tracks)}")
+    
     if artist_name.lower() != "various artists" and len(all_five_star_tracks) >= 10 and sync and not dry_run:
         playlist_name = f"Essential {artist_name}"
         create_playlist(playlist_name, all_five_star_tracks)
