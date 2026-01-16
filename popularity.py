@@ -831,6 +831,17 @@ def popularity_scan(
                     except Exception as e:
                         log_verbose(f"   ⚠ Could not load Discogs token from config: {e}")
                 
+                # Log which sources are available for single detection
+                sources_available = []
+                sources_available.append("Spotify")
+                if HAVE_MUSICBRAINZ:
+                    sources_available.append("MusicBrainz")
+                if HAVE_DISCOGS and discogs_token:
+                    sources_available.append("Discogs")
+                if HAVE_DISCOGS_VIDEO and discogs_token:
+                    sources_available.append("Discogs Video")
+                log_unified(f'   Using sources: {", ".join(sources_available)}')
+                
                 # Batch updates for singles detection
                 singles_updates = []
                 
@@ -909,7 +920,7 @@ def popularity_scan(
                         log_verbose(f"   ⓘ MusicBrainz client not available")
                     
                     # Third check: Discogs single detection
-                    discogs_token = os.environ.get("DISCOGS_TOKEN", "")
+                    # Use the discogs_token loaded from config.yaml above
                     if HAVE_DISCOGS and discogs_token:
                         try:
                             log_verbose(f"   Checking Discogs for single: {title}")
@@ -1076,6 +1087,13 @@ def popularity_scan(
                     # Log star distribution
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_unified(f'Star distribution for "{album}": {dist_str}')
+                
+                # Update last_scanned timestamp for all tracks in this album
+                current_timestamp = datetime.now().isoformat()
+                cursor.execute(
+                    """UPDATE tracks SET last_scanned = ? WHERE artist = ? AND album = ?""",
+                    (current_timestamp, artist, album)
+                )
                 
                 # Ensure changes are committed before logging to scan_history to avoid database lock conflicts
                 conn.commit()

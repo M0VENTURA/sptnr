@@ -413,3 +413,68 @@ def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]
         logger.error(f"Error getting Spotify playlists: {e}")
         return []
 
+
+def get_spotify_user_public_playlists(user_id: str, client_id: str, client_secret: str) -> list[dict]:
+    """
+    Fetch public playlists for a specific Spotify user.
+    
+    Args:
+        user_id: Spotify User ID (e.g., "spotify", "12345678")
+        client_id: Spotify Client ID
+        client_secret: Spotify Client Secret
+        
+    Returns:
+        List of public playlists with id, name, image_url, and track_count
+    """
+    try:
+        if not user_id:
+            logger.warning("No user_id provided for fetching public playlists")
+            return []
+        
+        # Use Client Credentials flow (doesn't require user auth)
+        client = SpotifyClient(client_id, client_secret)
+        headers = client._headers()
+        
+        playlists = []
+        next_url = f"https://api.spotify.com/v1/users/{user_id}/playlists?limit=50"
+        
+        while next_url and len(playlists) < 100:  # Limit to 100 playlists
+            try:
+                res = requests.get(next_url, headers=headers, timeout=(5, 10))
+                
+                if res.status_code == 404:
+                    logger.error(f"Spotify user not found: {user_id}")
+                    break
+                
+                res.raise_for_status()
+                data = res.json()
+                
+                for item in data.get("items", []):
+                    # Only include public playlists
+                    if item.get("public", False):
+                        playlists.append({
+                            "id": item["id"],
+                            "name": item["name"],
+                            "description": item.get("description", ""),
+                            "image_url": (item.get("images", [{}])[0] or {}).get("url"),
+                            "track_count": item.get("tracks", {}).get("total", 0),
+                            "owner": item.get("owner", {}).get("display_name", user_id),
+                            "external_url": item.get("external_urls", {}).get("spotify", "")
+                        })
+                
+                next_url = data.get("next")
+                if not next_url:
+                    break
+                
+            except Exception as e:
+                logger.error(f"Failed to fetch playlists for user {user_id}: {e}")
+                break
+        
+        logger.info(f"Fetched {len(playlists)} public playlists for user {user_id}")
+        return playlists
+    
+    except Exception as e:
+        logger.error(f"Error getting public playlists for user {user_id}: {e}")
+        return []
+
+

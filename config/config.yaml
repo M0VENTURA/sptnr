@@ -36,6 +36,7 @@ api_integrations:
     enabled: true
     client_id: "your_spotify_client_id"
     client_secret: "your_spotify_client_secret"
+    user_id: ""  # Optional: Spotify User ID to fetch public playlists from (e.g., "spotify")
   
   lastfm:
     enabled: true

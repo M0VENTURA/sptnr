@@ -278,6 +278,52 @@ def api_navidrome_playlist_detail(playlist_id):
     except Exception as e:
         logging.error(f"Failed to fetch Navidrome playlist detail: {e}", exc_info=True)
         return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
+
+# --- Spotify Playlists API ---
+@app.route("/api/spotify/playlists", methods=["GET"])
+def api_spotify_playlists():
+    """
+    Fetch public playlists for a Spotify user.
+    Query params:
+        - user_id (optional): Spotify User ID. If not provided, uses config.yaml value or returns featured playlists.
+    """
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+        client_id = spotify_config.get("client_id", "")
+        client_secret = spotify_config.get("client_secret", "")
+        
+        if not client_id or not client_secret:
+            return jsonify({"error": "Spotify not configured. Please add client_id and client_secret to config.yaml"}), 400
+        
+        # Get user_id from query param or config
+        user_id = request.args.get("user_id", "").strip()
+        if not user_id:
+            user_id = spotify_config.get("user_id", "").strip()
+        
+        if user_id:
+            # Fetch playlists for specific user
+            from api_clients.spotify import get_spotify_user_public_playlists
+            playlists = get_spotify_user_public_playlists(user_id, client_id, client_secret)
+            return jsonify({
+                "playlists": playlists,
+                "user_id": user_id,
+                "count": len(playlists)
+            })
+        else:
+            # Fallback to featured playlists
+            from api_clients.spotify import get_spotify_user_playlists
+            playlists = get_spotify_user_playlists(client_id, client_secret)
+            return jsonify({
+                "playlists": playlists,
+                "user_id": None,
+                "count": len(playlists)
+            })
+    
+    except Exception as e:
+        logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
+        return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
+
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
@@ -977,7 +1023,7 @@ def artists():
             artist,
             COUNT(DISTINCT album) as album_count,
             COUNT(*) as track_count,
-            SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as single_count,
+            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
         GROUP BY artist
@@ -1121,7 +1167,7 @@ def artist_detail(name):
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
-                SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year
             FROM tracks
@@ -5815,7 +5861,7 @@ def api_metadata():
                     SELECT 
                         AVG(stars) as avg_stars,
                         COUNT(*) as track_count,
-                        SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                        COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                         MAX(last_scanned) as last_scanned
                     FROM tracks
                     WHERE artist = ? AND album = ?
