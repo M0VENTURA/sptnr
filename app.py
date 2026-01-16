@@ -29,7 +29,6 @@ from functools import wraps
 from navidrome_import import scan_artist_to_db
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
-from start import rate_artist_single_detection
 from unified_scan import unified_scan_pipeline
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
@@ -2500,8 +2499,7 @@ def _run_artist_scan_pipeline(artist_name: str):
     """
     Helper function to run the complete scan pipeline for an artist:
     1. Navidrome import (imports metadata from Navidrome)
-    2. Popularity detection (Spotify, Last.fm, ListenBrainz)
-    3. Single detection and rating
+    2. Popularity detection (Spotify, Last.fm, ListenBrainz) + Singles detection + Star rating
     
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
@@ -2539,13 +2537,12 @@ def _run_artist_scan_pipeline(artist_name: str):
             return
 
         # Step 1: Import metadata from Navidrome for this artist
-        logging.info(f"Step 1/3: Navidrome import for artist '{artist_name}'")
+        logging.info(f"Step 1/2: Navidrome import for artist '{artist_name}'")
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
-        # Step 2 & 3: Run unified scan pipeline for this artist
-        # This handles popularity detection and single detection with proper logging
-        logging.info(f"Step 2/3: Running unified scan (popularity + singles) for artist '{artist_name}'")
-        unified_scan_pipeline(verbose=True, force=True, artist_filter=artist_name)
+        # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
+        logging.info(f"Step 2/2: Running popularity scan for artist '{artist_name}'")
+        popularity_scan(verbose=True, force=True, artist_filter=artist_name)
         
         logging.info(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
