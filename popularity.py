@@ -817,6 +817,19 @@ def popularity_scan(
                 log_unified(f'Detecting singles for "{artist} - {album}"')
                 singles_detected = 0
                 
+                # Load Discogs token from config.yaml if not in environment
+                discogs_token = os.environ.get("DISCOGS_TOKEN", "")
+                if not discogs_token:
+                    try:
+                        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+                        with open(config_path, 'r') as f:
+                            config = yaml.safe_load(f)
+                        discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+                        if discogs_token:
+                            log_verbose(f"   ✓ Loaded Discogs token from config.yaml")
+                    except Exception as e:
+                        log_verbose(f"   ⚠ Could not load Discogs token from config: {e}")
+                
                 # Batch updates for singles detection
                 singles_updates = []
                 

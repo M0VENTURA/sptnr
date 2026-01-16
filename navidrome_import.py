@@ -291,6 +291,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
                 log_unified(f"         ✓ Imported {album_tracks_processed} tracks from {album_name}")
                 logging.info(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
+            
+            # Update progress after each album to keep progress bars responsive
+            if total_artists > 0:
+                save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
         
         log_unified(f"✅ [Navidrome] Completed import for {artist_name}: {albums_scanned} albums, {tracks_imported} tracks")
         if verbose:

@@ -48,7 +48,8 @@ required_columns = {
     "discogs_video_found": "INTEGER",       # 1 if official video found on Discogs
     "is_canonical_title": "INTEGER",        # 1 if no remix/live/edit suffix
     "title_similarity_to_base": "REAL",     # Similarity score (0–1) to canonical form
-    "album_context_live": "INTEGER",        # 1 if album marked as live/unplugged
+    "album_context_live": "INTEGER",        # 1 if album marked as live
+    "album_context_unplugged": "INTEGER",   # 1 if album marked as unplugged
     # ✅ Scoring context fields for reproducibility
     "adaptive_weight_spotify": "REAL",      # Adaptive weight used for this album
     "adaptive_weight_lastfm": "REAL",       # Adaptive Last.fm weight

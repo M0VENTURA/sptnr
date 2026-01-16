@@ -727,6 +727,73 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
 
 
 
+def run_full_scan_pipeline(verbose=False, force=False):
+    """
+    Execute the full scan pipeline when full_scan is enabled in config.yaml.
+    
+    This runs three scans in sequence:
+    1. Navidrome import - imports metadata from Navidrome
+    2. Popularity detection - detects popularity and singles
+    3. Beets import - imports file paths and metadata from beets
+    
+    All progress is logged to unified_scan.log and progress bars are updated.
+    
+    Args:
+        verbose: Enable verbose output
+        force: Force re-scan of all data
+    """
+    from navidrome_import import scan_library_to_db
+    from popularity import popularity_scan
+    from beets_auto_import import BeetsAutoImporter
+    
+    log_unified("=" * 80)
+    log_unified("🔄 FULL SCAN PIPELINE STARTED")
+    log_unified("=" * 80)
+    log_unified(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_unified(f"Verbose: {verbose}, Force: {force}")
+    log_unified("")
+    
+    try:
+        # Step 1: Navidrome Import
+        log_unified("📥 STEP 1/3: Navidrome Import")
+        log_unified("-" * 80)
+        log_unified("Importing metadata from Navidrome...")
+        scan_library_to_db(verbose=verbose, force=force)
+        log_unified("✅ Navidrome import complete")
+        log_unified("")
+        
+        # Step 2: Popularity Detection (includes singles detection)
+        log_unified("⭐ STEP 2/3: Popularity Detection")
+        log_unified("-" * 80)
+        log_unified("Detecting track popularity and singles...")
+        popularity_scan(verbose=verbose, force=force, skip_header=True)
+        log_unified("✅ Popularity detection complete")
+        log_unified("")
+        
+        # Step 3: Beets Import
+        log_unified("🎵 STEP 3/3: Beets Import")
+        log_unified("-" * 80)
+        log_unified("Importing file paths and metadata from beets...")
+        importer = BeetsAutoImporter()
+        importer.import_and_capture(skip_existing=not force)
+        log_unified("✅ Beets import complete")
+        log_unified("")
+        
+        # Pipeline complete
+        log_unified("=" * 80)
+        log_unified("✅ FULL SCAN PIPELINE COMPLETE")
+        log_unified("=" * 80)
+        log_unified(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        
+    except KeyboardInterrupt:
+        log_unified("⚠️ Full scan pipeline interrupted by user")
+        raise
+    except Exception as e:
+        log_unified(f"❌ Full scan pipeline failed: {e}")
+        logging.error(f"Full scan pipeline error: {e}", exc_info=True)
+        raise
+
+
 # âœ… Main scan function that can be called from app.py
 def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
     """
@@ -1128,17 +1195,26 @@ if __name__ == "__main__":
         refresh_all_playlists_from_db()
         sys.exit(0)
 
-    # âœ… Determine which scan type to run
+    # ✅ Determine which scan type to run
     scan_type = None
-    if args.full_scan:
-        scan_type = 'full'
+    use_full_pipeline = False
+    
+    # Check if full_scan is enabled (either CLI or config)
+    if args.full_scan or config["features"].get("full_scan", False):
+        use_full_pipeline = True
     elif args.perpetual:
         scan_type = 'perpetual'
-    elif config["features"].get("full_scan") and config["features"].get("perpetual"):
-        scan_type = 'full'
     
-    # âœ… Only call run_scan if we have a scan type to execute
-    if scan_type:
+    # ✅ Execute the appropriate scan
+    if use_full_pipeline:
+        # Run the full scan pipeline (Navidrome → Popularity → Beets)
+        print("🔄 Starting full scan pipeline (Navidrome → Popularity → Beets)...")
+        run_full_scan_pipeline(
+            verbose=args.verbose or config["features"].get("verbose", False),
+            force=args.force or config["features"].get("force", False)
+        )
+    elif scan_type:
+        # Run the standard scan (perpetual mode)
         run_scan(
             scan_type=scan_type, 
             verbose=args.verbose or config["features"].get("verbose", False),
@@ -1146,7 +1222,7 @@ if __name__ == "__main__":
             dry_run=args.dry_run or config["features"].get("dry_run", False)
         )
     else:
-        print("âš ï¸ No CLI arguments and no enabled features in config.yaml. Exiting...")
+        print("⚠️ No CLI arguments and no enabled features in config.yaml. Exiting...")
         sys.exit(0)
 
 

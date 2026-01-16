@@ -2537,6 +2537,8 @@ def _run_artist_scan_pipeline(artist_name: str):
     
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
+    
+    Note: Force is always True for single artist/album scans to ensure fresh data.
     """
     # Write to file immediately to confirm function is called
     try:
@@ -2547,10 +2549,9 @@ def _run_artist_scan_pipeline(artist_name: str):
     
     log_unified(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
-        # Read force setting from config
-        config_data, _ = _read_yaml(CONFIG_PATH)
-        force = config_data.get("features", {}).get("force", False)
-        log_unified(f"Force rescan setting from config: {force}")
+        # Force is always True for single artist/album scans
+        force = True
+        log_unified(f"Force rescan: {force} (always enabled for single artist scans)")
         
         # Look up artist_id from cache; rebuild index if missing
         log_unified(f"Looking up artist_id for '{artist_name}' in database...")
