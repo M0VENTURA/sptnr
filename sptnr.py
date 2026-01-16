@@ -28,14 +28,30 @@ if not client_id or not client_secret:
     logging.error(f"{LIGHT_RED}Missing Spotify credentials.{RESET}")
     sys.exit(1)
 
+# ⚙️ Load config file
+import yaml
+CONFIG_FILE = os.path.join("config", "config.yaml")
+config = {}
+if os.path.exists(CONFIG_FILE):
+    with open(CONFIG_FILE, "r") as f:
+        config = yaml.safe_load(f) or {}
+
 # ⚙️ Global constants
 try:
-    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT", "0.5"))
-    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT", "0.5"))
+    SPOTIFY_WEIGHT = float(os.getenv("SPOTIFY_WEIGHT") or config.get("weights", {}).get("spotify", 0.5))
+    LASTFM_WEIGHT = float(os.getenv("LASTFM_WEIGHT") or config.get("weights", {}).get("lastfm", 0.5))
+    LISTENBRAINZ_WEIGHT = float(os.getenv("LISTENBRAINZ_WEIGHT") or config.get("weights", {}).get("listenbrainz", 0.2))
+    AGE_WEIGHT = float(os.getenv("AGE_WEIGHT") or config.get("weights", {}).get("age", 0.1))
 except ValueError:
-    print("⚠️ Invalid weight in .env — using defaults.")
+    print("⚠️ Invalid weight in config — using defaults.")
     SPOTIFY_WEIGHT = 0.5
     LASTFM_WEIGHT = 0.5
+    LISTENBRAINZ_WEIGHT = 0.2
+    AGE_WEIGHT = 0.1
+
+YOUTUBE_API_KEY = os.getenv("YOUTUBE_API_KEY")
+DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN")
+AUDIODB_API_KEY = os.getenv("AUDIODB_API_KEY")
 
 SLEEP_TIME = 1.5
 
@@ -55,6 +71,348 @@ for path in [RATING_CACHE_FILE, SINGLE_CACHE_FILE, CHANNEL_CACHE_FILE, INDEX_FIL
             f.write("{}")  # safe empty JSON object
 
 youtube_api_unavailable = False
+
+# 🗄️ Navidrome Integration Functions
+def build_artist_index():
+    """Build artist index from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        print(f"{LIGHT_RED}❌ Missing Navidrome credentials{RESET}")
+        return
+    
+    try:
+        res = requests.get(f"{nav_base}/rest/getArtists.view", params=auth)
+        res.raise_for_status()
+        data = res.json()
+        
+        if "subsonic-response" in data:
+            data = data["subsonic-response"]
+        
+        artist_map = {}
+        indexes = data.get("artists", {}).get("index", [])
+        
+        for group in indexes:
+            for artist in group.get("artist", []):
+                name = artist.get("name")
+                artist_id = artist.get("id")
+                if name and artist_id:
+                    artist_map[name] = artist_id
+        
+        with open(INDEX_FILE, "w", encoding="utf-8") as f:
+            json.dump(artist_map, f, indent=2)
+        
+        print(f"{LIGHT_GREEN}✅ Artist index built: {len(artist_map)} artists{RESET}")
+        return artist_map
+    except Exception as e:
+        print(f"{LIGHT_RED}❌ Failed to build artist index: {type(e).__name__} - {e}{RESET}")
+        return {}
+
+def load_artist_index():
+    """Load artist index from file"""
+    if os.path.exists(INDEX_FILE):
+        with open(INDEX_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def fetch_artist_albums(artist_id):
+    """Fetch all albums for an artist from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+    
+    try:
+        params = {**auth, "id": artist_id}
+        res = requests.get(f"{nav_base}/rest/getArtist.view", params=params)
+        res.raise_for_status()
+        data = res.json()
+        
+        if "subsonic-response" in data:
+            data = data["subsonic-response"]
+        
+        artist_data = data.get("artist", {})
+        albums = artist_data.get("album", [])
+        return albums if isinstance(albums, list) else [albums] if albums else []
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch albums: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def fetch_album_tracks(album_id):
+    """Fetch all tracks for an album from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return []
+    
+    try:
+        params = {**auth, "id": album_id}
+        res = requests.get(f"{nav_base}/rest/getAlbum.view", params=params)
+        res.raise_for_status()
+        data = res.json()
+        
+        if "subsonic-response" in data:
+            data = data["subsonic-response"]
+        
+        album_data = data.get("album", {})
+        songs = album_data.get("song", [])
+        return songs if isinstance(songs, list) else [songs] if songs else []
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch tracks: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def get_current_rating(track_id):
+    """Get current rating for a track from Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return None
+    
+    try:
+        params = {**auth, "id": track_id}
+        res = requests.get(f"{nav_base}/rest/getSong.view", params=params)
+        res.raise_for_status()
+        data = res.json()
+        
+        if "subsonic-response" in data:
+            data = data["subsonic-response"]
+        
+        song = data.get("song", {})
+        rating = song.get("userRating") or song.get("rating")
+        return rating if rating else None
+    except Exception:
+        return None
+
+def set_track_rating(track_id, stars):
+    """Set rating for a track in Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return False
+    
+    try:
+        params = {**auth, "id": track_id, "rating": stars}
+        res = requests.get(f"{nav_base}/rest/setRating.view", params=params)
+        res.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to set rating: {type(e).__name__} - {e}{RESET}")
+        return False
+
+def create_playlist(name, track_ids):
+    """Create or update a playlist in Navidrome"""
+    nav_base, auth = get_auth_params()
+    if not nav_base or not auth:
+        return False
+    
+    try:
+        # First, check if playlist exists
+        params = auth.copy()
+        res = requests.get(f"{nav_base}/rest/getPlaylists.view", params=params)
+        res.raise_for_status()
+        data = res.json()
+        
+        if "subsonic-response" in data:
+            data = data["subsonic-response"]
+        
+        playlists = data.get("playlists", {}).get("playlist", [])
+        if not isinstance(playlists, list):
+            playlists = [playlists] if playlists else []
+        
+        playlist_id = None
+        for pl in playlists:
+            if pl.get("name") == name:
+                playlist_id = pl.get("id")
+                break
+        
+        # Create or update playlist
+        if playlist_id:
+            # Clear existing playlist
+            params = {**auth, "playlistId": playlist_id}
+            requests.get(f"{nav_base}/rest/deletePlaylist.view", params=params)
+        
+        # Create new playlist
+        params = {**auth, "name": name}
+        for track_id in track_ids:
+            params[f"songId"] = track_id
+        
+        res = requests.get(f"{nav_base}/rest/createPlaylist.view", params=params)
+        res.raise_for_status()
+        return True
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to create playlist: {type(e).__name__} - {e}{RESET}")
+        return False
+
+# 🗄️ Database Functions
+import sqlite3
+
+def save_to_db(track_data):
+    """Save track data to SQLite database"""
+    db_path = config.get("database", {}).get("path", "data/sptnr.db")
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        os.makedirs(db_dir, exist_ok=True)
+    
+    try:
+        conn = sqlite3.connect(db_path)
+        cursor = conn.cursor()
+        
+        # Create table if not exists
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS tracks (
+                id TEXT PRIMARY KEY,
+                title TEXT,
+                artist TEXT,
+                album TEXT,
+                stars INTEGER,
+                score REAL,
+                is_single INTEGER,
+                single_confidence TEXT,
+                single_sources TEXT,
+                spotify_popularity INTEGER,
+                lastfm_track_playcount INTEGER,
+                lastfm_artist_playcount INTEGER,
+                genres TEXT,
+                last_scanned TEXT,
+                last_updated TEXT
+            )
+        ''')
+        
+        # Insert or update track
+        cursor.execute('''
+            INSERT OR REPLACE INTO tracks 
+            (id, title, artist, album, stars, score, is_single, single_confidence, 
+             single_sources, spotify_popularity, lastfm_track_playcount, 
+             lastfm_artist_playcount, genres, last_scanned, last_updated)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ''', (
+            track_data.get("id"),
+            track_data.get("title"),
+            track_data.get("artist"),
+            track_data.get("album"),
+            track_data.get("stars"),
+            track_data.get("score"),
+            1 if track_data.get("is_single") else 0,
+            track_data.get("single_confidence"),
+            ",".join(track_data.get("single_sources", [])),
+            track_data.get("spotify_popularity"),
+            track_data.get("lastfm_track_playcount"),
+            track_data.get("lastfm_artist_playcount"),
+            ",".join(track_data.get("genres", [])),
+            track_data.get("last_scanned"),
+            datetime.now().strftime("%Y-%m-%dT%H:%M:%S")  # Always update last_updated
+        ))
+        
+        conn.commit()
+        conn.close()
+        return True
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Database save failed: {type(e).__name__} - {e}{RESET}")
+        return False
+
+# 🎵 Genre Functions
+def get_discogs_genres(title, artist):
+    """Get genres from Discogs (stub implementation)"""
+    # This would require Discogs API integration
+    return []
+
+def get_audiodb_genres(artist):
+    """Get genres from AudioDB (stub implementation)"""
+    # This would require AudioDB API integration
+    return []
+
+def get_musicbrainz_genres(title, artist):
+    """Get genres from MusicBrainz (stub implementation)"""
+    # This would require MusicBrainz API integration
+    return []
+
+def get_top_genres_with_navidrome(sources, nav_genres, title=None, album=None):
+    """Combine genre sources and return top genres"""
+    all_genres = []
+    
+    # Add genres from all sources
+    for source, genres in sources.items():
+        all_genres.extend(genres)
+    
+    # Add Navidrome genres
+    all_genres.extend(nav_genres)
+    
+    # Count occurrences
+    genre_counts = {}
+    for genre in all_genres:
+        if genre:
+            genre_counts[genre] = genre_counts.get(genre, 0) + 1
+    
+    # Sort by count
+    sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)
+    top_genres = [g[0] for g in sorted_genres[:5]]
+    
+    return top_genres, genre_counts
+
+def adjust_genres(genre_list, artist_is_metal=False):
+    """Adjust genre list based on artist context"""
+    # Simple pass-through for now
+    return genre_list
+
+# 📊 Scoring Functions
+def compute_track_score(title, artist, release_date, spotify_score, mbid=None, verbose=False):
+    """Compute combined track score"""
+    # Age-based momentum
+    score, days_since = score_by_age(spotify_score, release_date)
+    
+    # ListenBrainz score (stub - would require API integration)
+    lb_score = 0
+    
+    # Combined score (simplified)
+    combined = (SPOTIFY_WEIGHT * spotify_score) + (AGE_WEIGHT * score)
+    
+    return combined, score, lb_score
+
+def compute_adaptive_weights(tracks, base_weights=None, clamp=(0.75, 1.25), use='mad'):
+    """Compute adaptive weights based on track data coverage"""
+    if base_weights is None:
+        base_weights = {
+            'spotify': SPOTIFY_WEIGHT,
+            'lastfm': LASTFM_WEIGHT,
+            'listenbrainz': LISTENBRAINZ_WEIGHT,
+        }
+    
+    # For now, just return base weights clamped
+    # A full implementation would analyze track data coverage and adjust
+    adapted = {}
+    for key, weight in base_weights.items():
+        adapted[key] = max(clamp[0], min(clamp[1], weight))
+    
+    return adapted
+
+def is_valid_version(title, allow_live_remix=True):
+    """Check if title is a canonical version (not live, remix, etc.)"""
+    title_lower = title.lower()
+    
+    if allow_live_remix:
+        return True
+    
+    # Check for non-canonical markers
+    markers = ['live', 'remix', 'remaster', 'demo', 'acoustic', 'unplugged', 
+               'radio edit', 'extended', 'instrumental', 'karaoke']
+    
+    for marker in markers:
+        if marker in title_lower:
+            return False
+    
+    return True
+
+# Helper functions for single detection (underscore-prefixed versions)
+def _is_lastfm_single(title, artist):
+    """Wrapper for is_lastfm_single"""
+    return is_lastfm_single(title, artist)
+
+def _is_musicbrainz_single(title, artist):
+    """Wrapper for is_musicbrainz_single"""
+    return is_musicbrainz_single(title, artist)
+
+def _is_youtube_single(title, artist, youtube_api_key):
+    """Wrapper for is_youtube_single"""
+    return is_youtube_single(title, artist, youtube_api_key)
+
+def _is_discogs_single_titleaware(title, artist, token):
+    """Wrapper for is_discogs_single_titleaware"""
+    return is_discogs_single_titleaware(title, artist, token)
 
 def strip_parentheses(s):
     return re.sub(r"\s*\(.*?\)\s*", " ", s).strip()
@@ -437,6 +795,99 @@ def get_spotify_token():
         error_description = error_info.get("error_description", "Unknown error")
         logging.error(f"{LIGHT_RED}Spotify Authentication Error: {error_description}{RESET}")
         sys.exit(1)
+
+def get_spotify_user_playlists(user_id):
+    """Fetch public playlists for a Spotify user"""
+    token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        # Get user's playlists
+        url = f"https://api.spotify.com/v1/users/{user_id}/playlists"
+        all_playlists = []
+        
+        while url:
+            res = requests.get(url, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            
+            playlists = data.get("items", [])
+            all_playlists.extend(playlists)
+            
+            url = data.get("next")  # Pagination
+        
+        return all_playlists
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch Spotify playlists: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def get_spotify_playlist_tracks(playlist_id):
+    """Fetch all tracks from a Spotify playlist"""
+    token = get_spotify_token()
+    headers = {"Authorization": f"Bearer {token}"}
+    
+    try:
+        url = f"https://api.spotify.com/v1/playlists/{playlist_id}/tracks"
+        all_tracks = []
+        
+        while url:
+            res = requests.get(url, headers=headers)
+            res.raise_for_status()
+            data = res.json()
+            
+            items = data.get("items", [])
+            all_tracks.extend(items)
+            
+            url = data.get("next")  # Pagination
+        
+        return all_tracks
+    except Exception as e:
+        print(f"{LIGHT_RED}⚠️ Failed to fetch playlist tracks: {type(e).__name__} - {e}{RESET}")
+        return []
+
+def import_spotify_playlist(user_id, playlist_name=None):
+    """Import playlists from a Spotify user"""
+    print(f"\n🎵 Fetching playlists for Spotify user: {user_id}")
+    
+    playlists = get_spotify_user_playlists(user_id)
+    if not playlists:
+        print(f"{LIGHT_RED}❌ No playlists found for user {user_id}{RESET}")
+        return
+    
+    print(f"\n📋 Found {len(playlists)} playlist(s):")
+    
+    # Filter playlists if name provided
+    if playlist_name:
+        playlists = [p for p in playlists if playlist_name.lower() in p.get("name", "").lower()]
+    
+    for i, playlist in enumerate(playlists, 1):
+        name = playlist.get("name")
+        pid = playlist.get("id")
+        track_count = playlist.get("tracks", {}).get("total", 0)
+        public = playlist.get("public", False)
+        
+        print(f"{i}. {name} ({track_count} tracks) - {'Public' if public else 'Private'}")
+        
+        # Get tracks for this playlist
+        tracks = get_spotify_playlist_tracks(pid)
+        
+        # Extract track and artist info
+        track_info = []
+        for item in tracks:
+            track = item.get("track")
+            if track:
+                track_name = track.get("name")
+                artists = ", ".join([a.get("name", "") for a in track.get("artists", [])])
+                track_info.append({"title": track_name, "artist": artists})
+        
+        print(f"   Sample tracks from '{name}':")
+        for t in track_info[:5]:  # Show first 5 tracks
+            print(f"     - {t['title']} by {t['artist']}")
+        
+        if len(track_info) > 5:
+            print(f"     ... and {len(track_info) - 5} more")
+    
+    return playlists
 
 def get_auth_params():
     base = os.getenv("NAV_BASE_URL")
@@ -1015,12 +1466,20 @@ if __name__ == "__main__":
     parser.add_argument("--sync", action="store_true", help="Push ratings to Navidrome")
     parser.add_argument("--refresh", action="store_true", help="Rebuild artist index")
     parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index (optionally filter)")
-    parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")  # ✅ Add this
+    parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose debug output")
     parser.add_argument("--resume", action="store_true", help="Resume batch scan from last synced artist")
     parser.add_argument("--force", action="store_true", help="Force re-scan of all tracks (override cache)")
+    parser.add_argument("--import-spotify-playlists", type=str, dest="spotify_user_id", metavar="USER_ID", 
+                        help="Import public playlists from a Spotify user ID")
+    parser.add_argument("--playlist-filter", type=str, help="Filter playlists by name when importing")
 
     args = parser.parse_args()
+
+    # Handle Spotify playlist import
+    if args.spotify_user_id:
+        import_spotify_playlist(args.spotify_user_id, args.playlist_filter)
+        sys.exit(0)
 
     if args.refresh or not os.path.exists(INDEX_FILE):
         build_artist_index()
@@ -1038,11 +1497,11 @@ if __name__ == "__main__":
                 print(f"⚠️ No ID found for '{name}', skipping.")
                 continue
             rated = rate_artist(artist_id, name, verbose=args.verbose, force=args.force)
-            if args.sync and not args.dry_run:
-                sync_to_navidrome(rated, name)
+            if args.sync and not args.dry_run and rated:
+                sync_to_navidrome(list(rated.values()), name)
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
-        batch_rate(sync=args.sync, dry_run=args.dry_run)
+        batch_rate(sync=args.sync, dry_run=args.dry_run, force=args.force)
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
 

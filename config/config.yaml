@@ -6,6 +6,7 @@ navidrome:
 spotify:
   client_id: "your_spotify_client_id"
   client_secret: "your_spotify_client_secret"
+  user_id: ""  # Optional: Your Spotify user ID for importing playlists
 
 lastfm:
   api_key: "your_lastfm_api_key"
@@ -22,6 +23,11 @@ weights:
 features:
   use_google: false
   use_ai: false
+  use_audiodb: false
+  clamp_min: 0.75
+  clamp_max: 1.25
+  cap_top4_pct: 0.25
+  known_singles: {}  # Format: {"Artist Name": ["Single 1", "Single 2"]}
 
 database:
   path: "/database/sptnr.db"
@@ -29,44 +35,3 @@ database:
 logging:
   level: "INFO"
   file: "/config/app.log"
-
-navidrome:
-  base_url: "http://localhost:4533"
-  user: "admin"
-  pass: "password"
-
-spotify:
-  client_id: "your_spotify_client_id"
-  client_secret: "your_spotify_client_secret"
-
-lastfm:
-  api_key: "your_lastfm_api_key"
-
-listenbrainz:
-  enabled: true
-
-weights:
-  spotify: 0.4
-  lastfm: 0.3
-  listenbrainz: 0.2
-  age: 0.1
-
-features:
-  use_google: false
-  use_ai: false
-
-database:
-  path: "/database/sptnr.db"
-
-logging:
-  level: "INFO"
-  file: "/config/app.log"
-
-features:
-  dry_run: false
-  sync: true
-  force: false
-  verbose: false
-  perpetual: false
-  batchrate: false
-  artist: []
