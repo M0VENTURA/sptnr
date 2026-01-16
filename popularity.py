@@ -920,7 +920,7 @@ def popularity_scan(
                         log_verbose(f"   ⓘ MusicBrainz client not available")
                     
                     # Third check: Discogs single detection
-                    # Use the discogs_token loaded from config.yaml at line 822-832
+                    # Use the discogs_token loaded from config.yaml above
                     if HAVE_DISCOGS and discogs_token:
                         try:
                             log_verbose(f"   Checking Discogs for single: {title}")
@@ -1089,7 +1089,6 @@ def popularity_scan(
                     log_unified(f'Star distribution for "{album}": {dist_str}')
                 
                 # Update last_scanned timestamp for all tracks in this album
-                from datetime import datetime
                 current_timestamp = datetime.now().isoformat()
                 cursor.execute(
                     """UPDATE tracks SET last_scanned = ? WHERE artist = ? AND album = ?""",
