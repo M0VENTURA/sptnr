@@ -977,7 +977,7 @@ def artists():
             artist,
             COUNT(DISTINCT album) as album_count,
             COUNT(*) as track_count,
-            SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as single_count,
+            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
         GROUP BY artist
@@ -1121,7 +1121,7 @@ def artist_detail(name):
                 album,
                 COUNT(*) as track_count,
                 AVG(stars) as avg_stars,
-                SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year
             FROM tracks
@@ -5815,7 +5815,7 @@ def api_metadata():
                     SELECT 
                         AVG(stars) as avg_stars,
                         COUNT(*) as track_count,
-                        SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                        COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                         MAX(last_scanned) as last_scanned
                     FROM tracks
                     WHERE artist = ? AND album = ?
