@@ -617,7 +617,12 @@ def popularity_scan(
         cursor = conn.cursor()
 
         # Build SQL query with optional filters
-        sql_conditions = ["(popularity_score IS NULL OR popularity_score = 0)"]
+        sql_conditions = []
+        
+        # Only filter by popularity_score if not forcing rescan
+        if not (FORCE_RESCAN or force):
+            sql_conditions.append("(popularity_score IS NULL OR popularity_score = 0)")
+        
         sql_params = []
         
         if artist_filter:
@@ -631,7 +636,7 @@ def popularity_scan(
         sql = f"""
             SELECT id, artist, title, album
             FROM tracks
-            WHERE {' AND '.join(sql_conditions)}
+            {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
         """
         
