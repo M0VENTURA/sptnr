@@ -1659,11 +1659,26 @@ def api_cached_missing_releases():
         conn = get_db()
         cursor = conn.cursor()
         
+        # Check if missing_releases table exists
         cursor.execute("""
-            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='missing_releases'
+        """)
+        table_exists = cursor.fetchone()
+        
+        if not table_exists:
+            conn.close()
+            return jsonify({
+                "artist": artist,
+                "missing": [],
+                "from_cache": False
+            })
+        
+        cursor.execute("""
+            SELECT id, title, release_type, release_date, mbid, discovered_at
             FROM missing_releases
             WHERE artist = ?
-            ORDER BY first_release_date DESC
+            ORDER BY release_date DESC
         """, (artist,))
         
         rows = cursor.fetchall()
@@ -1671,14 +1686,17 @@ def api_cached_missing_releases():
         
         missing = []
         for row in rows:
+            mbid = row[4] if len(row) > 4 else ""
+            cover_art_url = f"https://coverartarchive.org/release-group/{mbid}/front-250" if mbid else ""
+            
             missing.append({
-                "id": row[0],
+                "id": mbid or str(row[0]),
                 "title": row[1],
-                "primary_type": row[2],
-                "first_release_date": row[3],
-                "cover_art_url": row[4],
-                "category": row[5],
-                "last_checked": row[6]
+                "primary_type": row[2] if len(row) > 2 else "Album",
+                "first_release_date": row[3] if len(row) > 3 else "",
+                "cover_art_url": cover_art_url,
+                "category": (row[2] if len(row) > 2 else "Album").capitalize(),
+                "last_checked": row[5] if len(row) > 5 else ""
             })
         
         return jsonify({
@@ -1694,15 +1712,36 @@ def api_cached_missing_releases():
 
 @app.route("/api/artist/bio")
 def api_artist_bio():
-    """Get artist biography from MusicBrainz with Discogs fallback"""
+    """Get artist biography from cached metadata or external sources"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         return jsonify({"error": "Artist name required"}), 400
     
     try:
-        # First, get artist MBID from database
         conn = get_db()
         cursor = conn.cursor()
+        
+        # First check if we have cached biography in artist_metadata table
+        try:
+            cursor.execute("""
+                SELECT biography, image_url 
+                FROM artist_metadata 
+                WHERE artist_name = ?
+            """, (artist_name,))
+            metadata_row = cursor.fetchone()
+            
+            if metadata_row and metadata_row[0]:
+                # Return cached biography
+                conn.close()
+                return jsonify({
+                    "bio": metadata_row[0],
+                    "source": "Cached (Discogs)",
+                    "image_url": metadata_row[1] if len(metadata_row) > 1 else ""
+                })
+        except Exception as e:
+            logging.debug(f"artist_metadata table query failed: {e}")
+        
+        # Get artist MBID from database for MusicBrainz lookup
         cursor.execute("SELECT beets_artist_mbid FROM tracks WHERE artist = ? AND beets_artist_mbid IS NOT NULL LIMIT 1", (artist_name,))
         row = cursor.fetchone()
         conn.close()
