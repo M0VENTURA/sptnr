@@ -85,17 +85,22 @@
     </div>
   </div>
 
-  <!-- Genre Display -->
+  <!-- Genre Display and Management -->
   <div class="mb-4">
     <div class="card">
-      <div class="card-body">
-        <h5 class="card-title mb-3">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">
           <i class="bi bi-collection"></i> Genres
         </h5>
-        
-        <!-- Current Genres from Library -->
+        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
+          <i class="bi bi-cloud-download"></i> Get Online Suggestions
+        </button>
+      </div>
+      <div class="card-body">
+        <!-- Current Genres from All Tracks -->
         <div class="mb-3">
-          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Current Genres (from Library)</h6>
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
+          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist</p>
           <div class="d-flex flex-wrap gap-2" id="currentArtistGenres">
             {% if genres %}
               {% for genre in genres %}
@@ -107,14 +112,15 @@
           </div>
         </div>
         
-        <!-- Recommended Genres -->
-        <div>
-          <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres (from External Sources)</h6>
-          <div class="d-flex flex-wrap gap-2 mb-2" id="recommendedArtistGenres">
-            <span class="text-muted small">Click "Fetch Recommendations" to get genre suggestions</span>
+        <!-- Recommended Genres Section -->
+        <div id="recommendedArtistGenresSection" style="display: none;">
+          <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz</h6>
+          <p class="text-muted small mb-2">Click genres to select, then apply to all tracks by this artist</p>
+          <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedArtistGenres">
+            <span class="text-muted small">Loading...</span>
           </div>
-          <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
-            <i class="bi bi-cloud-download"></i> Fetch Recommendations
+          <button class="btn btn-sm btn-success" onclick="applySelectedArtistGenres()" id="applyArtistGenresBtn" style="display: none;">
+            <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)
           </button>
         </div>
       </div>
@@ -1220,6 +1226,10 @@ function fetchArtistGenreRecommendations() {
   const artistName = '{{ artist_name }}';
   const btn = document.getElementById('fetchArtistGenresBtn');
   const container = document.getElementById('recommendedArtistGenres');
+  const section = document.getElementById('recommendedArtistGenresSection');
+  
+  // Show the recommendations section
+  section.style.display = 'block';
   
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
@@ -1237,29 +1247,101 @@ function fetchArtistGenreRecommendations() {
       if (data.artists && data.artists.length > 0) {
         const artist = data.artists[0];
         if (artist.tags) {
-          artist.tags.slice(0, 10).forEach(tag => {
+          artist.tags.slice(0, 15).forEach(tag => {
             if (tag.name) genres.add(tag.name);
           });
         }
       }
       
       if (genres.size === 0) {
-        container.innerHTML = '<span class="text-muted small">No genre recommendations found. Genres are aggregated from albums in your library.</span>';
-      } else {
-        let html = '';
-        Array.from(genres).sort().forEach(genre => {
-          html += `<span class="badge badge-info">${escapeHtml(genre)}</span>`;
-        });
-        container.innerHTML = html;
+        container.innerHTML = '<span class="text-muted small">No genre recommendations found from MusicBrainz</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+        return;
       }
       
+      // Display genres as selectable badges
+      let html = '';
+      Array.from(genres).sort().forEach(genre => {
+        html += `<span class="badge badge-outline-primary artist-genre-badge" 
+          onclick="toggleArtistGenreSelection('${escapeHtml(genre)}')" 
+          data-artist-genre="${escapeHtml(genre)}"
+          style="cursor: pointer; border: 2px solid #0d6efd; background-color: transparent; color: #0d6efd;">
+          ${escapeHtml(genre)}
+        </span>`;
+      });
+      container.innerHTML = html;
+      
       btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+      document.getElementById('applyArtistGenresBtn').style.display = 'inline-block';
     })
     .catch(error => {
       container.innerHTML = '<span class="text-danger small">Error fetching recommendations</span>';
       btn.disabled = false;
-      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+    });
+}
+
+// Artist genre selection tracking
+let selectedArtistGenres = new Set();
+
+function toggleArtistGenreSelection(genre) {
+  const badge = document.querySelector(`[data-artist-genre="${escapeHtml(genre)}"]`);
+  if (!badge) return;
+  
+  if (selectedArtistGenres.has(genre)) {
+    selectedArtistGenres.delete(genre);
+    badge.style.backgroundColor = 'transparent';
+    badge.style.color = '#0d6efd';
+  } else {
+    selectedArtistGenres.add(genre);
+    badge.style.backgroundColor = '#0d6efd';
+    badge.style.color = '#fff';
+  }
+}
+
+function applySelectedArtistGenres() {
+  if (selectedArtistGenres.size === 0) {
+    alert('Please select at least one genre to apply');
+    return;
+  }
+  
+  const artistName = '{{ artist_name }}';
+  const genresArray = Array.from(selectedArtistGenres);
+  
+  if (!confirm(`Apply genres [${genresArray.join(', ')}] to ALL tracks by ${artistName}?\n\nThis will update the MP3 files for all albums by this artist.`)) {
+    return;
+  }
+  
+  const btn = document.getElementById('applyArtistGenresBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+  
+  fetch('/api/artist/apply-genres', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: artistName,
+      genres: genresArray
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message || 'Genres applied successfully to all artist tracks'}`);
+        // Refresh the page to show updated genres
+        location.reload();
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to apply genres'));
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)';
+      }
+    })
+    .catch(error => {
+      alert('❌ Network error: ' + error.message);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)';
     });
 }
 

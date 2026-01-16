@@ -366,48 +366,34 @@
         </div>
     </form>
     
-    <!-- Genres with Track Fit -->
-    {% if album_genres or True %}
+    <!-- Genre Information -->
     <div class="card mb-4">
-        <div class="card-body">
-            <h5 class="card-title mb-3">
-                <i class="bi bi-tags"></i> Genres
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-tags"></i> Genre Information
             </h5>
-            
-            <!-- Current Genres from Navidrome -->
-            <div class="mb-4">
-                <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Current Genres (from Navidrome/Files)</h6>
-                <div class="d-flex flex-wrap gap-2 mb-2" id="currentGenres">
-                    {% if album_genres %}
-                        {% for genre in album_genres %}
-                        <span class="badge badge-secondary">{{ genre }}</span>
-                        {% endfor %}
-                    {% else %}
-                        <span class="text-muted small">No genres set</span>
-                    {% endif %}
-                </div>
-            </div>
-            
+            <button class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                <i class="bi bi-cloud-download"></i> Get Online Suggestions
+            </button>
+        </div>
+        <div class="card-body">
             <!-- Recommended Genres from External Sources -->
-            <div class="mb-4">
-                <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres (from MusicBrainz/Discogs)</h6>
+            <div class="mb-4" id="recommendedGenresSection" style="display: none;">
+                <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz/Discogs</h6>
+                <p class="text-muted small mb-2">Click genres to select, then apply to all tracks</p>
                 <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedGenres">
-                    <span class="text-muted small">Click "Fetch Recommendations" to get genre suggestions</span>
+                    <span class="text-muted small">Loading...</span>
                 </div>
-                <div class="d-flex gap-2 flex-wrap">
-                    <button class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
-                        <i class="bi bi-cloud-download"></i> Fetch Recommendations
-                    </button>
-                    <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
-                        <i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files
-                    </button>
-                </div>
+                <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
+                    <i class="bi bi-check-circle"></i> Apply Selected to All MP3 Files
+                </button>
             </div>
             
-            <!-- Genre Track Fit Matrix -->
+            <!-- Genre Track Coverage -->
             {% if tracks or tracks_by_disc %}
-            <div class="mt-4">
-                <h6 class="mb-3">Genre Coverage by Track</h6>
+            <div>
+                <h6 class="mb-3"><i class="bi bi-music-note-list"></i> Genre Coverage Across Tracks</h6>
+                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata</p>
                 <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
                     <table class="table table-sm mb-0" style="font-size: 0.85rem;">
                         <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
@@ -1130,6 +1116,10 @@
         const albumName = '{{ album_name|safe }}';
         const btn = document.getElementById('fetchGenresBtn');
         const container = document.getElementById('recommendedGenres');
+        const section = document.getElementById('recommendedGenresSection');
+        
+        // Show the recommendations section
+        section.style.display = 'block';
         
         btn.disabled = true;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
@@ -1171,9 +1161,9 @@
             }
             
             if (genres.size === 0) {
-                container.innerHTML = '<span class="text-muted small">No genre recommendations found</span>';
+                container.innerHTML = '<span class="text-muted small">No genre recommendations found from external sources</span>';
                 btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+                btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
                 return;
             }
             
@@ -1190,13 +1180,13 @@
             container.innerHTML = html;
             
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
             document.getElementById('applyGenresBtn').style.display = 'inline-block';
         })
         .catch(error => {
             container.innerHTML = '<span class="text-danger small">Error: ' + error.message + '</span>';
             btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
         });
     }
 
