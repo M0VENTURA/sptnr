@@ -280,7 +280,12 @@ def unified_scan_pipeline(
         log_unified("=" * 70)
         logging.info("📊 Running popularity scan for all tracks...")
         try:
-            popularity_scan(verbose=verbose, resume_from=artist_filter)
+            # Pass artist_filter if specified, and skip_header to avoid duplicate headers
+            popularity_scan(
+                verbose=verbose, 
+                artist_filter=artist_filter,
+                skip_header=True
+            )
             log_unified("✅ Popularity scan completed for all tracks")
             logging.info("✅ Popularity scan completed for all tracks")
         except Exception as e:

@@ -554,12 +554,28 @@ def get_resume_artist_from_db():
         return None
 
 
-def popularity_scan(verbose: bool = False, resume_from: str = None):
-    """Detect track popularity from external sources (legacy function)"""
-    log_unified("=" * 60)
-    log_unified("Popularity Scanner Started")
-    log_unified("=" * 60)
-    log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+def popularity_scan(
+    verbose: bool = False, 
+    resume_from: str = None,
+    artist_filter: str = None,
+    album_filter: str = None,
+    skip_header: bool = False
+):
+    """
+    Detect track popularity from external sources.
+    
+    Args:
+        verbose: Enable verbose logging
+        resume_from: Artist name to resume from (for interrupted scans)
+        artist_filter: Only scan tracks for this specific artist
+        album_filter: Only scan tracks for this specific album (requires artist_filter)
+        skip_header: Skip logging the header (useful when called from unified_scan)
+    """
+    if not skip_header:
+        log_unified("=" * 60)
+        log_unified("Popularity Scanner Started")
+        log_unified("=" * 60)
+        log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Log scan mode
     if FORCE_RESCAN:
@@ -567,11 +583,21 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
     else:
         log_unified("📋 Normal scan mode - will skip albums that were already scanned")
 
+    # Log filter mode
+    if artist_filter:
+        if album_filter:
+            log_unified(f"🔍 Filtering: artist='{artist_filter}', album='{album_filter}'")
+        else:
+            log_unified(f"🔍 Filtering: artist='{artist_filter}'")
+    elif resume_from:
+        log_unified(f"⏩ Resuming from artist: '{resume_from}'")
+
     # Initialize popularity helpers to configure Spotify client
     from popularity_helpers import configure_popularity_helpers
     try:
         configure_popularity_helpers()
-        log_unified("✅ Spotify client configured")
+        if not skip_header:
+            log_unified("✅ Spotify client configured")
     except Exception as e:
         log_unified(f"⚠ Warning: Failed to configure Spotify client: {e}")
         log_unified("Popularity scan will continue but Spotify lookups may fail")
@@ -585,15 +611,27 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
         conn = get_db_connection()
         cursor = conn.cursor()
 
-        # Get all tracks that need popularity detection
-        sql = ("""
+        # Build SQL query with optional filters
+        sql_conditions = ["(popularity_score IS NULL OR popularity_score = 0)"]
+        sql_params = []
+        
+        if artist_filter:
+            sql_conditions.append("artist = ?")
+            sql_params.append(artist_filter)
+        
+        if album_filter and artist_filter:
+            sql_conditions.append("album = ?")
+            sql_params.append(album_filter)
+        
+        sql = f"""
             SELECT id, artist, title, album
             FROM tracks
-            WHERE popularity_score IS NULL OR popularity_score = 0
+            WHERE {' AND '.join(sql_conditions)}
             ORDER BY artist, album, title
-        """)
-        log_verbose(f"Executing SQL: {sql.strip()}")
-        cursor.execute(sql)
+        """
+        
+        log_verbose(f"Executing SQL: {sql.strip()} with params: {sql_params}")
+        cursor.execute(sql, sql_params)
 
         tracks = cursor.fetchall()
         log_unified(f"Found {len(tracks)} tracks to scan for popularity")
@@ -661,6 +699,13 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                 
                 log_unified(f'Scanning "{artist} - {album}" for Popularity')
                 album_scanned = 0
+                
+                # Batch updates for this album (commit once at end instead of per-track)
+                track_updates = []
+                
+                # Cache Spotify search results for singles detection reuse
+                spotify_results_cache = {}
+                
                 for track in album_tracks:
                     track_id = track["id"]
                     title = track["title"]
@@ -670,19 +715,23 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
 
                     # Try to get popularity from Spotify (using cached artist ID)
                     spotify_score = 0
+                    spotify_search_results = None
                     try:
                         if spotify_artist_id:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
-                            spotify_results = _run_with_timeout(
+                            spotify_search_results = _run_with_timeout(
                                 search_spotify_track,
                                 API_CALL_TIMEOUT,
                                 f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
                                 title, artist, album
                             )
-                            log_unified(f'Spotify search completed. Results count: {len(spotify_results) if spotify_results else 0}')
-                            if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-                                best_match = max(spotify_results, key=lambda r: r.get('popularity', 0))
+                            # Cache results for singles detection reuse
+                            spotify_results_cache[track_id] = spotify_search_results
+                            
+                            log_unified(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
+                            if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
+                                best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
                                 log_unified(f'Spotify popularity score: {spotify_score}')
                             else:
@@ -736,19 +785,10 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                         log_verbose(f"Last.fm error details: {type(e).__name__}: {str(e)}")
                         # Continue with next step even if Last.fm fails
 
-                    # Average the scores
+                    # Calculate popularity score and queue for batch update
                     if spotify_score > 0 or lastfm_score > 0:
                         popularity_score = (spotify_score + lastfm_score) / 2.0
-                        # Update track with popularity score
-                        # Note: spotify_artist_id was already batch-updated for all tracks earlier
-                        cursor.execute(
-                            "UPDATE tracks SET popularity_score = ? WHERE id = ?",
-                            (popularity_score, track_id)
-                        )
-                        # Commit immediately to prevent database locks.
-                        # Frequent commits are beneficial for SQLite WAL mode concurrency,
-                        # allowing other processes (like dashboard) to read during scan.
-                        conn.commit()
+                        track_updates.append((popularity_score, track_id))
                         scanned_count += 1
                         album_scanned += 1
                         log_unified(f'✓ Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -758,11 +798,23 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # Save progress after each track
                     save_popularity_progress(scanned_count, len(tracks))
 
+                # Batch update all popularity scores for this album in one commit
+                if track_updates:
+                    cursor.executemany(
+                        "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                        track_updates
+                    )
+                    conn.commit()
+                    log_verbose(f"Batch committed {len(track_updates)} popularity scores for album '{album}'")
+
                 log_unified(f'Album Scanned: "{artist} - {album}". Popularity Applied to {album_scanned} tracks.')
 
                 # Perform singles detection for album tracks
                 log_unified(f'Detecting singles for "{artist} - {album}"')
                 singles_detected = 0
+                
+                # Batch updates for singles detection
+                singles_updates = []
                 
                 # Get album track count for context-based confidence adjustment
                 album_track_count = len(album_tracks)
@@ -782,17 +834,23 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # Album context: downgrade medium → low if album has >3 tracks
                     single_sources = []
                     
-                    # First check: Spotify single detection
+                    # First check: Spotify single detection (REUSE cached results from popularity scan)
                     try:
-                        # For single detection, match Jan 2nd logic: call with title and artist only
-                        # (reference implementation in sptnr.py doesn't use album parameter)
-                        # This differs from popularity scoring (line 287) which uses album for better matching
-                        spotify_results = _run_with_timeout(
-                            search_spotify_track,
-                            API_CALL_TIMEOUT,
-                            f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
-                            title, artist
-                        )
+                        # OPTIMIZATION: Check cache first to avoid duplicate API call
+                        spotify_results = spotify_results_cache.get(track_id)
+                        
+                        if spotify_results is None:
+                            # Only query Spotify if not in cache (e.g., if popularity scan failed/skipped)
+                            log_verbose(f"   Spotify results not cached for {title}, querying...")
+                            spotify_results = _run_with_timeout(
+                                search_spotify_track,
+                                API_CALL_TIMEOUT,
+                                f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
+                                title, artist
+                            )
+                        else:
+                            log_verbose(f"   ✓ Reusing cached Spotify results for {title}")
+                        
                         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
                             for result in spotify_results:
                                 album_info = result.get("album", {})
@@ -879,19 +937,29 @@ def popularity_scan(verbose: bool = False, resume_from: str = None):
                     # is_single = True only for high confidence singles (5* singles)
                     is_single = single_confidence == "high"
                     
-                    # Update track with single detection results
+                    # Queue single detection results for batch update
                     if is_single or single_sources:
-                        cursor.execute(
-                            """UPDATE tracks 
-                            SET is_single = ?, single_confidence = ?, single_sources = ?
-                            WHERE id = ?""",
-                            (1 if is_single else 0, single_confidence, json.dumps(single_sources), track_id)
-                        )
-                        conn.commit()  # Commit immediately to prevent database locks
+                        singles_updates.append((
+                            1 if is_single else 0,
+                            single_confidence,
+                            json.dumps(single_sources),
+                            track_id
+                        ))
                         if is_single:
                             singles_detected += 1
                             source_str = ", ".join(single_sources)
                             log_unified(f"   ✓ Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                
+                # Batch update all singles detection results for this album in one commit
+                if singles_updates:
+                    cursor.executemany(
+                        """UPDATE tracks 
+                        SET is_single = ?, single_confidence = ?, single_sources = ?
+                        WHERE id = ?""",
+                        singles_updates
+                    )
+                    conn.commit()
+                    log_verbose(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
                 
                 log_unified(f'Singles Detection Complete: {singles_detected} single(s) detected for "{artist} - {album}"')
 
