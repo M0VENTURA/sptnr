@@ -2384,6 +2384,15 @@ def album_detail(artist, album):
                 'total_discs': 1
             }
         
+        # Count singles in this album (based on 5* ratings as those are the detected singles)
+        cursor.execute("""
+            SELECT COUNT(*) as singles_count
+            FROM tracks
+            WHERE artist = ? AND album = ? AND stars = 5
+        """, (artist, album))
+        singles_row = cursor.fetchone()
+        album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
+        
         # Aggregate genres from tracks in this album
         cursor.execute("""
             SELECT DISTINCT genres FROM tracks
@@ -2513,6 +2522,11 @@ def _run_artist_scan_pipeline(artist_name: str):
     
     logging.info(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
+        # Read force setting from config
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        force = config_data.get("features", {}).get("force", False)
+        logging.info(f"Force rescan setting from config: {force}")
+        
         # Look up artist_id from cache; rebuild index if missing
         logging.info(f"Looking up artist_id for '{artist_name}' in database...")
         conn = get_db()
@@ -2537,12 +2551,12 @@ def _run_artist_scan_pipeline(artist_name: str):
             return
 
         # Step 1: Import metadata from Navidrome for this artist
-        logging.info(f"Step 1/2: Navidrome import for artist '{artist_name}'")
-        scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
+        logging.info(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
+        scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
         # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-        logging.info(f"Step 2/2: Running popularity scan for artist '{artist_name}'")
-        popularity_scan(verbose=True, force=True, artist_filter=artist_name)
+        logging.info(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
+        popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         
         logging.info(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:

@@ -203,9 +203,53 @@ from datetime import datetime
 from collections import defaultdict
 from db_utils import get_db_connection
 
+def _get_nav_client():
+    """Get or create NavidromeClient instance."""
+    try:
+        from start import nav_client
+        if nav_client is not None:
+            return nav_client
+    except (ImportError, AttributeError):
+        pass
+    
+    # Fallback: create a new client from config
+    import yaml
+    import os
+    from api_clients.navidrome import NavidromeClient
+    
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Try multi-user config first
+        nav_users = config.get('navidrome_users')
+        if nav_users and len(nav_users) > 0:
+            # Use first user's config
+            user_config = nav_users[0]
+            base_url = user_config.get('base_url')
+            username = user_config.get('user')
+            password = user_config.get('pass')
+        else:
+            # Fall back to single-user config
+            nav_config = config.get('navidrome', {})
+            base_url = nav_config.get('base_url')
+            username = nav_config.get('user')
+            password = nav_config.get('pass')
+        
+        if base_url and username and password:
+            return NavidromeClient(base_url, username, password)
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to create NavidromeClient: {e}")
+    
+    return None
+
 def fetch_artist_albums(artist_id):
     """Fetch albums for an artist (wrapper using NavidromeClient)."""
-    from start import nav_client
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
     return nav_client.fetch_artist_albums(artist_id)
 
 def fetch_album_tracks(album_id):
@@ -214,7 +258,9 @@ def fetch_album_tracks(album_id):
     :param album_id: Album ID in Navidrome
     :return: List of track objects
     """
-    from start import nav_client
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
     return nav_client.fetch_album_tracks(album_id)
 
 def save_to_db(track_data):
@@ -231,7 +277,9 @@ def save_to_db(track_data):
 
 def build_artist_index(verbose: bool = False):
     """Build artist index from Navidrome (wrapper using NavidromeClient)."""
-    from start import nav_client
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
     artist_map_from_api = nav_client.build_artist_index()
     max_retries = 3
     for attempt in range(max_retries):

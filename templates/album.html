@@ -140,6 +140,21 @@
                 </div>
             </div>
         </div>
+        
+        {% if album_data.singles_count and album_data.singles_count > 0 %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-music-note"></i> Detected Singles
+                    </div>
+                    <div class="h6 mb-0">
+                        <span class="badge badge-info">{{ album_data.singles_count }} track{{ 's' if album_data.singles_count != 1 }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
     </div>
     {% endif %}
     
