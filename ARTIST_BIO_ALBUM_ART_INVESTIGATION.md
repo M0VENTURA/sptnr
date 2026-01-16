@@ -39,7 +39,8 @@ The popularity scan (`popularity.py`) focuses exclusively on these fields:
 ## How Artist Biography Works
 
 ### Implementation
-- **File:** `app.py` (line ~1695) and `artist_api_additions.py` (line 17-72)
+- **File:** `app.py` (line 1695-1771) - primary implementation
+- **Note:** `artist_api_additions.py` has a duplicate implementation (lines 17-72) but may not be actively used
 - **Endpoint:** `GET /api/artist/bio?name={artist_name}`
 - **Storage:** **NOT stored in database** - fetched on-demand from external APIs
 - **Sources:** 
@@ -145,8 +146,8 @@ cursor.executemany(
 
 ### Database Schema (check_db.py)
 ```python
-"cover_art_url": "TEXT",                # Album cover art URL from MusicBrainz
-"beets_artist_mbid": "TEXT",            # Artist MBID from beets (used for bio lookup)
+"cover_art_url": "TEXT",                # Line 74 - Album cover art URL from MusicBrainz
+"beets_artist_mbid": "TEXT",            # Line 85 - Artist MBID from beets (used for bio lookup)
 ```
 
 **Note:** There is NO `artist_bio` or `artist_biography` field in the database schema.
