@@ -1190,8 +1190,10 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     offset = 0
     page_size = min(limit, 100)  # MusicBrainz max is 100 per request
     max_total = 500  # Safety limit to avoid excessive API calls
+    pages_fetched = 0
+    max_pages = 10  # Additional safety: max 10 pages (1000 releases if page_size=100)
     
-    while offset < max_total:
+    while offset < max_total and pages_fetched < max_pages:
         params = {"fmt": "json", "limit": page_size, "query": query, "offset": offset}
         
         fetched_this_page = False
@@ -1217,6 +1219,7 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
                     })
                 
                 fetched_this_page = True
+                pages_fetched += 1
                 
                 # Check if we've fetched all available releases
                 if len(release_groups) < page_size or offset + len(release_groups) >= total_count:

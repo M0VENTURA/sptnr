@@ -438,6 +438,13 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
 
     def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False):
         """Scan a single artist from Navidrome and persist tracks to DB."""
+        # Import live album detection helper once per function call (PR #76)
+        try:
+            from helpers import detect_live_album
+        except ImportError:
+            def detect_live_album(album_name):
+                return {"is_live": False, "is_unplugged": False}
+        
         try:
             # Prefetch cached track IDs for this artist
             existing_track_ids: set[str] = set()
@@ -465,11 +472,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     continue
                 
                 # Detect if this is a live/unplugged album (PR #76)
-                try:
-                    from helpers import detect_live_album
-                    album_context = detect_live_album(album_name)
-                except ImportError:
-                    album_context = {"is_live": False, "is_unplugged": False}
+                album_context = detect_live_album(album_name)
                 
                 if album_context.get("is_live") or album_context.get("is_unplugged"):
                     if verbose:
@@ -496,7 +499,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     current_single = get_current_single_detection(track_id)
 
                     # Extract genre from Navidrome and use it as the initial genres value (PR #76 fix)
-                    navidrome_genre = t.get("genre", "")
+                    navidrome_genre = t.get("genre", "") or ""
                     
                     td = {
                         "id": track_id,
@@ -508,9 +511,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         "lastfm_score": 0,
                         "listenbrainz_score": 0,
                         "age_score": 0,
-                        "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre (PR #76)
-                        "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string (PR #76)
-                        "navidrome_genre": navidrome_genre,  # Also store in single genre field (PR #76)
+                        "genres": navidrome_genre,  # Initialize with Navidrome genre (PR #76)
+                        "navidrome_genres": navidrome_genre,  # Store for reference (PR #76)
+                        "navidrome_genre": navidrome_genre,  # Single genre field (PR #76)
                         "spotify_genres": [],
                         "lastfm_tags": [],
                         "discogs_genres": [],
