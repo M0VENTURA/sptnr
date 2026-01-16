@@ -111,17 +111,20 @@ def rate_track_single_detection(
     verbose: bool = False
 ) -> dict:
     """
-    Perform single detection on a track and update its fields with single status, sources, and star assignment.
+    Perform single detection on a track and update its fields with single status, sources, and confidence.
     
     This function now delegates to the canonical single detection logic in popularity.py
     to ensure consistency across the codebase.
     
     Returns the updated track dict with:
     - is_single (bool)
-    - single_sources (list)
+    - single_sources (str): JSON-encoded list of sources
     - single_confidence (str): 'high', 'medium', 'low'
-    - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
-    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
+    - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found
+    
+    Note: Parameters config, title_sim_threshold, count_short_release_as_match, and use_lastfm_single
+    are kept for backward compatibility but are not used in the delegated implementation.
+    The canonical logic in popularity.py handles these concerns internally.
     """
     # Import the canonical single detection function from popularity.py
     from popularity import detect_single_for_track
@@ -141,6 +144,10 @@ def rate_track_single_detection(
     track['is_canonical_title'] = 1 if canonical else 0
     track['title_similarity_to_base'] = sim_to_base
     
+    # Initialize audit fields to 0
+    track['discogs_single_confirmed'] = 0
+    track['discogs_video_found'] = 0
+    
     # Get album track count from context if available
     album_track_count = album_ctx.get("total_tracks", 1)
     
@@ -158,10 +165,10 @@ def rate_track_single_detection(
     single_confidence = detection_result["confidence"]
     is_single = detection_result["is_single"]
     
-    # Update track with results
+    # Update track with results - ensure sources is a list before converting to JSON
     track["is_single"] = is_single
     track["single_confidence"] = single_confidence
-    track["single_sources"] = json.dumps(sources)
+    track["single_sources"] = json.dumps(list(sources) if not isinstance(sources, list) else sources)
     
     # Set audit fields for backward compatibility with tests
     if "discogs" in sources:
