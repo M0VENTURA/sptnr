@@ -65,7 +65,23 @@ def _get_timeout_safe_discogs_client(token: str):
 logger = logging.getLogger(__name__)
 
 # Keyword filter for non-singles (defined at module level for performance)
-IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
+# Filters out alternate versions: live, acoustic, orchestral, remixes, demos, etc.
+# Note: List is used (not set) since we perform substring matching with 'any(k in title...)'
+IGNORE_SINGLE_KEYWORDS = [
+    "intro", "outro", "jam",  # intros/outros/jams
+    "live", "unplugged",  # live performances
+    "remix", "edit", "mix",  # remixes and edits
+    "acoustic", "orchestral",  # alternate arrangements
+    "demo", "instrumental", "karaoke",  # alternate versions
+    "remaster", "remastered"  # remasters
+]
+
+# Subset of keywords to check in Spotify album names (for album-level filtering)
+# These are the most common alternate version album types
+# Note: List is used (not set) since we perform substring matching with 'any(k in album_name...)'
+SPOTIFY_ALBUM_EXCLUDE_KEYWORDS = [
+    "live", "remix", "acoustic", "unplugged", "orchestral", "demo", "instrumental"
+]
 
 # Genre weighting configuration for multi-source aggregation
 GENRE_WEIGHTS = {
@@ -169,9 +185,6 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
 
     return online_top, nav_cleaned
 
-
-# Keyword filter for non-singles (defined at module level for performance)
-IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 
 # Timeout configuration for API calls (in seconds)
 API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
@@ -654,8 +667,11 @@ def detect_single_for_track(
                 album_type = album_info.get("album_type", "").lower()
                 album_name = album_info.get("name", "").lower()
                 
-                # Match Jan 2nd logic: exclude live/remix singles
-                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
+                # Match Jan 2nd logic: exclude alternate version singles
+                # Check album name for alternate version keywords
+                is_alternate_version = any(k in album_name for k in SPOTIFY_ALBUM_EXCLUDE_KEYWORDS)
+                
+                if album_type == "single" and not is_alternate_version:
                     single_sources.append("spotify")
                     if verbose:
                         log_verbose(f"   ✓ Spotify confirms single: {title}")
