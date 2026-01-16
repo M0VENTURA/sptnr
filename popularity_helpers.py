@@ -151,12 +151,13 @@ def get_spotify_artist_id(artist_name: str) -> str | None:
         conn.close()
         
         if row and row[0]:
-            logging.debug(f"Using cached Spotify artist ID for '{artist_name}': {row[0]}")
+            logging.info(f"✓ Using cached Spotify artist ID for '{artist_name}': {row[0]}")
             return row[0]
     except Exception as e:
         logging.debug(f"Failed to lookup cached Spotify artist ID for '{artist_name}': {e}")
     
     # If not in database, query Spotify API
+    logging.info(f"Querying Spotify API for artist ID: '{artist_name}'")
     return _spotify_client.get_artist_id(artist_name)
 
 
