@@ -29,7 +29,6 @@ from functools import wraps
 from navidrome_import import scan_artist_to_db
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
-from start import rate_artist_single_detection
 from unified_scan import unified_scan_pipeline
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
@@ -2500,44 +2499,56 @@ def _run_artist_scan_pipeline(artist_name: str):
     """
     Helper function to run the complete scan pipeline for an artist:
     1. Navidrome import (imports metadata from Navidrome)
-    2. Popularity detection (Spotify, Last.fm, ListenBrainz)
-    3. Single detection and rating
+    2. Popularity detection (Spotify, Last.fm, ListenBrainz) + Singles detection + Star rating
     
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
     """
+    # Write to file immediately to confirm function is called
+    try:
+        with open('/tmp/artist_scan_debug.log', 'a') as f:
+            f.write(f"{datetime.now()}: _run_artist_scan_pipeline called for {artist_name}\n")
+    except:
+        pass
+    
+    logging.info(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
         # Look up artist_id from cache; rebuild index if missing
+        logging.info(f"Looking up artist_id for '{artist_name}' in database...")
         conn = get_db()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
             row = cursor.fetchone()
             artist_id = row[0] if row else None
+            logging.info(f"Database lookup result: artist_id={artist_id}")
         finally:
             conn.close()
 
         if not artist_id:
+            logging.info(f"Artist ID not found in cache, rebuilding artist index...")
             idx = build_artist_index()
             artist_data = idx.get(artist_name, {})
             artist_id = artist_data.get("id") if artist_data else None
+            logging.info(f"After index rebuild: artist_id={artist_id}")
 
         if not artist_id:
             logging.error(f"Scan aborted: no artist_id for {artist_name}")
             return
 
         # Step 1: Import metadata from Navidrome for this artist
-        logging.info(f"Step 1/3: Navidrome import for artist '{artist_name}'")
+        logging.info(f"Step 1/2: Navidrome import for artist '{artist_name}'")
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
-        # Step 2 & 3: Run unified scan pipeline for this artist
-        # This handles popularity detection and single detection with proper logging
-        logging.info(f"Step 2/3: Running unified scan (popularity + singles) for artist '{artist_name}'")
-        unified_scan_pipeline(verbose=True, force=True, artist_filter=artist_name)
+        # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
+        logging.info(f"Step 2/2: Running popularity scan for artist '{artist_name}'")
+        popularity_scan(verbose=True, force=True, artist_filter=artist_name)
         
         logging.info(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
         logging.error(f"❌ Scan failed for {artist_name}: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
 
 
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
@@ -2670,14 +2681,21 @@ def scan_start():
     global scan_process
     
     scan_type = request.form.get("scan_type", "batchrate")
+    artist = request.form.get("artist")
+    
+    logging.info(f"scan_start called: scan_type={scan_type}, artist={artist}")
     
     # Handle artist-specific scan differently - use threaded worker instead of subprocess
     if scan_type == "artist":
-        artist = request.form.get("artist")
         if artist:
+            logging.info(f"Starting artist scan thread for: {artist}")
             threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
             flash(f"Scan started for artist: {artist}", "success")
             return redirect(url_for("artist_detail", name=artist))
+        else:
+            logging.error("Artist scan requested but no artist name provided")
+            flash("Error: No artist name provided", "danger")
+            return redirect(url_for("dashboard"))
     
     # For batch/force scans, use subprocess as before
     with scan_lock:
