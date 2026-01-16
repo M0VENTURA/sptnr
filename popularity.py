@@ -559,7 +559,8 @@ def popularity_scan(
     resume_from: str = None,
     artist_filter: str = None,
     album_filter: str = None,
-    skip_header: bool = False
+    skip_header: bool = False,
+    force: bool = False
 ):
     """
     Detect track popularity from external sources.
@@ -570,6 +571,7 @@ def popularity_scan(
         artist_filter: Only scan tracks for this specific artist
         album_filter: Only scan tracks for this specific album (requires artist_filter)
         skip_header: Skip logging the header (useful when called from unified_scan)
+        force: Force re-scan of albums even if they were already scanned
     """
     if not skip_header:
         log_unified("=" * 60)
@@ -578,7 +580,7 @@ def popularity_scan(
         log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Log scan mode
-    if FORCE_RESCAN:
+    if FORCE_RESCAN or force:
         log_unified("⚠ Force rescan mode enabled - will rescan all albums regardless of scan history")
     else:
         log_unified("📋 Normal scan mode - will skip albums that were already scanned")
@@ -692,7 +694,7 @@ def popularity_scan(
             
             for album, album_tracks in albums.items():
                 # Check if album was already scanned (unless force rescan is enabled)
-                if not FORCE_RESCAN and was_album_scanned(artist, album, 'popularity'):
+                if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity'):
                     log_unified(f'⏭ Skipping already-scanned album: "{artist} - {album}"')
                     skipped_count += 1
                     continue
@@ -1228,5 +1230,6 @@ if __name__ == "__main__":
     import argparse
     parser = argparse.ArgumentParser(description="Run popularity scan.")
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
+    parser.add_argument("--force", action="store_true", help="Force re-scan of all albums")
     args = parser.parse_args()
-    popularity_scan(verbose=args.verbose)
+    popularity_scan(verbose=args.verbose, force=args.force)

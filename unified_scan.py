@@ -284,7 +284,8 @@ def unified_scan_pipeline(
             popularity_scan(
                 verbose=verbose, 
                 artist_filter=artist_filter,
-                skip_header=True
+                skip_header=True,
+                force=force
             )
             log_unified("✅ Popularity scan completed for all tracks")
             logging.info("✅ Popularity scan completed for all tracks")
