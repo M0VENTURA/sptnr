@@ -2769,8 +2769,14 @@ def scan_unified():
             return redirect(url_for("dashboard"))
         
         try:
+            # Read force setting from config
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            force = config_data.get("features", {}).get("force", False)
+            
             # Start unified scan process
             cmd = [sys.executable, "unified_scan.py", "--verbose"]
+            if force:
+                cmd.append("--force")
             scan_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -2897,12 +2903,16 @@ def scan_popularity_route():
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
+            # Read force setting from config
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            force = config_data.get("features", {}).get("force", False)
+
             # Run popularity scan in background thread instead of subprocess
             from popularity import popularity_scan as scan_popularity_func
             def run_popularity_scan_bg():
                 try:
-                    logging.info("Starting popularity score scan in background")
-                    scan_popularity_func(verbose=False)
+                    logging.info(f"Starting popularity score scan in background (force={force})")
+                    scan_popularity_func(verbose=False, force=force)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Popularity scan completed successfully")
                 except Exception as e:
