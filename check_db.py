@@ -39,6 +39,7 @@ required_columns = {
     "single_sources": "TEXT",           # ✅ JSON or comma-delimited
     "is_spotify_single": "INTEGER",
     "navidrome_rating": "INTEGER",
+    "spotify_id": "TEXT",               # Spotify track ID
     "spotify_total_tracks": "INTEGER",
     "spotify_album_type": "TEXT",
     "lastfm_ratio": "REAL",              # ✅ Added for Last.fm ratio
