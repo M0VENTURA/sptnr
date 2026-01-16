@@ -1176,10 +1176,13 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
         log_basic(f"Essential playlist created for '{artist_name}' (top 10% by rating)")
         return
 
+    # If artist no longer meets requirements, delete existing playlist if it exists
     log_basic(
         f"No Essential playlist created for '{artist_name}' "
         f"(total={total_tracks}, five★={len(five_star_tracks)})"
     )
+    # Clean up old playlist if it exists but requirements are no longer met
+    _delete_nsp_file(playlist_name)
 
 def refresh_all_playlists_from_db():
     """

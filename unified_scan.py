@@ -438,6 +438,15 @@ def unified_scan_pipeline(
                         json.dump(playlist_json, pf, indent=2)
                     log_unified(f"✓ Essential Artist playlist created: {playlist_path}")
                     logging.info(f"✓ Essential Artist playlist created: {playlist_path}")
+                else:
+                    # Artist no longer meets requirements - delete old playlist if exists
+                    playlist_name = f"Essential {artist_name}"
+                    playlists_dir = os.path.join(music_folder, "Playlists")
+                    playlist_path = os.path.join(playlists_dir, f"{playlist_name}.nsp")
+                    if os.path.exists(playlist_path):
+                        os.remove(playlist_path)
+                        log_unified(f"🗑️ Deleted Essential playlist for {artist_name} (no longer meets requirements: {len(five_star_tracks)} five-star tracks, {total_tracks} total tracks)")
+                        logging.info(f"Deleted Essential playlist for {artist_name} (requirements not met)")
             except Exception as e:
                 logging.error(f"Failed to create Essential Artist playlist for {artist_name}: {e}")
                 log_unified(f"✗ Failed to create Essential Artist playlist for {artist_name}: {e}")
