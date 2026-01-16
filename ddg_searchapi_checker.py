@@ -17,7 +17,14 @@ from bs4 import BeautifulSoup
 logger = logging.getLogger(__name__)
 
 SEARCH_URL = "https://www.searchapi.io/api/v1/search"
-SEARCHAPI_KEY = os.getenv("SEARCHAPI_IO_KEY")
+
+# Get API key from config.yaml instead of environment variable
+from config_loader import load_config
+
+_config = load_config()
+_api_integrations = _config.get("api_integrations", {})
+_searchapi_config = _api_integrations.get("searchapi", {})
+SEARCHAPI_KEY = _searchapi_config.get("api_key", "")
 
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 "

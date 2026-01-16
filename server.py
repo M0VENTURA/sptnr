@@ -10,8 +10,13 @@ import datetime
 load_dotenv()
 
 sptnr = Flask(__name__)
-WEB_API_KEY = os.getenv("WEB_API_KEY")
-ENABLE_WEB_API_KEY = os.getenv("ENABLE_WEB_API_KEY", "True") == "True"
+
+# Load API key from config.yaml instead of environment variables
+from config_loader import load_config
+
+_config = load_config()
+WEB_API_KEY = _config.get("web_api_key", "")
+ENABLE_WEB_API_KEY = _config.get("enable_web_api_key", True)
 LOG_DIR = "data/logs"
 
 
