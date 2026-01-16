@@ -226,37 +226,36 @@ def create_playlist(name, track_ids):
             params = {**auth, "playlistId": playlist_id}
             requests.get(f"{nav_base}/rest/deletePlaylist.view", params=params)
         
-        # Create new playlist
+        # Create new playlist with tracks
+        # Note: Subsonic API expects multiple 'songId' parameters for multiple tracks
+        # We'll create an empty playlist first, then add tracks one by one
         params = {**auth, "name": name}
-        for idx, track_id in enumerate(track_ids):
-            params[f"songId"] = track_id  # API expects 'songId' parameter repeated
-        
         res = requests.get(f"{nav_base}/rest/createPlaylist.view", params=params)
         res.raise_for_status()
         
-        # If that didn't work, try adding songs one by one
-        if playlist_id is None:
-            # Get the newly created playlist ID
-            res2 = requests.get(f"{nav_base}/rest/getPlaylists.view", params=auth)
-            res2.raise_for_status()
-            data2 = res2.json()
-            if "subsonic-response" in data2:
-                data2 = data2["subsonic-response"]
-            playlists2 = data2.get("playlists", {}).get("playlist", [])
-            if not isinstance(playlists2, list):
-                playlists2 = [playlists2] if playlists2 else []
-            for pl in playlists2:
-                if pl.get("name") == name:
-                    playlist_id = pl.get("id")
-                    break
+        # Get the newly created playlist ID
+        res2 = requests.get(f"{nav_base}/rest/getPlaylists.view", params=auth)
+        res2.raise_for_status()
+        data2 = res2.json()
+        if "subsonic-response" in data2:
+            data2 = data2["subsonic-response"]
+        playlists2 = data2.get("playlists", {}).get("playlist", [])
+        if not isinstance(playlists2, list):
+            playlists2 = [playlists2] if playlists2 else []
         
-        # Add tracks to playlist one by one if needed
-        if playlist_id:
+        new_playlist_id = None
+        for pl in playlists2:
+            if pl.get("name") == name:
+                new_playlist_id = pl.get("id")
+                break
+        
+        # Add tracks to playlist one by one
+        if new_playlist_id:
             for track_id in track_ids:
                 try:
-                    add_params = {**auth, "playlistId": playlist_id, "songIdToAdd": track_id}
+                    add_params = {**auth, "playlistId": new_playlist_id, "songIdToAdd": track_id}
                     requests.get(f"{nav_base}/rest/updatePlaylist.view", params=add_params)
-                except:
+                except Exception:
                     pass  # Continue even if some tracks fail
         
         return True
@@ -321,7 +320,7 @@ def save_to_db(track_data):
             track_data.get("lastfm_artist_playcount"),
             ",".join(track_data.get("genres", [])),
             track_data.get("last_scanned"),
-            datetime.now().strftime("%Y-%m-%dT%H:%M:%S")  # Always update last_updated
+            datetime.now().strftime("%Y-%m-%dT%H:%M:%S")  # Set current timestamp as last_updated
         ))
         
         conn.commit()
@@ -1426,8 +1425,8 @@ def pipe_output(search_term=None):
         print(f"⚠️ Failed to read {INDEX_FILE}: {type(e).__name__} - {e}")
         sys.exit(1)
         
-def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
-    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}")
+def batch_rate(sync=False, dry_run=False, force=False, verbose=False, resume_from=None):
+    print(f"\n🔧 Batch config → sync: {sync}, dry_run: {dry_run}, force: {force}, verbose: {verbose}")
 
     artists = fetch_all_artists()
     artist_index = load_artist_index()
@@ -1455,7 +1454,7 @@ def batch_rate(sync=False, dry_run=False, force=False, resume_from=None):
             print(f"{LIGHT_CYAN}👀 Dry run: would scan '{name}' (ID {artist_id}){RESET}")
             continue
 
-        rated = rate_artist(artist_id, name, verbose=args.verbose, force=force)
+        rated = rate_artist(artist_id, name, verbose=verbose, force=force)
         if sync and rated:
             sync_to_navidrome(list(rated.values()), name)
 
@@ -1485,6 +1484,7 @@ def run_perpetual_mode():
             sync=args.sync,
             dry_run=args.dry_run,
             force=args.force,
+            verbose=args.verbose,
             resume_from=resume_artist
         )
 
@@ -1537,7 +1537,7 @@ if __name__ == "__main__":
                 sync_to_navidrome(list(rated.values()), name)
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
-        batch_rate(sync=args.sync, dry_run=args.dry_run, force=args.force)
+        batch_rate(sync=args.sync, dry_run=args.dry_run, force=args.force, verbose=args.verbose)
     else:
         print("⚠️ No valid command provided. Try --artist, --batchrate, or --pipeoutput.")
 
