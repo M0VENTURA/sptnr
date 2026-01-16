@@ -65,7 +65,15 @@ def _get_timeout_safe_discogs_client(token: str):
 logger = logging.getLogger(__name__)
 
 # Keyword filter for non-singles (defined at module level for performance)
-IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
+# Filters out alternate versions: live, acoustic, orchestral, remixes, demos, etc.
+IGNORE_SINGLE_KEYWORDS = [
+    "intro", "outro", "jam",  # intros/outros/jams
+    "live", "unplugged",  # live performances
+    "remix", "edit", "mix",  # remixes and edits
+    "acoustic", "orchestral",  # alternate arrangements
+    "demo", "instrumental", "karaoke",  # alternate versions
+    "remaster", "remastered"  # remasters
+]
 
 # Genre weighting configuration for multi-source aggregation
 GENRE_WEIGHTS = {
@@ -169,9 +177,6 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
 
     return online_top, nav_cleaned
 
-
-# Keyword filter for non-singles (defined at module level for performance)
-IGNORE_SINGLE_KEYWORDS = ["intro", "outro", "jam", "live", "remix"]
 
 # Timeout configuration for API calls (in seconds)
 API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
