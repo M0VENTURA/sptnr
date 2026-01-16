@@ -126,22 +126,37 @@ def log_verbose(msg):
 
 # Unified scan log function
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-unified_logger = logging.getLogger("unified_scan_webui")
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(ServicePrefixFormatter(SERVICE_PREFIX))
-unified_logger.setLevel(logging.INFO)
-if not unified_logger.hasHandlers():
-    unified_logger.addHandler(unified_file_handler)
-unified_logger.propagate = False
+_unified_logger_initialized = False
+
+def _setup_unified_logger():
+    """Setup unified logger (called once)"""
+    global _unified_logger_initialized
+    if _unified_logger_initialized:
+        return
+    
+    unified_logger = logging.getLogger("unified_scan_webui")
+    if not unified_logger.hasHandlers():
+        unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
+        unified_file_handler.setFormatter(ServicePrefixFormatter(SERVICE_PREFIX))
+        unified_logger.setLevel(logging.INFO)
+        unified_logger.addHandler(unified_file_handler)
+        unified_logger.propagate = False
+    _unified_logger_initialized = True
+
+_setup_unified_logger()
 
 def log_unified(msg):
     """Log to unified_scan.log"""
+    unified_logger = logging.getLogger("unified_scan_webui")
     unified_logger.info(msg)
+    # Flush handlers, but log errors instead of silently ignoring
     for handler in unified_logger.handlers:
         try:
             handler.flush()
-        except Exception:
-            pass
+        except (OSError, IOError) as e:
+            logging.warning(f"Failed to flush unified log handler: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error flushing unified log handler: {e}")
 
 app = Flask(__name__)
 
