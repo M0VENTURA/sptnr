@@ -72,10 +72,16 @@ class DiscogsClient:
             return self._single_cache[cache_key]
         
         try:
-            # Search for releases
+            # Search for releases with Single/EP format filter
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
-            params = {"q": f"{artist} {title}", "type": "release", "per_page": 15}
+            # Add format filter to prioritize Singles and EPs
+            params = {
+                "q": f"{artist} {title}", 
+                "type": "release", 
+                "format": "Single, EP",  # Filter for Singles & EPs
+                "per_page": 15
+            }
             
             res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             if res.status_code == 429:
