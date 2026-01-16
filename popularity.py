@@ -1055,28 +1055,34 @@ def popularity_scan(
             # After artist scans, create essential playlist based on popularity and singles
             log_unified(f'Creating essential playlist for artist: {artist}')
             
-            # Get all 5-star and single tracks for this artist
+            # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
             cursor.execute(
-                """SELECT id, title, album, stars, is_single, single_confidence, popularity_score 
+                """SELECT id, artist, album, title, stars
                 FROM tracks 
-                WHERE artist = ? AND (stars = 5 OR is_single = 1)
+                WHERE artist = ?
                 ORDER BY stars DESC, popularity_score DESC""",
                 (artist,)
             )
-            essential_tracks = cursor.fetchall()
+            all_artist_tracks = cursor.fetchall()
             
-            if essential_tracks:
-                log_unified(f'   Essential playlist will include {len(essential_tracks)} track(s):')
-                for track in essential_tracks[:10]:  # Show first 10
-                    star_display = "★" * track["stars"]
-                    single_tag = " (Single)" if track["is_single"] else ""
-                    log_unified(f'      {star_display} - {track["title"]}{single_tag} from "{track["album"]}"')
-                if len(essential_tracks) > 10:
-                    log_unified(f'      ... and {len(essential_tracks) - 10} more')
-                # TODO: Create actual Navidrome playlist via create_or_update_playlist_for_artist
-                log_unified(f'   ✓ Essential playlist ready for artist: {artist} ({len(essential_tracks)} tracks)')
+            if all_artist_tracks:
+                # Convert to list of dicts for create_or_update_playlist_for_artist
+                tracks_list = [
+                    {
+                        "id": t["id"],
+                        "artist": t["artist"],
+                        "album": t["album"],
+                        "title": t["title"],
+                        "stars": int(t["stars"]) if t["stars"] else 0
+                    }
+                    for t in all_artist_tracks
+                ]
+                
+                # Call the actual playlist creation function (applies Case A/B logic)
+                create_or_update_playlist_for_artist(artist, tracks_list)
+                log_unified(f'   ✓ Essential playlist created for artist: {artist} ({len(all_artist_tracks)} total tracks)')
             else:
-                log_unified(f'   ⚠ No essential tracks found for artist: {artist}')
+                log_unified(f'   ⚠ No tracks found for artist: {artist}')
 
         log_verbose("Committing changes to database.")
         conn.commit()
