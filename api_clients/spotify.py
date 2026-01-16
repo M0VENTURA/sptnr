@@ -124,7 +124,9 @@ class SpotifyClient:
             return self._artist_id_cache[key]
         
         try:
-            params = {"q": f'artist:{artist_name}', "type": "artist", "limit": 1}
+            # Quote artist name to handle special characters like apostrophes
+            # This improves search accuracy for artists with punctuation
+            params = {"q": f'artist:"{artist_name}"', "type": "artist", "limit": 1}
             res = self.session.get(
                 "https://api.spotify.com/v1/search",
                 headers=self._headers(),

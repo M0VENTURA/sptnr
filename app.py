@@ -124,6 +124,40 @@ def log_verbose(msg):
     if VERBOSE:
         logging.info(f"[VERBOSE] {msg}")
 
+# Unified scan log function
+UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
+_unified_logger_initialized = False
+
+def _setup_unified_logger():
+    """Setup unified logger (called once)"""
+    global _unified_logger_initialized
+    if _unified_logger_initialized:
+        return
+    
+    unified_logger = logging.getLogger("unified_scan_webui")
+    if not unified_logger.hasHandlers():
+        unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
+        unified_file_handler.setFormatter(ServicePrefixFormatter(SERVICE_PREFIX))
+        unified_logger.setLevel(logging.INFO)
+        unified_logger.addHandler(unified_file_handler)
+        unified_logger.propagate = False
+    _unified_logger_initialized = True
+
+_setup_unified_logger()
+
+def log_unified(msg):
+    """Log to unified_scan.log"""
+    unified_logger = logging.getLogger("unified_scan_webui")
+    unified_logger.info(msg)
+    # Flush handlers, but log errors instead of silently ignoring
+    for handler in unified_logger.handlers:
+        try:
+            handler.flush()
+        except (OSError, IOError) as e:
+            logging.warning(f"Failed to flush unified log handler: {e}")
+        except Exception as e:
+            logging.error(f"Unexpected error flushing unified log handler: {e}")
+
 app = Flask(__name__)
 
 # --- Unified Log API ---
@@ -2520,49 +2554,49 @@ def _run_artist_scan_pipeline(artist_name: str):
     except:
         pass
     
-    logging.info(f"🎤 Artist scan pipeline started for: {artist_name}")
+    log_unified(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
         # Read force setting from config
         config_data, _ = _read_yaml(CONFIG_PATH)
         force = config_data.get("features", {}).get("force", False)
-        logging.info(f"Force rescan setting from config: {force}")
+        log_unified(f"Force rescan setting from config: {force}")
         
         # Look up artist_id from cache; rebuild index if missing
-        logging.info(f"Looking up artist_id for '{artist_name}' in database...")
+        log_unified(f"Looking up artist_id for '{artist_name}' in database...")
         conn = get_db()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
             row = cursor.fetchone()
             artist_id = row[0] if row else None
-            logging.info(f"Database lookup result: artist_id={artist_id}")
+            log_unified(f"Database lookup result: artist_id={artist_id}")
         finally:
             conn.close()
 
         if not artist_id:
-            logging.info(f"Artist ID not found in cache, rebuilding artist index...")
+            log_unified(f"Artist ID not found in cache, rebuilding artist index...")
             idx = build_artist_index()
             artist_data = idx.get(artist_name, {})
             artist_id = artist_data.get("id") if artist_data else None
-            logging.info(f"After index rebuild: artist_id={artist_id}")
+            log_unified(f"After index rebuild: artist_id={artist_id}")
 
         if not artist_id:
-            logging.error(f"Scan aborted: no artist_id for {artist_name}")
+            log_unified(f"❌ Scan aborted: no artist_id for {artist_name}")
             return
 
         # Step 1: Import metadata from Navidrome for this artist
-        logging.info(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
+        log_unified(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
         # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-        logging.info(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
+        log_unified(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
         popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         
-        logging.info(f"✅ Scan complete for artist '{artist_name}'")
+        log_unified(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
-        logging.error(f"❌ Scan failed for {artist_name}: {e}")
+        log_unified(f"❌ Scan failed for {artist_name}: {e}")
         import traceback
-        logging.error(f"Traceback: {traceback.format_exc()}")
+        log_unified(f"Traceback: {traceback.format_exc()}")
 
 
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
@@ -2750,8 +2784,14 @@ def scan_unified():
             return redirect(url_for("dashboard"))
         
         try:
+            # Read force setting from config
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            force = config_data.get("features", {}).get("force", False)
+            
             # Start unified scan process
             cmd = [sys.executable, "unified_scan.py", "--verbose"]
+            if force:
+                cmd.append("--force")
             scan_process = subprocess.Popen(
                 cmd,
                 stdout=subprocess.PIPE,
@@ -2878,12 +2918,16 @@ def scan_popularity_route():
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
             _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
+            # Read force setting from config
+            config_data, _ = _read_yaml(CONFIG_PATH)
+            force = config_data.get("features", {}).get("force", False)
+
             # Run popularity scan in background thread instead of subprocess
             from popularity import popularity_scan as scan_popularity_func
             def run_popularity_scan_bg():
                 try:
-                    logging.info("Starting popularity score scan in background")
-                    scan_popularity_func(verbose=False)
+                    logging.info(f"Starting popularity score scan in background (force={force})")
+                    scan_popularity_func(verbose=False, force=force)
                     _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Popularity scan completed successfully")
                 except Exception as e:
