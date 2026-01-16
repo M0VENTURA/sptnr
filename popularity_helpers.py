@@ -203,11 +203,21 @@ from datetime import datetime
 from collections import defaultdict
 from db_utils import get_db_connection
 
+# Cache for NavidromeClient instance
+_nav_client_cache = None
+
 def _get_nav_client():
-    """Get or create NavidromeClient instance."""
+    """Get or create NavidromeClient instance with caching."""
+    global _nav_client_cache
+    
+    # Return cached client if available
+    if _nav_client_cache is not None:
+        return _nav_client_cache
+    
     try:
         from start import nav_client
         if nav_client is not None:
+            _nav_client_cache = nav_client
             return nav_client
     except (ImportError, AttributeError):
         pass
@@ -238,7 +248,8 @@ def _get_nav_client():
             password = nav_config.get('pass')
         
         if base_url and username and password:
-            return NavidromeClient(base_url, username, password)
+            _nav_client_cache = NavidromeClient(base_url, username, password)
+            return _nav_client_cache
     except Exception as e:
         import logging
         logging.error(f"Failed to create NavidromeClient: {e}")
