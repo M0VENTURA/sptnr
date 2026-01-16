@@ -349,7 +349,9 @@ logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 # Dedicated logger for unified_scan.log
 unified_logger = logging.getLogger("unified_scan")
 unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(formatter)
+# Use a clean formatter without service prefix for unified log
+unified_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+unified_file_handler.setFormatter(unified_formatter)
 unified_logger.setLevel(logging.INFO)
 # Always add the file handler (even if handlers exist)
 unified_logger.addHandler(unified_file_handler)
@@ -870,9 +872,10 @@ def popularity_scan(
                     except Exception as e:
                         log_verbose(f"Spotify single check failed for {title}: {e}")
                     
-                    # Second check: MusicBrainz single detection (missing from current code)
+                    # Second check: MusicBrainz single detection
                     if HAVE_MUSICBRAINZ:
                         try:
+                            log_verbose(f"   Checking MusicBrainz for single: {title}")
                             result = _run_with_timeout(
                                 is_musicbrainz_single,
                                 API_CALL_TIMEOUT,
@@ -881,16 +884,21 @@ def popularity_scan(
                             )
                             if result:
                                 single_sources.append("musicbrainz")
-                                log_verbose(f"   ✓ MusicBrainz confirms single: {title}")
+                                log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                            else:
+                                log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
                         except TimeoutError as e:
-                            log_verbose(f"MusicBrainz single check timed out for {title}: {e}")
+                            log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
                         except Exception as e:
-                            log_verbose(f"MusicBrainz single check failed for {title}: {e}")
+                            log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                    else:
+                        log_verbose(f"   ⓘ MusicBrainz client not available")
                     
                     # Third check: Discogs single detection
                     discogs_token = os.environ.get("DISCOGS_TOKEN", "")
                     if HAVE_DISCOGS and discogs_token:
                         try:
+                            log_verbose(f"   Checking Discogs for single: {title}")
                             result = _run_with_timeout(
                                 lambda: is_discogs_single(title, artist, album_context=None, token=discogs_token),
                                 API_CALL_TIMEOUT,
@@ -898,11 +906,18 @@ def popularity_scan(
                             )
                             if result:
                                 single_sources.append("discogs")
-                                log_verbose(f"   ✓ Discogs confirms single: {title}")
+                                log_unified(f"   ✓ Discogs confirms single: {title}")
+                            else:
+                                log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
                         except TimeoutError as e:
-                            log_verbose(f"Discogs single check timed out for {title}: {e}")
+                            log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
                         except Exception as e:
-                            log_verbose(f"Discogs single check failed for {title}: {e}")
+                            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
+                    else:
+                        if not HAVE_DISCOGS:
+                            log_verbose(f"   ⓘ Discogs client not available")
+                        elif not discogs_token:
+                            log_verbose(f"   ⓘ Discogs token not configured")
                     
                     # Fourth check: Discogs video detection (requires second source for confirmation)
                     if HAVE_DISCOGS_VIDEO and discogs_token:
@@ -964,7 +979,9 @@ def popularity_scan(
                     conn.commit()
                     log_verbose(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
                 
-                log_unified(f'Singles Detection Complete: {singles_detected} single(s) detected for "{artist} - {album}"')
+                # Log summary of singles detection
+                high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
+                log_unified(f'Singles Detection Complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({len(singles_updates)} tracks checked)')
 
                 # Calculate star ratings for album tracks
                 log_unified(f'Calculating star ratings for "{artist} - {album}"')

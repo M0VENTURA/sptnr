@@ -728,12 +728,12 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
 
 
 # âœ… Main scan function that can be called from app.py
-def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
+def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
     """
     Execute a scan of the music library.
     
     Args:
-        scan_type: 'batchrate' or 'perpetual' (default: 'batchrate')
+        scan_type: 'full' or 'perpetual' (default: 'full')
         verbose: Enable verbose output
         force: Force re-scan of all tracks
         dry_run: Preview only, don't apply ratings
@@ -755,7 +755,7 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
     config = load_config()
     
     # Get configuration options
-    batchrate = scan_type == 'batchrate'
+    full_scan = scan_type == 'full'
     perpetual = scan_type == 'perpetual'
     force = force or config["features"].get("force", False)
     dry_run = dry_run or config["features"].get("dry_run", False)
@@ -863,8 +863,8 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
             conn.commit()
             conn.close()
 
-    # If force is enabled for batch mode, clear entire cache before scanning
-    if force and batchrate:
+    # If force is enabled for full scan mode, clear entire cache before scanning
+    if force and full_scan:
         print("âš ï¸ Force enabled: clearing entire cached library...")
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -876,8 +876,8 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
         print("â„¹ï¸ Rebuilding artist index from Navidrome after force clear...")
         build_artist_index()
 
-    # Always run batch rating when requested
-    if batchrate:
+    # Always run full library rating when requested
+    if full_scan:
         print("â„¹ï¸ Running full library batch rating based on DB...")
         
         try:
@@ -1034,7 +1034,7 @@ def run_scan(scan_type='batchrate', verbose=False, force=False, dry_run=False):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="ðŸŽ§ SPTNR â€“ Navidrome Rating CLI with API Integration")
     parser.add_argument("--artist", type=str, nargs="+", help="Rate one or more artists by name")
-    parser.add_argument("--batchrate", action="store_true", help="Rate the entire library")
+    parser.add_argument("--full-scan", action="store_true", help="Rate the entire library")
     parser.add_argument("--refresh", action="store_true", help="Rebuild artist index cache")
     parser.add_argument("--pipeoutput", type=str, nargs="?", const="", help="Print cached artist index")
     parser.add_argument("--perpetual", action="store_true", help="Run perpetual 12-hour scan loop")
@@ -1060,8 +1060,8 @@ if __name__ == "__main__":
             config["features"]["verbose"] = True; updated = True
         if args.perpetual:
             config["features"]["perpetual"] = True; updated = True
-        if args.batchrate:
-            config["features"]["batchrate"] = True; updated = True
+        if args.full_scan:
+            config["features"]["full_scan"] = True; updated = True
         if args.artist:
             config["features"]["artist"] = args.artist; updated = True
 
@@ -1081,7 +1081,7 @@ if __name__ == "__main__":
     force    = config["features"]["force"]
     verbose  = config["features"]["verbose"]
     perpetual = config["features"]["perpetual"]
-    batchrate = config["features"]["batchrate"]
+    full_scan = config["features"].get("full_scan", False)
     artist_list = config["features"]["artist"]
     # Legacy feature flags (deprecated - use api_integrations.enabled instead)
     use_google  = config["features"].get("use_google", GOOGLE_ENABLED)
@@ -1130,12 +1130,12 @@ if __name__ == "__main__":
 
     # âœ… Determine which scan type to run
     scan_type = None
-    if args.batchrate:
-        scan_type = 'batchrate'
+    if args.full_scan:
+        scan_type = 'full'
     elif args.perpetual:
         scan_type = 'perpetual'
-    elif config["features"].get("batchrate") and config["features"].get("perpetual"):
-        scan_type = 'batchrate'
+    elif config["features"].get("full_scan") and config["features"].get("perpetual"):
+        scan_type = 'full'
     
     # âœ… Only call run_scan if we have a scan type to execute
     if scan_type:
