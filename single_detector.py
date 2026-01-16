@@ -170,7 +170,7 @@ def rate_track_single_detection(
         logging.debug(f"Checking Discogs single for '{title}' by '{artist_name}'")
         from api_clients.discogs import is_discogs_single
         if DISCOGS_ENABLED and DISCOGS_TOKEN:
-            discogs_single_hit = is_discogs_single(title, artist_name, album_ctx, token=DISCOGS_TOKEN)
+            discogs_single_hit = is_discogs_single(title, artist_name, album_ctx, token=DISCOGS_TOKEN, enabled=DISCOGS_ENABLED)
             if discogs_single_hit:
                 sources.add("discogs")
                 track['discogs_single_confirmed'] = 1
@@ -272,7 +272,7 @@ def rate_track_single_detection(
         logging.debug(f"Checking Discogs music video for '{title}' by '{artist_name}'")
         from api_clients.discogs import has_discogs_video
         if DISCOGS_ENABLED and DISCOGS_TOKEN:
-            discogs_video_hit = has_discogs_video(title, artist_name, token=DISCOGS_TOKEN)
+            discogs_video_hit = has_discogs_video(title, artist_name, token=DISCOGS_TOKEN, enabled=DISCOGS_ENABLED)
             if discogs_video_hit:
                 sources.add("discogs_video")
                 track['discogs_video_found'] = 1
