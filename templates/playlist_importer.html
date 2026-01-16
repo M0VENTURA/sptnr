@@ -90,6 +90,32 @@
           Without it, featured public playlists will be shown instead. 
           See the <a href="/help/FEATURES_PLAYLISTS" target="_blank">playlist documentation</a> for authentication setup instructions.
         </div>
+        
+        <!-- Spotify User ID Input -->
+        <div class="mb-3">
+          <label for="spotifyUserId" class="form-label">
+            <i class="bi bi-person"></i> Browse Another User's Public Playlists
+          </label>
+          <div class="input-group">
+            <input 
+              type="text" 
+              id="spotifyUserId" 
+              class="form-control" 
+              placeholder="Enter Spotify User ID (e.g., 'spotify', 'username')"
+            />
+            <button class="btn btn-outline-primary" type="button" onclick="loadSpotifyPlaylistsByUser()">
+              <i class="bi bi-search"></i> Load
+            </button>
+            <button class="btn btn-outline-secondary" type="button" onclick="clearSpotifyUserId()">
+              <i class="bi bi-x-circle"></i> Clear
+            </button>
+          </div>
+          <small class="text-secondary">
+            <i class="bi bi-info-circle"></i> 
+            Enter a Spotify User ID to view their public playlists. Leave empty to use configured user or featured playlists.
+          </small>
+        </div>
+        
         <div id="playlistsLoading" class="text-center text-muted py-4">
           <div class="spinner-border spinner-border-sm me-2" role="status">
             <span class="visually-hidden">Loading...</span>
@@ -1032,7 +1058,7 @@
   }
 
   // Load Spotify playlists on page load
-  async function loadSpotifyPlaylists() {
+  async function loadSpotifyPlaylists(userId = null) {
     const container = document.getElementById('playlistsContainer');
     const loading = document.getElementById('playlistsLoading');
     const error = document.getElementById('playlistsError');
@@ -1047,7 +1073,13 @@
     refreshBtn.disabled = true;
 
     try {
-      const response = await fetch('/api/spotify/playlists');
+      // Build URL with optional user_id parameter
+      let url = '/api/spotify/playlists';
+      if (userId) {
+        url += `?user_id=${encodeURIComponent(userId)}`;
+      }
+      
+      const response = await fetch(url);
       const data = await response.json();
 
       if (!response.ok) {
@@ -1055,10 +1087,21 @@
       }
 
       const playlists = data.playlists || [];
+      
+      // Update header to show which user's playlists are being displayed
+      const header = document.querySelector('#playlistsContainer').closest('.card').querySelector('.card-header h5');
+      if (data.user_id) {
+        header.innerHTML = `<i class="bi bi-spotify"></i> Public Playlists from <span class="badge bg-primary">${escapeHtml(data.user_id)}</span>`;
+      } else {
+        header.innerHTML = `<i class="bi bi-spotify"></i> Your Spotify Playlists`;
+      }
 
       if (playlists.length === 0) {
         loading.style.display = 'none';
         empty.style.display = 'block';
+        document.getElementById('playlistsEmptyText').innerHTML = data.user_id 
+          ? `No public playlists found for user <strong>${escapeHtml(data.user_id)}</strong>. Make sure the user ID is correct.`
+          : 'No playlists found. If you expected to see your personal playlists, make sure <code>SPOTIFY_USER_TOKEN</code> is set.';
         return;
       }
 
@@ -1095,6 +1138,22 @@
     } finally {
       refreshBtn.disabled = false;
     }
+  }
+  
+  // Load playlists by user ID
+  function loadSpotifyPlaylistsByUser() {
+    const userId = document.getElementById('spotifyUserId').value.trim();
+    if (!userId) {
+      alert('Please enter a Spotify User ID');
+      return;
+    }
+    loadSpotifyPlaylists(userId);
+  }
+  
+  // Clear user ID and reload default playlists
+  function clearSpotifyUserId() {
+    document.getElementById('spotifyUserId').value = '';
+    loadSpotifyPlaylists();
   }
 
   // Import a playlist by clicking the quick import button
