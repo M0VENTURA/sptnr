@@ -659,8 +659,11 @@ def detect_single_for_track(
                 album_type = album_info.get("album_type", "").lower()
                 album_name = album_info.get("name", "").lower()
                 
-                # Match Jan 2nd logic: exclude live/remix singles
-                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
+                # Match Jan 2nd logic: exclude alternate version singles
+                # Check both album name for alternate version keywords
+                is_alternate_version = any(k in album_name for k in ["live", "remix", "acoustic", "unplugged", "orchestral", "demo", "instrumental"])
+                
+                if album_type == "single" and not is_alternate_version:
                     single_sources.append("spotify")
                     if verbose:
                         log_verbose(f"   ✓ Spotify confirms single: {title}")
