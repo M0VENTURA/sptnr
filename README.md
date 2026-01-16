@@ -1,217 +1,193 @@
-# 🎧 SPTNR – Navidrome Rating CLI
+# 🎧 SPTNR – Navidrome Rating & Management System
 
-> **Note:** This tool was created with the help of AI assistance. While the code works well, it’s still evolving. The goal is to provide intelligent star ratings for your Navidrome library using multiple data sources.
+> **Note:** This tool was created with the help of AI assistance. While the code works well, it's still evolving. The goal is to provide intelligent star ratings and comprehensive music library management for your Navidrome library.
 
-SPTNR (pronounced "Spotner") is a command-line tool that automates and enriches star ratings inside your Navidrome library. It intelligently fuses data from **Spotify**, **Last.fm**, and other sources to assign culturally aware ratings — perfect for playlist curation, auto-tagging, or metadata enrichment.
-
----
-
-## 🧠 What Is SPTNR?
-SPTNR works by blending multiple sources of listening data:
-
-- 🎵 **Spotify popularity**
-- 📊 **Last.fm playcount ratios**
-- 🕰️ **Age-based momentum scoring**
-- 🎬 **Single detection via metadata**
+SPTNR (pronounced "Spotner") is a comprehensive music library management system that automates star ratings, provides a rich web interface, and integrates with multiple music services and download clients.
 
 ---
 
-## 🚀 What Does It Do?
-✅ Automatically rate all tracks for one or more artists  
-✅ Detect singles using trusted metadata  
-✅ Sync star ratings back to Navidrome  
-✅ Cache API results to optimize speed and reduce API calls  
-✅ Run in perpetual mode for scheduled catalog enrichment  
-✅ Print debugging info with scoring breakdowns  
-✅ Resume batch scans from the last synced artist  
-✅ Force re-scan of all tracks, overriding the cache  
-✅ Auto-scan MP3 files in music folder with progress indicators  
-✅ Auto-scan Navidrome library with progress indicators and save current ratings  
+## 🚀 Quick Start
 
----
+### Docker Installation (Recommended)
 
-
-## 🧪 How Does It Work?
-SPTNR fetches each artist’s tracks from Navidrome and calculates a composite score using:
-
-- **Spotify popularity** (weighted)
-- **Last.fm track vs. artist ratio** (weighted)
-- **Age momentum** (older tracks decay unless historically significant)
-- **Single detection boost** if confirmed via metadata (see Modular Structure below)
-
-You can adjust score weights in `config.yaml`.
-
----
-
-## 🧩 Modular Structure
-SPTNR is now fully modularized for maintainability and clarity:
-
-- **single_detector.py**: All advanced single detection logic and helpers (multi-source, weighted, explainable decisions)
-- **singledetection.py**: Only DB helpers and orchestration wrappers for single detection state (no detection logic)
-- **popularity.py**: Popularity scan logic and integration with single detection
-- **popularity_helpers.py**: Shared helpers for popularity scoring and API lookups
-
-If you want to extend or debug single detection, start with `single_detector.py`.
-
----
-
----
-
-## 🛠 Setup Requirements
-Before running SPTNR, you’ll need:
-
-- A **Navidrome API token**
-- **Spotify API credentials**
-- **Last.fm API key**
-- Docker or Python installed locally
-
----
-
-## 📦 Installation Options
-
-### ✅ Docker Installation
-Clone the repo:
-
+```bash
 git clone https://github.com/M0VENTURA/sptnr.git
 cd sptnr
-
-Build and run:
-
-docker build -t sptnr .
-docker run -v ./config:/config -v ./database:/database sptnr --batchrate --sync
-
-Or use **Docker Compose**:
-
-version: "3.9"
-services:
-sptnr:
-build: .
-container_name: sptnr
-image: moventura/sptnr:latest
-volumes:
-- ./config:/config
-- ./database:/database
-command: ["--batchrate", "--sync"]
-
-Run:
+cp docker-compose.yml.example docker-compose.yml
+# Edit docker-compose.yml with your settings
 docker compose up -d
+```
 
----
+Access the web interface at **http://localhost:5000**
 
-### ✅ Local Installation (Python)
+### Local Installation
 
+```bash
 git clone https://github.com/M0VENTURA/sptnr.git
 cd sptnr
 python3 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+python app.py
+```
 
+---
+
+## 📚 Complete Documentation
+
+**All comprehensive documentation has been moved to the `/documentation` folder.**
+
+### Quick Links
+
+- **[📖 Documentation Index](documentation/INDEX.md)** - Start here for all documentation
+- **[⚙️ Installation Guide](documentation/INSTALLATION.md)** - Detailed setup instructions
+- **[🖥️ Web UI Guide](documentation/WEB_UI_README.md)** - Complete web interface documentation
+- **[👥 Multi-User Configuration](documentation/MULTI_USER_CONFIG_GUIDE.md)** - Setting up multiple users
+- **[⭐ Rating Algorithm](documentation/STAR_RATING_ALGORITHM.md)** - How ratings are calculated
+
+### Feature Documentation
+
+- **[📊 Dashboard Features](documentation/FEATURES_DASHBOARD.md)** - Dashboard overview and statistics
+- **[🎵 Library Features](documentation/FEATURES_LIBRARY.md)** - Artists, albums, and tracks
+- **[📥 Downloads Manager](documentation/FEATURES_DOWNLOADS.md)** - qBittorrent and Soulseek integration
+- **[📝 Playlist Management](documentation/FEATURES_PLAYLISTS.md)** - Smart playlists and imports
+
+### Help in Web Interface
+
+When using the web interface, click the **Help** link in the navigation bar or the help buttons (?) on each page to access context-specific documentation.
+
+---
+
+## ✨ Key Features
+
+### 🎯 Smart Rating System
+- Automated star ratings using Spotify, Last.fm, and ListenBrainz data
+- Intelligent single detection via metadata
+- Customizable rating weights and algorithms
+- Age-based momentum scoring
+
+### 🖥️ Rich Web Interface
+- Browse artists, albums, and tracks
+- Real-time library statistics
+- Scan management and monitoring
+- Track metadata editing
+- Log viewer with live streaming
+
+### 📥 Download Integration
+- **qBittorrent**: Search and download torrents
+- **Soulseek (slskd)**: P2P music downloads
+- Integrated search from artist pages
+- One-click download management
+
+### 📝 Advanced Playlist Features
+- Smart playlists with auto-update
+- Import Spotify playlists
+- Essential artist playlists
+- Bookmark favorite items
+
+### 👥 Multi-User Support
+- Multiple Navidrome accounts
+- Per-user Spotify credentials
+- Per-user ListenBrainz tokens
+- Isolated user contexts
+
+### 🔧 Additional Features
+- Beets music tagger integration
+- MusicBrainz metadata enrichment
+- Real-time log monitoring
+- YAML-based configuration
+- Scan history tracking
+
+---
+
+## 🔑 Required API Keys
+
+You'll need credentials for:
+- **Navidrome** (your music server)
+- **Spotify API** - https://developer.spotify.com/dashboard/
+- **Last.fm API** - https://www.last.fm/api/account/create
+
+Optional:
+- **ListenBrainz** - https://listenbrainz.org/settings/profile/
+- **qBittorrent** with Web UI enabled
+- **slskd** (Soulseek daemon)
+
+See the [Installation Guide](documentation/INSTALLATION.md) for detailed setup instructions.
+
+---
+
+## 📖 Documentation Structure
+
+```
+documentation/
+├── INDEX.md                      # Documentation index
+├── INSTALLATION.md               # Setup guide
+├── README.md                     # Original detailed README
+├── WEB_UI_README.md             # Web interface guide
+├── FEATURES_*.md                 # Feature-specific docs
+├── MULTI_USER_CONFIG_GUIDE.md   # Multi-user setup
+├── STAR_RATING_ALGORITHM.md     # Rating system
+└── [Many more technical docs]    # See INDEX.md for complete list
+```
+
+---
+
+## 🎯 Common Tasks
+
+### Rate a Single Artist
+```bash
 python start.py --artist "Radiohead" --sync --verbose
+```
 
----
-
-## 🔑 How to Get API Keys
-- **Navidrome:** Settings → API Tokens → Generate token
-- **Spotify:** https://developer.spotify.com/dashboard/ → Create App → Get Client ID & Secret
-- **Last.fm:** https://www.last.fm/api/account/create
-
----
-
-## ⚙️ Configuration
-Edit `/config/config.yaml`:
-
-navidrome:
-base_url: "http://navidrome:4533"
-api_token: "your_navidrome_api_token"
-spotify:
-client_id: "your_spotify_client_id"
-client_secret: "your_spotify_client_secret"
-lastfm:
-api_key: "your_lastfm_api_key"
-features:
-dry_run: false
-sync: true
-force: false
-verbose: false
-perpetual: false
-batchrate: false
-artist: []
-
-**Optional Environment Variables:**
-- `MUSIC_FOLDER`: Path to music folder for MP3 metadata scanning (default: `/music`)
-
----
-
-## 🧭 CLI Switches
-
-python start.py [options]
-
-| Switch        | Description                                      |
-|---------------|--------------------------------------------------|
-| --artist      | Rate one or more artists manually               |
-| --batchrate   | Rate the entire library                         |
-| --dry-run     | Preview without syncing to Navidrome            |
-| --sync        | Push ratings to Navidrome                       |
-| --refresh     | Rebuild cached artist index                     |
-| --pipeoutput  | Print cached artist index                       |
-| --perpetual   | Run a full rating scan every 12 hours           |
-| --verbose     | Show scoring breakdowns                         |
-| --force       | Force re-scan of all tracks                     |
-
----
-
-## 📌 Usage Examples
-Rate and sync a single artist:
-
-python start.py --artist "Nine Inch Nails" --sync
-
-Rate entire library silently:
-
+### Rate Entire Library
+```bash
 python start.py --batchrate --sync
+```
 
-Preview scoring details without syncing:
+### Run Web Interface
+```bash
+python app.py
+# Access at http://localhost:5000
+```
 
-python start.py --artist "Radiohead" --dry-run --verbose
-
-Run auto rating every 12 hours:
-
-python start.py --perpetual
-
-Run auto rating every 12 hours with MP3 and Navidrome scans:
-
+### Automated Scans
+```bash
 python start.py --perpetual --batchrate --sync
+```
 
 ---
 
+## 🐛 Troubleshooting
 
-## 🔧 Advanced Options
-Customize scoring weights in `config.yaml`:
-
-weights:
-	spotify: 0.3
-	lastfm: 0.5
-	age: 0.2
-
----
-
-## 🛠️ Development Notes
-- All advanced single detection logic is in `single_detector.py`.
-- `singledetection.py` is now only for DB helpers and orchestration wrappers.
-- For popularity scan logic, see `popularity.py` and `popularity_helpers.py`.
+For troubleshooting and support:
+1. Check the [Installation Guide](documentation/INSTALLATION.md#troubleshooting)
+2. Review the [Quick Fix Reference](documentation/QUICK_FIX_REFERENCE.md)
+3. Check logs at `/config/sptnr.log`
+4. Open an issue on GitHub with log excerpts
 
 ---
 
+## 🤝 Contributing
 
----
-
-## 📂 Data Files
-| File                | Purpose                                  |
-|----------------------|------------------------------------------|
-| artist_index.json    | Cached Navidrome artist IDs            |
-| rating_cache.json    | Last synced ratings                    |
-| single_cache.json    | Confirmed singles                      |
-
----
-
-## 📬 Feedback & Support
 SPTNR is designed for personal/local use. PRs and ideas welcome!
+
+---
+
+## 📜 License
+
+See [LICENSE](LICENSE) file for details.
+
+---
+
+## 🌟 What Makes SPTNR Special?
+
+- **Intelligent Rating**: Fuses multiple data sources for culturally aware ratings
+- **Complete Solution**: CLI + Web UI + API in one package
+- **Modern Stack**: Flask, Bootstrap 5, SQLite/PostgreSQL
+- **Extensible**: Modular design for easy customization
+- **Well Documented**: Comprehensive docs in `/documentation` folder
+- **Active Development**: Regular updates and improvements
+
+---
+
+**For complete documentation, see the [Documentation Index](documentation/INDEX.md) or click Help in the web interface.**
