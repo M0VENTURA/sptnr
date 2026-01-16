@@ -1169,9 +1169,10 @@ def _normalize_release_title(text: str) -> str:
 
 def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict]:
     """
-    Fetch release-groups from MusicBrainz for an artist with retry logic.
+    Fetch release-groups from MusicBrainz for an artist with retry logic and pagination.
     
     Handles SSL errors, timeouts, and other network issues with exponential backoff.
+    Implements pagination to fetch all releases (not just first 100).
     """
     if not artist_name:
         return []
@@ -1180,44 +1181,74 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     releases: list[dict] = []
     query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
     url = "https://musicbrainz.org/ws/2/release-group"
-    params = {"fmt": "json", "limit": limit, "query": query}
     
     # Retry with exponential backoff
     max_retries = 3
     base_delay = 1
     
-    for attempt in range(max_retries):
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            for rg in data.get("release-groups", []) or []:
-                rg_id = rg.get("id", "")
-                primary_type = rg.get("primary-type", "")
-                releases.append({
-                    "id": rg_id,
-                    "title": rg.get("title", ""),
-                    "primary_type": primary_type,
-                    "first_release_date": rg.get("first-release-date", ""),
-                    "secondary_types": rg.get("secondary-types", []),
-                    "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
-                })
-            return releases  # Success
-        except requests.exceptions.Timeout:
-            logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name}")
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
-        except requests.exceptions.ConnectionError as e:
-            # Includes SSLEOFError and other connection issues
-            logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))
-        except requests.exceptions.RequestException as e:
-            logging.debug(f"MusicBrainz request error for {artist_name}: {e}")
-            break  # Don't retry for other request errors
-        except Exception as e:
-            logging.debug(f"Unexpected error fetching MusicBrainz releases for {artist_name}: {e}")
-            break
+    # Pagination loop - fetch all pages of results
+    offset = 0
+    page_size = min(limit, 100)  # MusicBrainz max is 100 per request
+    max_total = 500  # Safety limit to avoid excessive API calls
+    
+    while offset < max_total:
+        params = {"fmt": "json", "limit": page_size, "query": query, "offset": offset}
+        
+        fetched_this_page = False
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                release_groups = data.get("release-groups", []) or []
+                total_count = data.get("count", 0)
+                
+                for rg in release_groups:
+                    rg_id = rg.get("id", "")
+                    primary_type = rg.get("primary-type", "")
+                    releases.append({
+                        "id": rg_id,
+                        "title": rg.get("title", ""),
+                        "primary_type": primary_type,
+                        "first_release_date": rg.get("first-release-date", ""),
+                        "secondary_types": rg.get("secondary-types", []),
+                        "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
+                    })
+                
+                fetched_this_page = True
+                
+                # Check if we've fetched all available releases
+                if len(release_groups) < page_size or offset + len(release_groups) >= total_count:
+                    logging.debug(f"MusicBrainz: Fetched {len(releases)} total releases for {artist_name}")
+                    return releases  # Success - all pages fetched
+                
+                # Move to next page
+                offset += page_size
+                # MusicBrainz rate limiting: wait 1 second between requests
+                time.sleep(1.0)
+                break  # Success, exit retry loop
+                
+            except requests.exceptions.Timeout:
+                logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name} at offset {offset}")
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+            except requests.exceptions.ConnectionError as e:
+                # Includes SSLEOFError and other connection issues
+                logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+            except requests.exceptions.RequestException as e:
+                logging.debug(f"MusicBrainz request error for {artist_name}: {e}")
+                break  # Don't retry for other request errors
+            except Exception as e:
+                logging.debug(f"Unexpected error fetching MusicBrainz releases for {artist_name}: {e}")
+                break
+        
+        # If we failed to fetch this page after all retries, return what we have
+        if not fetched_this_page:
+            logging.warning(f"MusicBrainz: Failed to fetch page at offset {offset} for {artist_name}, returning {len(releases)} releases")
+            return releases
     
     return releases
 

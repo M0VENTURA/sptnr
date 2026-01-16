@@ -463,6 +463,17 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 album_id = alb.get("id")
                 if not album_id:
                     continue
+                
+                # Detect if this is a live/unplugged album (PR #76)
+                try:
+                    from helpers import detect_live_album
+                    album_context = detect_live_album(album_name)
+                except ImportError:
+                    album_context = {"is_live": False, "is_unplugged": False}
+                
+                if album_context.get("is_live") or album_context.get("is_unplugged"):
+                    if verbose:
+                        logging.info(f"      🎤 Detected live/unplugged album: {album_name}")
 
                 try:
                     tracks = fetch_album_tracks(album_id)
@@ -484,6 +495,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     # Get current single detection state to preserve user edits during Navidrome sync
                     current_single = get_current_single_detection(track_id)
 
+                    # Extract genre from Navidrome and use it as the initial genres value (PR #76 fix)
+                    navidrome_genre = t.get("genre", "")
+                    
                     td = {
                         "id": track_id,
                         "title": t.get("title", ""),
@@ -494,8 +508,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         "lastfm_score": 0,
                         "listenbrainz_score": 0,
                         "age_score": 0,
-                        "genres": [],
-                        "navidrome_genres": [t.get("genre")] if t.get("genre") else [],
+                        "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre (PR #76)
+                        "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string (PR #76)
+                        "navidrome_genre": navidrome_genre,  # Also store in single genre field (PR #76)
                         "spotify_genres": [],
                         "lastfm_tags": [],
                         "discogs_genres": [],
@@ -527,6 +542,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                         "album_artist": t.get("albumArtist", ""),
                         "bitrate": t.get("bitRate"),
                         "sample_rate": t.get("samplingRate"),
+                        # Store album context for single detection (PR #76)
+                        "album_context_live": 1 if album_context.get("is_live") else 0,
+                        "album_context_unplugged": 1 if album_context.get("is_unplugged") else 0,
                     }
                     save_to_db(td)
 
