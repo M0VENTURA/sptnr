@@ -65,6 +65,14 @@ api_integrations:
   youtube:
     enabled: false
     api_key: ""
+  
+  searchapi:
+    enabled: false
+    api_key: ""  # SearchAPI.io key for DuckDuckGo searches
+
+# Web API Configuration
+web_api_key: ""  # API key for web interface authentication
+enable_web_api_key: true  # Set to false to disable API key requirement
 
 weights:
   spotify: 0.4

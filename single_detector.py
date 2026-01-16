@@ -119,11 +119,13 @@ def rate_track_single_detection(
     - stars (int): 5 for confirmed singles, 2 for single hints, 1 default
     - Audit fields: is_canonical_title, title_similarity_to_base, discogs_single_confirmed, discogs_video_found, album_context_live
     """
-    # Get API configuration from environment
-    DISCOGS_ENABLED = bool(os.getenv("DISCOGS_TOKEN"))
-    DISCOGS_TOKEN = os.getenv("DISCOGS_TOKEN", "")
+    # Get API configuration from config.yaml
+    from config_loader import get_api_key, is_api_enabled
+    
+    DISCOGS_TOKEN = get_api_key("discogs", "token")
+    DISCOGS_ENABLED = bool(DISCOGS_TOKEN) and is_api_enabled("discogs")
     MUSICBRAINZ_ENABLED = True  # MusicBrainz doesn't require auth
-    LASTFM_API_KEY = os.getenv("LASTFM_API_KEY", "")
+    LASTFM_API_KEY = get_api_key("lastfm", "api_key")
     
     title = track.get("title", "")
     canonical_base = _base_title(title)
