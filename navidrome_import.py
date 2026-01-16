@@ -14,6 +14,10 @@ import logging
 import sqlite3
 import time
 import json
+import difflib
+import unicodedata
+import re
+import requests
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -435,7 +439,7 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         existing_albums = {row[0].lower().strip() for row in cursor.fetchall() if row[0]}
         
         # Query MusicBrainz for all release groups
-        headers = {"User-Agent": "sptnr-cli/1.0 (support@example.com)"}
+        headers = {"User-Agent": "sptnr-cli/1.0 (https://github.com/M0VENTURA/sptnr)"}
         query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
         
         all_mb_releases = []
