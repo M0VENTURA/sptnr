@@ -23,6 +23,7 @@ required_columns = {
     "discogs_album_id": "TEXT",
     "musicbrainz_genres": "TEXT",
     "spotify_album": "TEXT",
+    "spotify_album_id": "TEXT",               # Spotify album/release ID (manually editable)
     "spotify_artist": "TEXT",
     "spotify_popularity": "INTEGER",
     "spotify_release_date": "TEXT",

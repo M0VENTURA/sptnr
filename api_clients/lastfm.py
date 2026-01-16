@@ -35,6 +35,8 @@ class LastFmClient:
             logger.warning("Last.fm API key missing. Skipping lookup.")
             return {"track_play": 0}
         
+        # Note: requests library automatically handles URL encoding of params dict
+        # Special characters like '+' in artist names (e.g., "+44") are properly encoded
         params = {
             "method": "track.getInfo",
             "artist": artist,

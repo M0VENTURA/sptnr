@@ -1188,7 +1188,10 @@ def artist_detail(name):
                     SUM(COALESCE(duration, 0)) as total_duration,
                     MIN(year) as earliest_year,
                     MAX(year) as latest_year,
-                    MAX(beets_artist_mbid) as beets_artist_mbid
+                    MAX(beets_artist_mbid) as beets_artist_mbid,
+                    MAX(spotify_artist_id) as spotify_artist_id,
+                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
+                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -1203,7 +1206,10 @@ def artist_detail(name):
                     SUM(COALESCE(duration, 0)) as total_duration,
                     MIN(year) as earliest_year,
                     MAX(year) as latest_year,
-                    NULL as beets_artist_mbid
+                    NULL as beets_artist_mbid,
+                    NULL as spotify_artist_id,
+                    NULL as lastfm_artist_mbid,
+                    NULL as musicbrainz_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -2037,6 +2043,118 @@ def api_artist_set_image():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/artist/update-ids", methods=["POST"])
+def api_artist_update_ids():
+    """Update artist IDs (Spotify, Last.fm, MusicBrainz) for an artist"""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist")
+        spotify_id = data.get("spotify_artist_id", "").strip()
+        lastfm_mbid = data.get("lastfm_artist_mbid", "").strip()
+        musicbrainz_id = data.get("musicbrainz_artist_id", "").strip()
+        
+        if not artist_name:
+            return jsonify({"error": "Missing artist name"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update all tracks for this artist with the new IDs
+        # Only update non-NULL values
+        updates = []
+        params = []
+        
+        if spotify_id:
+            updates.append("spotify_artist_id = ?")
+            params.append(spotify_id)
+        
+        if lastfm_mbid:
+            updates.append("lastfm_artist_mbid = ?")
+            params.append(lastfm_mbid)
+        
+        if musicbrainz_id:
+            updates.append("musicbrainz_artist_id = ?")
+            params.append(musicbrainz_id)
+        
+        if updates:
+            params.append(artist_name)
+            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ?"
+            cursor.execute(query, params)
+            conn.commit()
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Artist IDs updated for {artist_name}",
+            "updated": {
+                "spotify_artist_id": spotify_id if spotify_id else None,
+                "lastfm_artist_mbid": lastfm_mbid if lastfm_mbid else None,
+                "musicbrainz_artist_id": musicbrainz_id if musicbrainz_id else None
+            }
+        })
+    except Exception as e:
+        logging.error(f"Error updating artist IDs: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/album/update-ids", methods=["POST"])
+def api_album_update_ids():
+    """Update album/release IDs for an album"""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist")
+        album_name = data.get("album")
+        spotify_album_id = data.get("spotify_album_id", "").strip()
+        musicbrainz_release_id = data.get("musicbrainz_release_id", "").strip()
+        discogs_release_id = data.get("discogs_release_id", "").strip()
+        
+        if not artist_name or not album_name:
+            return jsonify({"error": "Missing artist or album name"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update all tracks for this album with the new IDs
+        updates = []
+        params = []
+        
+        if spotify_album_id:
+            updates.append("spotify_album_id = ?")
+            params.append(spotify_album_id)
+        
+        if musicbrainz_release_id:
+            updates.append("beets_album_mbid = ?")
+            params.append(musicbrainz_release_id)
+        
+        if discogs_release_id:
+            updates.append("discogs_album_id = ?")
+            params.append(discogs_release_id)
+        
+        if updates:
+            params.extend([artist_name, album_name])
+            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
+            cursor.execute(query, params)
+            conn.commit()
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Album IDs updated for {album_name}",
+            "updated": {
+                "spotify_album_id": spotify_album_id if spotify_album_id else None,
+                "musicbrainz_release_id": musicbrainz_release_id if musicbrainz_release_id else None,
+                "discogs_release_id": discogs_release_id if discogs_release_id else None
+            }
+        })
+    except Exception as e:
+        logging.error(f"Error updating album IDs: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+
+
 @app.route("/api/album/search-art")
 def api_album_search_art():
     """Search for album art on MusicBrainz, Discogs, or Spotify"""
@@ -2469,7 +2587,8 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(beets_album_mbid) as beets_album_mbid,
-                    MAX(discogs_album_id) as discogs_album_id
+                    MAX(discogs_album_id) as discogs_album_id,
+                    MAX(spotify_album_id) as spotify_album_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -2486,7 +2605,8 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     NULL as beets_album_mbid,
-                    NULL as discogs_album_id
+                    NULL as discogs_album_id,
+                    NULL as spotify_album_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
