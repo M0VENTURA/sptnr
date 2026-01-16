@@ -286,6 +286,74 @@ class DiscogsClient:
         except Exception as e:
             logger.error(f"Discogs lookup failed for '{title}': {e}")
             return []
+    
+    def get_artist_biography(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> dict:
+        """
+        Fetch artist biography/profile from Discogs API.
+        
+        Args:
+            artist: Artist name
+            timeout: Request timeout
+            
+        Returns:
+            Dictionary with biography info including 'profile', 'real_name', 'urls', 'images'
+        """
+        if not self.enabled or not self.token:
+            logger.debug("Discogs artist biography lookup skipped (disabled or token missing).")
+            return {}
+        
+        try:
+            # Search for artist
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {"q": artist, "type": "artist", "per_page": 5}
+            
+            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            res.raise_for_status()
+            
+            results = res.json().get("results", [])
+            if not results:
+                logger.debug(f"No Discogs artist found for: {artist}")
+                return {}
+            
+            # Get the best match (first result, Discogs search is pretty accurate)
+            artist_url = results[0].get("resource_url")
+            if not artist_url:
+                return {}
+            
+            # Fetch full artist details
+            _throttle_discogs()
+            artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
+            if artist_res.status_code == 429:
+                retry_after = int(artist_res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                artist_res = self.session.get(artist_url, headers=self.headers, timeout=timeout)
+            artist_res.raise_for_status()
+            
+            artist_data = artist_res.json()
+            
+            # Extract relevant biography info
+            bio_info = {
+                "profile": artist_data.get("profile", ""),
+                "real_name": artist_data.get("realname", ""),
+                "urls": artist_data.get("urls", []),
+                "images": artist_data.get("images", []),
+                "members": artist_data.get("members", []),
+                "name_variations": artist_data.get("namevariations", []),
+                "discogs_id": artist_data.get("id"),
+                "discogs_url": artist_data.get("uri", "")
+            }
+            
+            logger.debug(f"Found Discogs biography for '{artist}': {len(bio_info.get('profile', ''))} chars")
+            return bio_info
+            
+        except Exception as e:
+            logger.error(f"Discogs artist biography lookup failed for '{artist}': {e}")
+            return {}
 
 
 # Backward-compatible module functions
@@ -312,3 +380,8 @@ def has_discogs_video(title: str, artist: str, token: str = "", enabled: bool = 
     """Backward-compatible wrapper for video detection."""
     client = _get_discogs_client(token, enabled=enabled)
     return client.has_official_video(title, artist, timeout)
+
+def get_discogs_artist_biography(artist: str, token: str = "", enabled: bool = True, timeout: tuple[int, int] | int = (5, 10)) -> dict:
+    """Backward-compatible wrapper for artist biography lookup."""
+    client = _get_discogs_client(token, enabled=enabled)
+    return client.get_artist_biography(artist, timeout)
