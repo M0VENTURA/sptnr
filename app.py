@@ -3033,10 +3033,18 @@ def scan_stop_popularity():
     global scan_process_popularity
     
     with scan_lock:
-        if scan_process_popularity and scan_process_popularity.poll() is None:
-            scan_process_popularity.terminate()
-            scan_process_popularity.wait(timeout=10)
-            flash("Popularity scan stopped", "info")
+        if scan_process_popularity is not None:
+            if isinstance(scan_process_popularity, dict):
+                thread = scan_process_popularity.get('thread')
+                if thread and thread.is_alive():
+                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
+                    # The scan will check for stop signals and exit gracefully
+                    scan_process_popularity = None
+                    flash("Popularity scan stop requested (will finish current track)", "info")
+                else:
+                    flash("No popularity scan is currently running", "warning")
+            else:
+                flash("No popularity scan is currently running", "warning")
         else:
             flash("No popularity scan is currently running", "warning")
     
