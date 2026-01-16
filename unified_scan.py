@@ -273,6 +273,26 @@ def unified_scan_pipeline(
         log_verbose("Building artist index...")
         artist_index = build_artist_index()
 
+        # Run popularity scan ONCE for all tracks before processing artists
+        # This ensures artist IDs are looked up only once and cached in the database
+        log_unified("=" * 70)
+        log_unified("📊 Phase 1: Popularity Detection (Spotify, Last.fm, ListenBrainz)")
+        log_unified("=" * 70)
+        logging.info("📊 Running popularity scan for all tracks...")
+        try:
+            popularity_scan(verbose=verbose, resume_from=artist_filter)
+            log_unified("✅ Popularity scan completed for all tracks")
+            logging.info("✅ Popularity scan completed for all tracks")
+        except Exception as e:
+            logging.error(f"❌ Popularity scan failed: {e}")
+            log_unified(f"❌ Popularity scan failed: {e}")
+            # Continue with singles detection even if popularity scan fails
+        
+        log_unified("")
+        log_unified("=" * 70)
+        log_unified("🎵 Phase 2: Singles Detection & Star Rating")
+        log_unified("=" * 70)
+
         # Process each artist
         for idx, artist_name in enumerate(artists, 1):
             progress.current_artist = artist_name
@@ -321,42 +341,13 @@ def unified_scan_pipeline(
                 album_track_count = cursor.fetchone()['count']
                 conn.close()
                 log_verbose(f"Album {album_name} has {album_track_count} tracks.")
-                # Phase 1: Popularity Detection
-                progress.current_phase = "popularity"
-                progress.save()
-                if progress_callback:
-                    progress_callback(progress)
-                log_unified(f"      → Phase: Popularity detection")
-                logging.info(f"      → Phase: Popularity detection")
-                if verbose:
-                    log_verbose(f"Starting popularity scan for album {album_name} by {artist_name}")
-                api_skipped = []
-                try:
-                    popularity_scan(verbose=verbose)
-                    # Log popularity scan for this album
-                    log_album_scan(artist_name, album_name, 'popularity', album_track_count, 'completed', 'Spotify, Last.fm, ListenBrainz')
-                    log_unified(f"      ✓ Popularity scan complete for album '{album_name}' ({album_track_count} tracks)")
-                except Exception as e:
-                    logging.error(f"      ✗ Popularity scan failed: {e}")
-                    log_album_scan(artist_name, album_name, 'popularity', 0, 'error', str(e))
-                    logging.info(f"      ✗ Popularity scan failed for album '{album_name}': {e}")
-                    # Try to parse which API failed from the error message
-                    err_str = str(e).lower()
-                    if 'spotify' in err_str:
-                        api_skipped.append('Spotify')
-                    if 'last.fm' in err_str or 'lastfm' in err_str:
-                        api_skipped.append('Last.fm')
-                    if 'listenbrainz' in err_str:
-                        api_skipped.append('ListenBrainz')
-                if api_skipped:
-                    log_unified(f"      ⚠️ Skipped APIs for album '{album_name}': {', '.join(api_skipped)} (connection issue)")
-                # Phase 2: Single Detection & Rating
+                # Singles Detection & Rating (popularity already done in Phase 1)
                 progress.current_phase = "singles"
                 progress.save()
                 if progress_callback:
                     progress_callback(progress)
-                log_unified(f"      → Phase: Single detection & rating")
-                logging.info(f"      → Phase: Single detection & rating")
+                log_unified(f"      → Singles detection & rating")
+                logging.info(f"      → Singles detection & rating")
                 try:
                     rate_artist(artist_id, artist_name, verbose=verbose, force=force)
                     # Log singles detection scan - source will be added by rate_artist
