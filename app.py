@@ -2506,21 +2506,26 @@ def _run_artist_scan_pipeline(artist_name: str):
     All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
     """
+    logging.info(f"🎤 Artist scan pipeline started for: {artist_name}")
     try:
         # Look up artist_id from cache; rebuild index if missing
+        logging.info(f"Looking up artist_id for '{artist_name}' in database...")
         conn = get_db()
         try:
             cursor = conn.cursor()
             cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
             row = cursor.fetchone()
             artist_id = row[0] if row else None
+            logging.info(f"Database lookup result: artist_id={artist_id}")
         finally:
             conn.close()
 
         if not artist_id:
+            logging.info(f"Artist ID not found in cache, rebuilding artist index...")
             idx = build_artist_index()
             artist_data = idx.get(artist_name, {})
             artist_id = artist_data.get("id") if artist_data else None
+            logging.info(f"After index rebuild: artist_id={artist_id}")
 
         if not artist_id:
             logging.error(f"Scan aborted: no artist_id for {artist_name}")
@@ -2538,6 +2543,8 @@ def _run_artist_scan_pipeline(artist_name: str):
         logging.info(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
         logging.error(f"❌ Scan failed for {artist_name}: {e}")
+        import traceback
+        logging.error(f"Traceback: {traceback.format_exc()}")
 
 
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
