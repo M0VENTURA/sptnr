@@ -129,8 +129,15 @@ def update_schema(db_path):
     columns_added = []
     for col, col_type in required_columns.items():
         if col not in existing_columns:
-            cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} {col_type};")
-            columns_added.append(col)
+            try:
+                cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col} {col_type};")
+                columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                # Column might already exist due to race condition or previous partial run
+                if "duplicate column name" in str(e).lower():
+                    print(f"⚠️ Column {col} already exists, skipping")
+                else:
+                    raise
     
     if columns_added:
         print(f"✅ Added {len(columns_added)} missing column(s): {', '.join(columns_added)}")
@@ -146,8 +153,15 @@ def update_schema(db_path):
     artist_columns_added = []
     for col, col_type in required_artist_columns.items():
         if col not in existing_artist_columns:
-            cursor.execute(f"ALTER TABLE artists ADD COLUMN {col} {col_type};")
-            artist_columns_added.append(col)
+            try:
+                cursor.execute(f"ALTER TABLE artists ADD COLUMN {col} {col_type};")
+                artist_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                # Column might already exist due to race condition or previous partial run
+                if "duplicate column name" in str(e).lower():
+                    print(f"⚠️ Column {col} already exists in artists table, skipping")
+                else:
+                    raise
     
     if artist_columns_added:
         print(f"✅ Added {len(artist_columns_added)} missing artist column(s): {', '.join(artist_columns_added)}")
@@ -267,8 +281,15 @@ def update_schema(db_path):
     cursor.execute("PRAGMA table_info(scan_history);")
     scan_history_columns = [row[1] for row in cursor.fetchall()]
     if 'source' not in scan_history_columns:
-        cursor.execute("ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT '';")
-        print("✅ Added missing 'source' column to scan_history table.")
+        try:
+            cursor.execute("ALTER TABLE scan_history ADD COLUMN source TEXT DEFAULT '';")
+            print("✅ Added missing 'source' column to scan_history table.")
+        except sqlite3.OperationalError as e:
+            # Column might already exist due to race condition or previous partial run
+            if "duplicate column name" in str(e).lower():
+                print("⚠️ Column 'source' already exists in scan_history table, skipping")
+            else:
+                raise
     
     # ✅ Ensure missing_releases table exists
     cursor.execute("""
