@@ -426,6 +426,7 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
     import unicodedata
     import re
     
+    conn = None
     try:
         # Get existing albums from database
         conn = get_db_connection()
@@ -478,7 +479,6 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         if not all_mb_releases:
             if verbose:
                 logging.info(f"No MusicBrainz releases found for {artist_name}")
-            conn.close()
             return
         
         # Normalize function for title comparison
@@ -577,10 +577,14 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
             if verbose:
                 logging.info(f"No missing releases found for {artist_name}")
         
-        conn.close()
-        
     except Exception as e:
         logging.debug(f"Error scanning missing MusicBrainz releases for {artist_name}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def scan_library_to_db(verbose: bool = False, force: bool = False):
