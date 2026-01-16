@@ -2604,6 +2604,123 @@ def _run_artist_scan_pipeline(artist_name: str):
         log_unified(f"Traceback: {traceback.format_exc()}")
 
 
+@app.route("/album/<path:artist>/<path:album>/edit", methods=["POST"])
+def album_edit(artist, album):
+    """Update album metadata for all tracks in the album"""
+    from urllib.parse import unquote
+    artist = unquote(artist)
+    album = unquote(album)
+    
+    # Get form data
+    album_title = request.form.get("album_title", "").strip()
+    album_artist = request.form.get("album_artist", "").strip()
+    release_year = request.form.get("release_year", "").strip() or None
+    album_type = request.form.get("album_type", "").strip() or None
+    album_mbid = request.form.get("album_mbid", "").strip() or None
+    album_genres = request.form.get("album_genres", "").strip()
+    
+    if not album_title or not album_artist:
+        flash("Album title and artist are required", "danger")
+        return redirect(url_for("album_detail", artist=artist, album=album))
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update all tracks in this album
+        update_fields = []
+        update_values = []
+        
+        # If album title or artist changed, update those
+        if album_title != album or album_artist != artist:
+            update_fields.extend(["album = ?", "artist = ?"])
+            update_values.extend([album_title, album_artist])
+        
+        # Update year if provided
+        if release_year:
+            update_fields.append("year = ?")
+            update_values.append(int(release_year))
+        
+        # Update album type if provided
+        if album_type:
+            update_fields.append("spotify_album_type = ?")
+            update_values.append(album_type)
+        
+        # Update album MBID if provided
+        if album_mbid:
+            update_fields.append("beets_album_mbid = ?")
+            update_values.append(album_mbid)
+        
+        # Update genres
+        if album_genres:
+            update_fields.append("genres = ?")
+            update_values.append(album_genres)
+        
+        # Add WHERE clause values
+        update_values.extend([artist, album])
+        
+        # Execute update
+        if update_fields:
+            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE artist = ? AND album = ?"
+            cursor.execute(sql, update_values)
+            rows_updated = cursor.rowcount
+            conn.commit()
+            
+            # Now update MP3 files via beets
+            try:
+                from beets_integration import update_track_metadata_with_beets
+                
+                # Get all track IDs for this album
+                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE artist = ? AND album = ?", 
+                             (album_artist, album_title))
+                tracks = cursor.fetchall()
+                
+                success_count = 0
+                for track in tracks:
+                    track_id = track['id']
+                    file_path = track['beets_path'] if track['beets_path'] else track['file_path']
+                    
+                    if file_path and os.path.exists(file_path):
+                        # Prepare metadata to update
+                        metadata_updates = {
+                            'album': album_title,
+                            'albumartist': album_artist,
+                        }
+                        
+                        if release_year:
+                            metadata_updates['year'] = release_year
+                        if album_genres:
+                            metadata_updates['genre'] = album_genres
+                        if album_mbid:
+                            metadata_updates['mb_albumid'] = album_mbid
+                        
+                        # Update via beets
+                        if update_track_metadata_with_beets(track_id, metadata_updates, DB_PATH):
+                            success_count += 1
+                
+                if success_count > 0:
+                    flash(f"Updated {rows_updated} tracks in database and {success_count} MP3 files", "success")
+                else:
+                    flash(f"Updated {rows_updated} tracks in database (MP3 files not found)", "warning")
+            except ImportError:
+                flash(f"Updated {rows_updated} tracks in database (beets integration not available)", "warning")
+            except Exception as e:
+                logging.error(f"Error updating MP3 files: {e}")
+                flash(f"Updated {rows_updated} tracks in database, but MP3 update failed: {str(e)}", "warning")
+        else:
+            flash("No changes to save", "info")
+        
+        conn.close()
+        
+        # Redirect to the (potentially new) album page
+        return redirect(url_for("album_detail", artist=album_artist, album=album_title))
+        
+    except Exception as e:
+        logging.error(f"Error updating album: {e}")
+        flash(f"Error updating album: {str(e)}", "danger")
+        return redirect(url_for("album_detail", artist=artist, album=album))
+
+
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
 def album_rescan(artist, album):
     """Trigger per-album pipeline: Navidrome fetch -> popularity -> single detection."""
