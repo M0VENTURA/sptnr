@@ -162,6 +162,7 @@ def rate_track_single_detection(
             logging.info(f"💡 Initial hints: {', '.join(hints)}")
     
     # --- Discogs Single (hard stop) - Check online and cache the result ---
+    # Discogs is checked FIRST as it's high confidence
     discogs_single_hit = False
     try:
         if verbose:
@@ -176,6 +177,15 @@ def rate_track_single_detection(
                 logging.debug(f"Discogs single detected for '{title}' (sources={sources})")
                 if verbose:
                     logging.info("✅ Discogs single FOUND")
+                
+                # Early exit: Discogs is high confidence, if canonical we can stop here
+                if canonical and not has_subtitle and sim_to_base >= title_sim_threshold:
+                    track["is_single"] = True
+                    track["single_confidence"] = "high"
+                    track["single_sources"] = json.dumps(list(sources))
+                    if verbose:
+                        logging.info(f"✅ SINGLE (Discogs guarantee - early exit): {title}")
+                    return track
             else:
                 logging.debug(f"Discogs single not detected for '{title}'")
                 if verbose:
@@ -184,6 +194,8 @@ def rate_track_single_detection(
         logging.exception(f"is_discogs_single failed for '{title}': {e}")
     
     # --- MusicBrainz Single - Check online ---
+    # Track total confirmations from non-Discogs sources
+    confirmation_count = len(sources)  # Start with current count (includes spotify/short_release if present)
     musicbrainz_single_hit = False
     try:
         if verbose:
@@ -194,9 +206,19 @@ def rate_track_single_detection(
             musicbrainz_single_hit = is_musicbrainz_single(title, artist_name, enabled=True)
             if musicbrainz_single_hit:
                 sources.add("musicbrainz")
-                logging.debug(f"MusicBrainz single detected for '{title}' (sources={sources})")
+                confirmation_count = len(sources)
+                logging.debug(f"MusicBrainz single detected for '{title}' (sources={sources}, confirmations={confirmation_count})")
                 if verbose:
                     logging.info("✅ MusicBrainz single FOUND")
+                
+                # Early exit: if we have 2 confirmations, we can stop
+                if confirmation_count >= 2:
+                    if verbose:
+                        logging.info(f"✅ SINGLE (2 confirmations reached - early exit): {title}")
+                    track["is_single"] = True
+                    track["single_confidence"] = "high"
+                    track["single_sources"] = json.dumps(list(sources))
+                    return track
             else:
                 logging.debug(f"MusicBrainz single not detected for '{title}'")
                 if verbose:
@@ -226,9 +248,19 @@ def rate_track_single_detection(
                 if "single" in tags:
                     lastfm_single_hit = True
                     sources.add("lastfm")
-                    logging.debug(f"Last.fm single tag detected for '{title}' (sources={sources})")
+                    confirmation_count = len(sources)
+                    logging.debug(f"Last.fm single tag detected for '{title}' (sources={sources}, confirmations={confirmation_count})")
                     if verbose:
                         logging.info("✅ Last.fm single tag FOUND")
+                    
+                    # Early exit: if we have 2 confirmations, we can stop
+                    if confirmation_count >= 2:
+                        if verbose:
+                            logging.info(f"✅ SINGLE (2 confirmations reached - early exit): {title}")
+                        track["is_single"] = True
+                        track["single_confidence"] = "high"
+                        track["single_sources"] = json.dumps(list(sources))
+                        return track
                 else:
                     logging.debug(f"Last.fm single tag not detected for '{title}'")
                     if verbose:
@@ -247,10 +279,20 @@ def rate_track_single_detection(
             discogs_video_hit = has_discogs_video(title, artist_name, token=DISCOGS_TOKEN)
             if discogs_video_hit:
                 sources.add("discogs_video")
+                confirmation_count = len(sources)
                 track['discogs_video_found'] = 1
-                logging.debug(f"Discogs music video detected for '{title}' (sources={sources})")
+                logging.debug(f"Discogs music video detected for '{title}' (sources={sources}, confirmations={confirmation_count})")
                 if verbose:
                     logging.info("✅ Discogs music video FOUND")
+                
+                # Early exit: if we have 2 confirmations, we can stop
+                if confirmation_count >= 2:
+                    if verbose:
+                        logging.info(f"✅ SINGLE (2 confirmations reached - early exit): {title}")
+                    track["is_single"] = True
+                    track["single_confidence"] = "high"
+                    track["single_sources"] = json.dumps(list(sources))
+                    return track
             else:
                 logging.debug(f"Discogs music video not detected for '{title}'")
                 if verbose:
