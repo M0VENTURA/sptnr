@@ -7336,7 +7336,9 @@ if __name__ == "__main__":
         import time
         logger = logging.getLogger('sptnr')
         try:
-            data = request.get_json()
+            data = request.get_json(force=True, silent=True)
+            if not data:
+                return jsonify({"error": "Invalid JSON in request body"}), 400
             album = data.get("album", "")
             artist = data.get("artist", "")
             
@@ -7436,7 +7438,9 @@ if __name__ == "__main__":
             from popularity import _discogs_search, _get_discogs_session
             import difflib
             
-            data = request.get_json()
+            data = request.get_json(force=True, silent=True)
+            if not data:
+                return jsonify({"error": "Invalid JSON in request body"}), 400
             album = data.get("album", "")
             artist = data.get("artist", "")
             

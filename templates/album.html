@@ -729,7 +729,16 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ album: album, artist: artist })
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error('Response is not JSON');
+            }
+            return response.json();
+        })
         .then(data => {
             if (data.error) {
                 resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
@@ -754,7 +763,16 @@
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ album: album, artist: artist })
         })
-        .then(response => response.json())
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error('Response is not JSON');
+            }
+            return response.json();
+        })
         .then(data => {
             if (data.error) {
                 resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
