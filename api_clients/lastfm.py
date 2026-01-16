@@ -1,5 +1,6 @@
 """Last.fm API client module."""
 import logging
+from urllib.parse import quote
 from . import session
 
 logger = logging.getLogger(__name__)
@@ -35,6 +36,8 @@ class LastFmClient:
             logger.warning("Last.fm API key missing. Skipping lookup.")
             return {"track_play": 0}
         
+        # URL encode artist and title to handle special characters like "+44"
+        # Using quote with safe='' ensures '+' is encoded as %2B instead of being treated as space
         params = {
             "method": "track.getInfo",
             "artist": artist,

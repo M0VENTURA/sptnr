@@ -236,6 +236,62 @@
     </div>
     {% endif %}
     
+    <!-- Album Release IDs Section -->
+    {% if album_data %}
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-link-45deg"></i> Album/Release IDs
+            </h5>
+            <button class="btn btn-sm btn-primary" onclick="openEditAlbumIdsModal()">
+                <i class="bi bi-pencil"></i> Edit IDs
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">Spotify Album ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="spotifyAlbumId" value="{{ album_data.spotify_album_id or '' }}" readonly>
+                        {% if album_data.spotify_album_id %}
+                        <a href="https://open.spotify.com/album/{{ album_data.spotify_album_id }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">MusicBrainz Release ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.beets_album_mbid or '' }}" readonly>
+                        {% if album_data.beets_album_mbid %}
+                        <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">Discogs Release ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="discogsReleaseId" value="{{ album_data.discogs_album_id or '' }}" readonly>
+                        {% if album_data.discogs_album_id %}
+                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle"></i> These IDs are used for API lookups and future scans. Edit them to correct matching issues.
+                </small>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
     <!-- Editable Album Metadata Form -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="card mb-4">
@@ -1320,6 +1376,102 @@
                   .replace(/"/g, '\\"')
                   .replace(/\n/g, '\\n')
                   .replace(/\r/g, '\\r');
+    }
+
+    function openEditAlbumIdsModal() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const spotifyId = document.getElementById('spotifyAlbumId').value;
+        const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
+        const discogsId = document.getElementById('discogsReleaseId').value;
+        
+        const modalHtml = `
+            <div class="modal fade" id="editAlbumIdsModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Album/Release IDs</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="editSpotifyAlbumId" class="form-label">Spotify Album ID</label>
+                                <input type="text" class="form-control" id="editSpotifyAlbumId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 4aawyAB9vmqN3uQ7FjRGTy">
+                                <div class="form-text">
+                                    <a href="https://open.spotify.com/search/${encodeURIComponent(artistName + ' ' + albumName)}" target="_blank">Search Spotify</a> to find the album ID
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editMusicbrainzReleaseId" class="form-label">MusicBrainz Release ID</label>
+                                <input type="text" class="form-control" id="editMusicbrainzReleaseId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+                                <div class="form-text">
+                                    <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName + ' ' + albumName)}&type=release" target="_blank">Search MusicBrainz</a> to find the release ID
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editDiscogsReleaseId" class="form-label">Discogs Release ID</label>
+                                <input type="text" class="form-control" id="editDiscogsReleaseId" value="${escapeHtml(discogsId)}" placeholder="e.g., 123456">
+                                <div class="form-text">
+                                    <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName + ' ' + albumName)}&type=release" target="_blank">Search Discogs</a> to find the release ID
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveAlbumIds()">
+                                <i class="bi bi-save"></i> Save Changes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('editAlbumIdsModal');
+        if (existingModal) existingModal.remove();
+        
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        const modal = new bootstrap.Modal(document.getElementById('editAlbumIdsModal'));
+        modal.show();
+    }
+
+    function saveAlbumIds() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
+        const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
+        const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
+        
+        fetch('/api/album/update-ids', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: artistName,
+                album: albumName,
+                spotify_album_id: spotifyId,
+                musicbrainz_release_id: musicbrainzId,
+                discogs_release_id: discogsId
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Update the readonly fields
+                document.getElementById('spotifyAlbumId').value = spotifyId;
+                document.getElementById('musicbrainzReleaseId').value = musicbrainzId;
+                document.getElementById('discogsReleaseId').value = discogsId;
+                
+                bootstrap.Modal.getInstance(document.getElementById('editAlbumIdsModal'))?.hide();
+                alert('✅ Album IDs updated successfully!');
+                
+                // Reload page to update links
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
+            }
+        })
+        .catch(err => alert('❌ Network error: ' + err.message));
     }
 </script>
 {% endblock %}

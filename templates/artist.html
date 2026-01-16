@@ -182,6 +182,60 @@
     {% endif %}
   </div>
 
+  <!-- Artist IDs Section -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-link-45deg"></i> Artist IDs
+      </h5>
+      <button class="btn btn-sm btn-primary" onclick="openEditArtistIdsModal()">
+        <i class="bi bi-pencil"></i> Edit IDs
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">Spotify Artist ID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="spotifyArtistId" value="{{ stats.spotify_artist_id or '' }}" readonly>
+            {% if stats.spotify_artist_id %}
+            <a href="https://open.spotify.com/artist/{{ stats.spotify_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">Last.fm Artist MBID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="lastfmArtistMbid" value="{{ stats.lastfm_artist_mbid or '' }}" readonly>
+            {% if stats.lastfm_artist_mbid %}
+            <a href="https://musicbrainz.org/artist/{{ stats.lastfm_artist_mbid }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="musicbrainzArtistId" value="{{ stats.musicbrainz_artist_id or '' }}" readonly>
+            {% if stats.musicbrainz_artist_id %}
+            <a href="https://musicbrainz.org/artist/{{ stats.musicbrainz_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="mt-3">
+        <small class="text-muted">
+          <i class="bi bi-info-circle"></i> These IDs are used for API lookups and can be manually edited to correct matching issues.
+        </small>
+      </div>
+    </div>
+  </div>
+
   <!-- Additional Stats: Duration and Year Range -->
   <div class="row g-2 g-md-3 mb-4">
     <div class="col-6 col-md-4">
@@ -1207,6 +1261,99 @@ function fetchArtistGenreRecommendations() {
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-cloud-download"></i> Fetch Recommendations';
     });
+}
+
+function openEditArtistIdsModal() {
+  const artistName = '{{ artist_name }}';
+  const spotifyId = document.getElementById('spotifyArtistId').value;
+  const lastfmMbid = document.getElementById('lastfmArtistMbid').value;
+  const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
+  
+  const modalHtml = `
+    <div class="modal fade" id="editArtistIdsModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist IDs</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="editSpotifyArtistId" class="form-label">Spotify Artist ID</label>
+              <input type="text" class="form-control" id="editSpotifyArtistId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 3TVXtAsR1Inumwj472S9r4">
+              <div class="form-text">
+                <a href="https://open.spotify.com/search/${encodeURIComponent(artistName)}" target="_blank">Search Spotify</a> to find the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editLastfmArtistMbid" class="form-label">Last.fm Artist MBID</label>
+              <input type="text" class="form-control" id="editLastfmArtistMbid" value="${escapeHtml(lastfmMbid)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+              <div class="form-text">
+                <a href="https://www.last.fm/music/${encodeURIComponent(artistName)}" target="_blank">Search Last.fm</a> for the artist
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
+              <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+              <div class="form-text">
+                <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> to find the artist ID
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
+              <i class="bi bi-save"></i> Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existingModal = document.getElementById('editArtistIdsModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
+  modal.show();
+}
+
+function saveArtistIds() {
+  const artistName = '{{ artist_name }}';
+  const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
+  const lastfmMbid = document.getElementById('editLastfmArtistMbid').value.trim();
+  const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
+  
+  fetch('/api/artist/update-ids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: artistName,
+      spotify_artist_id: spotifyId,
+      lastfm_artist_mbid: lastfmMbid,
+      musicbrainz_artist_id: musicbrainzId
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        // Update the readonly fields
+        document.getElementById('spotifyArtistId').value = spotifyId;
+        document.getElementById('lastfmArtistMbid').value = lastfmMbid;
+        document.getElementById('musicbrainzArtistId').value = musicbrainzId;
+        
+        bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'))?.hide();
+        alert('✅ Artist IDs updated successfully!');
+        
+        // Reload page to update links
+        setTimeout(() => location.reload(), 1000);
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
 }
 </script>
 <style>
