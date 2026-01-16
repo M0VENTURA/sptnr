@@ -55,7 +55,9 @@ def _get_timeout_safe_musicbrainz_client():
 def _get_timeout_safe_discogs_client(token: str):
     """Get or create timeout-safe Discogs client for use in popularity scanner."""
     global _timeout_safe_discogs_clients
-    if token not in _timeout_safe_discogs_clients and HAVE_DISCOGS:
+    if not HAVE_DISCOGS:
+        return None
+    if token not in _timeout_safe_discogs_clients:
         _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True)
     return _timeout_safe_discogs_clients.get(token)
 
