@@ -3450,6 +3450,53 @@ def config_save_json():
         return jsonify({"success": False, "error": error_msg}), 400
 
 
+@app.route("/help")
+@app.route("/help/<path:doc_name>")
+def help_page(doc_name=None):
+    """Display documentation from /documentation folder"""
+    import markdown
+    import os
+    
+    doc_path = os.path.join(os.path.dirname(__file__), "documentation")
+    
+    # If no doc specified, show index
+    if not doc_name:
+        doc_name = "INDEX.md"
+    elif not doc_name.endswith('.md'):
+        doc_name = doc_name + '.md'
+    
+    # Security: prevent path traversal
+    doc_name = os.path.basename(doc_name)
+    full_path = os.path.join(doc_path, doc_name)
+    
+    # Get list of all documentation files
+    try:
+        doc_files = sorted([f for f in os.listdir(doc_path) if f.endswith('.md')])
+    except:
+        doc_files = []
+    
+    # Read and render the markdown file
+    content = ""
+    doc_title = doc_name.replace('.md', '').replace('_', ' ').title()
+    
+    if os.path.exists(full_path):
+        try:
+            with open(full_path, 'r', encoding='utf-8') as f:
+                md_content = f.read()
+                # Convert markdown to HTML
+                content = markdown.markdown(md_content, extensions=['extra', 'codehilite', 'toc'])
+        except Exception as e:
+            content = f"<p>Error loading documentation: {str(e)}</p>"
+    else:
+        content = f"<p>Documentation file not found: {doc_name}</p>"
+    
+    return render_template('help.html', 
+                         content=content, 
+                         doc_title=doc_title,
+                         doc_files=doc_files,
+                         current_doc=doc_name)
+
+
 @app.route("/api/stats")
 def api_stats():
     """API endpoint for statistics"""
