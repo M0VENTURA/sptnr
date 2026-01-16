@@ -110,21 +110,44 @@ Import playlists from your Spotify account to Navidrome:
    - Ensure Spotify API credentials configured
    - Client ID and Secret in config.yaml
    - See [Configuration Guide](MULTI_USER_CONFIG_GUIDE.md)
+   - **For Personal Playlists**: Set `SPOTIFY_USER_TOKEN` environment variable with your Spotify user access token
+   - Without user token, only featured/public playlists will be available
 
 2. **Navidrome Connection**
    - Verify Navidrome URL and credentials
    - Test connection on Config page
 
+### Getting Spotify User Token
+
+To access your personal Spotify playlists, you need a user access token:
+
+1. **Option 1: OAuth Flow (Recommended)**
+   - Use Spotify's Authorization Code Flow
+   - Requires implementing OAuth callback
+   - Token refresh handled automatically
+
+2. **Option 2: Manual Token (Quick Test)**
+   - Visit [Spotify Web API Console](https://developer.spotify.com/console/get-playlists/)
+   - Click "Get Token" and authorize
+   - Copy the access token
+   - Set as environment variable: `export SPOTIFY_USER_TOKEN="your_token_here"`
+   - **Note**: Manual tokens expire after 1 hour
+
+3. **Option 3: Client Credentials (Fallback)**
+   - Without user token, featured public playlists are shown
+   - Good for discovering new music
+   - Cannot access personal/private playlists
+
 ### Import Process
 
 #### Step 1: List Spotify Playlists
 1. Navigate to Playlist Importer
-2. Click "Fetch My Playlists"
-3. See all your Spotify playlists
+2. Playlists load automatically on page load
+3. See your Spotify playlists (if user token set) or featured playlists
 4. Shows track count for each
 
 #### Step 2: Select Playlist
-1. Click on playlist name
+1. Click "Import" button on a playlist card
 2. View all tracks in playlist
 3. See match status for each track:
    - ✅ **Found**: Track exists in library

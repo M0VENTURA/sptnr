@@ -227,6 +227,7 @@ def _discogs_search(session, headers, query, kind="release", per_page=15, timeou
         logger.error(f"Discogs search failed for query '{query}': {e}")
         raise
 
+
 # Shared thread pool for timeout enforcement (prevents resource exhaustion)
 # Using a larger pool to handle multiple concurrent API calls without blocking.
 # Increased from 10 to 20 to reduce risk of thread pool exhaustion when API calls

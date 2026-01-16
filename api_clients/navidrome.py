@@ -40,6 +40,34 @@ class NavidromeClient:
         except Exception as e:
             logger.error(f"❌ Failed to fetch playlists: {e}")
             return []
+    
+    def fetch_playlist(self, playlist_id: str) -> dict:
+        """
+        Fetch details for a specific playlist including tracks.
+        
+        Args:
+            playlist_id: Navidrome playlist ID
+            
+        Returns:
+            Dict with playlist metadata and track list
+        """
+        url = f"{self.base_url}/rest/getPlaylist.view"
+        params = self._build_params(id=playlist_id)
+        try:
+            res = self.session.get(url, params=params)
+            res.raise_for_status()
+            playlist = res.json().get("subsonic-response", {}).get("playlist", {})
+            # Add type field
+            if playlist.get('smart', False):
+                playlist['type'] = 'smart'
+            else:
+                playlist['type'] = 'regular'
+            # Rename 'entry' to 'tracks' for clarity
+            playlist['tracks'] = playlist.pop('entry', [])
+            return playlist
+        except Exception as e:
+            logger.error(f"❌ Failed to fetch playlist {playlist_id}: {e}")
+            return {}
 
     def __init__(self, base_url: str, username: str, password: str, http_session=None):
         """

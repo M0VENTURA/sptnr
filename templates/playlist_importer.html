@@ -84,11 +84,17 @@
         </button>
       </div>
       <div class="card-body">
+        <div class="alert alert-info mb-3">
+          <i class="bi bi-info-circle"></i> 
+          <strong>Note:</strong> To view your personal Spotify playlists, you need to set the <code>SPOTIFY_USER_TOKEN</code> environment variable with your Spotify user access token. 
+          Without it, featured public playlists will be shown instead. 
+          See the <a href="/help/FEATURES_PLAYLISTS" target="_blank">playlist documentation</a> for authentication setup instructions.
+        </div>
         <div id="playlistsLoading" class="text-center text-muted py-4">
           <div class="spinner-border spinner-border-sm me-2" role="status">
             <span class="visually-hidden">Loading...</span>
           </div>
-          Loading your Spotify playlists...
+          Loading Spotify playlists...
         </div>
         <div id="playlistsContainer" style="display: none;">
           <div class="row g-3" id="playlistsGrid">
@@ -97,10 +103,11 @@
         </div>
         <div id="playlistsError" style="display: none;" class="alert alert-warning">
           <i class="bi bi-exclamation-triangle"></i>
-          <span id="playlistsErrorText">Unable to load playlists. Make sure Spotify is configured.</span>
+          <span id="playlistsErrorText">Unable to load playlists. Make sure Spotify is configured in your config file.</span>
         </div>
         <div id="playlistsEmpty" style="display: none;" class="alert alert-info">
-          <i class="bi bi-info-circle"></i> No playlists found in your Spotify account.
+          <i class="bi bi-info-circle"></i> 
+          <span id="playlistsEmptyText">No playlists found. If you expected to see your personal playlists, make sure <code>SPOTIFY_USER_TOKEN</code> is set.</span>
         </div>
       </div>
     </div>

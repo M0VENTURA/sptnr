@@ -185,11 +185,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
                     "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
                     "navidrome_genre": navidrome_genre,  # Also store in single genre field
-                    "spotify_genres": [],
-                    "lastfm_tags": [],
-                    "discogs_genres": [],
-                    "audiodb_genres": [],
-                    "musicbrainz_genres": [],
+                    "spotify_genres": json.dumps([]),  # Serialize as JSON string
+                    "lastfm_tags": json.dumps([]),  # Serialize as JSON string
+                    "discogs_genres": json.dumps([]),  # Serialize as JSON string
+                    "audiodb_genres": json.dumps([]),  # Serialize as JSON string
+                    "musicbrainz_genres": json.dumps([]),  # Serialize as JSON string
                     "spotify_album": "",
                     "spotify_artist": "",
                     "spotify_popularity": 0,
@@ -205,7 +205,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "is_spotify_single": False,
                     "is_single": False,
                     "single_confidence": "low",
-                    "single_sources": [],
+                    "single_sources": json.dumps([]),  # Serialize as JSON string
                     "mbid": t.get("mbid", "") or "",
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,

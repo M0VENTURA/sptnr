@@ -96,6 +96,27 @@ def _now_local_iso() -> str:
         return datetime.now().isoformat()
 
 
+def get_existing_file_path(track_id: str) -> Optional[str]:
+    """
+    Get existing file_path from database to preserve Beets paths.
+    
+    Args:
+        track_id: Track ID to look up
+        
+    Returns:
+        Existing file_path or None
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
 def save_navidrome_scan_progress(current_artist, processed_artists, total_artists):
     """Save Navidrome scan progress to JSON file (using artist list for progress tracking)"""
     try:
@@ -245,18 +266,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
                     "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
                     "navidrome_genre": navidrome_genre,  # Also store in single genre field
-                    "spotify_genres": [],
-                    "lastfm_tags": [],
-                    "discogs_genres": [],
-                    "audiodb_genres": [],
-                    "musicbrainz_genres": [],
+                    "spotify_genres": json.dumps([]),  # Serialize as JSON string
+                    "lastfm_tags": json.dumps([]),  # Serialize as JSON string
+                    "discogs_genres": json.dumps([]),  # Serialize as JSON string
+                    "audiodb_genres": json.dumps([]),  # Serialize as JSON string
+                    "musicbrainz_genres": json.dumps([]),  # Serialize as JSON string
                     "spotify_album": "",
                     "spotify_artist": "",
                     "spotify_popularity": 0,
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    "file_path": t.get("path", ""),
+                    "file_path": None,  # Leave file_path unset for Navidrome; beets import owns the canonical path
                     "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
