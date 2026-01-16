@@ -6945,50 +6945,6 @@ def playlist_import():
                          slskd_enabled=slskd_enabled)
 
 
-@app.route("/api/spotify/playlists", methods=["GET"])
-def api_spotify_playlists():
-    """API endpoint to list user's Spotify playlists"""
-    try:
-        config_data, _ = _read_yaml(CONFIG_PATH)
-        spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
-        client_id = spotify_config.get("client_id", "")
-        client_secret = spotify_config.get("client_secret", "")
-        enabled = spotify_config.get("enabled", False)
-
-        # If not enabled or missing credentials, try to fall back to first user with valid Spotify config
-        if not (enabled and client_id and client_secret):
-            users = config_data.get("users", [])
-            fallback_found = False
-            for user in users:
-                user_spotify = user.get("api_integrations", {}).get("spotify", {})
-                if user_spotify.get("enabled") and user_spotify.get("client_id") and user_spotify.get("client_secret"):
-                    client_id = user_spotify["client_id"]
-                    client_secret = user_spotify["client_secret"]
-                    fallback_found = True
-                    logging.info(f"Falling back to Spotify credentials for user: {user.get('username', 'unknown')}")
-                    break
-            if not fallback_found:
-                logging.error("Spotify not enabled or configured for any user. Checked users: %s", users)
-                return jsonify({"error": "Spotify not enabled or configured for any user. Please check your config and credentials."}), 400
-
-        try:
-            from api_clients.spotify import get_spotify_user_playlists
-            playlists = get_spotify_user_playlists(client_id, client_secret)
-            if playlists is None:
-                logging.error("Spotify API returned None for playlists.")
-                return jsonify({"error": "Failed to fetch playlists from Spotify. See logs for details."}), 500
-            if not playlists:
-                logging.warning("No playlists found in Spotify for the configured user/credentials.")
-                return jsonify({"error": "No playlists found in Spotify for the configured user/credentials."}), 200
-            return jsonify({"playlists": playlists})
-        except Exception as e:
-            logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
-            return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
-    except Exception as e:
-        logging.error(f"Playlist list error: {str(e)}", exc_info=True)
-        return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
-
-
 @app.route("/api/playlist/import", methods=["POST"])
 def api_playlist_import():
     """API endpoint to import a Spotify playlist and match to Navidrome database"""
