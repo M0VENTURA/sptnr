@@ -75,6 +75,12 @@ IGNORE_SINGLE_KEYWORDS = [
     "remaster", "remastered"  # remasters
 ]
 
+# Subset of keywords to check in Spotify album names (for album-level filtering)
+# These are the most common alternate version album types
+SPOTIFY_ALBUM_EXCLUDE_KEYWORDS = [
+    "live", "remix", "acoustic", "unplugged", "orchestral", "demo", "instrumental"
+]
+
 # Genre weighting configuration for multi-source aggregation
 GENRE_WEIGHTS = {
     "musicbrainz": 0.40,   # Most trusted
@@ -660,8 +666,8 @@ def detect_single_for_track(
                 album_name = album_info.get("name", "").lower()
                 
                 # Match Jan 2nd logic: exclude alternate version singles
-                # Check both album name for alternate version keywords
-                is_alternate_version = any(k in album_name for k in ["live", "remix", "acoustic", "unplugged", "orchestral", "demo", "instrumental"])
+                # Check album name for alternate version keywords
+                is_alternate_version = any(k in album_name for k in SPOTIFY_ALBUM_EXCLUDE_KEYWORDS)
                 
                 if album_type == "single" and not is_alternate_version:
                     single_sources.append("spotify")

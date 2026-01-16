@@ -103,5 +103,4 @@ if __name__ == "__main__":
     passed, failed, missing = test_keyword_filtering()
     
     # Exit with error if tests failed or keywords are missing
-    import sys
     sys.exit(0 if (failed == 0 and len(missing) == 0) else 1)
