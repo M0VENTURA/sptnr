@@ -21,24 +21,43 @@ from datetime import datetime
 from statistics import median
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
-from api_clients import session
+from api_clients import session, timeout_safe_session
 
 # Import API clients for single detection at module level
 try:
-    from api_clients.musicbrainz import is_musicbrainz_single
+    from api_clients.musicbrainz import MusicBrainzClient
     HAVE_MUSICBRAINZ = True
 except ImportError as e:
     HAVE_MUSICBRAINZ = False
     logging.debug(f"MusicBrainz client unavailable: {e}")
     
 try:
-    from api_clients.discogs import is_discogs_single, has_discogs_video
+    from api_clients.discogs import DiscogsClient
     HAVE_DISCOGS = True
     HAVE_DISCOGS_VIDEO = True
 except ImportError as e:
     HAVE_DISCOGS = False
     HAVE_DISCOGS_VIDEO = False
     logging.debug(f"Discogs client unavailable: {e}")
+
+# Timeout-safe clients for use within _run_with_timeout() context
+# These use timeout_safe_session with reduced retry count to prevent exceeding timeout
+_timeout_safe_mb_client = None
+_timeout_safe_discogs_clients = {}  # token -> client mapping
+
+def _get_timeout_safe_musicbrainz_client():
+    """Get or create timeout-safe MusicBrainz client for use in popularity scanner."""
+    global _timeout_safe_mb_client
+    if _timeout_safe_mb_client is None and HAVE_MUSICBRAINZ:
+        _timeout_safe_mb_client = MusicBrainzClient(http_session=timeout_safe_session, enabled=True)
+    return _timeout_safe_mb_client
+
+def _get_timeout_safe_discogs_client(token: str):
+    """Get or create timeout-safe Discogs client for use in popularity scanner."""
+    global _timeout_safe_discogs_clients
+    if token not in _timeout_safe_discogs_clients and HAVE_DISCOGS:
+        _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True)
+    return _timeout_safe_discogs_clients.get(token)
 
 # Module-level logger
 logger = logging.getLogger(__name__)
@@ -906,17 +925,20 @@ def popularity_scan(
                     if HAVE_MUSICBRAINZ:
                         try:
                             log_verbose(f"   Checking MusicBrainz for single: {title}")
-                            result = _run_with_timeout(
-                                is_musicbrainz_single,
-                                API_CALL_TIMEOUT,
-                                f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
-                                title, artist
-                            )
-                            if result:
-                                single_sources.append("musicbrainz")
-                                log_unified(f"   ✓ MusicBrainz confirms single: {title}")
-                            else:
-                                log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                            # Use timeout-safe client to prevent retries from exceeding timeout
+                            mb_client = _get_timeout_safe_musicbrainz_client()
+                            if mb_client:
+                                result = _run_with_timeout(
+                                    mb_client.is_single,
+                                    API_CALL_TIMEOUT,
+                                    f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
+                                    title, artist
+                                )
+                                if result:
+                                    single_sources.append("musicbrainz")
+                                    log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                                else:
+                                    log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
                         except TimeoutError as e:
                             log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
                         except Exception as e:
@@ -929,16 +951,19 @@ def popularity_scan(
                     if HAVE_DISCOGS and discogs_token:
                         try:
                             log_verbose(f"   Checking Discogs for single: {title}")
-                            result = _run_with_timeout(
-                                lambda: is_discogs_single(title, artist, album_context=None, token=discogs_token),
-                                API_CALL_TIMEOUT,
-                                f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
-                            )
-                            if result:
-                                single_sources.append("discogs")
-                                log_unified(f"   ✓ Discogs confirms single: {title}")
-                            else:
-                                log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
+                            # Use timeout-safe client to prevent retries from exceeding timeout
+                            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+                            if discogs_client:
+                                result = _run_with_timeout(
+                                    lambda: discogs_client.is_single(title, artist, album_context=None),
+                                    API_CALL_TIMEOUT,
+                                    f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
+                                )
+                                if result:
+                                    single_sources.append("discogs")
+                                    log_unified(f"   ✓ Discogs confirms single: {title}")
+                                else:
+                                    log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
                         except TimeoutError as e:
                             log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
                         except Exception as e:
@@ -952,18 +977,21 @@ def popularity_scan(
                     # Fourth check: Discogs video detection (requires second source for confirmation)
                     if HAVE_DISCOGS_VIDEO and discogs_token:
                         try:
-                            result = _run_with_timeout(
-                                lambda: has_discogs_video(title, artist, token=discogs_token),
-                                API_CALL_TIMEOUT,
-                                f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
-                            )
-                            if result:
-                                # Only add if we have at least one other source
-                                if len(single_sources) >= 1:
-                                    single_sources.append("discogs_video")
-                                    log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
-                                else:
-                                    log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
+                            # Use timeout-safe client to prevent retries from exceeding timeout
+                            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+                            if discogs_client:
+                                result = _run_with_timeout(
+                                    lambda: discogs_client.has_official_video(title, artist),
+                                    API_CALL_TIMEOUT,
+                                    f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
+                                )
+                                if result:
+                                    # Only add if we have at least one other source
+                                    if len(single_sources) >= 1:
+                                        single_sources.append("discogs_video")
+                                        log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
+                                    else:
+                                        log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
                         except TimeoutError as e:
                             log_verbose(f"Discogs video check timed out for {title}: {e}")
                         except Exception as e:
@@ -1106,9 +1134,7 @@ def popularity_scan(
                 # Log album scan
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
 
-            # After artist scans, create essential playlist based on popularity and singles
-            log_unified(f'Creating essential playlist for artist: {artist}')
-            
+            # After artist scans, evaluate essential playlist for artist (Case A: 10+ five-star OR Case B: 100+ tracks)
             # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
             cursor.execute(
                 """SELECT id, artist, album, title, stars
@@ -1133,10 +1159,8 @@ def popularity_scan(
                 ]
                 
                 # Call the actual playlist creation function (applies Case A/B logic)
+                # Logging happens inside the function based on whether playlist was actually created
                 create_or_update_playlist_for_artist(artist, tracks_list)
-                log_unified(f'   ✓ Essential playlist created for artist: {artist} ({len(all_artist_tracks)} total tracks)')
-            else:
-                log_unified(f'   ⚠ No tracks found for artist: {artist}')
 
         log_verbose("Committing changes to database.")
         conn.commit()
