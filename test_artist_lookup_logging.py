@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Test script to verify artist ID lookup logging shows cache hits/misses.
-This tests the fix for the issue where artist lookups were happening multiple times.
+This tests the fix for the issue where artist lookups were occurring multiple times.
 """
 
 import os

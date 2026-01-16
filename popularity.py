@@ -841,6 +841,7 @@ def popularity_scan(
                         
                         if spotify_results is None:
                             # Only query Spotify if not in cache (e.g., if popularity scan failed/skipped)
+                            # Results will be cached for potential future use
                             log_verbose(f"   Spotify results not cached for {title}, querying...")
                             spotify_results = _run_with_timeout(
                                 search_spotify_track,

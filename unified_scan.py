@@ -274,7 +274,7 @@ def unified_scan_pipeline(
         artist_index = build_artist_index()
 
         # Run popularity scan ONCE for all tracks before processing artists
-        # This ensures artist IDs are looked up only once and cached in the database
+        # This ensures artist IDs are looked up only once per artist and cached in the database
         log_unified("=" * 70)
         log_unified("📊 Phase 1: Popularity Detection (Spotify, Last.fm, ListenBrainz)")
         log_unified("=" * 70)
