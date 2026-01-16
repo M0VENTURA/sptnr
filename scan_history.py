@@ -10,7 +10,48 @@ from datetime import datetime
 import os
 import time
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
+
+def _get_db_path():
+    """
+    Determine the correct database path with fallback logic.
+    
+    Priority:
+    1. DB_PATH environment variable
+    2. /database/sptnr.db (Docker default) if directory exists or can be created
+    3. ./database/sptnr.db (relative path for local development)
+    """
+    # Check environment variable first
+    env_path = os.environ.get("DB_PATH")
+    if env_path:
+        return env_path
+    
+    # Try Docker default path
+    docker_path = "/database/sptnr.db"
+    docker_dir = os.path.dirname(docker_path)
+    
+    # Check if Docker directory exists or can be created
+    if os.path.exists(docker_dir):
+        return docker_path
+    
+    try:
+        os.makedirs(docker_dir, exist_ok=True)
+        return docker_path
+    except (PermissionError, OSError):
+        # Can't create Docker directory, fall back to relative path
+        pass
+    
+    # Use relative path (for local development/testing)
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    local_path = os.path.join(script_dir, "database", "sptnr.db")
+    
+    # Ensure local database directory exists
+    local_dir = os.path.dirname(local_path)
+    os.makedirs(local_dir, exist_ok=True)
+    
+    return local_path
+
+
+DB_PATH = _get_db_path()
 
 
 def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: int = 0, status: str = "completed", source: str = ""):
