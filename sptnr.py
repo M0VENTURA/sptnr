@@ -228,11 +228,37 @@ def create_playlist(name, track_ids):
         
         # Create new playlist
         params = {**auth, "name": name}
-        for track_id in track_ids:
-            params[f"songId"] = track_id
+        for idx, track_id in enumerate(track_ids):
+            params[f"songId"] = track_id  # API expects 'songId' parameter repeated
         
         res = requests.get(f"{nav_base}/rest/createPlaylist.view", params=params)
         res.raise_for_status()
+        
+        # If that didn't work, try adding songs one by one
+        if playlist_id is None:
+            # Get the newly created playlist ID
+            res2 = requests.get(f"{nav_base}/rest/getPlaylists.view", params=auth)
+            res2.raise_for_status()
+            data2 = res2.json()
+            if "subsonic-response" in data2:
+                data2 = data2["subsonic-response"]
+            playlists2 = data2.get("playlists", {}).get("playlist", [])
+            if not isinstance(playlists2, list):
+                playlists2 = [playlists2] if playlists2 else []
+            for pl in playlists2:
+                if pl.get("name") == name:
+                    playlist_id = pl.get("id")
+                    break
+        
+        # Add tracks to playlist one by one if needed
+        if playlist_id:
+            for track_id in track_ids:
+                try:
+                    add_params = {**auth, "playlistId": playlist_id, "songIdToAdd": track_id}
+                    requests.get(f"{nav_base}/rest/updatePlaylist.view", params=add_params)
+                except:
+                    pass  # Continue even if some tracks fail
+        
         return True
     except Exception as e:
         print(f"{LIGHT_RED}⚠️ Failed to create playlist: {type(e).__name__} - {e}{RESET}")
@@ -1507,6 +1533,7 @@ if __name__ == "__main__":
                 continue
             rated = rate_artist(artist_id, name, verbose=args.verbose, force=args.force)
             if args.sync and not args.dry_run and rated:
+                # sync_to_navidrome expects a list of track dicts
                 sync_to_navidrome(list(rated.values()), name)
             time.sleep(SLEEP_TIME)
     elif args.batchrate:
