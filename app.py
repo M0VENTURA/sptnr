@@ -244,24 +244,37 @@ def api_navidrome_playlist_detail(playlist_id):
     """Return full details for a single Navidrome playlist by ID."""
     try:
         config_data, _ = _read_yaml(CONFIG_PATH)
-        nav_cfg = config_data.get("api_integrations", {}).get("navidrome", {})
-        base_url = nav_cfg.get("base_url") or config_data.get("nav_base_url")
-        username = nav_cfg.get("username") or config_data.get("nav_user")
-        password = nav_cfg.get("password") or config_data.get("nav_pass")
+        current_user = session.get("username")
+        navidrome_users = config_data.get("navidrome_users", [])
+        nav_cfg = None
+
+        if navidrome_users and current_user:
+            # Find the config for the logged-in user
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if not nav_cfg:
+            # Fallback to single-user config
+            nav_cfg = config_data.get("navidrome", {})
+        
+        base_url = nav_cfg.get("base_url")
+        username = nav_cfg.get("user")
+        password = nav_cfg.get("pass")
+        
         if not (base_url and username and password):
             logging.error(f"Navidrome not configured: base_url={base_url}, username={username}, password={'set' if password else 'unset'}")
             return jsonify({"error": "Navidrome not configured. Please check your config file and credentials."}), 400
+        
         from api_clients.navidrome import NavidromeClient
         client = NavidromeClient(base_url, username, password)
-        playlists = client.fetch_all_playlists()
-        if playlists is None:
-            logging.error("NavidromeClient returned None for playlists.")
-            return jsonify({"error": "Failed to fetch playlists from Navidrome. See logs for details."}), 500
-        for pl in playlists:
-            if str(pl.get("id")) == str(playlist_id):
-                return jsonify(pl)
-        logging.warning(f"Playlist ID {playlist_id} not found in Navidrome playlists.")
-        return jsonify({"error": f"Playlist {playlist_id} not found in Navidrome."}), 404
+        playlist = client.fetch_playlist(playlist_id)
+        
+        if not playlist:
+            logging.warning(f"Playlist ID {playlist_id} not found in Navidrome.")
+            return jsonify({"error": f"Playlist {playlist_id} not found in Navidrome."}), 404
+        
+        # Add Navidrome URL for edit link
+        playlist['navidromeUrl'] = base_url
+        
+        return jsonify(playlist)
     except Exception as e:
         logging.error(f"Failed to fetch Navidrome playlist detail: {e}", exc_info=True)
         return jsonify({"error": f"Exception occurred: {str(e)}"}), 500

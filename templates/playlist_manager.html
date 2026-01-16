@@ -4,47 +4,80 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <!-- Navidrome Playlists Dropdowns -->
+  <h1 class="mb-4">
+    <i class="bi bi-music-note-list"></i> Playlist Manager
+  </h1>
+
+  <!-- Playlist Selection -->
   <div class="row mb-4">
-    <div class="col-md-6">
-      <label for="smartPlaylistSelect" class="form-label">Smart Playlists</label>
-      <select id="smartPlaylistSelect" class="form-select">
-        <option value="">Select a smart playlist...</option>
-      </select>
-    </div>
-    <div class="col-md-6">
-      <label for="regularPlaylistSelect" class="form-label">Regular Playlists</label>
-      <select id="regularPlaylistSelect" class="form-select">
-        <option value="">Select a regular playlist...</option>
-      </select>
-    </div>
-  </div>
-  <div class="row mb-4">
-    <div class="col-md-4">
-      <label for="smartPlaylistSelect" class="form-label">Smart Playlists (Navidrome)</label>
-      <select id="smartPlaylistSelect" class="form-select">
-        <option value="">Select a smart playlist...</option>
-      </select>
-    </div>
-    <div class="col-md-4">
-      <label for="regularPlaylistSelect" class="form-label">Regular Playlists (Navidrome)</label>
-      <select id="regularPlaylistSelect" class="form-select">
-        <option value="">Select a regular playlist...</option>
-      </select>
-    </div>
-    <div class="col-md-4">
-      <label for="spotifyPlaylistSelect" class="form-label">Spotify Playlists</label>
-      <select id="spotifyPlaylistSelect" class="form-select">
-        <option value="">Select a Spotify playlist...</option>
-      </select>
-    </div>
-  </div>
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-folder2-open"></i> Browse Playlists
           </h5>
         </div>
         <div class="card-body">
-          <p class="text-muted mb-4">
-            Select a playlist file to download missing tracks and replace detected matches from your Soulseek sources.
-          </p>
+          <div class="row g-3">
+            <div class="col-md-6">
+              <label for="smartPlaylistSelect" class="form-label">Smart Playlists</label>
+              <select id="smartPlaylistSelect" class="form-select">
+                <option value="">Select a smart playlist...</option>
+              </select>
+              <small class="text-muted">Auto-updating playlists based on rules</small>
+            </div>
+            <div class="col-md-6">
+              <label for="regularPlaylistSelect" class="form-label">Regular Playlists</label>
+              <select id="regularPlaylistSelect" class="form-select">
+                <option value="">Select a regular playlist...</option>
+              </select>
+              <small class="text-muted">Manually curated playlists</small>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Playlist Details Section -->
+  <div id="playlistDetailsSection" style="display: none;" class="mb-4">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="mb-0">
+          <i class="bi bi-music-note-beamed"></i> <span id="playlistDetailName">Playlist Details</span>
+        </h5>
+        <div class="btn-group">
+          <button class="btn btn-sm btn-primary" onclick="editPlaylist()" id="editPlaylistBtn">
+            <i class="bi bi-pencil"></i> Edit in Navidrome
+          </button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="refreshPlaylistDetails()" id="refreshPlaylistBtn">
+            <i class="bi bi-arrow-clockwise"></i> Refresh
+          </button>
+        </div>
+      </div>
+      <div class="card-body">
+        <div id="playlistMetadata" class="mb-3">
+          <!-- Metadata will be inserted here -->
+        </div>
+        <div id="playlistTracks">
+          <!-- Track list will be inserted here -->
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Playlist Downloader Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-cloud-download"></i> Playlist Downloader
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Select a playlist file to download missing tracks and replace detected matches from your Soulseek sources.
+        </p>
 
           <div class="row g-3 mb-4">
             <div class="col-12 col-md-6">
@@ -235,11 +268,13 @@
 <script>
 
 // ===============================
-// PLAYLIST DROPDOWNS (Navidrome & Spotify)
+// PLAYLIST DROPDOWNS (Navidrome Only)
 // ===============================
+let currentPlaylistId = null;
+let currentPlaylistData = null;
+
 document.addEventListener('DOMContentLoaded', function() {
   loadNavidromePlaylists();
-  loadSpotifyPlaylists();
 });
 
 async function loadNavidromePlaylists() {
@@ -267,46 +302,119 @@ async function loadNavidromePlaylists() {
   }
 }
 
-async function loadSpotifyPlaylists() {
-  try {
-    const response = await fetch('/api/spotify/playlists');
-    const data = await response.json();
-    const spotifySelect = document.getElementById('spotifyPlaylistSelect');
-    spotifySelect.innerHTML = '<option value="">Select a Spotify playlist...</option>';
-    (data.playlists || []).forEach(pl => {
-      const opt = document.createElement('option');
-      opt.value = pl.id;
-      opt.textContent = pl.name;
-      spotifySelect.appendChild(opt);
-    });
-  } catch (e) {
-    console.error('Failed to load Spotify playlists:', e);
-  }
-}
-
 document.getElementById('smartPlaylistSelect').addEventListener('change', function() {
-  if (this.value) loadNavidromePlaylistDetail(this.value);
+  if (this.value) {
+    // Clear the other dropdown
+    document.getElementById('regularPlaylistSelect').value = '';
+    loadNavidromePlaylistDetail(this.value, 'smart');
+  }
 });
-document.getElementById('regularPlaylistSelect').addEventListener('change', function() {
-  if (this.value) loadNavidromePlaylistDetail(this.value);
-});
-// You can add a similar event for Spotify playlist selection if needed
 
-async function loadNavidromePlaylistDetail(playlistId) {
+document.getElementById('regularPlaylistSelect').addEventListener('change', function() {
+  if (this.value) {
+    // Clear the other dropdown
+    document.getElementById('smartPlaylistSelect').value = '';
+    loadNavidromePlaylistDetail(this.value, 'regular');
+  }
+});
+
+async function loadNavidromePlaylistDetail(playlistId, type) {
+  currentPlaylistId = playlistId;
+  
   try {
     const response = await fetch(`/api/navidrome/playlist/${playlistId}`);
     const data = await response.json();
-    if (data && data.name) {
-      // Populate form fields for editing
-      document.getElementById('customPlaylistName').value = data.name || '';
-      document.getElementById('customPlaylistDesc').value = data.comment || '';
-      // Optionally set user, public, and pre-fill songs if API provides them
-      // Clear selected songs for now (future: load playlist tracks)
-      selectedSongs = [];
-      updateSelectedSongsList();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load playlist');
     }
+    
+    currentPlaylistData = data;
+    displayPlaylistDetails(data, type);
   } catch (e) {
     console.error('Failed to load playlist details:', e);
+    alert('Failed to load playlist: ' + e.message);
+  }
+}
+
+function displayPlaylistDetails(data, type) {
+  const detailsSection = document.getElementById('playlistDetailsSection');
+  const nameEl = document.getElementById('playlistDetailName');
+  const metadataEl = document.getElementById('playlistMetadata');
+  const tracksEl = document.getElementById('playlistTracks');
+  
+  // Set playlist name
+  nameEl.textContent = data.name || 'Unknown Playlist';
+  
+  // Build metadata
+  let metadataHtml = '<div class="row g-3">';
+  metadataHtml += `<div class="col-md-3"><strong>Type:</strong> ${type === 'smart' ? 'Smart Playlist' : 'Regular Playlist'}</div>`;
+  metadataHtml += `<div class="col-md-3"><strong>Tracks:</strong> ${data.songCount || 0}</div>`;
+  if (data.duration) {
+    const hours = Math.floor(data.duration / 3600);
+    const minutes = Math.floor((data.duration % 3600) / 60);
+    metadataHtml += `<div class="col-md-3"><strong>Duration:</strong> ${hours}h ${minutes}m</div>`;
+  }
+  if (data.owner) {
+    metadataHtml += `<div class="col-md-3"><strong>Owner:</strong> ${escapeHtml(data.owner)}</div>`;
+  }
+  if (data.comment) {
+    metadataHtml += `<div class="col-12"><strong>Description:</strong> ${escapeHtml(data.comment)}</div>`;
+  }
+  metadataHtml += '</div>';
+  metadataEl.innerHTML = metadataHtml;
+  
+  // Build track list (if available)
+  if (data.tracks && data.tracks.length > 0) {
+    let tracksHtml = '<h6 class="mt-3 mb-2">Tracks</h6>';
+    tracksHtml += '<div style="max-height: 400px; overflow-y: auto;">';
+    data.tracks.forEach((track, idx) => {
+      tracksHtml += `
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+          <div>
+            <span class="text-muted me-2">${idx + 1}.</span>
+            <strong>${escapeHtml(track.title || 'Unknown Track')}</strong><br>
+            <small class="text-muted ms-4">${escapeHtml(track.artist || 'Unknown Artist')} ${track.album ? '· ' + escapeHtml(track.album) : ''}</small>
+          </div>
+          ${track.duration ? `<small class="text-muted">${formatDuration(track.duration)}</small>` : ''}
+        </div>
+      `;
+    });
+    tracksHtml += '</div>';
+    tracksEl.innerHTML = tracksHtml;
+  } else {
+    tracksEl.innerHTML = '<p class="text-muted text-center py-3">No tracks available</p>';
+  }
+  
+  // Show the details section
+  detailsSection.style.display = 'block';
+  
+  // Scroll to details
+  detailsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function formatDuration(seconds) {
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
+}
+
+function editPlaylist() {
+  if (!currentPlaylistId || !currentPlaylistData) {
+    alert('No playlist selected');
+    return;
+  }
+  
+  // Get Navidrome URL from config (we'll need to fetch this or store it)
+  // For now, open a generic edit page
+  const navidromeUrl = currentPlaylistData.navidromeUrl || '/navidrome';
+  window.open(`${navidromeUrl}/#/playlist/${currentPlaylistId}`, '_blank');
+}
+
+function refreshPlaylistDetails() {
+  if (currentPlaylistId) {
+    const type = document.getElementById('smartPlaylistSelect').value ? 'smart' : 'regular';
+    loadNavidromePlaylistDetail(currentPlaylistId, type);
   }
 }
 // =============================================================================
