@@ -278,11 +278,21 @@ def save_to_db(track_data):
     """Save or update a track in the database."""
     conn = get_db_connection()
     cursor = conn.cursor()
-    columns = ', '.join(track_data.keys())
-    placeholders = ', '.join(['?'] * len(track_data))
-    update_clause = ', '.join([f"{k}=excluded.{k}" for k in track_data.keys()])
+    
+    # Convert any list values to comma-separated strings for SQLite compatibility
+    sanitized_data = {}
+    for key, value in track_data.items():
+        if isinstance(value, list):
+            # Convert list to comma-separated string
+            sanitized_data[key] = ', '.join(str(v) for v in value) if value else ''
+        else:
+            sanitized_data[key] = value
+    
+    columns = ', '.join(sanitized_data.keys())
+    placeholders = ', '.join(['?'] * len(sanitized_data))
+    update_clause = ', '.join([f"{k}=excluded.{k}" for k in sanitized_data.keys()])
     sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
-    cursor.execute(sql, list(track_data.values()))
+    cursor.execute(sql, list(sanitized_data.values()))
     conn.commit()
     conn.close()
 

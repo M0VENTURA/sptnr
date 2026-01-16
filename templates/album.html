@@ -236,6 +236,80 @@
     </div>
     {% endif %}
     
+    <!-- Editable Album Metadata Form -->
+    <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pencil-square"></i> Album Metadata
+                </h5>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
+                        <i class="bi bi-search"></i> Search Metadata
+                    </button>
+                    <button type="submit" class="btn btn-sm btn-success">
+                        <i class="bi bi-check-circle"></i> Save to Database & MP3s
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="album_title" class="form-label">Album Title</label>
+                        <input type="text" class="form-control" id="album_title" name="album_title" value="{{ album_name }}" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="album_artist" class="form-label">Album Artist</label>
+                        <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="release_year" class="form-label">Release Year</label>
+                        <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="album_type" class="form-label">Album Type</label>
+                        <select class="form-select" id="album_type" name="album_type">
+                            <option value="">Unknown</option>
+                            <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
+                            <option value="single" {% if album_data and album_data.spotify_album_type == 'single' %}selected{% endif %}>Single</option>
+                            <option value="ep" {% if album_data and album_data.spotify_album_type == 'ep' %}selected{% endif %}>EP</option>
+                            <option value="compilation" {% if album_data and album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Compilation</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="album_mbid" class="form-label">MusicBrainz Release ID</label>
+                        <input type="text" class="form-control" id="album_mbid" name="album_mbid" value="{{ album_data.beets_album_mbid if album_data and album_data.beets_album_mbid else '' }}" placeholder="MBID">
+                    </div>
+                    
+                    <!-- Genre Multi-Select -->
+                    <div class="col-12">
+                        <label for="album_genres" class="form-label">Genres</label>
+                        <div id="albumGenresContainer" class="mb-2">
+                            {% if album_genres %}
+                                {% for genre in album_genres %}
+                                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                                    {{ genre }}
+                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre }}')" aria-label="Remove"></button>
+                                </span>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted small">No genres set</span>
+                            {% endif %}
+                        </div>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
+                            <button class="btn btn-outline-success" type="button" onclick="addAlbumGenre()">
+                                <i class="bi bi-plus-circle"></i> Add
+                            </button>
+                        </div>
+                        <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
+                        <div class="form-text">These genres will be applied to all tracks in the album.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </form>
+    
     <!-- Genres with Track Fit -->
     {% if album_genres or True %}
     <div class="card mb-4">
@@ -732,8 +806,8 @@
                                 <div class="small text-muted mb-2">
                                     <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
                                 </div>
-                                <button class="btn btn-sm btn-primary" onclick="applyAlbumMBID('${result.mbid}', '${result.title}', '${result.cover_art_url || ''}')">
-                                    <i class="bi bi-check-circle"></i> Select This Match
+                                 <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}')">
+                                    <i class="bi bi-check-circle"></i> Use This Album
                                 </button>
                             </div>
                         </div>
@@ -764,11 +838,8 @@
                             ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
                             ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
                             <div class="gap-2">
-                                ${result.discogs_id ? `<button class="btn btn-sm btn-primary" onclick="applyAlbumDiscogsID('${result.discogs_id}')">
-                                    <i class="bi bi-check-circle"></i> Apply Discogs ID
-                                </button>` : ''}
-                                <button class="btn btn-sm btn-outline-primary" onclick="applyAlbumGenres('${genres.replace(/'/g, "\\'")}')">
-                                    <i class="bi bi-check-circle"></i> Apply Genres
+                                <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}')">
+                                    <i class="bi bi-check-circle"></i> Use This Album
                                 </button>
                             </div>
                         </div>
@@ -1114,6 +1185,123 @@
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
         });
+    }
+    
+    // Album metadata form population function
+    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres) {
+        // Close the modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
+        if (modal) modal.hide();
+        
+        // Populate form fields
+        if (title) {
+            document.getElementById('album_title').value = title;
+        }
+        if (year) {
+            document.getElementById('release_year').value = year;
+        }
+        if (albumType) {
+            document.getElementById('album_type').value = albumType.toLowerCase();
+        }
+        if (mbid) {
+            document.getElementById('album_mbid').value = mbid;
+        }
+        
+        // Handle genres
+        if (genres) {
+            const genreList = genres.split(',').map(g => g.trim()).filter(g => g);
+            genreList.forEach(genre => {
+                if (!currentAlbumGenres.has(genre)) {
+                    currentAlbumGenres.add(genre);
+                }
+            });
+            updateAlbumGenresDisplay();
+        }
+        
+        // Show success message
+        alert('✅ Album metadata populated! Review and click "Save to Database & MP3s" to apply.');
+        
+        // Scroll to the form
+        document.getElementById('albumMetadataForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    
+    // Album genre management
+    let currentAlbumGenres = new Set();
+    
+    // Initialize album genres
+    document.addEventListener('DOMContentLoaded', function() {
+        const albumGenresInput = document.getElementById('album_genres');
+        if (albumGenresInput && albumGenresInput.value) {
+            const genres = albumGenresInput.value.split(',').map(g => g.trim()).filter(g => g);
+            currentAlbumGenres = new Set(genres);
+        }
+        
+        // Add Enter key support
+        const genreInput = document.getElementById('newAlbumGenreInput');
+        if (genreInput) {
+            genreInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addAlbumGenre();
+                }
+            });
+        }
+    });
+    
+    function addAlbumGenre() {
+        const input = document.getElementById('newAlbumGenreInput');
+        const genre = input.value.trim();
+        
+        if (!genre) return;
+        
+        if (currentAlbumGenres.has(genre)) {
+            alert('Genre already added');
+            input.value = '';
+            return;
+        }
+        
+        currentAlbumGenres.add(genre);
+        updateAlbumGenresDisplay();
+        input.value = '';
+        input.focus();
+    }
+    
+    function removeAlbumGenre(genre) {
+        currentAlbumGenres.delete(genre);
+        updateAlbumGenresDisplay();
+    }
+    
+    function updateAlbumGenresDisplay() {
+        const container = document.getElementById('albumGenresContainer');
+        const hiddenInput = document.getElementById('album_genres');
+        
+        if (currentAlbumGenres.size === 0) {
+            container.innerHTML = '<span class="text-muted small">No genres set</span>';
+            hiddenInput.value = '';
+            return;
+        }
+        
+        let html = '';
+        Array.from(currentAlbumGenres).sort().forEach(genre => {
+            html += `
+                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                    ${escapeHtml(genre)}
+                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('${escapeHtml(genre)}')" aria-label="Remove"></button>
+                </span>
+            `;
+        });
+        
+        container.innerHTML = html;
+        hiddenInput.value = Array.from(currentAlbumGenres).join(', ');
+    }
+    
+    function escapeJsString(str) {
+        if (!str) return '';
+        return str.replace(/\\/g, '\\\\')
+                  .replace(/'/g, "\\'")
+                  .replace(/"/g, '\\"')
+                  .replace(/\n/g, '\\n')
+                  .replace(/\r/g, '\\r');
     }
 </script>
 {% endblock %}

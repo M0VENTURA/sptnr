@@ -360,3 +360,73 @@ def get_beets_stats(config_path: str = "/config", enabled: bool = True) -> dict:
     """Backward-compatible wrapper."""
     client = _get_beets_client(config_path, enabled)
     return client.get_library_stats()
+
+
+def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str = None) -> bool:
+    """
+    Update track metadata in MP3 file using beets modify command.
+    
+    Args:
+        track_id: Track ID in the database
+        metadata: Dict of metadata fields to update (e.g., {'title': 'New Title', 'genre': 'Rock, Jazz'})
+        db_path: Path to the database
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get the track file path from the database
+        if not db_path:
+            db_path = os.environ.get("DB_PATH", "/config/sptnr.db")
+        
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT beets_path, file_path, artist, album, title FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            logger.error(f"Track {track_id} not found in database")
+            return False
+        
+        file_path = row['beets_path'] if row['beets_path'] else row['file_path']
+        
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"File not found for track {track_id}: {file_path}")
+            return False
+        
+        # Build beets modify command
+        # Use the file path to identify the track
+        cmd = ["beet", "modify", "-y", f"path:{file_path}"]
+        
+        # Add each metadata field to update
+        for key, value in metadata.items():
+            if value is not None:
+                # Escape values with spaces or special characters
+                if ' ' in str(value) or ',' in str(value):
+                    cmd.append(f"{key}='{value}'")
+                else:
+                    cmd.append(f"{key}={value}")
+        
+        logger.info(f"Running beets modify: {' '.join(cmd)}")
+        
+        # Run the command
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Beets modify failed: {result.stderr}")
+            return False
+        
+        logger.info(f"Successfully updated MP3 metadata for track {track_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating track metadata with beets: {e}")
+        return False

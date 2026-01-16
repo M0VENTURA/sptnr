@@ -111,6 +111,62 @@
                                 <option value="high" {% if track.single_confidence == 'high' %}selected{% endif %}>High</option>
                             </select>
                         </div>
+                        
+                        <!-- Genres - Multi-select with add/remove -->
+                        <div class="mb-3">
+                            <label for="genres" class="form-label">Genres</label>
+                            <div id="genresContainer" class="mb-2">
+                                {% if track.genres %}
+                                    {% for genre in track.genres.split(',') %}
+                                    <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                                        {{ genre.strip() }}
+                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeGenre('{{ genre.strip() }}')" aria-label="Remove"></button>
+                                    </span>
+                                    {% endfor %}
+                                {% else %}
+                                    <span class="text-muted small">No genres set</span>
+                                {% endif %}
+                            </div>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="newGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
+                                <button class="btn btn-outline-success" type="button" onclick="addGenre()">
+                                    <i class="bi bi-plus-circle"></i> Add
+                                </button>
+                            </div>
+                            <input type="hidden" id="genres" name="genres" value="{{ track.genres or '' }}">
+                            <div class="form-text">Press Enter or click Add to add a genre. Click × to remove.</div>
+                        </div>
+                        
+                        <!-- Additional MP3 Metadata Fields -->
+                        <div class="mb-3">
+                            <label for="year" class="form-label">Year</label>
+                            <input type="number" class="form-control" id="year" name="year" value="{{ track.year or '' }}" placeholder="e.g., 2023">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="album_artist" class="form-label">Album Artist</label>
+                            <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ track.album_artist or '' }}" placeholder="Leave empty to use artist">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="composer" class="form-label">Composer</label>
+                            <input type="text" class="form-control" id="composer" name="composer" value="{{ track.composer or '' }}" placeholder="Composer name">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="track_number" class="form-label">Track Number</label>
+                            <input type="text" class="form-control" id="track_number" name="track_number" value="{{ track.track_number or '' }}" placeholder="e.g., 1 or 1/12">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="disc_number" class="form-label">Disc Number</label>
+                            <input type="number" class="form-control" id="disc_number" name="disc_number" value="{{ track.disc_number or '' }}" placeholder="e.g., 1">
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="comment" class="form-label">Comment</label>
+                            <textarea class="form-control" id="comment" name="comment" rows="2" placeholder="Add notes or comments">{{ track.comment or '' }}</textarea>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -907,6 +963,84 @@ function applyTrackMBID(mbid, title) {
     const modal = bootstrap.Modal.getInstance(document.getElementById('trackMBLookupModal'));
     modal.hide();
     alert('✅ MBID applied! Remember to save your changes.');
+}
+
+// Genre management functions
+let currentGenres = new Set();
+
+// Initialize genres from the form
+document.addEventListener('DOMContentLoaded', function() {
+    const genresInput = document.getElementById('genres');
+    if (genresInput && genresInput.value) {
+        const genres = genresInput.value.split(',').map(g => g.trim()).filter(g => g);
+        currentGenres = new Set(genres);
+    }
+    
+    // Add Enter key support for genre input
+    const genreInput = document.getElementById('newGenreInput');
+    if (genreInput) {
+        genreInput.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                e.preventDefault();
+                addGenre();
+            }
+        });
+    }
+});
+
+function addGenre() {
+    const input = document.getElementById('newGenreInput');
+    const genre = input.value.trim();
+    
+    if (!genre) {
+        return;
+    }
+    
+    if (currentGenres.has(genre)) {
+        alert('Genre already added');
+        input.value = '';
+        return;
+    }
+    
+    currentGenres.add(genre);
+    updateGenresDisplay();
+    input.value = '';
+    input.focus();
+}
+
+function removeGenre(genre) {
+    currentGenres.delete(genre);
+    updateGenresDisplay();
+}
+
+function updateGenresDisplay() {
+    const container = document.getElementById('genresContainer');
+    const hiddenInput = document.getElementById('genres');
+    
+    if (currentGenres.size === 0) {
+        container.innerHTML = '<span class="text-muted small">No genres set</span>';
+        hiddenInput.value = '';
+        return;
+    }
+    
+    let html = '';
+    Array.from(currentGenres).sort().forEach(genre => {
+        html += `
+            <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                ${escapeHtml(genre)}
+                <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeGenre('${escapeHtml(genre)}')" aria-label="Remove"></button>
+            </span>
+        `;
+    });
+    
+    container.innerHTML = html;
+    hiddenInput.value = Array.from(currentGenres).join(', ');
+}
+
+function escapeHtml(text) {
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
 }
 </script>
 {% endblock %}
