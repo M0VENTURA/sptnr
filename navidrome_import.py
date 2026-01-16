@@ -96,6 +96,27 @@ def _now_local_iso() -> str:
         return datetime.now().isoformat()
 
 
+def get_existing_file_path(track_id: str) -> Optional[str]:
+    """
+    Get existing file_path from database to preserve Beets paths.
+    
+    Args:
+        track_id: Track ID to look up
+        
+    Returns:
+        Existing file_path or None
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return row[0] if row and row[0] else None
+    except Exception:
+        return None
+
+
 def save_navidrome_scan_progress(current_artist, processed_artists, total_artists):
     """Save Navidrome scan progress to JSON file (using artist list for progress tracking)"""
     try:
@@ -256,7 +277,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    "file_path": t.get("path", ""),
+                    "file_path": None,  # Leave file_path unset for Navidrome; beets import owns the canonical path
                     "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,
