@@ -1088,6 +1088,14 @@ def popularity_scan(
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_unified(f'Star distribution for "{album}": {dist_str}')
                 
+                # Update last_scanned timestamp for all tracks in this album
+                from datetime import datetime
+                current_timestamp = datetime.now().isoformat()
+                cursor.execute(
+                    """UPDATE tracks SET last_scanned = ? WHERE artist = ? AND album = ?""",
+                    (current_timestamp, artist, album)
+                )
+                
                 # Ensure changes are committed before logging to scan_history to avoid database lock conflicts
                 conn.commit()
                 
