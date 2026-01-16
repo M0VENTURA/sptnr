@@ -2713,18 +2713,82 @@ def track_edit(track_id):
     suggested_mbid = request.form.get("suggested_mbid", "").strip() or None
     suggested_mbid_confidence = request.form.get("suggested_mbid_confidence", type=float)
     
+    # New MP3 metadata fields
+    genres = request.form.get("genres", "").strip()
+    year = request.form.get("year", "").strip() or None
+    album_artist = request.form.get("album_artist", "").strip() or None
+    composer = request.form.get("composer", "").strip() or None
+    track_number = request.form.get("track_number", "").strip() or None
+    disc_number = request.form.get("disc_number", type=int) or None
+    comment = request.form.get("comment", "").strip() or None
+    
     # Update database
-    cursor.execute("""
-        UPDATE tracks
-        SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
-            mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?
-        WHERE id = ?
-    """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, suggested_mbid_confidence, track_id))
+    try:
+        cursor.execute("""
+            UPDATE tracks
+            SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
+                mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?,
+                genres = ?, year = ?, album_artist = ?, composer = ?, 
+                track_number = ?, disc_number = ?, comment = ?
+            WHERE id = ?
+        """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, 
+              suggested_mbid_confidence, genres, year, album_artist, composer, 
+              track_number, disc_number, comment, track_id))
+        
+        conn.commit()
+        
+        # Now update the MP3 file via beets
+        try:
+            from beets_integration import update_track_metadata_with_beets
+            
+            # Get the file path for this track
+            cursor.execute("SELECT beets_path, file_path FROM tracks WHERE id = ?", (track_id,))
+            row = cursor.fetchone()
+            file_path = row['beets_path'] if row and row['beets_path'] else (row['file_path'] if row else None)
+            
+            if file_path:
+                # Prepare metadata to update
+                metadata_updates = {
+                    'title': title,
+                    'artist': artist,
+                    'album': album,
+                }
+                
+                if genres:
+                    metadata_updates['genre'] = genres
+                if year:
+                    metadata_updates['year'] = year
+                if album_artist:
+                    metadata_updates['albumartist'] = album_artist
+                if composer:
+                    metadata_updates['composer'] = composer
+                if track_number:
+                    metadata_updates['track'] = track_number
+                if disc_number:
+                    metadata_updates['disc'] = disc_number
+                if comment:
+                    metadata_updates['comments'] = comment
+                if mbid:
+                    metadata_updates['mb_trackid'] = mbid
+                
+                # Update via beets
+                update_track_metadata_with_beets(track_id, metadata_updates, DB_PATH)
+                flash(f"Track '{title}' updated successfully (database + MP3 file)", "success")
+            else:
+                flash(f"Track '{title}' updated in database (MP3 file not found for sync)", "warning")
+        except ImportError:
+            # Beets integration not available
+            flash(f"Track '{title}' updated in database (beets integration not available)", "warning")
+        except Exception as e:
+            logging.error(f"Error updating MP3 via beets: {e}")
+            flash(f"Track '{title}' updated in database, but MP3 update failed: {str(e)}", "warning")
+    except Exception as e:
+        conn.rollback()
+        logging.error(f"Error updating track: {e}")
+        flash(f"Error updating track: {str(e)}", "danger")
+    finally:
+        conn.close()
     
-    conn.commit()
-    conn.close()
-    
-    flash(f"Track '{title}' updated successfully", "success")
     return redirect(url_for("track_detail", track_id=track_id))
 
 

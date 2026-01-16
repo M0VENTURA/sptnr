@@ -26,9 +26,23 @@
             <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
         </div>
     {% else %}
+        <!-- Letter Navigation -->
+        <div class="card mb-3">
+            <div class="card-body py-2">
+                <div class="d-flex flex-wrap gap-1 justify-content-center align-items-center">
+                    <span class="text-muted small me-2">Jump to:</span>
+                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('all')">All</button>
+                    {% for letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' %}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('{{ letter }}')">{{ letter }}</button>
+                    {% endfor %}
+                    <button class="btn btn-sm btn-outline-secondary" onclick="jumpToLetter('#')">#</button>
+                </div>
+            </div>
+        </div>
+        
         <div class="card">
             <div class="table-responsive">
-                <table class="table table-hover mb-0">
+                <table class="table table-hover mb-0" id="artistsTable">
                     <thead class="table-dark sticky-top">
                         <tr>
                             <th class="d-none d-sm-table-cell">
@@ -50,7 +64,9 @@
                     </thead>
                     <tbody>
                         {% for artist in artists %}
-                        <tr>
+                        {% set first_letter = artist.artist[0]|upper if artist.artist else '#' %}
+                        {% set letter_key = first_letter if first_letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' else '#' %}
+                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.artist }}">
                             <td class="d-none d-sm-table-cell">
                                 <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
                                     {{ artist.artist }}
@@ -273,6 +289,38 @@ function addArtist() {
         btn.disabled = false;
         btn.innerHTML = '<i class="bi bi-search"></i> Search & Add';
     });
+}
+
+// Letter navigation function
+function jumpToLetter(letter) {
+    const table = document.getElementById('artistsTable');
+    const rows = table.querySelectorAll('tbody tr');
+    
+    if (letter === 'all') {
+        // Show all rows
+        rows.forEach(row => row.style.display = '');
+        return;
+    }
+    
+    // Hide all rows first
+    rows.forEach(row => row.style.display = 'none');
+    
+    // Show only rows matching the letter
+    let firstMatch = null;
+    rows.forEach(row => {
+        const rowLetter = row.getAttribute('data-letter');
+        if (rowLetter === letter) {
+            row.style.display = '';
+            if (!firstMatch) {
+                firstMatch = row;
+            }
+        }
+    });
+    
+    // Scroll to first match
+    if (firstMatch) {
+        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
 }
 </script>
 
