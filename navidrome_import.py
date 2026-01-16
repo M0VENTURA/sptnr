@@ -14,6 +14,10 @@ import logging
 import sqlite3
 import time
 import json
+import difflib
+import unicodedata
+import re
+import requests
 from datetime import datetime
 from typing import Optional
 from zoneinfo import ZoneInfo
@@ -321,10 +325,270 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         if verbose:
             print(f"Artist scan complete: {artist_name}")
             logging.info(f"Artist scan complete: {artist_name}")
+        
+        # Fetch artist biography and images after successful import
+        try:
+            _fetch_artist_metadata(artist_name, verbose=verbose)
+        except Exception as e:
+            logging.debug(f"Failed to fetch artist metadata for {artist_name}: {e}")
+        
+        # Scan for missing releases from MusicBrainz
+        try:
+            _scan_missing_musicbrainz_releases(artist_name, verbose=verbose)
+        except Exception as e:
+            logging.debug(f"Failed to scan missing MusicBrainz releases for {artist_name}: {e}")
     except Exception as e:
         log_unified(f"❌ [Navidrome] Import failed for {artist_name}: {e}")
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
+
+
+def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
+    """
+    Fetch and store artist biography and images from external APIs.
+    
+    This is called after a successful artist scan to enhance artist metadata.
+    
+    Args:
+        artist_name: Name of the artist
+        verbose: Enable verbose logging
+    """
+    from api_clients.discogs import get_discogs_artist_biography
+    from api_clients.applemusic import get_artist_artwork
+    from config_loader import load_config
+    
+    try:
+        config = load_config()
+        
+        # Get Discogs configuration
+        discogs_config = config.get("api_integrations", {}).get("discogs", {})
+        discogs_enabled = discogs_config.get("enabled", False)
+        discogs_token = discogs_config.get("token", "")
+        
+        # Try to fetch biography from Discogs
+        biography = ""
+        if discogs_enabled and discogs_token:
+            if verbose:
+                logging.info(f"Fetching biography for {artist_name} from Discogs...")
+            bio_data = get_discogs_artist_biography(artist_name, token=discogs_token, enabled=True)
+            biography = bio_data.get("profile", "")
+            if biography:
+                log_unified(f"   📖 Retrieved artist biography from Discogs ({len(biography)} chars)")
+        
+        # Try to fetch artist image from Apple Music (iTunes Search API - no auth needed)
+        artist_image_url = ""
+        if verbose:
+            logging.info(f"Fetching artist image for {artist_name} from Apple Music...")
+        artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
+        if artist_image_url:
+            log_unified(f"   🖼️  Retrieved artist image from Apple Music")
+        
+        # Store in database
+        if biography or artist_image_url:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Create artist_metadata table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS artist_metadata (
+                    artist_name TEXT PRIMARY KEY,
+                    biography TEXT,
+                    image_url TEXT,
+                    updated_at TEXT
+                )
+            """)
+            
+            # Insert or update artist metadata
+            cursor.execute("""
+                INSERT OR REPLACE INTO artist_metadata (artist_name, biography, image_url, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (artist_name, biography, artist_image_url, datetime.now().isoformat()))
+            
+            conn.commit()
+            conn.close()
+            
+            if verbose:
+                logging.info(f"Stored artist metadata for {artist_name}")
+    
+    except Exception as e:
+        logging.debug(f"Error fetching artist metadata for {artist_name}: {e}")
+
+
+def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
+    """
+    Query MusicBrainz for missing singles, EPs, and albums for an artist.
+    
+    Compares MusicBrainz releases to what's already in the database and stores
+    information about missing releases.
+    
+    Args:
+        artist_name: Name of the artist
+        verbose: Enable verbose logging
+    """
+    import requests
+    import difflib
+    import unicodedata
+    import re
+    
+    conn = None
+    try:
+        # Get existing albums from database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
+        existing_albums = {row[0].lower().strip() for row in cursor.fetchall() if row[0]}
+        
+        # Query MusicBrainz for all release groups
+        headers = {"User-Agent": "sptnr-cli/1.0 (https://github.com/M0VENTURA/sptnr)"}
+        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+        
+        all_mb_releases = []
+        offset = 0
+        page_size = 100
+        max_pages = 5  # Limit to 500 releases max
+        
+        if verbose:
+            logging.info(f"Querying MusicBrainz for releases by {artist_name}...")
+        
+        # Paginate through results
+        for page in range(max_pages):
+            try:
+                resp = requests.get(
+                    "https://musicbrainz.org/ws/2/release-group",
+                    params={"query": query, "fmt": "json", "limit": page_size, "offset": offset},
+                    headers=headers,
+                    timeout=10
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                
+                release_groups = data.get("release-groups", []) or []
+                if not release_groups:
+                    break
+                
+                all_mb_releases.extend(release_groups)
+                
+                # Check if we've fetched all available
+                total_count = data.get("count", 0)
+                if offset + len(release_groups) >= total_count:
+                    break
+                
+                offset += page_size
+                time.sleep(1.0)  # Rate limiting
+                
+            except Exception as e:
+                logging.debug(f"MusicBrainz query failed for {artist_name} at offset {offset}: {e}")
+                break
+        
+        if not all_mb_releases:
+            if verbose:
+                logging.info(f"No MusicBrainz releases found for {artist_name}")
+            return
+        
+        # Normalize function for title comparison
+        def normalize_title(title: str) -> str:
+            if not title:
+                return ""
+            # Remove accents
+            title = unicodedata.normalize("NFKD", title)
+            title = "".join(c for c in title if not unicodedata.combining(c))
+            title = title.lower()
+            # Remove parenthetical content and brackets
+            title = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", title)
+            # Remove remaster/deluxe/etc
+            title = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", title)
+            # Keep alphanumeric only
+            title = re.sub(r"[^a-z0-9]+", " ", title)
+            return " ".join(title.split())
+        
+        # Find missing releases
+        missing_releases = []
+        for rg in all_mb_releases:
+            mb_title = rg.get("title", "")
+            norm_mb_title = normalize_title(mb_title)
+            
+            # Skip if title is empty or matches an existing album
+            if not norm_mb_title:
+                continue
+            
+            # Check if this release already exists
+            is_missing = True
+            for existing in existing_albums:
+                norm_existing = normalize_title(existing)
+                similarity = difflib.SequenceMatcher(None, norm_mb_title, norm_existing).ratio()
+                if similarity > 0.85:  # High similarity threshold
+                    is_missing = False
+                    break
+            
+            if is_missing:
+                # Skip compilations
+                secondary_types = rg.get("secondary-types", []) or []
+                if "Compilation" in secondary_types:
+                    continue
+                
+                primary_type = (rg.get("primary-type") or "Album").lower()
+                release_date = rg.get("first-release-date", "")
+                mbid = rg.get("id", "")
+                
+                missing_releases.append({
+                    "artist": artist_name,
+                    "title": mb_title,
+                    "release_type": primary_type,
+                    "release_date": release_date,
+                    "mbid": mbid,
+                    "source": "musicbrainz"
+                })
+        
+        if missing_releases:
+            log_unified(f"   🔍 Found {len(missing_releases)} missing releases on MusicBrainz")
+            
+            # Create missing_releases table if it doesn't exist
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS missing_releases (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artist TEXT NOT NULL,
+                    title TEXT NOT NULL,
+                    release_type TEXT NOT NULL,
+                    release_date TEXT,
+                    mbid TEXT,
+                    source TEXT DEFAULT 'musicbrainz',
+                    discovered_at TEXT NOT NULL,
+                    UNIQUE(artist, title, source)
+                )
+            """)
+            
+            # Insert missing releases
+            for release in missing_releases:
+                cursor.execute("""
+                    INSERT OR IGNORE INTO missing_releases 
+                    (artist, title, release_type, release_date, mbid, source, discovered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    release["artist"],
+                    release["title"],
+                    release["release_type"],
+                    release["release_date"],
+                    release["mbid"],
+                    release["source"],
+                    datetime.now().isoformat()
+                ))
+            
+            conn.commit()
+            
+            if verbose:
+                logging.info(f"Stored {len(missing_releases)} missing releases for {artist_name}")
+        else:
+            if verbose:
+                logging.info(f"No missing releases found for {artist_name}")
+        
+    except Exception as e:
+        logging.debug(f"Error scanning missing MusicBrainz releases for {artist_name}: {e}")
+    finally:
+        if conn:
+            try:
+                conn.close()
+            except Exception:
+                pass
 
 
 def scan_library_to_db(verbose: bool = False, force: bool = False):
