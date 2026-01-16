@@ -43,7 +43,9 @@ logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 # Dedicated logger for unified_scan.log
 unified_logger = logging.getLogger("unified_scan_navidrome")
 unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(formatter)
+# Use a clean formatter without service prefix for unified log
+unified_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
+unified_file_handler.setFormatter(unified_formatter)
 unified_logger.setLevel(logging.INFO)
 if not unified_logger.hasHandlers():
     unified_logger.addHandler(unified_file_handler)
