@@ -15,7 +15,7 @@ def test_keyword_filtering():
     print("="*60)
     
     # Import the actual list from popularity.py
-    # We need to mock the logging setup first
+    # Set log paths to avoid file creation errors during import
     os.environ.setdefault("LOG_PATH", "/tmp/test_sptnr.log")
     os.environ.setdefault("UNIFIED_SCAN_LOG_PATH", "/tmp/test_unified.log")
     

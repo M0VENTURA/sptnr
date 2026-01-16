@@ -66,6 +66,7 @@ logger = logging.getLogger(__name__)
 
 # Keyword filter for non-singles (defined at module level for performance)
 # Filters out alternate versions: live, acoustic, orchestral, remixes, demos, etc.
+# Note: List is used (not set) since we perform substring matching with 'any(k in title...)'
 IGNORE_SINGLE_KEYWORDS = [
     "intro", "outro", "jam",  # intros/outros/jams
     "live", "unplugged",  # live performances
@@ -77,6 +78,7 @@ IGNORE_SINGLE_KEYWORDS = [
 
 # Subset of keywords to check in Spotify album names (for album-level filtering)
 # These are the most common alternate version album types
+# Note: List is used (not set) since we perform substring matching with 'any(k in album_name...)'
 SPOTIFY_ALBUM_EXCLUDE_KEYWORDS = [
     "live", "remix", "acoustic", "unplugged", "orchestral", "demo", "instrumental"
 ]
