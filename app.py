@@ -302,7 +302,6 @@ def setup():
                 "force": False,
                 "verbose": False,
                 "perpetual": True,
-                "batchrate": False,
                 "artist": [],
                 "album_skip_days": 7,
                 "album_skip_min_tracks": 1,
@@ -454,7 +453,7 @@ _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log"))
 
 # Global scan process tracker
-scan_process = None  # Main scan process (batchrate, force, artist-specific)
+scan_process = None  # Main scan process (full scan, force, artist-specific)
 scan_process_mp3 = None  # MP3 scanner process
 scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
@@ -671,7 +670,6 @@ def _baseline_config():
             "force": False,
             "verbose": False,
             "perpetual": True,
-            "batchrate": False,
             "artist": [],
             "album_skip_days": 7,
             "album_skip_min_tracks": 1,
@@ -698,14 +696,7 @@ def _baseline_config():
 # Kick off Navidrome metadata-only import at startup (missing-only)
 if AUTO_BOOT_ND_IMPORT:
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        batchrate_enabled = False
-        if cfg and 'features' in cfg:
-            batchrate_enabled = bool(cfg['features'].get('batchrate', False))
-        if batchrate_enabled:
-            _start_boot_navidrome_import()
-        else:
-            logging.info("Navidrome scan at boot skipped: batchrate is False")
+        _start_boot_navidrome_import()
     except Exception as e:
         logging.error(f"Failed to start boot Navidrome import: {e}")
 
@@ -2728,7 +2719,7 @@ def scan_start():
     """Start a library scan"""
     global scan_process
     
-    scan_type = request.form.get("scan_type", "batchrate")
+    scan_type = request.form.get("scan_type", "full")
     artist = request.form.get("artist")
     
     logging.info(f"scan_start called: scan_type={scan_type}, artist={artist}")
@@ -2754,10 +2745,10 @@ def scan_start():
         # Build command
         cmd = ["python", "/app/start.py"]
         
-        if scan_type == "batchrate":
-            cmd.append("--batchrate")
+        if scan_type == "full":
+            cmd.append("--full-scan")
         elif scan_type == "force":
-            cmd.extend(["--batchrate", "--force"])
+            cmd.extend(["--full-scan", "--force"])
         
         # Start process
         scan_process = subprocess.Popen(
@@ -7018,18 +7009,17 @@ if __name__ == "__main__":
         features = cfg.get('features', {})
         
         print(f"Checking auto-start configuration...")
-        print(f"  batchrate: {features.get('batchrate')}")
         print(f"  perpetual: {features.get('perpetual')}")
         
-        if features.get('batchrate') and features.get('perpetual'):
+        if features.get('perpetual'):
             # Start the beets auto-import and scanner in background thread
             def start_scanner():
                 import time as time_module
                 time_module.sleep(2)  # Give Flask time to start
                 try:
-                    print("Auto-starting beets import and scanner with batchrate and perpetual mode...")
+                    print("Auto-starting beets import and scanner with perpetual mode...")
                     logger = logging.getLogger('sptnr')
-                    logger.info("Auto-starting beets import and scanner with batchrate and perpetual mode...")
+                    logger.info("Auto-starting beets import and scanner with perpetual mode...")
                     
                     # First, run beets auto-import to capture file paths and metadata
                     print("Step 1: Running beets auto-import...")
@@ -7042,7 +7032,7 @@ if __name__ == "__main__":
                     print("Step 2: Running Navidrome sync and rating scan...")
                     logger.info("Step 2: Running Navidrome sync and rating scan...")
                     from start import run_scan
-                    run_scan(scan_type='batchrate')
+                    run_scan(scan_type='full')
                 except Exception as e:
                     import traceback
                     print(f"Error starting auto-import/scanner: {e}")
@@ -7055,7 +7045,7 @@ if __name__ == "__main__":
             scanner_thread.start()
             print("Scanner thread started in background")
         else:
-            print("Auto-start not enabled (both batchrate and perpetual must be true)")
+            print("Auto-start not enabled (perpetual must be true)")
     except Exception as e:
         import traceback
         print(f"Error in auto-start configuration: {e}")
