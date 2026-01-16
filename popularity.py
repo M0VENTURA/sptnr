@@ -578,6 +578,209 @@ def get_resume_artist_from_db():
         return None
 
 
+def detect_single_for_track(
+    title: str,
+    artist: str,
+    album_track_count: int = 1,
+    spotify_results_cache: dict = None,
+    verbose: bool = False
+) -> dict:
+    """
+    Detect if a track is a single using multiple data sources.
+    
+    This is the canonical single detection logic used by popularity.py.
+    Other modules should call this function to ensure consistent behavior.
+    
+    Args:
+        title: Track title
+        artist: Artist name
+        album_track_count: Number of tracks on the album (for context-based confidence)
+        spotify_results_cache: Optional dict mapping track_id to Spotify search results
+        verbose: Enable verbose logging
+        
+    Returns:
+        Dict with keys:
+            - sources: List of sources that confirmed single (e.g. ['spotify', 'musicbrainz'])
+            - confidence: 'high', 'medium', or 'low'
+            - is_single: True if confidence is 'high', False otherwise
+    """
+    # Ignore obvious non-singles by keywords
+    if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
+        if verbose:
+            log_verbose(f"   ⊗ Skipping non-single: {title} (keyword filter)")
+        return {
+            "sources": [],
+            "confidence": "low",
+            "is_single": False
+        }
+    
+    single_sources = []
+    
+    # Load discogs token from config
+    discogs_token = ""
+    try:
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+    except Exception as e:
+        if verbose:
+            log_verbose(f"   ⚠ Could not load Discogs token from config: {e}")
+    
+    # First check: Spotify single detection
+    try:
+        # Use cached results if available
+        spotify_results = None
+        if spotify_results_cache is not None:
+            spotify_results = spotify_results_cache.get(title)
+        
+        if spotify_results is None:
+            # Query Spotify
+            if verbose:
+                log_verbose(f"   Spotify results not cached for {title}, querying...")
+            spotify_results = _run_with_timeout(
+                search_spotify_track,
+                API_CALL_TIMEOUT,
+                f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
+                title, artist
+            )
+        else:
+            if verbose:
+                log_verbose(f"   ✓ Reusing cached Spotify results for {title}")
+        
+        if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
+            for result in spotify_results:
+                album_info = result.get("album", {})
+                album_type = album_info.get("album_type", "").lower()
+                album_name = album_info.get("name", "").lower()
+                
+                # Match Jan 2nd logic: exclude live/remix singles
+                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
+                    single_sources.append("spotify")
+                    if verbose:
+                        log_verbose(f"   ✓ Spotify confirms single: {title}")
+                    break
+    except TimeoutError as e:
+        if verbose:
+            log_verbose(f"Spotify single check timed out for {title}: {e}")
+    except Exception as e:
+        if verbose:
+            log_verbose(f"Spotify single check failed for {title}: {e}")
+    
+    # Second check: MusicBrainz single detection
+    if HAVE_MUSICBRAINZ:
+        try:
+            if verbose:
+                log_verbose(f"   Checking MusicBrainz for single: {title}")
+            # Use timeout-safe client to prevent retries from exceeding timeout
+            mb_client = _get_timeout_safe_musicbrainz_client()
+            if mb_client:
+                result = _run_with_timeout(
+                    mb_client.is_single,
+                    API_CALL_TIMEOUT,
+                    f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
+                    title, artist
+                )
+                if result:
+                    single_sources.append("musicbrainz")
+                    if verbose:
+                        log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                else:
+                    if verbose:
+                        log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
+        except TimeoutError as e:
+            if verbose:
+                log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
+        except Exception as e:
+            if verbose:
+                log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+    else:
+        if verbose:
+            log_verbose(f"   ⓘ MusicBrainz client not available")
+    
+    # Third check: Discogs single detection
+    if HAVE_DISCOGS and discogs_token:
+        try:
+            if verbose:
+                log_verbose(f"   Checking Discogs for single: {title}")
+            # Use timeout-safe client to prevent retries from exceeding timeout
+            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+            if discogs_client:
+                result = _run_with_timeout(
+                    lambda: discogs_client.is_single(title, artist, album_context=None),
+                    API_CALL_TIMEOUT,
+                    f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
+                )
+                if result:
+                    single_sources.append("discogs")
+                    if verbose:
+                        log_unified(f"   ✓ Discogs confirms single: {title}")
+                else:
+                    if verbose:
+                        log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
+        except TimeoutError as e:
+            if verbose:
+                log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
+        except Exception as e:
+            if verbose:
+                log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
+    else:
+        if not HAVE_DISCOGS and verbose:
+            log_verbose(f"   ⓘ Discogs client not available")
+        elif not discogs_token and verbose:
+            log_verbose(f"   ⓘ Discogs token not configured")
+    
+    # Fourth check: Discogs video detection (requires second source for confirmation)
+    if HAVE_DISCOGS_VIDEO and discogs_token:
+        try:
+            # Use timeout-safe client to prevent retries from exceeding timeout
+            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+            if discogs_client:
+                result = _run_with_timeout(
+                    lambda: discogs_client.has_official_video(title, artist),
+                    API_CALL_TIMEOUT,
+                    f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
+                )
+                if result:
+                    # Only add if we have at least one other source
+                    if len(single_sources) >= 1:
+                        single_sources.append("discogs_video")
+                        if verbose:
+                            log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
+                    else:
+                        if verbose:
+                            log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
+        except TimeoutError as e:
+            if verbose:
+                log_verbose(f"Discogs video check timed out for {title}: {e}")
+        except Exception as e:
+            if verbose:
+                log_verbose(f"Discogs video check failed for {title}: {e}")
+    
+    # Calculate confidence based on number of sources (Jan 2nd logic)
+    if len(single_sources) >= 2:
+        single_confidence = "high"
+    elif len(single_sources) == 1:
+        single_confidence = "medium"
+    else:
+        single_confidence = "low"
+    
+    # Album context rule: downgrade medium → low if album has >3 tracks
+    if single_confidence == "medium" and album_track_count > 3:
+        single_confidence = "low"
+        if verbose:
+            log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
+    
+    # is_single = True only for high confidence singles (5* singles)
+    is_single = single_confidence == "high"
+    
+    return {
+        "sources": single_sources,
+        "confidence": single_confidence,
+        "is_single": is_single
+    }
+
+
 def popularity_scan(
     verbose: bool = False, 
     resume_from: str = None,
@@ -878,142 +1081,18 @@ def popularity_scan(
                     track_id = track["id"]
                     title = track["title"]
                     
-                    # Ignore obvious non-singles by keywords (matching start.py Jan 2nd logic)
-                    if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
-                        log_verbose(f"   ⊗ Skipping non-single: {title} (keyword filter)")
-                        continue
+                    # Use the centralized single detection function
+                    detection_result = detect_single_for_track(
+                        title=title,
+                        artist=artist,
+                        album_track_count=album_track_count,
+                        spotify_results_cache=spotify_results_cache,
+                        verbose=VERBOSE
+                    )
                     
-                    # Check for singles using multiple sources with confidence levels
-                    # Matching start.py logic from Jan 2nd: Spotify, MusicBrainz, Discogs
-                    # Confidence: 2+ sources = high, 1 source = medium, 0 sources = low
-                    # Album context: downgrade medium → low if album has >3 tracks
-                    single_sources = []
-                    
-                    # First check: Spotify single detection (REUSE cached results from popularity scan)
-                    try:
-                        # OPTIMIZATION: Check cache first to avoid duplicate API call
-                        spotify_results = spotify_results_cache.get(track_id)
-                        
-                        if spotify_results is None:
-                            # Only query Spotify if not in cache (e.g., if popularity scan failed/skipped)
-                            # Results will be cached for potential future use
-                            log_verbose(f"   Spotify results not cached for {title}, querying...")
-                            spotify_results = _run_with_timeout(
-                                search_spotify_track,
-                                API_CALL_TIMEOUT,
-                                f"Spotify single detection timed out after {API_CALL_TIMEOUT}s",
-                                title, artist
-                            )
-                        else:
-                            log_verbose(f"   ✓ Reusing cached Spotify results for {title}")
-                        
-                        if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-                            for result in spotify_results:
-                                album_info = result.get("album", {})
-                                album_type = album_info.get("album_type", "").lower()
-                                album_name = album_info.get("name", "").lower()
-                                
-                                # Match Jan 2nd logic: exclude live/remix singles
-                                if album_type == "single" and "live" not in album_name and "remix" not in album_name:
-                                    single_sources.append("spotify")
-                                    log_verbose(f"   ✓ Spotify confirms single: {title}")
-                                    break
-                    except TimeoutError as e:
-                        log_verbose(f"Spotify single check timed out for {title}: {e}")
-                    except Exception as e:
-                        log_verbose(f"Spotify single check failed for {title}: {e}")
-                    
-                    # Second check: MusicBrainz single detection
-                    if HAVE_MUSICBRAINZ:
-                        try:
-                            log_verbose(f"   Checking MusicBrainz for single: {title}")
-                            # Use timeout-safe client to prevent retries from exceeding timeout
-                            mb_client = _get_timeout_safe_musicbrainz_client()
-                            if mb_client:
-                                result = _run_with_timeout(
-                                    mb_client.is_single,
-                                    API_CALL_TIMEOUT,
-                                    f"MusicBrainz single detection timed out after {API_CALL_TIMEOUT}s",
-                                    title, artist
-                                )
-                                if result:
-                                    single_sources.append("musicbrainz")
-                                    log_unified(f"   ✓ MusicBrainz confirms single: {title}")
-                                else:
-                                    log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
-                        except TimeoutError as e:
-                            log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
-                        except Exception as e:
-                            log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
-                    else:
-                        log_verbose(f"   ⓘ MusicBrainz client not available")
-                    
-                    # Third check: Discogs single detection
-                    # Use the discogs_token loaded from config.yaml above
-                    if HAVE_DISCOGS and discogs_token:
-                        try:
-                            log_verbose(f"   Checking Discogs for single: {title}")
-                            # Use timeout-safe client to prevent retries from exceeding timeout
-                            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
-                            if discogs_client:
-                                result = _run_with_timeout(
-                                    lambda: discogs_client.is_single(title, artist, album_context=None),
-                                    API_CALL_TIMEOUT,
-                                    f"Discogs single detection timed out after {API_CALL_TIMEOUT}s"
-                                )
-                                if result:
-                                    single_sources.append("discogs")
-                                    log_unified(f"   ✓ Discogs confirms single: {title}")
-                                else:
-                                    log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
-                        except TimeoutError as e:
-                            log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
-                        except Exception as e:
-                            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
-                    else:
-                        if not HAVE_DISCOGS:
-                            log_verbose(f"   ⓘ Discogs client not available")
-                        elif not discogs_token:
-                            log_verbose(f"   ⓘ Discogs token not configured")
-                    
-                    # Fourth check: Discogs video detection (requires second source for confirmation)
-                    if HAVE_DISCOGS_VIDEO and discogs_token:
-                        try:
-                            # Use timeout-safe client to prevent retries from exceeding timeout
-                            discogs_client = _get_timeout_safe_discogs_client(discogs_token)
-                            if discogs_client:
-                                result = _run_with_timeout(
-                                    lambda: discogs_client.has_official_video(title, artist),
-                                    API_CALL_TIMEOUT,
-                                    f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
-                                )
-                                if result:
-                                    # Only add if we have at least one other source
-                                    if len(single_sources) >= 1:
-                                        single_sources.append("discogs_video")
-                                        log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
-                                    else:
-                                        log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
-                        except TimeoutError as e:
-                            log_verbose(f"Discogs video check timed out for {title}: {e}")
-                        except Exception as e:
-                            log_verbose(f"Discogs video check failed for {title}: {e}")
-                    
-                    # Calculate confidence based on number of sources (Jan 2nd logic)
-                    if len(single_sources) >= 2:
-                        single_confidence = "high"
-                    elif len(single_sources) == 1:
-                        single_confidence = "medium"
-                    else:
-                        single_confidence = "low"
-                    
-                    # Album context rule: downgrade medium → low if album has >3 tracks
-                    if single_confidence == "medium" and album_track_count > 3:
-                        single_confidence = "low"
-                        log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
-                    
-                    # is_single = True only for high confidence singles (5* singles)
-                    is_single = single_confidence == "high"
+                    single_sources = detection_result["sources"]
+                    single_confidence = detection_result["confidence"]
+                    is_single = detection_result["is_single"]
                     
                     # Queue single detection results for batch update
                     if is_single or single_sources:
