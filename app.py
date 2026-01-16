@@ -26,10 +26,11 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from datetime import datetime
 import copy
 from functools import wraps
-from scan_helpers import scan_artist_to_db
+from navidrome_import import scan_artist_to_db
 from popularity import popularity_scan
 from popularity_helpers import build_artist_index
 from start import rate_artist_single_detection
+from unified_scan import unified_scan_pipeline
 # --- Utility: Aggregate genres from tracks in DB ---
 def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     """
@@ -1168,9 +1169,10 @@ def _normalize_release_title(text: str) -> str:
 
 def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict]:
     """
-    Fetch release-groups from MusicBrainz for an artist with retry logic.
+    Fetch release-groups from MusicBrainz for an artist with retry logic and pagination.
     
     Handles SSL errors, timeouts, and other network issues with exponential backoff.
+    Implements pagination to fetch all releases (not just first 100).
     """
     if not artist_name:
         return []
@@ -1179,44 +1181,77 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     releases: list[dict] = []
     query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
     url = "https://musicbrainz.org/ws/2/release-group"
-    params = {"fmt": "json", "limit": limit, "query": query}
     
     # Retry with exponential backoff
     max_retries = 3
     base_delay = 1
     
-    for attempt in range(max_retries):
-        try:
-            resp = requests.get(url, headers=headers, params=params, timeout=5)
-            resp.raise_for_status()
-            data = resp.json()
-            for rg in data.get("release-groups", []) or []:
-                rg_id = rg.get("id", "")
-                primary_type = rg.get("primary-type", "")
-                releases.append({
-                    "id": rg_id,
-                    "title": rg.get("title", ""),
-                    "primary_type": primary_type,
-                    "first_release_date": rg.get("first-release-date", ""),
-                    "secondary_types": rg.get("secondary-types", []),
-                    "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
-                })
-            return releases  # Success
-        except requests.exceptions.Timeout:
-            logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name}")
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
-        except requests.exceptions.ConnectionError as e:
-            # Includes SSLEOFError and other connection issues
-            logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
-            if attempt < max_retries - 1:
-                time.sleep(base_delay * (2 ** attempt))
-        except requests.exceptions.RequestException as e:
-            logging.debug(f"MusicBrainz request error for {artist_name}: {e}")
-            break  # Don't retry for other request errors
-        except Exception as e:
-            logging.debug(f"Unexpected error fetching MusicBrainz releases for {artist_name}: {e}")
-            break
+    # Pagination loop - fetch all pages of results
+    offset = 0
+    page_size = min(limit, 100)  # MusicBrainz max is 100 per request
+    max_total = 500  # Safety limit to avoid excessive API calls
+    pages_fetched = 0
+    max_pages = 10  # Additional safety: max 10 pages (1000 releases if page_size=100)
+    
+    while offset < max_total and pages_fetched < max_pages:
+        params = {"fmt": "json", "limit": page_size, "query": query, "offset": offset}
+        
+        fetched_this_page = False
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(url, headers=headers, params=params, timeout=10)
+                resp.raise_for_status()
+                data = resp.json()
+                
+                release_groups = data.get("release-groups", []) or []
+                total_count = data.get("count", 0)
+                
+                for rg in release_groups:
+                    rg_id = rg.get("id", "")
+                    primary_type = rg.get("primary-type", "")
+                    releases.append({
+                        "id": rg_id,
+                        "title": rg.get("title", ""),
+                        "primary_type": primary_type,
+                        "first_release_date": rg.get("first-release-date", ""),
+                        "secondary_types": rg.get("secondary-types", []),
+                        "cover_art_url": f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else "",
+                    })
+                
+                fetched_this_page = True
+                pages_fetched += 1
+                
+                # Check if we've fetched all available releases
+                if len(release_groups) < page_size or offset + len(release_groups) >= total_count:
+                    logging.debug(f"MusicBrainz: Fetched {len(releases)} total releases for {artist_name}")
+                    return releases  # Success - all pages fetched
+                
+                # Move to next page
+                offset += page_size
+                # MusicBrainz rate limiting: wait 1 second between requests
+                time.sleep(1.0)
+                break  # Success, exit retry loop
+                
+            except requests.exceptions.Timeout:
+                logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {artist_name} at offset {offset}")
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))  # Exponential backoff
+            except requests.exceptions.ConnectionError as e:
+                # Includes SSLEOFError and other connection issues
+                logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}) for {artist_name}: {type(e).__name__}")
+                if attempt < max_retries - 1:
+                    time.sleep(base_delay * (2 ** attempt))
+            except requests.exceptions.RequestException as e:
+                logging.debug(f"MusicBrainz request error for {artist_name}: {e}")
+                break  # Don't retry for other request errors
+            except Exception as e:
+                logging.debug(f"Unexpected error fetching MusicBrainz releases for {artist_name}: {e}")
+                break
+        
+        # If we failed to fetch this page after all retries, return what we have
+        if not fetched_this_page:
+            logging.warning(f"MusicBrainz: Failed to fetch page at offset {offset} for {artist_name}, returning {len(releases)} releases")
+            return releases
     
     return releases
 
@@ -2464,10 +2499,11 @@ def album_detail(artist, album):
 def _run_artist_scan_pipeline(artist_name: str):
     """
     Helper function to run the complete scan pipeline for an artist:
-    1. Navidrome scan (with force=True)
-    2. Popularity detection
+    1. Navidrome import (imports metadata from Navidrome)
+    2. Popularity detection (Spotify, Last.fm, ListenBrainz)
     3. Single detection and rating
     
+    All steps log to unified_scan.log and Recent Scans page.
     This is used by artist scan, album rescan, and track rescan routes.
     """
     try:
@@ -2490,22 +2526,18 @@ def _run_artist_scan_pipeline(artist_name: str):
             logging.error(f"Scan aborted: no artist_id for {artist_name}")
             return
 
-        # Step 1: refresh Navidrome cache for this artist (force=True ensures rescan)
-        logging.info(f"Step 1/3: Navidrome scan for artist '{artist_name}'")
+        # Step 1: Import metadata from Navidrome for this artist
+        logging.info(f"Step 1/3: Navidrome import for artist '{artist_name}'")
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=True)
 
-        # Step 2: popularity detection (for all tracks)
-        # Note: This scans all tracks in the database, not just this artist
-        logging.info(f"Step 2/3: Popularity scan for artist '{artist_name}'")
-        popularity_scan(verbose=True)
-
-        # Step 3: single detection & scoring
-        logging.info(f"Step 3/3: Single detection and rating for artist '{artist_name}'")
-        rate_artist_single_detection(artist_id, artist_name, verbose=True, force=True)
+        # Step 2 & 3: Run unified scan pipeline for this artist
+        # This handles popularity detection and single detection with proper logging
+        logging.info(f"Step 2/3: Running unified scan (popularity + singles) for artist '{artist_name}'")
+        unified_scan_pipeline(verbose=True, force=True, artist_filter=artist_name)
         
-        logging.info(f"Scan complete for artist '{artist_name}'")
+        logging.info(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
-        logging.error(f"Scan failed for {artist_name}: {e}")
+        logging.error(f"❌ Scan failed for {artist_name}: {e}")
 
 
 @app.route("/album/<path:artist>/<path:album>/rescan", methods=["POST"])
