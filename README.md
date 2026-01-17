@@ -66,6 +66,13 @@ When using the web interface, click the **Help** link in the navigation bar or t
 - Customizable rating weights and algorithms
 - Age-based momentum scoring
 
+### 🎵 Comprehensive Spotify Metadata (NEW!)
+- **Audio Features**: Tempo, energy, danceability, valence, acousticness, and more
+- **Smart Tags**: Automatic detection of Christmas, Cover, Live, Acoustic, Orchestral, and Instrumental tracks
+- **Genre Normalization**: Artist genres mapped to broad categories
+- **Smart Playlists**: Filter tracks by energy, mood, tempo, and special tags
+- **[📖 Full Documentation](documentation/SPOTIFY_METADATA_FEATURES.md)**
+
 ### 🖥️ Rich Web Interface
 - Browse artists, albums, and tracks
 - Real-time library statistics

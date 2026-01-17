@@ -314,6 +314,154 @@ class SpotifyClient:
                 all_results.extend(results)
         
         return all_results
+    
+    def get_audio_features(self, track_id: str) -> dict | None:
+        """
+        Fetch audio features for a track from Spotify /audio-features endpoint.
+        
+        Args:
+            track_id: Spotify track ID
+            
+        Returns:
+            Dictionary with audio features or None if not found
+        """
+        if not track_id:
+            return None
+        
+        headers = self._headers()
+        
+        try:
+            res = self.session.get(
+                f"https://api.spotify.com/v1/audio-features/{track_id}",
+                headers=headers,
+                timeout=(5, 10)
+            )
+            res.raise_for_status()
+            return res.json()
+        except Exception as e:
+            logger.debug(f"Failed to fetch audio features for track {track_id}: {e}")
+            return None
+    
+    def get_audio_features_batch(self, track_ids: list[str]) -> dict[str, dict]:
+        """
+        Fetch audio features for multiple tracks in a single request (up to 100).
+        
+        Args:
+            track_ids: List of Spotify track IDs (max 100)
+            
+        Returns:
+            Dictionary mapping track_id to audio features
+        """
+        if not track_ids:
+            return {}
+        
+        # Spotify API allows up to 100 IDs per request
+        track_ids = track_ids[:100]
+        headers = self._headers()
+        
+        try:
+            params = {"ids": ",".join(track_ids)}
+            res = self.session.get(
+                "https://api.spotify.com/v1/audio-features",
+                headers=headers,
+                params=params,
+                timeout=(5, 15)
+            )
+            res.raise_for_status()
+            features_list = res.json().get("audio_features", [])
+            
+            # Map track IDs to features
+            result = {}
+            for features in features_list:
+                if features and features.get("id"):
+                    result[features["id"]] = features
+            
+            logger.debug(f"Fetched audio features for {len(result)}/{len(track_ids)} tracks")
+            return result
+        except Exception as e:
+            logger.debug(f"Failed to fetch batch audio features: {e}")
+            return {}
+    
+    def get_artist_metadata(self, artist_id: str) -> dict | None:
+        """
+        Fetch artist metadata including genres and popularity from /artists endpoint.
+        
+        Args:
+            artist_id: Spotify artist ID
+            
+        Returns:
+            Dictionary with artist metadata or None if not found
+        """
+        if not artist_id:
+            return None
+        
+        headers = self._headers()
+        
+        try:
+            res = self.session.get(
+                f"https://api.spotify.com/v1/artists/{artist_id}",
+                headers=headers,
+                timeout=(5, 10)
+            )
+            res.raise_for_status()
+            return res.json()
+        except Exception as e:
+            logger.debug(f"Failed to fetch artist metadata for {artist_id}: {e}")
+            return None
+    
+    def get_album_metadata(self, album_id: str) -> dict | None:
+        """
+        Fetch album metadata including label, total tracks, and type from /albums endpoint.
+        
+        Args:
+            album_id: Spotify album ID
+            
+        Returns:
+            Dictionary with album metadata or None if not found
+        """
+        if not album_id:
+            return None
+        
+        headers = self._headers()
+        
+        try:
+            res = self.session.get(
+                f"https://api.spotify.com/v1/albums/{album_id}",
+                headers=headers,
+                timeout=(5, 10)
+            )
+            res.raise_for_status()
+            return res.json()
+        except Exception as e:
+            logger.debug(f"Failed to fetch album metadata for {album_id}: {e}")
+            return None
+    
+    def get_track_metadata(self, track_id: str) -> dict | None:
+        """
+        Fetch complete track metadata from Spotify /tracks endpoint.
+        
+        Args:
+            track_id: Spotify track ID
+            
+        Returns:
+            Dictionary with track metadata or None if not found
+        """
+        if not track_id:
+            return None
+        
+        headers = self._headers()
+        
+        try:
+            res = self.session.get(
+                f"https://api.spotify.com/v1/tracks/{track_id}",
+                headers=headers,
+                timeout=(5, 10)
+            )
+            res.raise_for_status()
+            return res.json()
+        except Exception as e:
+            logger.debug(f"Failed to fetch track metadata for {track_id}: {e}")
+            return None
 
 
 def get_spotify_user_playlists(client_id: str, client_secret: str) -> list[dict]:
