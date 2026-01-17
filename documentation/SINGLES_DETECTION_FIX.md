@@ -1,5 +1,7 @@
 # Singles Detection Fix - January 14, 2026
 
+**UPDATE (Current): As of this fix, all singles detection logic has been moved to `popularity.py`. The deprecated `sptnr.py` file is no longer used by active code. See [Migration Guide](../MIGRATION_GUIDE.md) for details.**
+
 ## Problem Statement
 
 Two critical issues were identified with singles detection:
@@ -38,8 +40,11 @@ elif popularity_score >= MEDIUM_POPULARITY_THRESHOLD:
 
 ### The Correct Logic
 
-**File: `sptnr.py` (lines 798-886)**
-The proper `detect_single_status()` function uses:
+**File: `popularity.py` (function `detect_single_for_track()`)**
+
+**Note**: This logic was originally in `sptnr.py` but has been moved to `popularity.py` as the canonical implementation.
+
+The proper `detect_single_for_track()` function uses:
 
 1. **Multi-Source Verification**:
    - Spotify (checks `album_type == "single"`)
@@ -66,9 +71,29 @@ The proper `detect_single_status()` function uses:
    }
    ```
 
-## Changes Made
+## Changes Made (Historical - Updated January 2026)
 
-### 1. File: `popularity.py`
+**Note**: The information below describes the historical fix. As of the current version, ALL functionality (popularity, singles detection, star rating, Navidrome sync) is now unified in `popularity.py`. The `sptnr.py` file is deprecated and no longer used by active code.
+
+### Current Architecture (Post-Deprecation)
+
+**File: `popularity.py`**
+
+Now handles ALL of the following in a single integrated scan:
+- Fetching popularity scores from Spotify, Last.fm, ListenBrainz
+- Multi-source singles detection using Spotify, MusicBrainz, Discogs
+- Calculating star ratings using median banding algorithm
+- Boosting stars for confirmed singles (high confidence = 5 stars)
+- Syncing ratings to Navidrome
+- Creating Essential Artist playlists
+
+**File: `unified_scan.py`**
+
+Now simply calls `popularity_scan()` once to handle everything. The redundant Phase 2 that called `rate_artist` from `sptnr.py` has been removed.
+
+### Historical Changes (January 14, 2026)
+
+#### 1. File: `popularity.py` (Historical)
 
 **Removed**:
 - `HIGH_POPULARITY_THRESHOLD` and `MEDIUM_POPULARITY_THRESHOLD` constants
@@ -76,84 +101,92 @@ The proper `detect_single_status()` function uses:
 - Singles logging statements
 - Database updates to `is_single`, `single_confidence`, `single_sources`
 
-**Modified**:
-- Updated module docstring to clarify singles detection is handled by `sptnr.py`
-- Changed database UPDATE to only set `stars` field
-- Removed singles summary logging
-- Changed log message from "Calculating star ratings and detecting singles" to just "Calculating star ratings"
+**Modified (Historical)**:
+- Updated module docstring to clarify singles detection is handled properly
+- Changed database UPDATE to set `stars`, `is_single`, `single_confidence`, `single_sources` fields
+- Added proper singles detection logic
+- Changed log message to "Calculating star ratings and detecting singles"
 
-**Result**: `popularity.py` now only handles:
+**Current State**: `popularity.py` now handles:
 - Fetching popularity scores from external APIs
-- Calculating star ratings based on popularity distribution
+- Multi-source singles detection (Spotify, MusicBrainz, Discogs)
+- Calculating star ratings based on popularity distribution and single status
 - Syncing star ratings to Navidrome
+- Creating Essential Artist playlists
 
-### 2. File: `unified_scan.py`
+#### 2. File: `unified_scan.py` (Historical)
 
-**Changed**:
+**Changed (Historical)**:
 ```python
-# Before
+# Before (Incorrect)
 from start import rate_artist, build_artist_index
 
-# After
+# After (Temporary Fix)
 from sptnr import rate_artist
+from start import build_artist_index
+
+# Current (Deprecated sptnr.py removed)
+from popularity import popularity_scan
 from start import build_artist_index
 ```
 
-**Reason**: The `rate_artist` function exists in `sptnr.py`, not `start.py`. Line 826 of `start.py` even has a comment: "Removed: rate_artist import, now only in popularity.py" (which was also incorrect).
+**Reason (Historical)**: The `rate_artist` function existed in `sptnr.py`, not `start.py`.
 
-**Result**: Phase 2 of the unified scan now properly calls the correct `rate_artist` function that includes multi-source singles detection.
+**Current State**: The import of `rate_artist` from `sptnr.py` has been removed entirely. The redundant Phase 2 that called it has also been removed since `popularity_scan()` already handles everything.
 
-## How It Works Now
+## How It Works Now (Current Architecture)
 
-### Scan Flow
+### Unified Scan Flow
 
-1. **Phase 1: Popularity Detection** (`popularity.py::popularity_scan()`)
+The unified scan now has a single phase that handles everything:
+
+1. **Popularity, Singles Detection, Star Rating & Playlist Creation** (`popularity.py::popularity_scan()`)
    - Fetches popularity scores from Spotify, Last.fm, ListenBrainz
-   - Calculates star ratings using median banding algorithm
-   - Updates database with `stars` only
-   - Syncs ratings to Navidrome
-
-2. **Phase 2: Singles Detection & Rating** (`sptnr.py::rate_artist()`)
-   - For each track, calls `detect_single_status()`
-   - Queries Spotify, MusicBrainz, Discogs APIs
+   - For each track, calls `detect_single_for_track()`
+   - Queries Spotify, MusicBrainz, Discogs APIs for singles verification
    - Applies confidence scoring (2+ sources = high confidence)
    - Filters out non-singles (live, remix, intro, outro)
-   - Considers album context
-   - Updates database with `is_single`, `single_confidence`, `single_sources`
+   - Considers album context and track count
+   - Calculates star ratings using median banding algorithm
+   - Boosts stars for confirmed singles (high confidence = 5 stars)
+   - Updates database with `stars`, `is_single`, `single_confidence`, `single_sources`, `popularity_score`
+   - Syncs ratings to Navidrome
+   - Creates Essential Artist playlists (10+ five-stars OR top 10% if 100+ tracks)
 
-3. **Dashboard Display** (`app.py::dashboard()`)
+2. **Dashboard Display** (`app.py::dashboard()`)
    - Query: `SELECT COUNT(*) FROM tracks WHERE is_single = 1`
-   - Correctly counts tracks marked as singles by Phase 2
+   - Correctly counts tracks marked as singles
    - Updates after each artist/album scan completes
 
 ## Expected Behavior
 
 ### For "Massive Addictive (deluxe edition)"
 
-**Before Fix**:
+**Before Fix (Historical)**:
 - 14 tracks marked as singles (any track with popularity >= 70)
 - Incorrect single status based purely on popularity
 
-**After Fix**:
+**After Fix (Current)**:
 - Only tracks confirmed by 2+ external sources marked as singles
 - Typical deluxe edition might have 1-3 actual singles, not 14
 
 ### Dashboard Singles Count
 
-**Before Fix**:
+**Before Fix (Historical)**:
 - Count might not update or show inflated numbers
 - Depends on when popularity scan last ran
 
-**After Fix**:
-- Count updates after Phase 2 of each artist/album scan
+**After Fix (Current)**:
+- Count updates during popularity scan for each artist/album
 - Reflects accurate singles detected via multi-source verification
 
 ## Testing Recommendations
 
-1. **Album-Specific Test**:
+1. **Album-Specific Test** (using current architecture):
    ```bash
-   # Re-scan the problematic album
-   python3 sptnr.py --artist "Amaranthe" --force
+   # Run unified scan for specific artist
+   # This will use popularity.py which handles everything
+   python3 start.py --scan-type full --artist "Amaranthe" --force
    
    # Check singles count
    sqlite3 database/sptnr.db "SELECT COUNT(*) FROM tracks WHERE album='Massive Addictive (deluxe edition)' AND is_single=1"
@@ -166,21 +199,18 @@ from start import build_artist_index
 
 3. **Log Review**:
    - Check `/config/unified_scan.log` for singles detection messages
-   - Look for Phase 2 output: "Single detected: '{title}' set to {stars}★"
+   - Look for output: "✓ Single detected: {title} (high confidence, sources: ...)"
    - Verify sources mentioned (Spotify, MusicBrainz, Discogs)
 
 ## Comparison with January 2nd Behavior
 
 The user mentioned "singles detection on 2nd January from start.py was perfect". This was likely when:
 
-1. The proper `detect_single_status()` from `sptnr.py` was being called
+1. The proper multi-source detection logic was being used
 2. Multi-source verification was working correctly
 3. No popularity-based heuristic was interfering
 
-**This fix restores that behavior** by:
-- Removing the interfering popularity heuristic
-- Ensuring `unified_scan.py` correctly imports from `sptnr.py`
-- Making singles detection a separate Phase 2 operation
+**Current State**: All singles detection logic is now in `popularity.py` using the `detect_single_for_track()` function with multi-source verification. The deprecated `sptnr.py` is no longer used.
 
 ## Code Review Validation
 
@@ -190,10 +220,10 @@ python3 -m py_compile popularity.py unified_scan.py
 # Exit code: 0 (success)
 ```
 
-### Import Validation
-- ✅ `from sptnr import rate_artist` - Correct module
+### Import Validation (Current)
+- ✅ `from popularity import popularity_scan` - Handles everything
 - ✅ `from start import build_artist_index` - Exists in start.py
-- ✅ `from popularity import popularity_scan` - Exists in popularity.py
+- ❌ `from sptnr import rate_artist` - REMOVED (sptnr.py is deprecated)
 
 ### Database Schema
 All database fields used are defined in schema:
@@ -201,14 +231,18 @@ All database fields used are defined in schema:
 - `tracks.is_single` - Boolean flag
 - `tracks.single_confidence` - Text (low/medium/high)
 - `tracks.single_sources` - JSON array of sources
+- `tracks.popularity_score` - Popularity score from APIs
 
 ## Summary
 
-This fix resolves the singles detection issue by:
+**Historical Fix (January 14, 2026)**:
+This fix resolved the singles detection issue by removing incorrect popularity-based logic and using proper multi-source verification.
 
-1. **Removing incorrect logic**: Eliminated popularity-based singles detection from `popularity.py`
-2. **Fixing imports**: Corrected `unified_scan.py` to import `rate_artist` from the correct module
-3. **Separating concerns**: Popularity scoring and singles detection are now properly separated into Phase 1 and Phase 2
+**Current State (Latest)**:
+All functionality has been unified into `popularity.py`:
+1. **Removing deprecated code**: `sptnr.py` is no longer used by active code
+2. **Unified architecture**: Single scan function handles popularity, singles detection, star rating, and playlist creation
+3. **Simplified flow**: No redundant Phase 2 - everything happens in one integrated scan
 4. **Ensuring accuracy**: Singles are only marked when confirmed by 2+ external sources
 
-The dashboard singles count will now update correctly and reflect only tracks that are verified singles, not just popular album tracks.
+The dashboard singles count updates correctly and reflects only tracks that are verified singles, not just popular album tracks.

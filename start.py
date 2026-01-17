@@ -722,8 +722,8 @@ def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
         logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
         return 0
 
-# Removed: rate_artist import, now only in popularity.py
-
+# Note: rate_artist from deprecated sptnr.py is no longer used.
+# All rating logic is now in popularity.py as part of the popularity_scan() function.
 
 
 
