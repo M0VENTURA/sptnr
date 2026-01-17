@@ -93,6 +93,11 @@ GENRE_WEIGHTS = {
     "spotify": 0.05        # Keep low (too granular)
 }
 
+# Popularity-based confidence system constants
+DEFAULT_POPULARITY_MEAN = 10  # Default mean when no valid scores
+DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularity >= mean + 6)
+DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
+
 
 def normalize_genre(genre):
     """
@@ -1367,7 +1372,6 @@ def popularity_scan(
                     valid_scores = [s for s in scores if s > 0]
                     
                     if valid_scores:
-                        from statistics import stdev
                         popularity_mean = mean(valid_scores)
                         popularity_stddev = stdev(valid_scores) if len(valid_scores) > 1 else 0
                         
@@ -1381,33 +1385,34 @@ def popularity_scan(
                             zscores.append(zscore)
                         
                         # Get mean of top 50% z-scores for medium confidence threshold
+                        # Use heapq.nlargest for efficiency with large albums
                         if zscores:
-                            sorted_zscores = sorted(zscores, reverse=True)
-                            top_50_count = max(1, len(sorted_zscores) // 2)
-                            top_50_zscores = sorted_zscores[:top_50_count]
+                            import heapq
+                            top_50_count = max(1, len(zscores) // 2)
+                            top_50_zscores = heapq.nlargest(top_50_count, zscores)
                             mean_top50_zscore = mean(top_50_zscores)
                         else:
                             mean_top50_zscore = 0
                         
-                        # High confidence threshold: mean + 6
-                        high_conf_threshold = popularity_mean + 6
-                        # Medium confidence threshold: mean_top50_zscore - 0.3
-                        medium_conf_zscore_threshold = mean_top50_zscore - 0.3
+                        # High confidence threshold: mean + DEFAULT_HIGH_CONF_OFFSET
+                        high_conf_threshold = popularity_mean + DEFAULT_HIGH_CONF_OFFSET
+                        # Medium confidence threshold: mean_top50_zscore + DEFAULT_MEDIUM_CONF_THRESHOLD
+                        medium_conf_zscore_threshold = mean_top50_zscore + DEFAULT_MEDIUM_CONF_THRESHOLD
                         
                         if verbose:
                             log_unified(f"   📊 Album Stats: mean={popularity_mean:.1f}, stddev={popularity_stddev:.1f}")
                             log_unified(f"   📈 High confidence threshold: {high_conf_threshold:.1f}")
                             log_unified(f"   📉 Medium confidence zscore threshold: {medium_conf_zscore_threshold:.2f}")
                     else:
-                        popularity_mean = 10
+                        popularity_mean = DEFAULT_POPULARITY_MEAN
                         popularity_stddev = 0
-                        high_conf_threshold = 16
-                        medium_conf_zscore_threshold = -0.3
+                        high_conf_threshold = DEFAULT_POPULARITY_MEAN + DEFAULT_HIGH_CONF_OFFSET
+                        medium_conf_zscore_threshold = DEFAULT_MEDIUM_CONF_THRESHOLD
                     
                     # Calculate median score for band-based threshold (legacy)
-                    median_score = median(scores) if scores else 10
+                    median_score = median(scores) if scores else DEFAULT_POPULARITY_MEAN
                     if median_score == 0:
-                        median_score = 10
+                        median_score = DEFAULT_POPULARITY_MEAN
                     jump_threshold = median_score * 1.7
                     
                     star_distribution = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
@@ -1426,7 +1431,7 @@ def popularity_scan(
                         # Parse single sources
                         try:
                             single_sources = json.loads(single_sources_json) if single_sources_json else []
-                        except:
+                        except json.JSONDecodeError:
                             single_sources = []
                         
                         # Calculate z-score for this track
