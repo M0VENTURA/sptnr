@@ -150,7 +150,11 @@ required_columns = {
     "spotify_version_count": "INTEGER",       # Number of exact-match Spotify versions
     "discogs_release_ids": "TEXT",            # JSON array of Discogs release IDs
     "musicbrainz_release_group_ids": "TEXT",  # JSON array of MusicBrainz release group IDs
-    "single_detection_last_updated": "TEXT"   # Timestamp when single detection last ran
+    "single_detection_last_updated": "TEXT",   # Timestamp when single detection last ran
+    # ✅ Alternate take detection fields (for parenthesis matching)
+    "alternate_take": "INTEGER",               # 1 if track is alternate take (similar title with parenthesis)
+    "base_track_id": "TEXT",                   # ID of base track (if this is an alternate take)
+    "last_spotify_lookup": "TEXT"              # Timestamp of last Spotify API lookup (for 24hr caching)
 }
 
 # ✅ Define columns for the artists table
@@ -235,7 +239,10 @@ def update_schema(db_path):
             artist_name TEXT,
             album_count INTEGER,
             track_count INTEGER,
-            last_updated TEXT
+            last_updated TEXT,
+            avg_popularity REAL,
+            median_popularity REAL,
+            popularity_stddev REAL
         );
     """)
     

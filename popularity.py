@@ -18,8 +18,9 @@ import atexit
 import time
 import heapq
 import re
+import difflib
 from contextlib import contextmanager
-from datetime import datetime
+from datetime import datetime, timedelta
 from statistics import median, mean, stdev
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
@@ -101,7 +102,185 @@ DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularit
 DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
 
 
-def should_exclude_from_stats(tracks_with_scores):
+def strip_parentheses(title: str) -> str:
+    """
+    Remove parenthesized content from track title to get base version.
+    Example: "Track (Live)" -> "Track"
+    """
+    return re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
+
+
+def detect_alternate_takes(tracks: list) -> dict:
+    """
+    Detect alternate takes in a list of tracks by comparing titles with/without parentheses.
+    
+    An alternate take is a track whose title:
+    1. Ends with a parenthesized suffix (e.g., "Track (Live)")
+    2. Has a base version (without parentheses) that matches another track
+    3. Appears later in the track list (lower track number or at end of album)
+    
+    Args:
+        tracks: List of track dicts with 'id', 'title', 'track_number' fields
+        
+    Returns:
+        Dict mapping track_id -> base_track_id for all detected alternate takes
+    """
+    alternate_takes = {}
+    title_to_track = {}  # Map base title -> track info
+    
+    for track in tracks:
+        track_id = track.get('id')
+        title = track.get('title', '')
+        track_number = track.get('track_number', 999)
+        
+        # Check if this track has parentheses at the end
+        if re.match(r'^.*\([^)]*\)$', title):
+            # Get base title without parentheses
+            base_title = strip_parentheses(title)
+            base_title_lower = base_title.lower()
+            
+            # Check if we have a track with this base title
+            if base_title_lower in title_to_track:
+                # This is an alternate take - link to base track
+                base_track = title_to_track[base_title_lower]
+                alternate_takes[track_id] = base_track['id']
+                log_verbose(f"   Detected alternate take: '{title}' -> base: '{base_track['title']}'")
+            else:
+                # No base track yet - record this one as a potential base
+                # (in case we see a non-parenthesis version later)
+                title_to_track[base_title_lower] = {
+                    'id': track_id,
+                    'title': title,
+                    'track_number': track_number
+                }
+        else:
+            # No parentheses - this is a base version
+            title_lower = title.lower()
+            
+            # Check if we already saw an alternate take for this title
+            if title_lower in title_to_track:
+                existing_track = title_to_track[title_lower]
+                # If existing track has parentheses, mark it as alternate
+                if re.match(r'^.*\([^)]*\)$', existing_track['title']):
+                    alternate_takes[existing_track['id']] = track_id
+                    log_verbose(f"   Detected alternate take: '{existing_track['title']}' -> base: '{title}'")
+            
+            # Record this as the base track
+            title_to_track[title_lower] = {
+                'id': track_id,
+                'title': title,
+                'track_number': track_number
+            }
+    
+    return alternate_takes
+
+
+def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
+    """
+    Check if Spotify lookup should be skipped based on 24-hour cache.
+    
+    Returns True if:
+    - Track has last_spotify_lookup timestamp
+    - Timestamp is less than 24 hours old
+    - Track has valid popularity_score in database
+    
+    Args:
+        track_id: Track ID to check
+        conn: Database connection
+        
+    Returns:
+        True if lookup should be skipped (use cached data), False otherwise
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT last_spotify_lookup, popularity_score 
+            FROM tracks 
+            WHERE id = ?
+        """, (track_id,))
+        row = cursor.fetchone()
+        
+        if not row or not row[0]:
+            # No cached lookup timestamp
+            return False
+        
+        last_lookup_str = row[0]
+        popularity_score = row[1]
+        
+        # Check if we have a valid popularity score
+        if not popularity_score or popularity_score == 0:
+            return False
+        
+        # Parse timestamp and check if it's less than 24 hours old
+        try:
+            last_lookup = datetime.fromisoformat(last_lookup_str)
+            age = datetime.now() - last_lookup
+            
+            if age < timedelta(hours=24):
+                log_verbose(f"   Using cached Spotify data (age: {age.total_seconds() / 3600:.1f}h)")
+                return True
+        except (ValueError, TypeError) as e:
+            log_verbose(f"   Invalid timestamp format: {last_lookup_str} ({e})")
+            return False
+        
+        return False
+    except Exception as e:
+        log_verbose(f"   Error checking Spotify cache: {e}")
+        return False
+
+
+def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection) -> dict:
+    """
+    Calculate artist-level popularity statistics from all albums.
+    
+    This helps identify underperforming albums/singles within an artist's catalog.
+    
+    Args:
+        artist_name: Name of the artist
+        conn: Database connection
+        
+    Returns:
+        Dict with keys:
+        - avg_popularity: Average popularity across all tracks
+        - median_popularity: Median popularity
+        - stddev_popularity: Standard deviation
+        - track_count: Total tracks analyzed
+    """
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT popularity_score 
+            FROM tracks 
+            WHERE artist = ? AND popularity_score > 0
+        """, (artist_name,))
+        
+        scores = [row[0] for row in cursor.fetchall()]
+        
+        if not scores:
+            return {
+                'avg_popularity': 0,
+                'median_popularity': 0,
+                'stddev_popularity': 0,
+                'track_count': 0
+            }
+        
+        return {
+            'avg_popularity': mean(scores),
+            'median_popularity': median(scores),
+            'stddev_popularity': stdev(scores) if len(scores) > 1 else 0,
+            'track_count': len(scores)
+        }
+    except Exception as e:
+        log_verbose(f"   Error calculating artist stats: {e}")
+        return {
+            'avg_popularity': 0,
+            'median_popularity': 0,
+            'stddev_popularity': 0,
+            'track_count': 0
+        }
+
+
+def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = None):
     r"""
     Identify tracks that should be excluded from popularity statistics calculation.
     
@@ -109,12 +288,17 @@ def should_exclude_from_stats(tracks_with_scores):
     (e.g., "Track Title (Single)", "Track Title (Live in Wacken 2022)"), as these 
     bonus/alternate versions can skew the popularity mean and z-scores.
     
+    NEW: Also excludes tracks marked as alternate takes (via alternate_takes_map).
+    
     A track is excluded if:
         - It appears after the last "normal" track, AND
         - The title matches the pattern: `^.*\([^)]*\)$`
+        OR
+        - It is marked as an alternate take in alternate_takes_map
     
     Args:
         tracks_with_scores: List of track dictionaries ordered by popularity (descending)
+        alternate_takes_map: Optional dict mapping track_id -> base_track_id for alternate takes
         
     Returns:
         Set of track indices to exclude from statistics
@@ -123,6 +307,16 @@ def should_exclude_from_stats(tracks_with_scores):
     if not tracks_with_scores or len(tracks_with_scores) < 3:
         # Don't filter albums with too few tracks
         return set()
+    
+    excluded_indices = set()
+    
+    # Exclude tracks marked as alternate takes
+    if alternate_takes_map:
+        for i, track in enumerate(tracks_with_scores):
+            track_id = track.get("id")
+            if track_id and track_id in alternate_takes_map:
+                excluded_indices.add(i)
+                log_verbose(f"   Excluding alternate take from stats: {track.get('title')}")
     
     # Check for titles ending with parenthesized suffix
     # Pattern: ^.*\([^)]*\)$ - matches titles that end with (something)
@@ -136,7 +330,7 @@ def should_exclude_from_stats(tracks_with_scores):
     
     # Only exclude if we have multiple tracks with suffix
     if len(tracks_with_suffix) < 2:
-        return set()
+        return excluded_indices
     
     # Find consecutive tracks with suffix at the END of the track list
     # Since tracks are sorted by popularity DESC, the last indices are the end of the album
@@ -166,9 +360,9 @@ def should_exclude_from_stats(tracks_with_scores):
     
     # Only exclude if we have at least 2 consecutive tracks with suffix at the end
     if len(consecutive_at_end) >= 2:
-        return set(consecutive_at_end)
+        excluded_indices.update(consecutive_at_end)
     
-    return set()
+    return excluded_indices
 
 
 def normalize_genre(genre):
@@ -1163,6 +1357,21 @@ def popularity_scan(
                 log_unified(f'Scanning "{artist} - {album}" for Popularity')
                 album_scanned = 0
                 
+                # Detect alternate takes for this album (tracks with parentheses matching base tracks)
+                album_tracks_list = list(album_tracks)
+                alternate_takes_map = detect_alternate_takes(album_tracks_list)
+                
+                # Save alternate take mappings to database
+                if alternate_takes_map:
+                    for alt_track_id, base_track_id in alternate_takes_map.items():
+                        cursor.execute("""
+                            UPDATE tracks 
+                            SET alternate_take = 1, base_track_id = ?
+                            WHERE id = ?
+                        """, (base_track_id, alt_track_id))
+                    conn.commit()
+                    log_unified(f'   Detected {len(alternate_takes_map)} alternate take(s) in album')
+                
                 # Batch updates for this album (commit once at end instead of per-track)
                 track_updates = []
                 
@@ -1181,6 +1390,12 @@ def popularity_scan(
                     skip_spotify_lookup = any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS)
                     if skip_spotify_lookup:
                         log_unified(f'⏭ Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
+                    
+                    # Check if we should skip Spotify lookup based on 24-hour cache
+                    if not skip_spotify_lookup and not (FORCE_RESCAN or force):
+                        if should_skip_spotify_lookup(track_id, conn):
+                            skip_spotify_lookup = True
+                            log_unified(f'⏭ Using cached Spotify data for: {title} (updated within 24 hours)')
 
                     # Try to get popularity from Spotify (using cached artist ID)
                     spotify_score = 0
@@ -1197,6 +1412,14 @@ def popularity_scan(
                             )
                             # Cache results for singles detection reuse (using title as key)
                             spotify_results_cache[title] = spotify_search_results
+                            
+                            # Update last_spotify_lookup timestamp
+                            current_timestamp = datetime.now().isoformat()
+                            cursor.execute("""
+                                UPDATE tracks 
+                                SET last_spotify_lookup = ?
+                                WHERE id = ?
+                            """, (current_timestamp, track_id))
                             
                             log_unified(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
                             if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
@@ -1436,6 +1659,20 @@ def popularity_scan(
                 # Calculate star ratings for album tracks
                 log_unified(f'Calculating star ratings for "{artist} - {album}"')
                 
+                # Calculate artist-level popularity statistics for context
+                artist_stats = calculate_artist_popularity_stats(artist, conn)
+                if artist_stats['track_count'] > 0:
+                    log_unified(f"   📊 Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_stats['median_popularity']:.1f}")
+                    
+                    # Update artist_stats table with popularity statistics
+                    cursor.execute("""
+                        UPDATE artist_stats 
+                        SET avg_popularity = ?, median_popularity = ?, popularity_stddev = ?
+                        WHERE artist_name = ?
+                    """, (artist_stats['avg_popularity'], artist_stats['median_popularity'], 
+                          artist_stats['stddev_popularity'], artist))
+                    conn.commit()
+                
                 # Get all tracks for this album with their popularity scores and single detection
                 cursor.execute(
                     "SELECT id, title, popularity_score, is_single, single_confidence, single_sources FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
@@ -1449,7 +1686,8 @@ def popularity_scan(
                     band_size = math.ceil(total_tracks / 4)
                     
                     # Identify tracks to exclude from statistics (e.g., bonus tracks with parentheses at end)
-                    excluded_indices = should_exclude_from_stats(album_tracks_with_scores)
+                    # Pass alternate_takes_map to exclude those tracks as well
+                    excluded_indices = should_exclude_from_stats(album_tracks_with_scores, alternate_takes_map)
                     
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
@@ -1461,6 +1699,17 @@ def popularity_scan(
                     if excluded_indices and verbose:
                         excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
                         log_unified(f"   📊 Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
+                    
+                    # Check if this album is significantly underperforming compared to artist's catalog
+                    album_is_underperforming = False
+                    if valid_scores and artist_stats['track_count'] > 10:
+                        album_median = median(valid_scores)
+                        artist_median = artist_stats['median_popularity']
+                        
+                        # Consider album underperforming if median is < 60% of artist median
+                        if artist_median > 0 and album_median < (artist_median * 0.6):
+                            album_is_underperforming = True
+                            log_unified(f"   ⚠️ Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
                     
                     if valid_scores:
                         popularity_mean = mean(valid_scores)
@@ -1596,6 +1845,18 @@ def popularity_scan(
                             if single_confidence == "high" and stars < 5:
                                 stars = 5  # High confidence single = 5 stars
                             # Medium confidence singles no longer get automatic +1 star boost
+                        
+                        # NEW: Artist-level popularity context
+                        # Downgrade singles from underperforming albums (unless they exceed artist median)
+                        if album_is_underperforming and single_confidence in ["medium", "high"]:
+                            if artist_stats['median_popularity'] > 0:
+                                # Only downgrade if track popularity is also below artist median
+                                if popularity_score < artist_stats['median_popularity']:
+                                    # Downgrade by 1 star (but keep at least 3 stars for confirmed singles)
+                                    original_stars = stars
+                                    stars = max(stars - 1, 3 if single_confidence == "high" else 2)
+                                    if verbose and stars < original_stars:
+                                        log_unified(f"   📉 Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
