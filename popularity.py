@@ -100,6 +100,66 @@ DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularit
 DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
 
 
+def should_exclude_from_stats(tracks_with_scores):
+    """
+    Identify tracks that should be excluded from popularity statistics calculation.
+    
+    Excludes tracks at the end of an album when there are multiple consecutive tracks
+    with parenthetical content (e.g., "Live in Wacken 2022"), as these bonus/alternate
+    versions can skew the popularity mean and z-scores.
+    
+    Args:
+        tracks_with_scores: List of track dictionaries ordered by popularity (descending)
+        
+    Returns:
+        Set of track indices to exclude from statistics
+    """
+    import re
+    
+    if not tracks_with_scores or len(tracks_with_scores) < 3:
+        # Don't filter albums with too few tracks
+        return set()
+    
+    # Check for parentheses in track titles (starting from the end of the album)
+    # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
+    tracks_with_parens = []
+    for i, track in enumerate(tracks_with_scores):
+        title = track.get("title", "")
+        # Check if title contains parenthetical content
+        if re.search(r'\([^)]+\)', title):
+            tracks_with_parens.append(i)
+    
+    # Only exclude if we have multiple consecutive tracks with parentheses at the end
+    if len(tracks_with_parens) < 2:
+        return set()
+    
+    # Check if these tracks are consecutive and at the end (low popularity end)
+    # Since tracks are sorted by popularity DESC, "end of album" means end of list
+    tracks_with_parens_sorted = sorted(tracks_with_parens)
+    
+    # Find the longest consecutive sequence at the end
+    consecutive_at_end = []
+    for i in range(len(tracks_with_parens_sorted) - 1, -1, -1):
+        idx = tracks_with_parens_sorted[i]
+        # Check if this is part of a sequence from the end of the track list
+        if not consecutive_at_end:
+            # Start building from the last track
+            if idx >= len(tracks_with_scores) - len(tracks_with_parens_sorted):
+                consecutive_at_end.insert(0, idx)
+        else:
+            # Check if consecutive with the current sequence
+            if idx == consecutive_at_end[0] - 1:
+                consecutive_at_end.insert(0, idx)
+            else:
+                break
+    
+    # Only exclude if we have at least 2 consecutive tracks with parentheses at the end
+    if len(consecutive_at_end) >= 2:
+        return set(consecutive_at_end)
+    
+    return set()
+
+
 def normalize_genre(genre):
     """
     Normalize genre names to avoid duplicates and inconsistencies.
@@ -1368,9 +1428,18 @@ def popularity_scan(
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
                     
+                    # Identify tracks to exclude from statistics (e.g., bonus tracks with parentheses at end)
+                    excluded_indices = should_exclude_from_stats(album_tracks_with_scores)
+                    
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    valid_scores = [s for s in scores if s > 0]
+                    # Filter out excluded tracks when calculating statistics
+                    valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
+                    
+                    # Log exclusions if any
+                    if excluded_indices and verbose:
+                        excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
+                        log_unified(f"   📊 Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
                     
                     if valid_scores:
                         popularity_mean = mean(valid_scores)
