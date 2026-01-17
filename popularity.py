@@ -1498,8 +1498,7 @@ def popularity_scan(
                         # Boost stars for confirmed singles (legacy)
                         if single_confidence == "high" and stars < 5:
                             stars = 5  # High confidence single = 5 stars
-                        elif single_confidence == "medium" and stars < 5:
-                            stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
+                        # Medium confidence singles no longer get automatic +1 star boost
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
