@@ -111,7 +111,7 @@ def should_exclude_from_stats(tracks_with_scores):
     
     A track is excluded if:
         - It appears after the last "normal" track, AND
-        - The title matches the pattern: ^.*\([^)]*\)$
+        - The title matches the pattern: `^.*\([^)]*\)$`
     
     Args:
         tracks_with_scores: List of track dictionaries ordered by popularity (descending)
