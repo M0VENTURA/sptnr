@@ -1,6 +1,10 @@
 
 #!/usr/bin/env python3
 import sqlite3
+import logging
+
+# Database connection constants
+DB_TIMEOUT = 120.0  # Timeout for database connections in seconds
 
 # ✅ Define the full schema for the tracks table
 required_columns = {
@@ -155,8 +159,16 @@ def update_schema(db_path):
     Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
     Adds missing columns dynamically and creates indexes for performance.
     """
-    conn = sqlite3.connect(db_path, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
+    conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
+    
+    # Enable WAL mode for better concurrent access
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except sqlite3.OperationalError as e:
+        # WAL mode might not be supported on some filesystems (e.g., read-only)
+        # Log a warning but continue - the timeout alone helps with locking
+        print(f"⚠️ Could not enable WAL mode: {e}. Continuing with default journal mode.")
+    
     cursor = conn.cursor()
 
     # ✅ Ensure tracks table exists

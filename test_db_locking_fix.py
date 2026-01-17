@@ -17,7 +17,7 @@ import time
 # Add parent directory to path to import modules
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from check_db import update_schema
+from check_db import update_schema, DB_TIMEOUT
 
 
 def test_update_schema_with_wal_mode():
@@ -33,7 +33,7 @@ def test_update_schema_with_wal_mode():
         update_schema(test_db_path)
         
         # Verify WAL mode is enabled
-        conn = sqlite3.connect(test_db_path, timeout=120.0)
+        conn = sqlite3.connect(test_db_path, timeout=DB_TIMEOUT)
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0]
@@ -71,7 +71,7 @@ def test_concurrent_access():
         def writer_thread():
             """Thread that writes to the database"""
             try:
-                conn = sqlite3.connect(test_db_path, timeout=120.0)
+                conn = sqlite3.connect(test_db_path, timeout=DB_TIMEOUT)
                 conn.execute("PRAGMA journal_mode=WAL")
                 cursor = conn.cursor()
                 
@@ -88,7 +88,7 @@ def test_concurrent_access():
         def reader_thread():
             """Thread that reads from the database"""
             try:
-                conn = sqlite3.connect(test_db_path, timeout=120.0)
+                conn = sqlite3.connect(test_db_path, timeout=DB_TIMEOUT)
                 conn.execute("PRAGMA journal_mode=WAL")
                 cursor = conn.cursor()
                 
