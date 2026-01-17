@@ -397,8 +397,8 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
         
         # If metadata exists and force is not enabled, skip fetching
         if existing_row and not force:
-            existing_bio = existing_row[0] if existing_row[0] else ""
-            existing_image = existing_row[1] if existing_row[1] else ""
+            existing_bio = existing_row[0] or ""
+            existing_image = existing_row[1] or ""
             
             if existing_bio or existing_image:
                 if verbose:

@@ -299,6 +299,11 @@ def infer_from_popularity(z_score: float, spotify_version_count: int, version_co
     """
     Popularity-based inference per Stage 5.
     
+    Args:
+        z_score: Z-score for the track within its album
+        spotify_version_count: Number of exact-match Spotify versions
+        version_count_standout: Whether track has version_count >= mean + 1 for the album
+    
     Returns:
         Tuple of (confidence_level, is_inferred_single)
     
@@ -307,17 +312,18 @@ def infer_from_popularity(z_score: float, spotify_version_count: int, version_co
     - z >= 0.5 → likely single (medium)
     - z >= 0.2 AND >= 3 versions → weak single (low)
     - version_count_standout (version_count >= mean + 1) → medium confidence indicator
+      (for rating boost, but does not mark as single)
     """
     if z_score >= 1.0:
         return 'high', True
     elif z_score >= 0.5:
         return 'medium', True
+    elif z_score >= 0.2 and spotify_version_count >= 3:
+        return 'low', True
     elif version_count_standout:
         # Version-based medium confidence: doesn't mark as single by itself
         # but contributes to medium confidence for rating boost
         return 'medium', False
-    elif z_score >= 0.2 and spotify_version_count >= 3:
-        return 'low', True
     else:
         return 'none', False
 

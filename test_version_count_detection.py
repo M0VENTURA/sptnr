@@ -77,10 +77,10 @@ def test_version_count_calculation():
         # Track 2 (8 versions) should be standout: 8 >= 7 = True
         # Track 3 (6 versions) should NOT be standout: 6 >= 7 = False
         
-        assert is_version_count_standout(10, 6.0) == True, "Track 1 should be standout"
-        assert is_version_count_standout(8, 6.0) == True, "Track 2 should be standout"
-        assert is_version_count_standout(6, 6.0) == False, "Track 3 should NOT be standout"
-        assert is_version_count_standout(4, 6.0) == False, "Track 4 should NOT be standout"
+        assert is_version_count_standout(10, 6.0) is True, "Track 1 should be standout"
+        assert is_version_count_standout(8, 6.0) is True, "Track 2 should be standout"
+        assert is_version_count_standout(6, 6.0) is False, "Track 3 should NOT be standout"
+        assert is_version_count_standout(4, 6.0) is False, "Track 4 should NOT be standout"
         
         print("✓ Version count standout detection correct")
         
@@ -96,16 +96,16 @@ def test_medium_confidence_without_single_marking():
     """Test that version count standout gives medium confidence without marking as single."""
     print("\n=== Test 2: Medium Confidence Without Single Marking ===")
     
-    # Test with version count standout
+    # Test with version count standout (low z-score and version count to avoid other triggers)
     confidence, is_single = infer_from_popularity(
-        z_score=0.3,  # Below medium threshold (0.5)
-        spotify_version_count=8,
+        z_score=0.1,  # Below all thresholds
+        spotify_version_count=2,  # Below 3 versions
         version_count_standout=True
     )
     
     print(f"Confidence: {confidence}, Is Single: {is_single}")
     assert confidence == 'medium', f"Expected 'medium', got '{confidence}'"
-    assert is_single == False, f"Expected False (not marking as single), got {is_single}"
+    assert is_single is False, f"Expected False (not marking as single), got {is_single}"
     print("✓ Version count standout gives medium confidence without single marking")
     
     # Test without version count standout
@@ -117,7 +117,7 @@ def test_medium_confidence_without_single_marking():
     
     print(f"Without standout - Confidence: {confidence2}, Is Single: {is_single2}")
     assert confidence2 == 'none', f"Expected 'none', got '{confidence2}'"
-    assert is_single2 == False, f"Expected False, got {is_single2}"
+    assert is_single2 is False, f"Expected False, got {is_single2}"
     print("✓ Without standout, low z_score and version count gives no confidence")
 
 
@@ -169,7 +169,7 @@ def test_high_z_score_overrides():
     
     print(f"High z-score: Confidence={confidence}, Is Single={is_single}")
     assert confidence == 'high', f"Expected 'high', got '{confidence}'"
-    assert is_single == True, f"Expected True, got {is_single}"
+    assert is_single is True, f"Expected True, got {is_single}"
     print("✓ High z-score still gives high confidence and marks as single")
     
     # Medium z-score should give medium confidence
@@ -181,7 +181,7 @@ def test_high_z_score_overrides():
     
     print(f"Medium z-score: Confidence={confidence2}, Is Single={is_single2}")
     assert confidence2 == 'medium', f"Expected 'medium', got '{confidence2}'"
-    assert is_single2 == True, f"Expected True, got {is_single2}"
+    assert is_single2 is True, f"Expected True, got {is_single2}"
     print("✓ Medium z-score still gives medium confidence and marks as single")
 
 
