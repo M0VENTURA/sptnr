@@ -2,6 +2,8 @@
 import logging
 import difflib
 import time
+import json
+from typing import Optional, Dict, List, Tuple
 from . import session
 
 logger = logging.getLogger(__name__)
@@ -18,6 +20,43 @@ def _throttle_discogs():
     if elapsed < _DISCOGS_MIN_INTERVAL:
         time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
     _DISCOGS_LAST_REQUEST_TIME = time.time()
+
+
+def _retry_on_500(func, max_retries: int = 3, retry_delay: float = 2.0):
+    """
+    Retry a function on 500 errors with exponential backoff.
+    
+    Args:
+        func: Function to execute (should return requests.Response)
+        max_retries: Maximum number of retry attempts
+        retry_delay: Initial delay between retries (doubles each time)
+        
+    Returns:
+        Function result on success
+        
+    Raises:
+        Exception: If all retries fail
+    """
+    last_exception = None
+    current_delay = retry_delay
+    
+    for attempt in range(max_retries + 1):
+        try:
+            result = func()
+            # Check for 500-level errors
+            if hasattr(result, 'status_code') and 500 <= result.status_code < 600:
+                raise Exception(f"Server error: {result.status_code}")
+            return result
+        except Exception as e:
+            last_exception = e
+            if attempt < max_retries:
+                logger.warning(f"Discogs API attempt {attempt + 1} failed with {e}, retrying in {current_delay}s...")
+                time.sleep(current_delay)
+                current_delay *= 2  # Exponential backoff
+            else:
+                logger.error(f"Discogs API: all {max_retries + 1} attempts failed")
+    
+    raise last_exception
 
 
 class DiscogsClient:
@@ -38,9 +77,230 @@ class DiscogsClient:
         self.base_url = "https://api.discogs.com"
         self.headers = {
             "Authorization": f"Discogs token={token}" if token else "",
-            "User-Agent": "sptnr-cli/1.0"
+            "User-Agent": "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
         }
         self._single_cache = {}  # (artist, title, context) -> bool
+        self._metadata_cache = {}  # (artist, title) -> metadata dict
+    
+    def get_comprehensive_metadata(
+        self,
+        title: str,
+        artist: str,
+        duration: Optional[float] = None,
+        timeout: tuple = (5, 10)
+    ) -> Optional[Dict]:
+        """
+        Get comprehensive Discogs metadata for database storage.
+        
+        This method is designed to fetch and return all required metadata fields
+        for storage in the database according to the problem statement requirements.
+        
+        Returns dict with keys:
+        - discogs_release_id: str or None
+        - discogs_master_id: str or None
+        - discogs_formats: List[str] (JSON-serializable)
+        - discogs_format_descriptions: List[str] (JSON-serializable)
+        - discogs_is_single: bool
+        - discogs_track_titles: List[str] (JSON-serializable)
+        - discogs_release_year: int or None
+        - discogs_label: str or None
+        - discogs_country: str or None
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            duration: Optional track duration in seconds
+            timeout: Request timeout
+            
+        Returns:
+            Metadata dict or None if lookup failed
+        """
+        # Check cache first
+        cache_key = (artist.lower(), title.lower())
+        if cache_key in self._metadata_cache:
+            return self._metadata_cache[cache_key]
+        
+        if not self.enabled or not self.token:
+            return None
+        
+        try:
+            # Search for releases
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {
+                "q": f"{artist} {title}",
+                "type": "release",
+                "format": "Single, EP",
+                "per_page": 5
+            }
+            
+            def make_search_request():
+                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    _throttle_discogs()
+                    response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                response.raise_for_status()
+                return response
+            
+            search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+            results = search_response.json().get("results", [])
+            
+            if not results:
+                logger.debug(f"No Discogs results for '{title}' by '{artist}'")
+                return None
+            
+            # Get first matching release
+            for result in results[:3]:
+                release_id = result.get('id')
+                if not release_id:
+                    continue
+                
+                # Fetch full release data
+                _throttle_discogs()
+                release_url = f"{self.base_url}/releases/{release_id}"
+                
+                def make_release_request():
+                    response = self.session.get(release_url, headers=self.headers, timeout=timeout)
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        time.sleep(retry_after)
+                        _throttle_discogs()
+                        response = self.session.get(release_url, headers=self.headers, timeout=timeout)
+                    response.raise_for_status()
+                    return response
+                
+                release_response = _retry_on_500(make_release_request, max_retries=2, retry_delay=1.0)
+                release_data = release_response.json()
+                
+                # Extract metadata
+                formats = release_data.get('formats', []) or []
+                format_names = [f.get('name', '') for f in formats if f.get('name')]
+                format_descriptions = []
+                for fmt in formats:
+                    descs = fmt.get('descriptions') or []
+                    format_descriptions.extend([d for d in descs if d])
+                
+                tracklist = release_data.get('tracklist', []) or []
+                track_titles = [t.get('title', '') for t in tracklist if t.get('title')]
+                
+                master_id = release_data.get('master_id')
+                release_year = release_data.get('year')
+                labels = release_data.get('labels', []) or []
+                label = labels[0].get('name', '') if labels else None
+                country = release_data.get('country')
+                
+                # Determine if single
+                is_single = self._determine_if_single(
+                    format_names,
+                    format_descriptions,
+                    len(tracklist),
+                    master_id,
+                    timeout
+                )
+                
+                metadata = {
+                    'discogs_release_id': str(release_id),
+                    'discogs_master_id': str(master_id) if master_id else None,
+                    'discogs_formats': format_names,
+                    'discogs_format_descriptions': format_descriptions,
+                    'discogs_is_single': is_single,
+                    'discogs_track_titles': track_titles,
+                    'discogs_release_year': release_year,
+                    'discogs_label': label,
+                    'discogs_country': country
+                }
+                
+                # Cache the result
+                self._metadata_cache[cache_key] = metadata
+                
+                return metadata
+            
+            # No matching release found
+            return None
+            
+        except Exception as e:
+            logger.error(f"Discogs metadata lookup failed for '{title}' by '{artist}': {e}")
+            return None
+    
+    def _determine_if_single(
+        self,
+        format_names: List[str],
+        format_descriptions: List[str],
+        track_count: int,
+        master_id: Optional[int],
+        timeout: tuple
+    ) -> bool:
+        """
+        Determine if release is a single based on Discogs data.
+        
+        Implements comprehensive single determination rules from problem statement.
+        """
+        # Rule 1: Format contains "Single"
+        names_lower = [n.lower() for n in format_names]
+        descs_lower = [d.lower() for d in format_descriptions]
+        
+        single_format_patterns = ['single', '7"', '12" single', 'cd single']
+        for pattern in single_format_patterns:
+            for name in names_lower:
+                if pattern in name:
+                    return True
+        
+        # Rule 2: Description contains "Single" or "Maxi-Single" (but not EP)
+        for desc in descs_lower:
+            if ('single' in desc or 'maxi-single' in desc) and 'ep' not in desc:
+                return True
+        
+        # Rule 3: 1-2 tracks
+        if 1 <= track_count <= 2:
+            return True
+        
+        # Rule 4: Promo with 1-2 tracks
+        is_promo = any('promo' in f for f in names_lower + descs_lower)
+        if is_promo and 1 <= track_count <= 2:
+            return True
+        
+        # Rule 5: Check master release
+        if master_id:
+            try:
+                _throttle_discogs()
+                master_url = f"{self.base_url}/masters/{master_id}"
+                
+                def make_master_request():
+                    response = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                    if response.status_code == 429:
+                        retry_after = int(response.headers.get("Retry-After", 60))
+                        time.sleep(retry_after)
+                        _throttle_discogs()
+                        response = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                    response.raise_for_status()
+                    return response
+                
+                master_response = _retry_on_500(make_master_request, max_retries=2, retry_delay=1.0)
+                master_data = master_response.json()
+                
+                master_formats = master_data.get('formats', []) or []
+                master_names = [f.get('name', '').lower() for f in master_formats if f.get('name')]
+                master_descs = []
+                for fmt in master_formats:
+                    descs = fmt.get('descriptions') or []
+                    master_descs.extend([d.lower() for d in descs if d])
+                
+                # Check master for single
+                for pattern in single_format_patterns:
+                    for name in master_names:
+                        if pattern in name:
+                            return True
+                
+                for desc in master_descs:
+                    if ('single' in desc or 'maxi-single' in desc) and 'ep' not in desc:
+                        return True
+                        
+            except Exception as e:
+                logger.debug(f"Failed to check master release {master_id}: {e}")
+        
+        return False
     
     def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:
         """
