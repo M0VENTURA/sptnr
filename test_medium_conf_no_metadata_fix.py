@@ -75,12 +75,11 @@ def simulate_star_calculation(
         medium_conf_zscore_threshold = DEFAULT_MEDIUM_CONF_THRESHOLD
     
     # Calculate median score for band-based threshold (legacy)
+    from statistics import median as calc_median
     scores = album_popularity_scores
     valid_scores = [s for s in scores if s > 0]
     if valid_scores:
-        sorted_scores = sorted(valid_scores)
-        median_index = (len(sorted_scores) - 1) // 2
-        median_score = sorted_scores[median_index]
+        median_score = calc_median(valid_scores)
     else:
         median_score = DEFAULT_POPULARITY_MEAN
     if median_score == 0:
