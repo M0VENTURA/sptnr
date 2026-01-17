@@ -1,7 +1,6 @@
 
 #!/usr/bin/env python3
 import sqlite3
-import logging
 
 # Database connection constants
 DB_TIMEOUT = 120.0  # Timeout for database connections in seconds
