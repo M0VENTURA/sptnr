@@ -472,16 +472,15 @@ def detect_single_enhanced(
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
-            if verbose:
-                logger.debug(f"[DEBUG] Discogs lookup starting for: {title}")
+            # Always log Discogs checks (not dependent on verbose)
+            logger.info(f"   Checking Discogs for single: {title}")
             
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
-                if verbose:
-                    logger.info(f"[INFO] Discogs confirms single: {title}")
+                logger.info(f"   ✓ Discogs confirms single: {title}")
                 
                 # Per problem statement: Discogs = HIGH confidence, skip other checks
                 result['single_status'] = 'high'
@@ -499,8 +498,17 @@ def detect_single_enhanced(
                     logger.debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
                 
                 return result
+            else:
+                if verbose:
+                    logger.info(f"   ⓘ Discogs does not confirm single: {title}")
         except Exception as e:
-            logger.error(f"Discogs check failed: {e}")
+            logger.info(f"   ⚠ Discogs single check failed for {title}: {e}")
+    else:
+        if verbose:
+            if not discogs_client:
+                logger.info(f"   ⓘ Discogs client not available")
+            elif not discogs_client.enabled:
+                logger.info(f"   ⓘ Discogs client is disabled")
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
@@ -538,15 +546,33 @@ def detect_single_enhanced(
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
+            # Always log MusicBrainz checks (not dependent on verbose)
+            logger.info(f"   Checking MusicBrainz for single: {title}")
+            
             # Use existing is_single method
             musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
             if musicbrainz_confirmed:
                 result['single_sources'].append('musicbrainz')
                 result['single_sources_used'].append('musicbrainz')
+                logger.info(f"   ✓ MusicBrainz confirms single: {title}")
+            else:
                 if verbose:
-                    logger.debug(f"MusicBrainz: Confirmed single for {title}")
+                    logger.info(f"   ⓘ MusicBrainz does not confirm single: {title}")
         except Exception as e:
-            logger.error(f"MusicBrainz check failed: {e}")
+            # Log SSL and connection errors more gracefully
+            error_type = type(e).__name__
+            if 'SSL' in error_type or 'ssl' in str(e).lower():
+                logger.info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+            elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
+                logger.info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+            else:
+                logger.info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+    else:
+        if verbose:
+            if not musicbrainz_client:
+                logger.info(f"   ⓘ MusicBrainz client not available")
+            elif not musicbrainz_client.enabled:
+                logger.info(f"   ⓘ MusicBrainz client is disabled")
     
     # STAGE 5: Popularity-Based Inference (including version count)
     z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
