@@ -322,7 +322,7 @@ def infer_from_popularity(z_score: float, spotify_version_count: int, version_co
         return 'low', True
     elif version_count_standout:
         # Version-based medium confidence: doesn't mark as single by itself
-        # but contributes to medium confidence for rating boost
+        # but contributes to medium confidence which can achieve 5★ via popularity-based system
         return 'medium', False
     else:
         return 'none', False

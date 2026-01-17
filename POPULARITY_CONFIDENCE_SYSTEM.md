@@ -148,5 +148,5 @@ This system adapts to different album types:
 
 The system maintains backward compatibility with the existing band-based rating system:
 - If a track doesn't meet high or medium confidence thresholds, it falls back to the legacy 4-band system
-- Medium confidence singles still get a +1 star boost (as before)
+- Medium confidence singles can still achieve 5★ by meeting the zscore threshold with metadata confirmation
 - High confidence singles still get auto 5★ (as before)
