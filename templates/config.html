@@ -256,6 +256,23 @@
     </div>
   </div>
 
+  <!-- Downloads Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
+      <small class="text-muted">Configure download folder for music files</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Downloads Folder</label>
+          <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
+          <div class="form-text">Path to watch for downloaded music files</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- API Integrations Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -283,6 +300,11 @@
             <div class="col-12">
               <label class="form-label form-label-sm">Client Secret</label>
               <input type="password" class="form-control form-control-sm" id="spotify_client_secret" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">User ID (Optional)</label>
+              <input type="text" class="form-control form-control-sm" id="spotify_user_id" placeholder="spotify" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
+              <small class="form-text text-muted">Optional: Spotify User ID to fetch public playlists from</small>
             </div>
           </div>
         </div>
@@ -394,7 +416,7 @@
         </div>
 
         <!-- YouTube -->
-        <div class="col-12">
+        <div class="col-12 border-bottom pb-3">
           <div class="d-flex justify-content-between align-items-start">
             <div class="flex-grow-1">
               <h6 class="mb-1">YouTube</h6>
@@ -408,6 +430,25 @@
             <div class="col-12">
               <label class="form-label form-label-sm">API Key</label>
               <input type="password" class="form-control form-control-sm" id="youtube_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- SearchAPI -->
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">SearchAPI (DuckDuckGo)</h6>
+              <small class="text-muted d-block">DuckDuckGo search integration via SearchAPI.io</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="searchapi_enabled" {% if config.get('api_integrations', {}).get('searchapi', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="searchapi_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('searchapi', {}).get('api_key', '') }}">
             </div>
           </div>
         </div>
@@ -498,6 +539,32 @@
         <div class="col-12">
           <label class="form-label">Log File Path</label>
           <input type="text" class="form-control" id="log_file" placeholder="/config/app.log" value="{{ config.get('logging', {}).get('file', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Web API Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-key"></i> Web API Authentication</h5>
+      <small class="text-muted">Configure API key authentication for web interface</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="enable_web_api_key" {% if config.get('enable_web_api_key', True) %}checked{% endif %}>
+            <label class="form-check-label" for="enable_web_api_key">
+              Enable Web API Key Authentication
+            </label>
+          </div>
+          <div class="form-text">When enabled, requires API key for web interface access</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Web API Key</label>
+          <input type="password" class="form-control" id="web_api_key" placeholder="Enter API key" value="{{ config.get('web_api_key', '') }}">
+          <div class="form-text">API key for authenticating web interface requests</div>
         </div>
       </div>
     </div>
@@ -630,11 +697,15 @@ function buildConfigObject() {
       max_bookmarks: parseInt(getValue('bookmarks_max', '100')) || 100,
       custom_links: getCustomBookmarkLinks()
     },
+    downloads: {
+      folder: getValue('downloads_folder', '')
+    },
     api_integrations: {
       spotify: {
         enabled: getChecked('spotify_enabled', false),
         client_id: getValue('spotify_client_id', ''),
-        client_secret: getValue('spotify_client_secret', '')
+        client_secret: getValue('spotify_client_secret', ''),
+        user_id: getValue('spotify_user_id', '')
       },
       lastfm: {
         enabled: getChecked('lastfm_enabled', false),
@@ -662,6 +733,10 @@ function buildConfigObject() {
       youtube: {
         enabled: getChecked('youtube_enabled', false),
         api_key: getValue('youtube_api_key', '')
+      },
+      searchapi: {
+        enabled: getChecked('searchapi_enabled', false),
+        api_key: getValue('searchapi_api_key', '')
       }
     },
     database: {
@@ -672,7 +747,9 @@ function buildConfigObject() {
       level: getValue('log_level', 'INFO'),
       file: getValue('log_file', ''),
       console: getValue('log_console', 'true') === 'true'
-    }
+    },
+    web_api_key: getValue('web_api_key', ''),
+    enable_web_api_key: getChecked('enable_web_api_key', true)
   };
 }
 
@@ -888,7 +965,7 @@ function renderFeaturesWeights(features, weights) {
     {
       heading: 'General Operation',
       description: 'Core options that control the overall behavior of the app, including dry-run/testing, syncing, and batch operations.',
-      keys: ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'artist'],
+      keys: ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
       explanations: {
         dry_run: 'Run all operations in test mode without making any changes to your files or database. Useful for safely testing configuration changes.',
         sync: 'Enable automatic syncing of your music libraries between sources and the app.',
@@ -897,6 +974,7 @@ function renderFeaturesWeights(features, weights) {
         perpetual: 'Keep background services (like folder watchers and scanners) running continuously.',
         batchrate: 'Enable batch rating mode to rate multiple albums or tracks at once.',
         full_scan: 'Run full scan pipeline: Navidrome import → Popularity detection → Beets import. When enabled, automatically executes all three scans in sequence.',
+        auto_boot_navidrome_scan: 'Automatically scan Navidrome metadata on application startup. When enabled, imports Navidrome library data when the app starts.',
         artist: 'Comma-separated list of artist names to prioritize or filter during scans and imports.'
       }
     },

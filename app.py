@@ -3947,6 +3947,8 @@ def config_save_json():
             'api_integrations': data.get('api_integrations', {}),
             'database': data.get('database', {}),
             'logging': data.get('logging', {}),
+            'web_api_key': data.get('web_api_key', ''),
+            'enable_web_api_key': data.get('enable_web_api_key', True),
             'features': data.get('features', {}),  # Accept features from request
             'weights': data.get('weights', {})  # Accept weights from request
         }
