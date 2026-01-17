@@ -1,8 +1,9 @@
-
 #!/usr/bin/env python3
 import sqlite3
 
 # Database connection constants
+# Note: This timeout value (120.0) matches the timeout used throughout the codebase
+# (see app.py, db_utils.py, scan_helpers.py, etc.)
 DB_TIMEOUT = 120.0  # Timeout for database connections in seconds
 
 # ✅ Define the full schema for the tracks table
