@@ -122,7 +122,7 @@ class MusicBrainzClient:
                 rgs = res.json().get("release-groups", [])
                 return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                # Only log warnings for SSL/connection errors, not at WARNING level to reduce noise
+                # Log SSL/connection/timeout errors at appropriate levels to reduce noise
                 error_type = type(e).__name__
                 if attempt < max_retries - 1:
                     # Log retries at debug level only
