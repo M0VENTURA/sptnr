@@ -203,12 +203,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         
         for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
-            album_id = alb.get("id")
-            if not album_id:
-                continue
             
             # Skip albums that don't match the filter (if provided)
             if album_filter and album_name != album_filter:
+                continue
+            
+            album_id = alb.get("id")
+            if not album_id:
                 continue
             
             log_unified(f"      💿 [Album {alb_idx}/{total_albums}] {album_name}")

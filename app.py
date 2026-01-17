@@ -2818,14 +2818,14 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
     All steps log to unified_scan.log and Recent Scans page.
     This is used by the album rescan route.
     
+    Args:
+        artist_name: Name of the artist
+        album_name: Name of the album to scan
+    
     Note: Force is always True for single album scans to ensure fresh data.
     """
     log_unified(f"💿 Album scan pipeline started for: {artist_name} - {album_name}")
     try:
-        # Force is always True for single album scans
-        force = True
-        log_unified(f"Force rescan: {force} (always enabled for single album scans)")
-        
         # Look up artist_id from cache; rebuild index if missing
         log_unified(f"Looking up artist_id for '{artist_name}' in database...")
         conn = get_db()
@@ -2850,12 +2850,13 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             return
 
         # Step 1: Import metadata from Navidrome for this specific album
-        log_unified(f"Step 1/2: Navidrome import for album '{artist_name} - {album_name}' (force={force})")
-        scan_artist_to_db(artist_name, artist_id, verbose=True, force=force, album_filter=album_name)
+        # Force is always True for single album scans to ensure fresh data
+        log_unified(f"Step 1/2: Navidrome import for album '{artist_name} - {album_name}' (force=True)")
+        scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
 
         # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-        log_unified(f"Step 2/2: Running popularity scan for album '{artist_name} - {album_name}' (force={force})")
-        popularity_scan(verbose=True, force=force, artist_filter=artist_name, album_filter=album_name)
+        log_unified(f"Step 2/2: Running popularity scan for album '{artist_name} - {album_name}' (force=True)")
+        popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
         
         log_unified(f"✅ Scan complete for album '{artist_name} - {album_name}'")
     except Exception as e:
