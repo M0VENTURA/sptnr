@@ -22,6 +22,7 @@ from statistics import median
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
+from helpers import find_matching_spotify_single
 
 # Import API clients for single detection at module level
 try:
@@ -761,20 +762,33 @@ def detect_single_for_track(
                 log_verbose(f"   ✓ Reusing cached Spotify results for {title}")
         
         if spotify_results and isinstance(spotify_results, list) and len(spotify_results) > 0:
-            for result in spotify_results:
-                album_info = result.get("album", {})
-                album_type = album_info.get("album_type", "").lower()
-                album_name = album_info.get("name", "").lower()
-                
-                # Match Jan 2nd logic: exclude alternate version singles
-                # Check album name for alternate version keywords
-                is_alternate_version = any(k in album_name for k in SPOTIFY_ALBUM_EXCLUDE_KEYWORDS)
-                
-                if album_type == "single" and not is_alternate_version:
-                    single_sources.append("spotify")
-                    if verbose:
-                        log_verbose(f"   ✓ Spotify confirms single: {title}")
-                    break
+            # Use new sophisticated matching logic
+            # Convert duration from seconds to milliseconds if provided
+            duration_ms = int(duration * 1000) if duration else None
+            
+            # Log all releases before filtering if verbose
+            if verbose:
+                log_verbose(f"   Spotify returned {len(spotify_results)} releases for {title}")
+            
+            # Use the sophisticated version-aware matching
+            matched_release = find_matching_spotify_single(
+                spotify_results=spotify_results,
+                track_title=title,
+                track_duration_ms=duration_ms,
+                duration_tolerance_sec=2,
+                logger=logging if verbose else None
+            )
+            
+            if matched_release:
+                single_sources.append("spotify")
+                album_info = matched_release.get("album", {})
+                if verbose:
+                    log_verbose(f"   ✓ Spotify confirms single: {title}")
+                    log_verbose(f"      Matched release: {matched_release.get('name')}")
+                    log_verbose(f"      Album: {album_info.get('name')} (type: {album_info.get('album_type')})")
+            else:
+                if verbose:
+                    log_verbose(f"   ⓘ No matching Spotify single found for {title}")
     except TimeoutError as e:
         if verbose:
             log_verbose(f"Spotify single check timed out for {title}: {e}")
