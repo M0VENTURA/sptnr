@@ -41,7 +41,7 @@ def test_auto_boot_scan_config():
                 return False
         
         result = _get_auto_boot_import_setting(temp_path)
-        if result == False:
+        if not result:
             print("✅ Test 1 PASSED: Default value is False")
         else:
             print(f"❌ Test 1 FAILED: Expected False, got {result}")
@@ -63,7 +63,7 @@ def test_auto_boot_scan_config():
     
     try:
         result = _get_auto_boot_import_setting(temp_path)
-        if result == True:
+        if result:
             print("✅ Test 2 PASSED: Explicit True is read correctly")
         else:
             print(f"❌ Test 2 FAILED: Expected True, got {result}")
@@ -85,7 +85,7 @@ def test_auto_boot_scan_config():
     
     try:
         result = _get_auto_boot_import_setting(temp_path)
-        if result == False:
+        if not result:
             print("✅ Test 3 PASSED: Explicit False is read correctly")
         else:
             print(f"❌ Test 3 FAILED: Expected False, got {result}")
@@ -113,7 +113,7 @@ def test_auto_boot_scan_config():
         # Clean up env var
         del os.environ["SPTNR_DISABLE_BOOT_ND_IMPORT"]
         
-        if result == False:
+        if not result:
             print("✅ Test 4 PASSED: Environment variable overrides config to False")
         else:
             print(f"❌ Test 4 FAILED: Expected False with env override, got {result}")
@@ -126,7 +126,7 @@ def test_auto_boot_scan_config():
     real_config_path = Path(__file__).parent / "config" / "config.yaml"
     if real_config_path.exists():
         result = _get_auto_boot_import_setting(str(real_config_path))
-        if result == False:
+        if not result:
             print("✅ Test 5 PASSED: Real config.yaml has auto_boot_navidrome_scan=False")
         else:
             print(f"⚠️  Test 5 WARNING: Real config.yaml has auto_boot_navidrome_scan={result}")
