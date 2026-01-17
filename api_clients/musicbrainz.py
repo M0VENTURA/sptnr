@@ -97,6 +97,9 @@ class MusicBrainzClient:
         retry_delay = 1.0
         for attempt in range(max_retries):
             try:
+                # Add rate limiting delay before each request to avoid server issues
+                time.sleep(1.0)
+                
                 query = f'{title} AND artist:{artist} AND primarytype:Single'
                 params = {
                     "query": query,
@@ -115,8 +118,9 @@ class MusicBrainzClient:
                 rgs = res.json().get("release-groups", [])
                 return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"MusicBrainz is_single attempt {attempt+1} failed for '{title}' by '{artist}': {e}")
+                logger.warning(f"MusicBrainz is_single attempt {attempt+1}/{max_retries} failed for '{title}' by '{artist}': {type(e).__name__}: {e}")
                 if attempt < max_retries - 1:
+                    logger.info(f"Retrying in {retry_delay} seconds...")
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
@@ -151,6 +155,9 @@ class MusicBrainzClient:
         
         for attempt in range(max_retries):
             try:
+                # Add rate limiting delay before each request to avoid server issues
+                time.sleep(1.0)
+                
                 # Step 1: search recording with richer includes
                 query = f'{title} AND artist:{artist}'
                 rec_params = {
@@ -232,6 +239,9 @@ class MusicBrainzClient:
             return tuple(cached)
         
         try:
+            # Add rate limiting delay before each request to avoid server issues
+            time.sleep(1.0)
+            
             # 1) Find recordings (with releases included for second hop)
             query = f'{title} AND artist:{artist}'
             rec_params = {
@@ -267,6 +277,8 @@ class MusicBrainzClient:
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "release-groups"}
                         try:
+                            # Add rate limiting delay before each release lookup
+                            time.sleep(1.0)
                             rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
                             if rr.ok:
                                 rel_json = rr.json()
