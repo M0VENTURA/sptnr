@@ -299,24 +299,22 @@ def infer_from_popularity(z_score: float, spotify_version_count: int, version_co
     """
     Popularity-based inference per Stage 5.
     
-    UPDATED: Z-score NO LONGER marks tracks as singles to avoid false positives
-    on underperforming albums. Z-score is still calculated and returned for
-    use in star rating adjustments, but does not contribute to single detection.
+    UPDATED: Singles are now detected exclusively through metadata sources 
+    (Discogs, MusicBrainz, Spotify). Z-scores are calculated but only used 
+    for rating adjustments in popularity.py, not for single detection.
+    
+    This prevents false negatives on underperforming albums where z-scores
+    are naturally lower due to overall low album popularity.
     
     Args:
-        z_score: Z-score for the track within its album
+        z_score: Z-score for the track within its album (calculated but not used)
         spotify_version_count: Number of exact-match Spotify versions
         version_count_standout: Whether track has version_count >= mean + 1 for the album
     
     Returns:
         Tuple of (confidence_level, is_inferred_single)
-    
-    Thresholds (DISABLED for single detection):
-    - z >= 1.0 → [removed] strong single (high)
-    - z >= 0.5 → [removed] likely single (medium)
-    - z >= 0.2 AND >= 3 versions → [removed] weak single (low)
-    - version_count_standout (version_count >= mean + 1) → medium confidence indicator
-      (for rating boost, but does not mark as single)
+        - confidence_level: 'medium' if version_count_standout, else 'none'
+        - is_inferred_single: Always False (metadata-only detection)
     """
     # Z-score based single detection disabled per problem statement
     # Singles should ONLY be detected via metadata (Discogs, MusicBrainz, Spotify)

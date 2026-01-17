@@ -59,6 +59,10 @@ def _retry_on_500(func, max_retries: int = 3, retry_delay: float = 2.0):
     raise last_exception
 
 
+# Single/EP format identifiers for Discogs filtering
+DISCOGS_SINGLE_FORMATS = ['single', 'ep', '7"', '12"']
+
+
 class DiscogsClient:
     """Discogs API wrapper for single detection and metadata."""
     
@@ -365,11 +369,13 @@ class DiscogsClient:
             for r in results:
                 formats = r.get("format", []) or []
                 format_str = " ".join(formats).lower() if formats else ""
-                if "single" in format_str or "ep" in format_str or "7\"" in format_str or "12\"" in format_str:
+                if any(fmt in format_str for fmt in DISCOGS_SINGLE_FORMATS):
                     filtered_results.append(r)
             
             # If we have filtered results, use those; otherwise use all results
-            results_to_check = filtered_results if filtered_results else results
+            # Fallback to all results is necessary because Discogs data can be incomplete
+            # or inconsistent, and we don't want to miss valid singles due to missing format tags
+            results_to_check = filtered_results if filtered_results else results[:10]  # Limit fallback to 10
             logger.debug(f"After filtering for Singles/EPs: {len(results_to_check)} results")
             
             # Inspect releases
