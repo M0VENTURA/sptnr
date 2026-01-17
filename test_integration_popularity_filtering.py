@@ -22,13 +22,13 @@ def should_exclude_from_stats(tracks_with_scores):
     if len(tracks_with_parens) < 2:
         return set()
     
-    tracks_with_parens_sorted = sorted(tracks_with_parens)
+    tracks_with_parens_set = set(tracks_with_parens)  # O(1) membership testing
     
     consecutive_at_end = []
     last_track_idx = len(tracks_with_scores) - 1
     
     for i in range(last_track_idx, -1, -1):
-        if i in tracks_with_parens_sorted:
+        if i in tracks_with_parens_set:
             if not consecutive_at_end:
                 consecutive_at_end.insert(0, i)
             elif i == consecutive_at_end[0] - 1:
@@ -99,8 +99,10 @@ def test_fegefeuer_album():
     print("\n✅ NEW BEHAVIOR (with filtering):")
     print("-" * 80)
     excluded_indices = should_exclude_from_stats(tracks)
-    scores_new = [t["popularity_score"] for i, t in enumerate(tracks) 
-                  if t["popularity_score"] > 0 and i not in excluded_indices]
+    scores_new = [
+        t["popularity_score"] for i, t in enumerate(tracks)
+        if t["popularity_score"] > 0 and i not in excluded_indices
+    ]
     mean_new = mean(scores_new)
     stddev_new = stdev(scores_new) if len(scores_new) > 1 else 0
     high_conf_threshold_new = mean_new + 6  # DEFAULT_HIGH_CONF_OFFSET

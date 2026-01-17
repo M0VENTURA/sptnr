@@ -135,7 +135,7 @@ def should_exclude_from_stats(tracks_with_scores):
     
     # Find consecutive tracks with parentheses at the END of the track list
     # Since tracks are sorted by popularity DESC, the last indices are the end of the album
-    tracks_with_parens_sorted = sorted(tracks_with_parens)
+    tracks_with_parens_set = set(tracks_with_parens)  # O(1) membership testing
     
     # Build a list of consecutive tracks starting from the last track index
     consecutive_at_end = []
@@ -143,7 +143,7 @@ def should_exclude_from_stats(tracks_with_scores):
     
     # Start from the last track and work backwards
     for i in range(last_track_idx, -1, -1):
-        if i in tracks_with_parens_sorted:
+        if i in tracks_with_parens_set:
             # This track has parentheses
             if not consecutive_at_end:
                 # First track in the sequence (must be the last track)
@@ -1439,7 +1439,7 @@ def popularity_scan(
                     
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    # Filter out excluded tracks when calculating statistics
+                    # Filter out excluded tracks when calculating statistics (O(n) due to set membership testing)
                     valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
                     
                     # Log exclusions if any
