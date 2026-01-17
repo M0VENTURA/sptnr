@@ -141,7 +141,16 @@ required_columns = {
     "discogs_track_titles": "TEXT",           # JSON array of track title strings
     "discogs_release_year": "INTEGER",        # Release year from Discogs
     "discogs_label": "TEXT",                  # Record label from Discogs
-    "discogs_country": "TEXT"                 # Release country from Discogs
+    "discogs_country": "TEXT",                # Release country from Discogs
+    # ✅ Single Detection Algorithm Fields (per problem statement)
+    "single_status": "TEXT",                  # none/low/medium/high per detection algorithm
+    "single_confidence_score": "REAL",        # Numeric confidence score (0.0-1.0)
+    "single_sources_used": "TEXT",            # JSON array: sources that confirmed single
+    "z_score": "REAL",                        # Z-score for single detection (alias for zscore)
+    "spotify_version_count": "INTEGER",       # Number of exact-match Spotify versions
+    "discogs_release_ids": "TEXT",            # JSON array of Discogs release IDs
+    "musicbrainz_release_group_ids": "TEXT",  # JSON array of MusicBrainz release group IDs
+    "single_detection_last_updated": "TEXT"   # Timestamp when single detection last ran
 }
 
 # ✅ Define columns for the artists table
