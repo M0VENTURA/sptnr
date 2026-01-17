@@ -18,7 +18,7 @@ import atexit
 import time
 from contextlib import contextmanager
 from datetime import datetime
-from statistics import median
+from statistics import median, mean, stdev
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
@@ -856,9 +856,11 @@ def detect_single_for_track(
         elif not discogs_token:
             log_unified(f"   ⓘ Discogs token not configured")
     
-    # Fourth check: Discogs video detection (requires second source for confirmation)
+    # Fourth check: Discogs video detection
     if HAVE_DISCOGS_VIDEO and discogs_token:
         try:
+            # Always log Discogs video checks (not dependent on verbose)
+            log_unified(f"   Checking Discogs for music video: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -868,25 +870,32 @@ def detect_single_for_track(
                     f"Discogs video detection timed out after {API_CALL_TIMEOUT}s"
                 )
                 if result:
-                    # Only add if we have at least one other source
-                    if len(single_sources) >= 1:
-                        single_sources.append("discogs_video")
-                        if verbose:
-                            log_verbose(f"   ✓ Discogs video confirms single (with other source): {title}")
-                    else:
-                        if verbose:
-                            log_verbose(f"   ⓘ Discogs video detected but needs second source: {title}")
+                    single_sources.append("discogs_video")
+                    log_unified(f"   ✓ Discogs confirms music video: {title}")
+                else:
+                    if verbose:
+                        log_verbose(f"   ⓘ Discogs does not confirm music video: {title}")
         except TimeoutError as e:
-            if verbose:
-                log_verbose(f"Discogs video check timed out for {title}: {e}")
+            log_unified(f"   ⏱ Discogs video check timed out for {title}: {e}")
         except Exception as e:
+            log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
+    else:
+        if not HAVE_DISCOGS_VIDEO:
             if verbose:
-                log_verbose(f"Discogs video check failed for {title}: {e}")
+                log_verbose(f"   ⓘ Discogs video client not available")
+        elif not discogs_token:
+            if verbose:
+                log_verbose(f"   ⓘ Discogs token not configured for video detection")
     
-    # Calculate confidence based on number of sources (Jan 2nd logic)
-    if len(single_sources) >= 2:
+    # Calculate confidence based on sources per problem statement
+    # High confidence: Discogs single or music video
+    # Medium confidence: Spotify, MusicBrainz, Last.fm single
+    has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
+    has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
+    
+    if has_discogs:
         single_confidence = "high"
-    elif len(single_sources) == 1:
+    elif has_other_sources:
         single_confidence = "medium"
     else:
         single_confidence = "low"
@@ -1343,7 +1352,7 @@ def popularity_scan(
                 
                 # Get all tracks for this album with their popularity scores and single detection
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
@@ -1353,8 +1362,49 @@ def popularity_scan(
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
                     
-                    # Calculate median score for threshold
+                    # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
+                    valid_scores = [s for s in scores if s > 0]
+                    
+                    if valid_scores:
+                        from statistics import stdev
+                        popularity_mean = mean(valid_scores)
+                        popularity_stddev = stdev(valid_scores) if len(valid_scores) > 1 else 0
+                        
+                        # Calculate z-scores for all tracks
+                        zscores = []
+                        for score in valid_scores:
+                            if popularity_stddev > 0:
+                                zscore = (score - popularity_mean) / popularity_stddev
+                            else:
+                                zscore = 0
+                            zscores.append(zscore)
+                        
+                        # Get mean of top 50% z-scores for medium confidence threshold
+                        if zscores:
+                            sorted_zscores = sorted(zscores, reverse=True)
+                            top_50_count = max(1, len(sorted_zscores) // 2)
+                            top_50_zscores = sorted_zscores[:top_50_count]
+                            mean_top50_zscore = mean(top_50_zscores)
+                        else:
+                            mean_top50_zscore = 0
+                        
+                        # High confidence threshold: mean + 6
+                        high_conf_threshold = popularity_mean + 6
+                        # Medium confidence threshold: mean_top50_zscore - 0.3
+                        medium_conf_zscore_threshold = mean_top50_zscore - 0.3
+                        
+                        if verbose:
+                            log_unified(f"   📊 Album Stats: mean={popularity_mean:.1f}, stddev={popularity_stddev:.1f}")
+                            log_unified(f"   📈 High confidence threshold: {high_conf_threshold:.1f}")
+                            log_unified(f"   📉 Medium confidence zscore threshold: {medium_conf_zscore_threshold:.2f}")
+                    else:
+                        popularity_mean = 10
+                        popularity_stddev = 0
+                        high_conf_threshold = 16
+                        medium_conf_zscore_threshold = -0.3
+                    
+                    # Calculate median score for band-based threshold (legacy)
                     median_score = median(scores) if scores else 10
                     if median_score == 0:
                         median_score = 10
@@ -1371,25 +1421,71 @@ def popularity_scan(
                         popularity_score = track_row["popularity_score"] if track_row["popularity_score"] else 0
                         is_single = track_row["is_single"] if track_row["is_single"] else 0
                         single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
+                        single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
                         
-                        # Calculate band-based star rating
+                        # Parse single sources
+                        try:
+                            single_sources = json.loads(single_sources_json) if single_sources_json else []
+                        except:
+                            single_sources = []
+                        
+                        # Calculate z-score for this track
+                        if popularity_stddev > 0 and popularity_score > 0:
+                            track_zscore = (popularity_score - popularity_mean) / popularity_stddev
+                        else:
+                            track_zscore = 0
+                        
+                        # Calculate band-based star rating (baseline)
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
+                        # NEW: Popularity-Based Confidence System
+                        # High Confidence (auto 5★): popularity >= mean + 6
+                        if popularity_score >= high_conf_threshold:
+                            stars = 5
+                            if verbose:
+                                log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f})")
+                        
+                        # Medium Confidence (requires metadata): zscore >= mean_top50_zscore - 0.3 + metadata
+                        elif track_zscore >= medium_conf_zscore_threshold:
+                            # Check if we have metadata confirmation from any source
+                            has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
+                            has_spotify = "spotify" in single_sources
+                            has_musicbrainz = "musicbrainz" in single_sources
+                            has_lastfm = "lastfm" in single_sources
+                            
+                            has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
+                            
+                            if has_metadata:
+                                stars = 5
+                                if verbose:
+                                    metadata_sources = []
+                                    if has_discogs:
+                                        metadata_sources.append("Discogs")
+                                    if has_spotify:
+                                        metadata_sources.append("Spotify")
+                                    if has_musicbrainz:
+                                        metadata_sources.append("MusicBrainz")
+                                    if has_lastfm:
+                                        metadata_sources.append("Last.fm")
+                                    log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_sources)})")
+                            else:
+                                if verbose:
+                                    log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
+                        
+                        # Legacy logic for backwards compatibility (if not caught by new system)
                         # Boost to 5 stars if score exceeds threshold (only for singles)
-                        # Per requirement: no song should be rated 5 stars unless it's a high confidence single
-                        # or a 4 star medium confidence single and gets a 1* bump
-                        if popularity_score >= jump_threshold:
+                        if popularity_score >= jump_threshold and stars < 5:
                             # Only boost to 5 if it's at least a medium confidence single
                             if single_confidence in ["high", "medium"]:
                                 stars = 5
                             else:
                                 stars = 4  # Cap at 4 stars if not a single
                         
-                        # Boost stars for confirmed singles
-                        if single_confidence == "high":
+                        # Boost stars for confirmed singles (legacy)
+                        if single_confidence == "high" and stars < 5:
                             stars = 5  # High confidence single = 5 stars
-                        elif single_confidence == "medium":
+                        elif single_confidence == "medium" and stars < 5:
                             stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
                         
                         # Ensure at least 1 star
