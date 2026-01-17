@@ -72,6 +72,58 @@ def duration_matches_strict(duration1: Optional[float], duration2: Optional[floa
 
 
 # ============================================================================
+# Compilation Album Detection
+# ============================================================================
+
+# Keywords for detecting compilation/greatest hits albums
+COMPILATION_KEYWORDS = [
+    "greatest hits",
+    "best of",
+    "the very best",
+    "anthology",
+    "singles",
+    "collection",
+    "ultimate",
+    "gold",
+    "platinum"
+]
+
+
+def is_compilation_album(album_type: Optional[str], album_title: str, track_count: int) -> bool:
+    """
+    Detect if an album is a compilation or greatest hits album.
+    
+    Per problem statement:
+    - If album_type == "compilation"
+    - OR album has more than 12 tracks
+    - OR album title contains compilation keywords
+    
+    Args:
+        album_type: Spotify album type (if available)
+        album_title: Album title
+        track_count: Number of tracks in the album
+        
+    Returns:
+        True if album is a compilation
+    """
+    # Check album type
+    if album_type and album_type.lower() == "compilation":
+        return True
+    
+    # Check track count
+    if track_count > 12:
+        return True
+    
+    # Check album title for keywords
+    album_lower = album_title.lower()
+    for keyword in COMPILATION_KEYWORDS:
+        if keyword in album_lower:
+            return True
+    
+    return False
+
+
+# ============================================================================
 # Stage 1: Pre-Filter Logic
 # ============================================================================
 
@@ -148,18 +200,26 @@ def should_check_track(
     album_mean: float,
     album_stddev: float,
     album_popularities: List[float],
-    spotify_version_count: int
+    spotify_version_count: int,
+    is_compilation: bool = False
 ) -> bool:
     """
     Pre-filter per problem statement Stage 1.
     
-    Always check if:
+    If compilation album:
+    - Always return True (check ALL tracks)
+    
+    Otherwise, always check if:
     - Spotify version count >= 5
     
     Otherwise check if:
     - In top 3 by popularity
     - popularity >= (album_mean + 1 * album_stddev)
     """
+    # Compilation albums: check ALL tracks
+    if is_compilation:
+        return True
+    
     # Rule 1.1: High Spotify version count
     if spotify_version_count >= 5:
         return True
@@ -271,13 +331,14 @@ def detect_single_enhanced(
     spotify_results: Optional[List[Dict]] = None,
     discogs_client=None,
     musicbrainz_client=None,
-    verbose: bool = False
+    verbose: bool = False,
+    album_type: Optional[str] = None
 ) -> Dict:
     """
     Enhanced single detection implementing the 8-stage algorithm.
     
     This function implements the exact algorithm from the problem statement:
-    1. Pre-Filter
+    1. Pre-Filter (with compilation detection)
     2. Discogs (Primary)
     3. Spotify (Secondary)
     4. MusicBrainz (Tertiary)
@@ -299,6 +360,7 @@ def detect_single_enhanced(
         discogs_client: Discogs API client
         musicbrainz_client: MusicBrainz API client
         verbose: Enable verbose logging
+        album_type: Spotify album type (for compilation detection)
         
     Returns:
         Dict with single detection results for database storage
@@ -330,12 +392,18 @@ def detect_single_enhanced(
     """, (artist, album))
     album_popularities = [row[0] for row in cursor.fetchall()]
     
+    # Detect if this is a compilation album
+    is_compilation = is_compilation_album(album_type, album, album_track_count)
+    
+    if is_compilation and verbose:
+        logger.debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
+    
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
-    # STAGE 1: Pre-Filter
-    if not should_check_track(popularity, album_mean, album_stddev, album_popularities, spotify_version_count):
+    # STAGE 1: Pre-Filter (with compilation override)
+    if not should_check_track(popularity, album_mean, album_stddev, album_popularities, spotify_version_count, is_compilation):
         if verbose:
             logger.debug(f"Pre-filter: Skipping {title} (not high priority)")
         return result
@@ -343,19 +411,37 @@ def detect_single_enhanced(
     if verbose:
         logger.debug(f"Pre-filter: Checking {title} (high priority)")
     
-    # STAGE 2: Discogs (Primary Source)
+    # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
+            if verbose:
+                logger.debug(f"[DEBUG] Discogs lookup starting for: {title}")
+            
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
             if discogs_confirmed:
-                result['single_sources'].append('Discogs')
-                result['single_sources_used'].append('Discogs')
+                result['single_sources'].append('discogs')
+                result['single_sources_used'].append('discogs')
                 if verbose:
-                    logger.debug(f"Discogs: Confirmed single for {title}")
-                # Per problem statement, Discogs confirmation allows skipping other external sources
-                # But we still calculate Z-score for final decision
+                    logger.info(f"[INFO] Discogs confirms single: {title}")
+                
+                # Per problem statement: Discogs = HIGH confidence, skip other checks
+                result['single_status'] = 'high'
+                result['single_confidence'] = 'high'
+                result['is_single'] = True
+                result['single_confidence_score'] = 1.0
+                
+                # Still calculate Z-score for logging purposes
+                z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                result['z_score'] = z_score
+                
+                # Add final debug summary
+                if verbose:
+                    logger.debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+                    logger.debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
+                
+                return result
         except Exception as e:
             logger.error(f"Discogs check failed: {e}")
     
@@ -366,7 +452,7 @@ def detect_single_enhanced(
         for result_item in spotify_results:
             result_title = result_item.get('name', '')
             album_info = result_item.get('album', {})
-            album_type = album_info.get('album_type', '').lower()
+            album_type_check = album_info.get('album_type', '').lower()
             album_name = album_info.get('name', '')
             
             # Check title match
@@ -378,16 +464,16 @@ def detect_single_enhanced(
                 continue
             
             # Check if single or EP with matching title
-            if album_type == 'single':
+            if album_type_check == 'single':
                 spotify_confirmed = True
                 break
-            elif album_type == 'ep' and normalize_title_strict(album_name) == norm_title:
+            elif album_type_check == 'ep' and normalize_title_strict(album_name) == norm_title:
                 spotify_confirmed = True
                 break
         
         if spotify_confirmed:
-            result['single_sources'].append('Spotify')
-            result['single_sources_used'].append('Spotify')
+            result['single_sources'].append('spotify')
+            result['single_sources_used'].append('spotify')
             if verbose:
                 logger.debug(f"Spotify: Confirmed single for {title}")
     
@@ -398,8 +484,8 @@ def detect_single_enhanced(
             # Use existing is_single method
             musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
             if musicbrainz_confirmed:
-                result['single_sources'].append('MusicBrainz')
-                result['single_sources_used'].append('MusicBrainz')
+                result['single_sources'].append('musicbrainz')
+                result['single_sources_used'].append('musicbrainz')
                 if verbose:
                     logger.debug(f"MusicBrainz: Confirmed single for {title}")
         except Exception as e:
@@ -411,7 +497,7 @@ def detect_single_enhanced(
     
     popularity_confidence, popularity_inferred = infer_from_popularity(z_score, spotify_version_count)
     if popularity_inferred:
-        result['single_sources'].append('Z-score')
+        result['single_sources'].append('z-score')
         if verbose:
             logger.debug(f"Popularity: Inferred single for {title} (z={z_score:.2f}, confidence={popularity_confidence})")
     
@@ -432,8 +518,10 @@ def detect_single_enhanced(
     confidence_scores = {'high': 1.0, 'medium': 0.67, 'low': 0.33, 'none': 0.0}
     result['single_confidence_score'] = confidence_scores.get(final_status, 0.0)
     
+    # Add final debug summary per track
     if verbose:
-        logger.debug(f"Final: {title} - status={final_status}, is_single={result['is_single']}, sources={result['single_sources']}")
+        logger.debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+        logger.debug(f"[DEBUG] Final single status for {title}: {final_status}")
     
     return result
 
