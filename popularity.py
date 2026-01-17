@@ -1050,7 +1050,25 @@ def popularity_scan(
                             if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
                                 best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
                                 spotify_score = best_match.get("popularity", 0)
+                                spotify_track_id = best_match.get("id")
                                 log_unified(f'Spotify popularity score: {spotify_score}')
+                                
+                                # Fetch comprehensive metadata for this track
+                                if spotify_track_id:
+                                    try:
+                                        from popularity_helpers import fetch_comprehensive_metadata
+                                        log_verbose(f"Fetching comprehensive metadata for track ID: {spotify_track_id}")
+                                        metadata_fetched = fetch_comprehensive_metadata(
+                                            db_track_id=track_id,
+                                            spotify_track_id=spotify_track_id,
+                                            force_refresh=force
+                                        )
+                                        if metadata_fetched:
+                                            log_verbose(f"✓ Comprehensive metadata fetched for: {title}")
+                                        else:
+                                            log_verbose(f"⚠ Failed to fetch comprehensive metadata for: {title}")
+                                    except Exception as e:
+                                        log_verbose(f"⚠ Error fetching comprehensive metadata for {title}: {e}")
                             else:
                                 log_unified(f'No Spotify results found for: {title}')
                         else:

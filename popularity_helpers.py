@@ -397,6 +397,53 @@ def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
         logging.error(f"Failed to update artist ID for '{artist_name}': {e}")
         return 0
 
+
+def fetch_comprehensive_metadata(db_track_id: str, spotify_track_id: str, force_refresh: bool = False) -> bool:
+    """
+    Fetch comprehensive Spotify metadata for a track and store in database.
+    
+    Args:
+        db_track_id: Database track ID (primary key)
+        spotify_track_id: Spotify track ID
+        force_refresh: Force refresh even if recently updated
+        
+    Returns:
+        True if metadata was successfully fetched and stored
+    """
+    _ensure_clients_from_config()
+    if not _spotify_enabled or _spotify_client is None or not spotify_track_id:
+        return False
+    
+    try:
+        from spotify_metadata_fetcher import SpotifyMetadataFetcher
+        
+        conn = get_db_connection()
+        fetcher = SpotifyMetadataFetcher(_spotify_client, conn)
+        
+        result = fetcher.fetch_and_store_track_metadata(
+            track_id=spotify_track_id,
+            db_track_id=db_track_id,
+            force_refresh=force_refresh
+        )
+        
+        conn.close()
+        return result
+    except Exception as e:
+        logging.debug(f"Failed to fetch comprehensive metadata for track {spotify_track_id}: {e}")
+        return False
+
+
+def get_spotify_client() -> SpotifyClient | None:
+    """
+    Get the configured Spotify client.
+    
+    Returns:
+        SpotifyClient instance or None if not configured
+    """
+    _ensure_clients_from_config()
+    return _spotify_client if _spotify_enabled else None
+
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -417,4 +464,6 @@ __all__ = [
     "get_album_last_scanned_from_db",
     "get_album_track_count_in_db",
     "update_artist_id_for_artist",
+    "fetch_comprehensive_metadata",
+    "get_spotify_client",
 ]
