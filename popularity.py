@@ -17,6 +17,7 @@ import yaml
 import atexit
 import time
 import heapq
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median, mean, stdev
@@ -98,6 +99,71 @@ GENRE_WEIGHTS = {
 DEFAULT_POPULARITY_MEAN = 10  # Default mean when no valid scores
 DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularity >= mean + 6)
 DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
+
+
+def should_exclude_from_stats(tracks_with_scores):
+    """
+    Identify tracks that should be excluded from popularity statistics calculation.
+    
+    Excludes tracks at the end of an album when there are multiple consecutive tracks
+    with parenthetical content (e.g., "Live in Wacken 2022"), as these bonus/alternate
+    versions can skew the popularity mean and z-scores.
+    
+    Args:
+        tracks_with_scores: List of track dictionaries ordered by popularity (descending)
+        
+    Returns:
+        Set of track indices to exclude from statistics
+    """
+    
+    if not tracks_with_scores or len(tracks_with_scores) < 3:
+        # Don't filter albums with too few tracks
+        return set()
+    
+    # Check for parentheses in track titles
+    # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
+    tracks_with_parens = []
+    for i, track in enumerate(tracks_with_scores):
+        title = track.get("title", "")
+        # Check if title contains parenthetical content
+        if re.search(r'\([^)]+\)', title):
+            tracks_with_parens.append(i)
+    
+    # Only exclude if we have multiple tracks with parentheses
+    if len(tracks_with_parens) < 2:
+        return set()
+    
+    # Find consecutive tracks with parentheses at the END of the track list
+    # Since tracks are sorted by popularity DESC, the last indices are the end of the album
+    tracks_with_parens_set = set(tracks_with_parens)  # O(1) membership testing
+    
+    # Build a list of consecutive tracks starting from the last track index
+    consecutive_at_end = []
+    last_track_idx = len(tracks_with_scores) - 1
+    
+    # Start from the last track and work backwards
+    for i in range(last_track_idx, -1, -1):
+        if i in tracks_with_parens_set:
+            # This track has parentheses
+            if not consecutive_at_end:
+                # First track in the sequence (must be the last track)
+                consecutive_at_end.insert(0, i)
+            elif i == consecutive_at_end[0] - 1:
+                # Consecutive with previous track
+                consecutive_at_end.insert(0, i)
+            else:
+                # Gap found, stop looking
+                break
+        elif consecutive_at_end:
+            # We've started building a sequence but hit a track without parentheses
+            # This means the sequence is not at the end
+            break
+    
+    # Only exclude if we have at least 2 consecutive tracks with parentheses at the end
+    if len(consecutive_at_end) >= 2:
+        return set(consecutive_at_end)
+    
+    return set()
 
 
 def normalize_genre(genre):
@@ -1368,9 +1434,19 @@ def popularity_scan(
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
                     
+                    # Identify tracks to exclude from statistics (e.g., bonus tracks with parentheses at end)
+                    excluded_indices = should_exclude_from_stats(album_tracks_with_scores)
+                    
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    valid_scores = [s for s in scores if s > 0]
+                    # Filter out excluded tracks when calculating statistics
+                    # Complexity is O(n) for iteration; set membership testing is O(1)
+                    valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
+                    
+                    # Log exclusions if any
+                    if excluded_indices and verbose:
+                        excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
+                        log_unified(f"   📊 Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
                     
                     if valid_scores:
                         popularity_mean = mean(valid_scores)
