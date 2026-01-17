@@ -4,13 +4,8 @@ Test script to demonstrate the popularity-based confidence system.
 This shows how the new rating logic works with sample data.
 """
 
-import sys
-import os
 from statistics import mean, stdev
 import heapq
-
-# Add parent directory to path
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 # Constants from popularity.py
 DEFAULT_POPULARITY_MEAN = 10

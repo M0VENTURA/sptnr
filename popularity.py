@@ -16,6 +16,7 @@ import math
 import yaml
 import atexit
 import time
+import heapq
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median, mean, stdev
@@ -1387,7 +1388,6 @@ def popularity_scan(
                         # Get mean of top 50% z-scores for medium confidence threshold
                         # Use heapq.nlargest for efficiency with large albums
                         if zscores:
-                            import heapq
                             top_50_count = max(1, len(zscores) // 2)
                             top_50_zscores = heapq.nlargest(top_50_count, zscores)
                             mean_top50_zscore = mean(top_50_zscores)
@@ -1428,9 +1428,12 @@ def popularity_scan(
                         single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
                         single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
                         
-                        # Parse single sources
+                        # Parse single sources (defensive check for valid string)
                         try:
-                            single_sources = json.loads(single_sources_json) if single_sources_json else []
+                            if single_sources_json and isinstance(single_sources_json, str):
+                                single_sources = json.loads(single_sources_json)
+                            else:
+                                single_sources = []
                         except json.JSONDecodeError:
                             single_sources = []
                         
