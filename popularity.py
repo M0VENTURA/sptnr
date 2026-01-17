@@ -732,6 +732,9 @@ def detect_single_for_track(
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
             discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+            if discogs_token:
+                if verbose:
+                    log_unified(f"   ✓ Loaded Discogs token from config.yaml")
         except Exception as e:
             # Always log config loading errors, not just in verbose mode
             log_unified(f"   ⚠ Could not load Discogs token from config at {config_path}: {e}")
@@ -813,8 +816,8 @@ def detect_single_for_track(
     # Third check: Discogs single detection
     if HAVE_DISCOGS and discogs_token:
         try:
-            if verbose:
-                log_unified(f"   Checking Discogs for single: {title}")
+            # Always log Discogs API calls (not dependent on verbose)
+            log_unified(f"   Checking Discogs for single: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -825,22 +828,19 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs")
-                    if verbose:
-                        log_unified(f"   ✓ Discogs confirms single: {title}")
+                    log_unified(f"   ✓ Discogs confirms single: {title}")
                 else:
                     if verbose:
                         log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
         except TimeoutError as e:
-            if verbose:
-                log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
+            log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
         except Exception as e:
-            if verbose:
-                log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
     else:
-        if not HAVE_DISCOGS and verbose:
-            log_verbose(f"   ⓘ Discogs client not available")
-        elif not discogs_token and verbose:
-            log_verbose(f"   ⓘ Discogs token not configured")
+        if not HAVE_DISCOGS:
+            log_unified(f"   ⓘ Discogs client not available")
+        elif not discogs_token:
+            log_unified(f"   ⓘ Discogs token not configured")
     
     # Fourth check: Discogs video detection (requires second source for confirmation)
     if HAVE_DISCOGS_VIDEO and discogs_token:
@@ -1362,9 +1362,15 @@ def popularity_scan(
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
-                        # Boost to 5 stars if score exceeds threshold
+                        # Boost to 5 stars if score exceeds threshold (only for singles)
+                        # Per requirement: no song should be rated 5 stars unless it's a high confidence single
+                        # or a 4 star medium confidence single and gets a 1* bump
                         if popularity_score >= jump_threshold:
-                            stars = 5
+                            # Only boost to 5 if it's at least a medium confidence single
+                            if single_confidence in ["high", "medium"]:
+                                stars = 5
+                            else:
+                                stars = 4  # Cap at 4 stars if not a single
                         
                         # Boost stars for confirmed singles
                         if single_confidence == "high":
