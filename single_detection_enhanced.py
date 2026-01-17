@@ -345,7 +345,7 @@ def detect_single_enhanced(
     
     # STAGE 2: Discogs (Primary Source)
     discogs_confirmed = False
-    if discogs_client and discogs_client.enabled:
+    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
@@ -393,7 +393,7 @@ def detect_single_enhanced(
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
-    if musicbrainz_client and musicbrainz_client.enabled:
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
             # Use existing is_single method
             musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
