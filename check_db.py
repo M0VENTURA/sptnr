@@ -102,7 +102,33 @@ required_columns = {
     "global_popularity": "REAL",              # Global popularity across all track versions
     "zscore": "REAL",                         # Z-score within album for single detection
     "metadata_single": "INTEGER",             # 1 if marked as single in metadata (Spotify/MB)
-    "is_compilation": "INTEGER"               # 1 if album is compilation/greatest hits
+    "is_compilation": "INTEGER",              # 1 if album is compilation/greatest hits
+    # ✅ Spotify Audio Features (from /audio-features endpoint)
+    "spotify_tempo": "REAL",                  # BPM (tempo)
+    "spotify_energy": "REAL",                 # Energy (0.0-1.0)
+    "spotify_danceability": "REAL",           # Danceability (0.0-1.0)
+    "spotify_valence": "REAL",                # Valence/positivity (0.0-1.0)
+    "spotify_acousticness": "REAL",           # Acousticness (0.0-1.0)
+    "spotify_instrumentalness": "REAL",       # Instrumentalness (0.0-1.0)
+    "spotify_liveness": "REAL",               # Liveness (0.0-1.0)
+    "spotify_speechiness": "REAL",            # Speechiness (0.0-1.0)
+    "spotify_loudness": "REAL",               # Loudness in dB
+    "spotify_key": "INTEGER",                 # Key (0-11, C=0, C#=1, etc.)
+    "spotify_mode": "INTEGER",                # Mode (0=minor, 1=major)
+    "spotify_time_signature": "INTEGER",      # Time signature (beats per measure)
+    # ✅ Artist Metadata (from /artists endpoint)
+    "spotify_artist_genres": "TEXT",          # JSON array of artist genres
+    "spotify_artist_popularity": "INTEGER",   # Artist popularity (0-100)
+    # ✅ Album Metadata (from /albums endpoint)
+    "spotify_album_label": "TEXT",            # Record label
+    "spotify_explicit": "INTEGER",            # Explicit flag (0 or 1)
+    # ✅ Derived Genre Tags (custom logic)
+    "special_tags": "TEXT",                   # JSON array: Christmas, Cover, Live, Acoustic, Orchestral, Instrumental
+    "normalized_genres": "TEXT",              # JSON array of broad/normalized genres
+    "merged_version_tags": "TEXT",            # JSON array of tags inherited from other versions
+    "raw_spotify_genres": "TEXT",             # JSON array from artist metadata (raw, unprocessed)
+    # ✅ Metadata refresh tracking
+    "metadata_last_updated": "TEXT"           # Timestamp when metadata was last fetched
 }
 
 # ✅ Define columns for the artists table
