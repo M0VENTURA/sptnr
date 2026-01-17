@@ -783,7 +783,7 @@ def detect_single_for_track(
     if HAVE_MUSICBRAINZ:
         try:
             if verbose:
-                log_verbose(f"   Checking MusicBrainz for single: {title}")
+                log_unified(f"   Checking MusicBrainz for single: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             mb_client = _get_timeout_safe_musicbrainz_client()
             if mb_client:
@@ -814,7 +814,7 @@ def detect_single_for_track(
     if HAVE_DISCOGS and discogs_token:
         try:
             if verbose:
-                log_verbose(f"   Checking Discogs for single: {title}")
+                log_unified(f"   Checking Discogs for single: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
