@@ -310,7 +310,6 @@ class SpotifyMetadataFetcher:
             # Derived tags
             "special_tags": json.dumps(sorted(list(special_tags))) if special_tags else None,
             "normalized_genres": json.dumps(normalized_genres) if normalized_genres else None,
-            "raw_spotify_genres": json.dumps(artist_genres) if artist_genres else None,
             
             # Metadata timestamp
             "metadata_last_updated": datetime.now().isoformat()

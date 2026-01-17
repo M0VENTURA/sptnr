@@ -12,9 +12,11 @@ import json
 import unittest
 from unittest.mock import Mock, MagicMock, patch
 
-# Set up test environment
-os.environ["DB_PATH"] = tempfile.mktemp(suffix=".db")
-test_db_path = os.environ["DB_PATH"]
+# Set up test environment with secure temp file
+_temp_db_file = tempfile.NamedTemporaryFile(mode='w', suffix=".db", delete=False)
+_temp_db_file.close()
+test_db_path = _temp_db_file.name
+os.environ["DB_PATH"] = test_db_path
 
 print(f"Using test database: {test_db_path}")
 

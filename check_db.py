@@ -126,7 +126,6 @@ required_columns = {
     "special_tags": "TEXT",                   # JSON array: Christmas, Cover, Live, Acoustic, Orchestral, Instrumental
     "normalized_genres": "TEXT",              # JSON array of broad/normalized genres
     "merged_version_tags": "TEXT",            # JSON array of tags inherited from other versions
-    "raw_spotify_genres": "TEXT",             # JSON array from artist metadata (raw, unprocessed)
     # ✅ Metadata refresh tracking
     "metadata_last_updated": "TEXT"           # Timestamp when metadata was last fetched
 }

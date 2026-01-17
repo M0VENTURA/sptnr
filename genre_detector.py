@@ -5,7 +5,6 @@ Detects special genre tags (Christmas, Cover, Live, Acoustic, Orchestral, Instru
 based on track metadata, audio features, and title/album analysis.
 """
 
-import re
 import json
 from typing import Set, Dict, Any, Optional
 
