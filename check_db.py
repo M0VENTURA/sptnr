@@ -378,7 +378,12 @@ def update_schema(db_path):
         # Artist ID indexes for fast cache lookups
         ("idx_tracks_spotify_artist_id", "tracks(spotify_artist_id)"),
         ("idx_tracks_musicbrainz_artist_id", "tracks(musicbrainz_artist_id)"),
-        ("idx_tracks_discogs_artist_id", "tracks(discogs_artist_id)")
+        ("idx_tracks_discogs_artist_id", "tracks(discogs_artist_id)"),
+        # Advanced single detection indexes
+        ("idx_tracks_isrc", "tracks(isrc)"),
+        ("idx_tracks_duration", "tracks(duration)"),
+        ("idx_tracks_global_popularity", "tracks(global_popularity)"),
+        ("idx_tracks_zscore", "tracks(zscore)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
