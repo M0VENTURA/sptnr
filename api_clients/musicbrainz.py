@@ -106,28 +106,35 @@ class MusicBrainzClient:
                     "fmt": "json",
                     "limit": 5
                 }
-                logger.info(f"MusicBrainz is_single request: {self.base_url}release-group/ params={params} headers={self.headers}")
+                # Only log first attempt at debug level to reduce noise
+                if attempt == 0:
+                    logger.debug(f"MusicBrainz is_single request: {self.base_url}release-group/ params={params}")
+                    
                 res = self.session.get(
                     f"{self.base_url}release-group/",
                     params=params,
                     headers=self.headers,
                     timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
-                logger.info(f"MusicBrainz is_single response: status={res.status_code} text={res.text[:200]}")
+                # Only log response on debug level to reduce noise
+                logger.debug(f"MusicBrainz is_single response: status={res.status_code}")
                 res.raise_for_status()
                 rgs = res.json().get("release-groups", [])
                 return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                logger.warning(f"MusicBrainz is_single attempt {attempt+1}/{max_retries} failed for '{title}' by '{artist}': {type(e).__name__}: {e}")
+                # Only log warnings for SSL/connection errors, not at WARNING level to reduce noise
+                error_type = type(e).__name__
                 if attempt < max_retries - 1:
-                    logger.info(f"Retrying in {retry_delay} seconds...")
+                    # Log retries at debug level only
+                    logger.debug(f"MusicBrainz is_single attempt {attempt+1}/{max_retries} failed for '{title}' by '{artist}': {error_type}, retrying in {retry_delay}s...")
                     time.sleep(retry_delay)
                     retry_delay *= 2
                 else:
-                    logger.error(f"MusicBrainz is_single failed after {max_retries} attempts for '{title}' by '{artist}': {e}")
+                    # Only log final failure at info level (not error) to reduce alarm
+                    logger.info(f"MusicBrainz is_single unavailable for '{title}' by '{artist}' after {max_retries} attempts: {error_type}")
                     return False
             except Exception as e:
-                logger.error(f"MusicBrainz is_single unexpected error for '{title}' by '{artist}': {e}")
+                logger.warning(f"MusicBrainz is_single unexpected error for '{title}' by '{artist}': {e}")
                 return False
     
     def get_genres(self, title: str, artist: str) -> list[str]:
