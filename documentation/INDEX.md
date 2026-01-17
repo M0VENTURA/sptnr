@@ -12,7 +12,8 @@ Welcome to the SPTNR documentation! This guide will help you navigate all availa
 
 ### Music Library Management
 - [Star Rating Algorithm](STAR_RATING_ALGORITHM.md) - How SPTNR calculates ratings
-- [Single Detection](SINGLE_DETECTION_FIX_SUMMARY.md) - Automatic single track detection
+- [Single Detection](SINGLE_DETECTION_FIX_SUMMARY.md) - Automatic single track detection (legacy)
+- [Advanced Single Detection](ADVANCED_SINGLE_DETECTION.md) - Comprehensive single detection with ISRC matching
 - [Album Metadata](ALBUM_METADATA_CONSOLIDATION.md) - Album metadata management
 - [Artist Scanning](ARTIST_SCAN_FIX_SUMMARY.md) - Artist scan improvements
 
