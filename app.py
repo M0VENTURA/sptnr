@@ -3401,10 +3401,18 @@ def scan_stop_mp3():
     global scan_process_mp3
     
     with scan_lock:
-        if scan_process_mp3 and scan_process_mp3.poll() is None:
-            scan_process_mp3.terminate()
-            scan_process_mp3.wait(timeout=10)
-            flash("File path scan stopped", "info")
+        if scan_process_mp3 is not None:
+            if isinstance(scan_process_mp3, dict):
+                thread = scan_process_mp3.get('thread')
+                if thread and thread.is_alive():
+                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
+                    # The scan will check for stop signals and exit gracefully
+                    scan_process_mp3 = None
+                    flash("File path scan stop requested (will finish current operation)", "info")
+                else:
+                    flash("No file path scan is currently running", "warning")
+            else:
+                flash("No file path scan is currently running", "warning")
         else:
             flash("No file path scan is currently running", "warning")
     
@@ -3417,10 +3425,18 @@ def scan_stop_navidrome():
     global scan_process_navidrome
     
     with scan_lock:
-        if scan_process_navidrome and scan_process_navidrome.poll() is None:
-            scan_process_navidrome.terminate()
-            scan_process_navidrome.wait(timeout=10)
-            flash("Navidrome sync scan stopped", "info")
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                thread = scan_process_navidrome.get('thread')
+                if thread and thread.is_alive():
+                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
+                    # The scan will check for stop signals and exit gracefully
+                    scan_process_navidrome = None
+                    flash("Navidrome sync scan stop requested (will finish current artist)", "info")
+                else:
+                    flash("No Navidrome sync scan is currently running", "warning")
+            else:
+                flash("No Navidrome sync scan is currently running", "warning")
         else:
             flash("No Navidrome sync scan is currently running", "warning")
     
@@ -3457,10 +3473,18 @@ def scan_stop_singles():
     global scan_process_singles
     
     with scan_lock:
-        if scan_process_singles and scan_process_singles.poll() is None:
-            scan_process_singles.terminate()
-            scan_process_singles.wait(timeout=10)
-            flash("Single detection scan stopped", "info")
+        if scan_process_singles is not None:
+            if isinstance(scan_process_singles, dict):
+                thread = scan_process_singles.get('thread')
+                if thread and thread.is_alive():
+                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
+                    # The scan will check for stop signals and exit gracefully
+                    scan_process_singles = None
+                    flash("Single detection scan stop requested (will finish current operation)", "info")
+                else:
+                    flash("No single detection scan is currently running", "warning")
+            else:
+                flash("No single detection scan is currently running", "warning")
         else:
             flash("No single detection scan is currently running", "warning")
     
