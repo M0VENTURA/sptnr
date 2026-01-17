@@ -97,7 +97,12 @@ required_columns = {
     "spotify_artist_id": "TEXT",              # Spotify artist ID for this track's artist
     "lastfm_artist_mbid": "TEXT",             # Last.fm artist MBID (if available)
     "discogs_artist_id": "TEXT",              # Discogs artist ID
-    "musicbrainz_artist_id": "TEXT"           # MusicBrainz artist ID
+    "musicbrainz_artist_id": "TEXT",          # MusicBrainz artist ID
+    # ✅ Advanced single detection fields
+    "global_popularity": "REAL",              # Global popularity across all track versions
+    "zscore": "REAL",                         # Z-score within album for single detection
+    "metadata_single": "INTEGER",             # 1 if marked as single in metadata (Spotify/MB)
+    "is_compilation": "INTEGER"               # 1 if album is compilation/greatest hits
 }
 
 # ✅ Define columns for the artists table

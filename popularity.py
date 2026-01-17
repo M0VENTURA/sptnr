@@ -597,13 +597,32 @@ def detect_single_for_track(
     album_track_count: int = 1,
     spotify_results_cache: dict = None,
     verbose: bool = False,
-    discogs_token: str = None
+    discogs_token: str = None,
+    # New parameters for advanced detection
+    track_id: str = None,
+    album: str = None,
+    isrc: str = None,
+    duration: float = None,
+    popularity: float = None,
+    album_type: str = None,
+    use_advanced_detection: bool = True,
+    zscore_threshold: float = 0.20
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
     
     This is the canonical single detection logic used by popularity.py.
     Other modules should call this function to ensure consistent behavior.
+    
+    NEW: Enhanced with advanced single detection logic including:
+    - ISRC-based track version matching
+    - Title+duration matching (±2 seconds)
+    - Alternate version filtering
+    - Live/unplugged context handling
+    - Album release deduplication
+    - Global popularity calculation
+    - Z-score based final determination
+    - Compilation/greatest hits special handling
     
     Args:
         title: Track title
@@ -612,13 +631,52 @@ def detect_single_for_track(
         spotify_results_cache: Optional dict mapping title to Spotify search results
         verbose: Enable verbose logging
         discogs_token: Optional Discogs API token (will load from config if not provided)
+        track_id: Track ID for advanced detection (optional)
+        album: Album name for advanced detection (optional)
+        isrc: ISRC code for advanced detection (optional)
+        duration: Track duration in seconds for advanced detection (optional)
+        popularity: Track popularity score for advanced detection (optional)
+        album_type: Album type for advanced detection (optional)
+        use_advanced_detection: Enable advanced detection logic (default True)
+        zscore_threshold: Z-score threshold for singles (default 0.20)
         
     Returns:
         Dict with keys:
             - sources: List of sources that confirmed single (e.g. ['spotify', 'musicbrainz'])
             - confidence: 'high', 'medium', or 'low'
             - is_single: True if confidence is 'high', False otherwise
+            - global_popularity: Global popularity across versions (if advanced)
+            - zscore: Z-score within album (if advanced)
+            - metadata_single: Metadata single status (if advanced)
+            - is_compilation: Compilation status (if advanced)
     """
+    # Use advanced detection if enabled and all required parameters are provided
+    if use_advanced_detection and track_id and album:
+        try:
+            from advanced_single_detection import detect_single_advanced
+            conn = get_db_connection()
+            
+            result = detect_single_advanced(
+                conn=conn,
+                track_id=track_id,
+                title=title,
+                artist=artist,
+                album=album,
+                isrc=isrc,
+                duration=duration,
+                popularity=popularity or 0.0,
+                album_type=album_type,
+                zscore_threshold=zscore_threshold,
+                verbose=verbose
+            )
+            
+            conn.close()
+            return result
+        except Exception as e:
+            if verbose:
+                log_unified(f"   ⚠ Advanced detection failed, falling back to standard: {e}")
+            # Fall through to standard detection
+    
     # Ignore obvious non-singles by keywords
     if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
         if verbose:
@@ -877,7 +935,7 @@ def popularity_scan(
             sql_params.append(album_filter)
         
         sql = f"""
-            SELECT id, artist, title, album
+            SELECT id, artist, title, album, isrc, duration, spotify_album_type
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -1100,14 +1158,35 @@ def popularity_scan(
                     track_id = track["id"]
                     title = track["title"]
                     
-                    # Use the centralized single detection function
+                    # Get additional fields for advanced detection
+                    track_isrc = track.get("isrc")
+                    track_duration = track.get("duration")
+                    track_album_type = track.get("spotify_album_type")
+                    
+                    # Get the popularity score for this track (may have been calculated earlier)
+                    track_popularity = 0.0
+                    cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
+                    pop_row = cursor.fetchone()
+                    if pop_row and pop_row[0]:
+                        track_popularity = pop_row[0]
+                    
+                    # Use the centralized single detection function with advanced parameters
                     detection_result = detect_single_for_track(
                         title=title,
                         artist=artist,
                         album_track_count=album_track_count,
                         spotify_results_cache=spotify_results_cache,
                         verbose=verbose,  # Pass function parameter, not module constant
-                        discogs_token=discogs_token  # Pass already-loaded token
+                        discogs_token=discogs_token,  # Pass already-loaded token
+                        # Advanced detection parameters
+                        track_id=track_id,
+                        album=album,
+                        isrc=track_isrc,
+                        duration=track_duration,
+                        popularity=track_popularity,
+                        album_type=track_album_type,
+                        use_advanced_detection=True,
+                        zscore_threshold=0.20
                     )
                     
                     single_sources = detection_result["sources"]
