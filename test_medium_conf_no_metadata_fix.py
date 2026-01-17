@@ -76,7 +76,13 @@ def simulate_star_calculation(
     
     # Calculate median score for band-based threshold (legacy)
     scores = album_popularity_scores
-    median_score = sorted([s for s in scores if s > 0])[len([s for s in scores if s > 0]) // 2] if scores else DEFAULT_POPULARITY_MEAN
+    valid_scores = [s for s in scores if s > 0]
+    if valid_scores:
+        sorted_scores = sorted(valid_scores)
+        median_index = (len(sorted_scores) - 1) // 2
+        median_score = sorted_scores[median_index]
+    else:
+        median_score = DEFAULT_POPULARITY_MEAN
     if median_score == 0:
         median_score = DEFAULT_POPULARITY_MEAN
     jump_threshold = median_score * 1.7
@@ -169,7 +175,10 @@ def test_medium_conf_no_metadata_scenario():
     - Track meets medium confidence threshold (zscore >= threshold)
     - Track has NO metadata support (no Discogs, Spotify, etc.)
     - Track is marked as "(Single)" with high confidence
-    - Expected: Should keep 4 stars, NOT upgrade to 5
+    - Expected: Should keep band-based stars, NOT upgrade to 5
+    
+    Returns:
+        bool: True if all tests pass, False otherwise
     """
     print("\n" + "=" * 80)
     print("TEST: Medium Confidence Without Metadata (Problem Statement Scenario)")
@@ -201,22 +210,26 @@ def test_medium_conf_no_metadata_scenario():
     print(f"Medium confidence zscore threshold: 0.30")
     print()
     
+    all_tests_passed = True
+    
     # Test case 1: Highlander (Single with high confidence, but no metadata sources)
     print("Test Case 1: Highlander")
     print("  - Popularity: 68.5")
     print("  - Is Single: True (high confidence)")
     print("  - Single Sources: [] (NO METADATA)")
     print("  - Zscore: (68.5 - 65.4) / 8.0 = 0.38 >= 0.30 ✓")
-    stars, reason = simulate_star_calculation(
+    stars1, reason1 = simulate_star_calculation(
         popularity_score=68.5,
         single_sources=[],  # NO metadata sources
         single_confidence="high",  # But marked as high confidence single
         album_popularity_scores=album_scores
     )
-    print(f"  - Result: {stars} stars")
-    print(f"  - Reason: {reason}")
+    print(f"  - Result: {stars1} stars")
+    print(f"  - Reason: {reason1}")
     print(f"  - Expected: Band-based stars (NOT 5 stars from legacy override)")
-    print(f"  - Status: {'✓ PASS' if stars < 5 and '[LEGACY LOGIC SKIPPED' in reason else '✗ FAIL'}")
+    test1_passed = stars1 < 5 and '[LEGACY LOGIC SKIPPED' in reason1
+    print(f"  - Status: {'✓ PASS' if test1_passed else '✗ FAIL'}")
+    all_tests_passed = all_tests_passed and test1_passed
     print()
     
     # Test case 2: Eis & Feuer (same scenario)
@@ -234,39 +247,47 @@ def test_medium_conf_no_metadata_scenario():
     print(f"  - Result: {stars2} stars")
     print(f"  - Reason: {reason2}")
     print(f"  - Expected: Band-based stars (NOT 5 stars from legacy override)")
-    print(f"  - Status: {'✓ PASS' if stars2 < 5 and '[LEGACY LOGIC SKIPPED' in reason2 else '✗ FAIL'}")
+    test2_passed = stars2 < 5 and '[LEGACY LOGIC SKIPPED' in reason2
+    print(f"  - Status: {'✓ PASS' if test2_passed else '✗ FAIL'}")
+    all_tests_passed = all_tests_passed and test2_passed
     print()
     
     # Test case 3: Berzerkermode (high confidence with metadata)
     print("Test Case 3: Berzerkermode (Control - should get 5 stars)")
     print("  - Popularity: 73.5")
     print("  - High confidence threshold: 71.4")
-    stars, reason = simulate_star_calculation(
+    stars3, reason3 = simulate_star_calculation(
         popularity_score=73.5,
         single_sources=["spotify", "discogs"],
         single_confidence="high",
         album_popularity_scores=album_scores
     )
-    print(f"  - Result: {stars} stars")
-    print(f"  - Reason: {reason}")
+    print(f"  - Result: {stars3} stars")
+    print(f"  - Reason: {reason3}")
     print(f"  - Expected: 5 stars (high confidence threshold)")
-    print(f"  - Status: {'✓ PASS' if stars == 5 else '✗ FAIL'}")
+    test3_passed = stars3 == 5
+    print(f"  - Status: {'✓ PASS' if test3_passed else '✗ FAIL'}")
+    all_tests_passed = all_tests_passed and test3_passed
     print()
     
     # Test case 4: Track with medium threshold AND metadata (should get 5 stars)
     print("Test Case 4: Track with Medium Threshold AND Metadata")
     print("  - Popularity: 68.5")
     print("  - Single Sources: ['spotify', 'discogs'] (HAS METADATA)")
-    stars, reason = simulate_star_calculation(
+    stars4, reason4 = simulate_star_calculation(
         popularity_score=68.5,
         single_sources=["spotify", "discogs"],  # HAS metadata
         single_confidence="high",
         album_popularity_scores=album_scores
     )
-    print(f"  - Result: {stars} stars")
-    print(f"  - Reason: {reason}")
+    print(f"  - Result: {stars4} stars")
+    print(f"  - Reason: {reason4}")
     print(f"  - Expected: 5 stars (medium threshold with metadata)")
-    print(f"  - Status: {'✓ PASS' if stars == 5 else '✗ FAIL'}")
+    test4_passed = stars4 == 5
+    print(f"  - Status: {'✓ PASS' if test4_passed else '✗ FAIL'}")
+    all_tests_passed = all_tests_passed and test4_passed
+    
+    return all_tests_passed
 
 
 if __name__ == "__main__":
@@ -277,8 +298,15 @@ if __name__ == "__main__":
     print("medium confidence threshold but lack metadata support were incorrectly")
     print("upgraded to 5 stars by legacy logic.")
     
-    test_medium_conf_no_metadata_scenario()
+    all_passed = test_medium_conf_no_metadata_scenario()
     
     print("\n" + "=" * 80)
     print("TEST COMPLETE")
     print("=" * 80)
+    
+    if all_passed:
+        print("\n✓ All tests PASSED")
+        exit(0)
+    else:
+        print("\n✗ Some tests FAILED")
+        exit(1)
