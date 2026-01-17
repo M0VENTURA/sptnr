@@ -124,7 +124,7 @@ def should_exclude_from_stats(tracks_with_scores):
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
     tracks_with_parens = []
     for i, track in enumerate(tracks_with_scores):
-        title = track.get("title", "")
+        title = track["title"] or ""
         # Check if title contains parenthetical content
         if re.search(r'\([^)]+\)', title):
             tracks_with_parens.append(i)
@@ -1195,10 +1195,10 @@ def popularity_scan(
                                     # Get track metadata for strict matching
                                     track_duration_ms = None
                                     track_isrc = None
-                                    if track.get("duration"):
+                                    if track["duration"]:
                                         # Duration is stored in seconds, convert to milliseconds
                                         track_duration_ms = int(track["duration"] * 1000)
-                                    if track.get("isrc"):
+                                    if track["isrc"]:
                                         track_isrc = track["isrc"]
                                     
                                     best_match = select_best_spotify_match_strict(
@@ -1715,7 +1715,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
         tracks: List of track dictionaries with id, artist, album, title, stars
     """
     total_tracks = len(tracks)
-    five_star_tracks = [t for t in tracks if (t.get("stars") or 0) == 5]
+    five_star_tracks = [t for t in tracks if (t["stars"] or 0) == 5]
     playlist_name = f"Essential {artist_name}"
 
     # CASE A – 10+ five-star tracks → purely 5★ essentials
