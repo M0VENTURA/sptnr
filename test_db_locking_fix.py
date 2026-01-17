@@ -33,7 +33,7 @@ def test_update_schema_with_wal_mode():
         update_schema(test_db_path)
         
         # Verify WAL mode is enabled
-        conn = sqlite3.connect(test_db_path)
+        conn = sqlite3.connect(test_db_path, timeout=120.0)
         cursor = conn.cursor()
         cursor.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0]
