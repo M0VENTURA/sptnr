@@ -102,12 +102,16 @@ def normalize_title(title: str) -> str:
 
 # Alternate version keywords for strict filtering
 # Tracks containing these keywords should be rejected in strict mode
+# Using word boundaries to avoid false positives (e.g., "mix" shouldn't match "remix" in "Mix It Up")
 ALTERNATE_VERSION_KEYWORDS = [
     "remix", "remaster", "remastered", "acoustic", "live", "unplugged",
     "orchestral", "symphonic", "demo", "instrumental", "edit", "extended",
-    "version", "alt", "alternate", "mix", "radio edit", "single edit",
+    "version", "alt", "alternate", "radio edit", "single edit",
     "album version", "explicit version", "clean version"
 ]
+
+# Keywords that should match as whole words only (to avoid false positives)
+WHOLE_WORD_KEYWORDS = ["mix", "live", "edit", "demo", "alt"]
 
 
 def is_alternate_version(title: str) -> bool:
@@ -124,7 +128,20 @@ def is_alternate_version(title: str) -> bool:
         return False
     
     title_lower = title.lower()
-    return any(keyword in title_lower for keyword in ALTERNATE_VERSION_KEYWORDS)
+    
+    # Check regular keywords (substring match)
+    for keyword in ALTERNATE_VERSION_KEYWORDS:
+        if keyword in title_lower:
+            return True
+    
+    # Check whole-word keywords (word boundary match)
+    import re
+    for keyword in WHOLE_WORD_KEYWORDS:
+        # Use word boundary regex to ensure it's a complete word
+        if re.search(r'\b' + re.escape(keyword) + r'\b', title_lower):
+            return True
+    
+    return False
 
 
 def select_best_spotify_match_strict(
@@ -196,9 +213,12 @@ def select_best_spotify_match_strict(
             if duration_diff > duration_tolerance_sec:
                 continue
         
-        # Rule 4: Check ISRC match (if both ISRCs exist)
-        if original_isrc and track_isrc:
-            if original_isrc != track_isrc:
+        # Rule 4: Check ISRC match (if original ISRC is provided)
+        # If original has ISRC and track has ISRC, they must match
+        # If original has no ISRC, we don't filter based on track ISRC
+        if original_isrc:
+            # Original has ISRC - if track also has ISRC, they must match
+            if track_isrc and original_isrc != track_isrc:
                 continue
         
         # This track passed all filters - it's an exact match
