@@ -127,7 +127,17 @@ required_columns = {
     "normalized_genres": "TEXT",              # JSON array of broad/normalized genres
     "merged_version_tags": "TEXT",            # JSON array of tags inherited from other versions
     # ✅ Metadata refresh tracking
-    "metadata_last_updated": "TEXT"           # Timestamp when metadata was last fetched
+    "metadata_last_updated": "TEXT",          # Timestamp when metadata was last fetched
+    # ✅ Discogs metadata columns for comprehensive single detection
+    "discogs_release_id": "TEXT",             # Discogs release ID
+    "discogs_master_id": "TEXT",              # Discogs master release ID
+    "discogs_formats": "TEXT",                # JSON array of format objects
+    "discogs_format_descriptions": "TEXT",    # JSON array of description strings
+    "discogs_is_single": "INTEGER",           # 1 if Discogs confirms single, 0 if not
+    "discogs_track_titles": "TEXT",           # JSON array of track title strings
+    "discogs_release_year": "INTEGER",        # Release year from Discogs
+    "discogs_label": "TEXT",                  # Record label from Discogs
+    "discogs_country": "TEXT"                 # Release country from Discogs
 }
 
 # ✅ Define columns for the artists table
