@@ -430,13 +430,23 @@ def find_matching_spotify_single(
                     logger.debug(f"[DEBUG]   ✓ Duration match: {duration_diff:.1f}s difference")
         
         # All checks passed - this is an accepted release
+        # Track whether this was accepted via explicit single override
+        is_override_match = (track_version_tag or release_version_tag) and is_explicit_single
+        
         if logger:
-            logger.debug(f"[DEBUG]   ✅ ACCEPTED: {release_title}")
-        accepted_releases.append(result)
+            logger.debug(f"[DEBUG]   ✅ ACCEPTED: {release_title}" + (" (via override)" if is_override_match else ""))
+        accepted_releases.append((result, is_override_match))
     
-    # Return the first accepted release (they're ordered by relevance from Spotify)
+    # Prefer exact version matches over override matches
     if accepted_releases:
-        best_match = accepted_releases[0]
+        # First try to find a non-override match
+        exact_matches = [r for r, override in accepted_releases if not override]
+        if exact_matches:
+            best_match = exact_matches[0]
+        else:
+            # Fall back to override matches
+            best_match = accepted_releases[0][0]
+        
         if logger:
             logger.debug(f"[DEBUG] ✓ Best match: {best_match.get('name')} (album: {best_match.get('album', {}).get('name')})")
         return best_match
