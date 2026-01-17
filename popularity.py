@@ -923,6 +923,23 @@ def popularity_scan(
         conn = get_db_connection()
         cursor = conn.cursor()
 
+        # Load strict matching configuration from config.yaml
+        strict_spotify_matching = False
+        duration_tolerance_sec = 2
+        try:
+            config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            features = config.get('features', {})
+            strict_spotify_matching = features.get('strict_spotify_matching', False)
+            duration_tolerance_sec = features.get('spotify_duration_tolerance', 2)
+            if strict_spotify_matching:
+                log_unified(f"✅ Strict Spotify matching enabled (duration tolerance: ±{duration_tolerance_sec}s)")
+            else:
+                log_verbose("Standard Spotify matching mode (highest popularity)")
+        except Exception as e:
+            log_verbose(f"Could not load strict matching config (using defaults): {e}")
+
         # Build SQL query with optional filters
         sql_conditions = []
         
@@ -1048,10 +1065,43 @@ def popularity_scan(
                             
                             log_unified(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
                             if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
-                                best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
-                                spotify_score = best_match.get("popularity", 0)
-                                spotify_track_id = best_match.get("id")
-                                log_unified(f'Spotify popularity score: {spotify_score}')
+                                # Use strict matching if enabled, otherwise use standard highest popularity
+                                if strict_spotify_matching:
+                                    from helpers import select_best_spotify_match_strict
+                                    # Get track metadata for strict matching
+                                    track_duration_ms = None
+                                    track_isrc = None
+                                    if track.get("duration"):
+                                        # Duration is stored in seconds, convert to milliseconds
+                                        track_duration_ms = int(track["duration"] * 1000)
+                                    if track.get("isrc"):
+                                        track_isrc = track["isrc"]
+                                    
+                                    best_match = select_best_spotify_match_strict(
+                                        spotify_search_results,
+                                        title,
+                                        track_duration_ms,
+                                        track_isrc,
+                                        duration_tolerance_sec
+                                    )
+                                    if best_match:
+                                        log_unified(f'✓ Strict match found for: {title}')
+                                    else:
+                                        log_unified(f'⚠ No strict match found for: {title} (trying standard matching)')
+                                        # Fallback to standard matching if no strict match
+                                        best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
+                                else:
+                                    # Standard matching: highest popularity
+                                    best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
+                                
+                                if best_match:
+                                    spotify_score = best_match.get("popularity", 0)
+                                    spotify_track_id = best_match.get("id")
+                                    log_unified(f'Spotify popularity score: {spotify_score}')
+                                else:
+                                    spotify_score = 0
+                                    spotify_track_id = None
+                                    log_unified(f'No Spotify match found for: {title}')
                                 
                                 # Fetch comprehensive metadata for this track
                                 if spotify_track_id:
