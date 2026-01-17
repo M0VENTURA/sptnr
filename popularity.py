@@ -609,7 +609,7 @@ def detect_single_for_track(
         title: Track title
         artist: Artist name
         album_track_count: Number of tracks on the album (for context-based confidence)
-        spotify_results_cache: Optional dict mapping track_id to Spotify search results
+        spotify_results_cache: Optional dict mapping title to Spotify search results
         verbose: Enable verbose logging
         discogs_token: Optional Discogs API token (will load from config if not provided)
         
