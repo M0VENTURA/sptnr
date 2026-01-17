@@ -195,6 +195,49 @@ def count_spotify_versions(spotify_results: List[Dict], title: str, duration: Op
     return count
 
 
+def calculate_mean_version_count(conn, artist: str, album: str) -> float:
+    """
+    Calculate mean version count for all tracks in an album.
+    
+    Args:
+        conn: Database connection
+        artist: Artist name
+        album: Album name
+        
+    Returns:
+        Mean version count across all tracks in the album (0.0 if no tracks)
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT spotify_version_count
+        FROM tracks
+        WHERE artist = ? AND album = ? AND spotify_version_count IS NOT NULL
+    """, (artist, album))
+    
+    version_counts = [row[0] for row in cursor.fetchall() if row[0] is not None]
+    
+    if not version_counts:
+        return 0.0
+    
+    return mean(version_counts)
+
+
+def is_version_count_standout(version_count: int, mean_version_count: float) -> bool:
+    """
+    Determine if a track is a version count standout.
+    
+    Per problem statement: version_count >= mean_version_count + 1
+    
+    Args:
+        version_count: Version count for this track
+        mean_version_count: Mean version count for the album
+        
+    Returns:
+        True if track qualifies as version-based standout
+    """
+    return version_count >= (mean_version_count + 1)
+
+
 def should_check_track(
     popularity: float,
     album_mean: float,
@@ -252,7 +295,7 @@ def calculate_z_score_strict(popularity: float, album_mean: float, album_stddev:
     return (popularity - album_mean) / album_stddev
 
 
-def infer_from_popularity(z_score: float, spotify_version_count: int) -> Tuple[str, bool]:
+def infer_from_popularity(z_score: float, spotify_version_count: int, version_count_standout: bool = False) -> Tuple[str, bool]:
     """
     Popularity-based inference per Stage 5.
     
@@ -263,11 +306,16 @@ def infer_from_popularity(z_score: float, spotify_version_count: int) -> Tuple[s
     - z >= 1.0 → strong single (high)
     - z >= 0.5 → likely single (medium)
     - z >= 0.2 AND >= 3 versions → weak single (low)
+    - version_count_standout (version_count >= mean + 1) → medium confidence indicator
     """
     if z_score >= 1.0:
         return 'high', True
     elif z_score >= 0.5:
         return 'medium', True
+    elif version_count_standout:
+        # Version-based medium confidence: doesn't mark as single by itself
+        # but contributes to medium confidence for rating boost
+        return 'medium', False
     elif z_score >= 0.2 and spotify_version_count >= 3:
         return 'low', True
     else:
@@ -283,7 +331,8 @@ def determine_final_status(
     spotify_confirmed: bool,
     musicbrainz_confirmed: bool,
     z_score: float,
-    spotify_version_count: int
+    spotify_version_count: int,
+    version_count_standout: bool = False
 ) -> str:
     """
     Final single status per Stage 7.
@@ -293,6 +342,7 @@ def determine_final_status(
     
     MEDIUM-CONFIDENCE:
     - Spotify or MusicBrainz confirms OR z >= 0.5
+    - Version count standout (version_count >= mean + 1) when matched with metadata
     
     LOW-CONFIDENCE:
     - z >= 0.2 AND >= 3 Spotify versions
@@ -305,7 +355,13 @@ def determine_final_status(
         return 'high'
     
     # MEDIUM
+    # Version count standout contributes to medium confidence when there's metadata confirmation
     if spotify_confirmed or musicbrainz_confirmed or z_score >= 0.5:
+        return 'medium'
+    
+    # Version count standout alone gives medium confidence for rating boost
+    # but doesn't mark as single unless combined with metadata
+    if version_count_standout and (spotify_confirmed or musicbrainz_confirmed):
         return 'medium'
     
     # LOW
@@ -491,15 +547,27 @@ def detect_single_enhanced(
         except Exception as e:
             logger.error(f"MusicBrainz check failed: {e}")
     
-    # STAGE 5: Popularity-Based Inference
+    # STAGE 5: Popularity-Based Inference (including version count)
     z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
     result['z_score'] = z_score
     
-    popularity_confidence, popularity_inferred = infer_from_popularity(z_score, spotify_version_count)
+    # Calculate mean version count for the album
+    mean_version_count = calculate_mean_version_count(conn, artist, album)
+    version_count_standout = is_version_count_standout(spotify_version_count, mean_version_count)
+    
+    if version_count_standout and verbose:
+        logger.debug(f"Version count standout: {title} (count={spotify_version_count}, mean={mean_version_count:.1f})")
+    
+    popularity_confidence, popularity_inferred = infer_from_popularity(z_score, spotify_version_count, version_count_standout)
     if popularity_inferred:
         result['single_sources'].append('z-score')
         if verbose:
             logger.debug(f"Popularity: Inferred single for {title} (z={z_score:.2f}, confidence={popularity_confidence})")
+    elif version_count_standout:
+        # Version count standout is medium confidence but doesn't mark as single
+        result['single_sources'].append('version_count')
+        if verbose:
+            logger.debug(f"Version count: Medium confidence indicator for {title} (not marking as single)")
     
     # STAGE 7: Final Decision
     final_status = determine_final_status(
@@ -507,7 +575,8 @@ def detect_single_enhanced(
         spotify_confirmed,
         musicbrainz_confirmed,
         z_score,
-        spotify_version_count
+        spotify_version_count,
+        version_count_standout
     )
     
     result['single_status'] = final_status

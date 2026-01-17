@@ -357,6 +357,7 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
     Fetch and store artist biography and images from external APIs.
     
     This is called after a successful artist scan to enhance artist metadata.
+    Only fetches if data doesn't exist or if force=true in config.
     
     Args:
         artist_name: Name of the artist
@@ -368,6 +369,44 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
     
     try:
         config = load_config()
+        
+        # Check if force flag is enabled
+        force = config.get("features", {}).get("force", False)
+        
+        # Check if artist metadata already exists
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create artist_metadata table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS artist_metadata (
+                artist_name TEXT PRIMARY KEY,
+                biography TEXT,
+                image_url TEXT,
+                updated_at TEXT
+            )
+        """)
+        
+        # Check for existing metadata
+        cursor.execute("""
+            SELECT biography, image_url 
+            FROM artist_metadata 
+            WHERE artist_name = ?
+        """, (artist_name,))
+        existing_row = cursor.fetchone()
+        
+        # If metadata exists and force is not enabled, skip fetching
+        if existing_row and not force:
+            existing_bio = existing_row[0] if existing_row[0] else ""
+            existing_image = existing_row[1] if len(existing_row) > 1 and existing_row[1] else ""
+            
+            if existing_bio or existing_image:
+                if verbose:
+                    logging.info(f"Artist metadata already exists for {artist_name}, skipping fetch (use force=true to re-fetch)")
+                conn.close()
+                return
+        
+        conn.close()
         
         # Get Discogs configuration
         discogs_config = config.get("api_integrations", {}).get("discogs", {})
@@ -396,16 +435,6 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
         if biography or artist_image_url:
             conn = get_db_connection()
             cursor = conn.cursor()
-            
-            # Create artist_metadata table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS artist_metadata (
-                    artist_name TEXT PRIMARY KEY,
-                    biography TEXT,
-                    image_url TEXT,
-                    updated_at TEXT
-                )
-            """)
             
             # Insert or update artist metadata
             cursor.execute("""
