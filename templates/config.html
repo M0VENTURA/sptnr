@@ -901,6 +901,17 @@ function renderFeaturesWeights(features, weights) {
       }
     },
     {
+      heading: 'Spotify Matching',
+      description: 'Controls how Spotify tracks are matched and selected for popularity scoring.',
+      keys: [
+        'strict_spotify_matching', 'spotify_duration_tolerance'
+      ],
+      explanations: {
+        strict_spotify_matching: 'Enable strict exact-match rules for Spotify tracks. When enabled, only tracks with exact title match, ±2s duration, and matching ISRC (if available) are selected. Rejects all alternate versions (remixes, live, acoustic, etc.).',
+        spotify_duration_tolerance: 'Maximum duration difference in seconds for strict matching (default: 2). Only used when strict_spotify_matching is enabled.'
+      }
+    },
+    {
       heading: 'Single Detection & Scoring',
       description: 'Advanced controls for how singles and albums are detected, scored, and filtered. Adjust these for fine-tuning detection accuracy and automation.',
       keys: [
