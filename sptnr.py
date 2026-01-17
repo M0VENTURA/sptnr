@@ -366,19 +366,13 @@ def normalize_title(s):
     s = re.sub(r"[^\w\s]", "", s)  # remove punctuation
     return s.strip()
 
-def is_lastfm_single(title, artist):
-    import requests
-    from bs4 import BeautifulSoup
-
-    query = f"{artist} {title}".replace(" ", "+")
-    url = f"https://www.last.fm/music/{artist.replace(' ', '+')}/{title.replace(' ', '+')}"
-    try:
-        res = requests.get(url, timeout=5)
-        res.raise_for_status()
-        soup = BeautifulSoup(res.text, "html.parser")
-        track_count = soup.find_all("td", class_="chartlist-duration")
-        return len(track_count) == 1
-    except:
+# Import is_lastfm_single from popularity module (moved there for proper URL encoding)
+try:
+    from popularity import is_lastfm_single
+except ImportError:
+    # Fallback if popularity module is not available
+    def is_lastfm_single(title, artist):
+        """Fallback implementation - always returns False if popularity module unavailable."""
         return False
 
 def is_youtube_single(title, artist, verbose=False):

@@ -591,6 +591,37 @@ def get_resume_artist_from_db():
         return None
 
 
+def is_lastfm_single(title, artist):
+    """
+    Check if a track is a single by examining the Last.fm page.
+    Uses proper URL encoding to handle special characters in artist/title names.
+    
+    Args:
+        title: Track title
+        artist: Artist name
+        
+    Returns:
+        True if the Last.fm page shows exactly 1 track, False otherwise
+    """
+    import requests
+    from bs4 import BeautifulSoup
+    from urllib.parse import quote
+
+    # Use urllib.parse.quote() for proper URL encoding (e.g., "+44" → "%2B44")
+    # safe='' means encode all special characters including '+'
+    artist_encoded = quote(artist, safe='')
+    title_encoded = quote(title, safe='')
+    url = f"https://www.last.fm/music/{artist_encoded}/{title_encoded}"
+    try:
+        res = requests.get(url, timeout=5)
+        res.raise_for_status()
+        soup = BeautifulSoup(res.text, "html.parser")
+        track_count = soup.find_all("td", class_="chartlist-duration")
+        return len(track_count) == 1
+    except:
+        return False
+
+
 def detect_single_for_track(
     title: str,
     artist: str,
