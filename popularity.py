@@ -685,7 +685,8 @@ def detect_single_for_track(
                 spotify_results=spotify_search_results,
                 discogs_client=discogs_client,
                 musicbrainz_client=musicbrainz_client,
-                verbose=verbose
+                verbose=verbose,
+                album_type=album_type
             )
             
             # Store result in database
