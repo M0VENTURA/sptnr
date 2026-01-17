@@ -25,16 +25,18 @@ def should_exclude_from_stats(tracks_with_scores):
     tracks_with_parens_sorted = sorted(tracks_with_parens)
     
     consecutive_at_end = []
-    for i in range(len(tracks_with_parens_sorted) - 1, -1, -1):
-        idx = tracks_with_parens_sorted[i]
-        if not consecutive_at_end:
-            if idx >= len(tracks_with_scores) - len(tracks_with_parens_sorted):
-                consecutive_at_end.insert(0, idx)
-        else:
-            if idx == consecutive_at_end[0] - 1:
-                consecutive_at_end.insert(0, idx)
+    last_track_idx = len(tracks_with_scores) - 1
+    
+    for i in range(last_track_idx, -1, -1):
+        if i in tracks_with_parens_sorted:
+            if not consecutive_at_end:
+                consecutive_at_end.insert(0, i)
+            elif i == consecutive_at_end[0] - 1:
+                consecutive_at_end.insert(0, i)
             else:
                 break
+        elif consecutive_at_end:
+            break
     
     if len(consecutive_at_end) >= 2:
         return set(consecutive_at_end)

@@ -17,6 +17,7 @@ import yaml
 import atexit
 import time
 import heapq
+import re
 from contextlib import contextmanager
 from datetime import datetime
 from statistics import median, mean, stdev
@@ -114,13 +115,12 @@ def should_exclude_from_stats(tracks_with_scores):
     Returns:
         Set of track indices to exclude from statistics
     """
-    import re
     
     if not tracks_with_scores or len(tracks_with_scores) < 3:
         # Don't filter albums with too few tracks
         return set()
     
-    # Check for parentheses in track titles (starting from the end of the album)
+    # Check for parentheses in track titles
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
     tracks_with_parens = []
     for i, track in enumerate(tracks_with_scores):
@@ -129,29 +129,35 @@ def should_exclude_from_stats(tracks_with_scores):
         if re.search(r'\([^)]+\)', title):
             tracks_with_parens.append(i)
     
-    # Only exclude if we have multiple consecutive tracks with parentheses at the end
+    # Only exclude if we have multiple tracks with parentheses
     if len(tracks_with_parens) < 2:
         return set()
     
-    # Check if these tracks are consecutive and at the end (low popularity end)
-    # Since tracks are sorted by popularity DESC, "end of album" means end of list
+    # Find consecutive tracks with parentheses at the END of the track list
+    # Since tracks are sorted by popularity DESC, the last indices are the end of the album
     tracks_with_parens_sorted = sorted(tracks_with_parens)
     
-    # Find the longest consecutive sequence at the end
+    # Build a list of consecutive tracks starting from the last track index
     consecutive_at_end = []
-    for i in range(len(tracks_with_parens_sorted) - 1, -1, -1):
-        idx = tracks_with_parens_sorted[i]
-        # Check if this is part of a sequence from the end of the track list
-        if not consecutive_at_end:
-            # Start building from the last track
-            if idx >= len(tracks_with_scores) - len(tracks_with_parens_sorted):
-                consecutive_at_end.insert(0, idx)
-        else:
-            # Check if consecutive with the current sequence
-            if idx == consecutive_at_end[0] - 1:
-                consecutive_at_end.insert(0, idx)
+    last_track_idx = len(tracks_with_scores) - 1
+    
+    # Start from the last track and work backwards
+    for i in range(last_track_idx, -1, -1):
+        if i in tracks_with_parens_sorted:
+            # This track has parentheses
+            if not consecutive_at_end:
+                # First track in the sequence (must be the last track)
+                consecutive_at_end.insert(0, i)
+            elif i == consecutive_at_end[0] - 1:
+                # Consecutive with previous track
+                consecutive_at_end.insert(0, i)
             else:
+                # Gap found, stop looking
                 break
+        elif consecutive_at_end:
+            # We've started building a sequence but hit a track without parentheses
+            # This means the sequence is not at the end
+            break
     
     # Only exclude if we have at least 2 consecutive tracks with parentheses at the end
     if len(consecutive_at_end) >= 2:

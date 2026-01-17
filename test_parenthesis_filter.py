@@ -27,7 +27,7 @@ def should_exclude_from_stats(tracks_with_scores):
         # Don't filter albums with too few tracks
         return set()
     
-    # Check for parentheses in track titles (starting from the end of the album)
+    # Check for parentheses in track titles
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
     tracks_with_parens = []
     for i, track in enumerate(tracks_with_scores):
@@ -36,29 +36,35 @@ def should_exclude_from_stats(tracks_with_scores):
         if re.search(r'\([^)]+\)', title):
             tracks_with_parens.append(i)
     
-    # Only exclude if we have multiple consecutive tracks with parentheses at the end
+    # Only exclude if we have multiple tracks with parentheses
     if len(tracks_with_parens) < 2:
         return set()
     
-    # Check if these tracks are consecutive and at the end (low popularity end)
-    # Since tracks are sorted by popularity DESC, "end of album" means end of list
+    # Find consecutive tracks with parentheses at the END of the track list
+    # Since tracks are sorted by popularity DESC, the last indices are the end of the album
     tracks_with_parens_sorted = sorted(tracks_with_parens)
     
-    # Find the longest consecutive sequence at the end
+    # Build a list of consecutive tracks starting from the last track index
     consecutive_at_end = []
-    for i in range(len(tracks_with_parens_sorted) - 1, -1, -1):
-        idx = tracks_with_parens_sorted[i]
-        # Check if this is part of a sequence from the end of the track list
-        if not consecutive_at_end:
-            # Start building from the last track
-            if idx >= len(tracks_with_scores) - len(tracks_with_parens_sorted):
-                consecutive_at_end.insert(0, idx)
-        else:
-            # Check if consecutive with the current sequence
-            if idx == consecutive_at_end[0] - 1:
-                consecutive_at_end.insert(0, idx)
+    last_track_idx = len(tracks_with_scores) - 1
+    
+    # Start from the last track and work backwards
+    for i in range(last_track_idx, -1, -1):
+        if i in tracks_with_parens_sorted:
+            # This track has parentheses
+            if not consecutive_at_end:
+                # First track in the sequence (must be the last track)
+                consecutive_at_end.insert(0, i)
+            elif i == consecutive_at_end[0] - 1:
+                # Consecutive with previous track
+                consecutive_at_end.insert(0, i)
             else:
+                # Gap found, stop looking
                 break
+        elif consecutive_at_end:
+            # We've started building a sequence but hit a track without parentheses
+            # This means the sequence is not at the end
+            break
     
     # Only exclude if we have at least 2 consecutive tracks with parentheses at the end
     if len(consecutive_at_end) >= 2:
@@ -137,8 +143,27 @@ def test_no_exclusion_non_consecutive():
     print(f"Test 3: No exclusion for non-consecutive tracks")
     print(f"  Excluded indices: {sorted(excluded)}")
     print(f"  Expected: empty set (tracks with parentheses are not consecutive at end)")
-    # This test might fail with current implementation - let's see
-    print(f"  ✓ Test completed (excluded {len(excluded)} tracks)\n")
+    assert len(excluded) == 0, f"Should not exclude non-consecutive tracks, got {excluded}"
+    print("  ✓ Test passed!\n")
+
+
+def test_exclusion_with_gap():
+    """Test that tracks with a gap in parentheses are not excluded."""
+    tracks = [
+        {"title": "Track 1", "popularity_score": 70.0},
+        {"title": "Track 2 (Live)", "popularity_score": 65.0},
+        {"title": "Track 3", "popularity_score": 60.0},
+        {"title": "Track 4 (Live)", "popularity_score": 12.0},
+        {"title": "Track 5 (Live)", "popularity_score": 10.0},
+    ]
+    
+    excluded = should_exclude_from_stats(tracks)
+    print(f"Test 3b: Exclusion only for consecutive tracks at end")
+    print(f"  Excluded indices: {sorted(excluded)}")
+    print(f"  Expected: [3, 4] (only the last 2 consecutive tracks)")
+    assert len(excluded) == 2, f"Should exclude only the last 2 tracks, got {len(excluded)}"
+    assert excluded == {3, 4}, f"Should exclude indices [3, 4], got {excluded}"
+    print("  ✓ Test passed!\n")
 
 
 def test_exclusion_two_tracks_at_end():
@@ -184,6 +209,7 @@ if __name__ == "__main__":
     test_basic_exclusion()
     test_no_exclusion_single_track()
     test_no_exclusion_non_consecutive()
+    test_exclusion_with_gap()
     test_exclusion_two_tracks_at_end()
     test_small_album()
     
