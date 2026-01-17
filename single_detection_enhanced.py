@@ -554,12 +554,14 @@ def detect_single_enhanced(
     
     # Calculate mean version count for the album
     mean_version_count = calculate_mean_version_count(conn, artist, album)
-    version_count_standout = is_version_count_standout(spotify_version_count, mean_version_count)
+    # Handle None spotify_version_count (default to 0)
+    version_count_value = spotify_version_count if spotify_version_count is not None else 0
+    version_count_standout = is_version_count_standout(version_count_value, mean_version_count)
     
     if version_count_standout and verbose:
-        logger.debug(f"Version count standout: {title} (count={spotify_version_count}, mean={mean_version_count:.1f})")
+        logger.debug(f"Version count standout: {title} (count={version_count_value}, mean={mean_version_count:.1f})")
     
-    popularity_confidence, popularity_inferred = infer_from_popularity(z_score, spotify_version_count, version_count_standout)
+    popularity_confidence, popularity_inferred = infer_from_popularity(z_score, version_count_value, version_count_standout)
     if popularity_inferred:
         result['single_sources'].append('z-score')
         if verbose:
@@ -576,7 +578,7 @@ def detect_single_enhanced(
         spotify_confirmed,
         musicbrainz_confirmed,
         z_score,
-        spotify_version_count
+        version_count_value
     )
     
     result['single_status'] = final_status

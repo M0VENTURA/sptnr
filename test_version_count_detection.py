@@ -25,7 +25,7 @@ def test_version_count_calculation():
     print("\n=== Test 1: Mean Version Count Calculation ===")
     
     # Create temporary database
-    with tempfile.NamedTemporaryFile(mode='w', suffix='.db', delete=False) as f:
+    with tempfile.NamedTemporaryFile(suffix='.db', delete=False) as f:
         db_path = f.name
     
     try:
