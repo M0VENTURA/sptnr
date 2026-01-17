@@ -434,7 +434,6 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
 
 
 # --- Dual Logger Setup: sptnr.log and unified_scan.log ---
-import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
 VERBOSE = (
@@ -478,7 +477,6 @@ def _flush_handlers(logger_obj):
             handler.flush()
     except Exception as e:
         # Log flush errors at debug level to aid troubleshooting
-        import logging
         logging.debug(f"Failed to flush log handlers: {e}")
 
 def log_basic(msg):
@@ -731,6 +729,7 @@ def detect_single_for_track(
     # Use enhanced detection algorithm per problem statement if enabled
     # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
     if use_advanced_detection and track_id and album:
+        conn = None
         try:
             from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
@@ -770,8 +769,6 @@ def detect_single_for_track(
             # Store result in database
             store_single_detection_result(conn, track_id, result)
             
-            conn.close()
-            
             # Return in expected format
             return {
                 "sources": result['single_sources'],
@@ -789,6 +786,9 @@ def detect_single_for_track(
             if verbose:
                 log_unified(f"   Error details: {traceback.format_exc()}")
             # Fall through to standard detection
+        finally:
+            if conn is not None:
+                conn.close()
     
     # Ignore obvious non-singles by keywords
     if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
@@ -1775,6 +1775,7 @@ def refresh_all_playlists_from_db():
     
     # Pull distinct artists that have cached tracks
     conn = None
+    cursor = None
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
@@ -1808,6 +1809,8 @@ def refresh_all_playlists_from_db():
     except Exception as e:
         log_basic(f"❌ Error refreshing playlists: {e}")
     finally:
+        if cursor:
+            cursor.close()
         if conn:
             conn.close()
 
