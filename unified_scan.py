@@ -205,7 +205,6 @@ def unified_scan_pipeline(
         progress_callback: Optional callback function for progress updates
     """
     from popularity import popularity_scan
-    from sptnr import rate_artist
     from start import build_artist_index
     from scan_history import log_album_scan
     
@@ -276,7 +275,7 @@ def unified_scan_pipeline(
         # Run popularity scan ONCE for all tracks before processing artists
         # This ensures artist IDs are looked up only once per artist and cached in the database
         log_unified("=" * 70)
-        log_unified("📊 Phase 1: Popularity Detection (Spotify, Last.fm, ListenBrainz)")
+        log_unified("📊 Popularity, Singles Detection, Star Rating & Playlist Creation")
         log_unified("=" * 70)
         logging.info("📊 Running popularity scan for all tracks...")
         try:
@@ -294,168 +293,17 @@ def unified_scan_pipeline(
             log_unified(f"❌ Popularity scan failed: {e}")
             # Continue with singles detection even if popularity scan fails
         
-        log_unified("")
-        log_unified("=" * 70)
-        log_unified("🎵 Phase 2: Singles Detection & Star Rating")
-        log_unified("=" * 70)
-
-        # Process each artist
-        for idx, artist_name in enumerate(artists, 1):
-            progress.current_artist = artist_name
-            progress.processed_artists = idx - 1
-            log_unified("")
-            log_unified(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
-            logging.info(f"🎤 [Artist {idx}/{progress.total_artists}] {artist_name}")
-            if verbose:
-                log_verbose(f"Processing artist: {artist_name} ({idx}/{progress.total_artists})")
-            # Get artist ID
-            artist_id = artist_index.get(artist_name)
-            if not artist_id:
-                logging.warning(f"⚠️ No artist ID found for '{artist_name}', skipping")
-                logging.info(f"⚠️ No artist ID found for '{artist_name}', skipping")
-                if verbose:
-                    log_verbose(f"No artist ID found for {artist_name}, skipping.")
-                continue
-            # Get albums for this artist
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            sql = """
-                SELECT DISTINCT album FROM tracks
-                WHERE artist = ?
-                ORDER BY album COLLATE NOCASE
-            """
-            log_verbose(f"Executing SQL: {sql.strip()} with artist_name={artist_name}")
-            cursor.execute(sql, (artist_name,))
-            albums = [row['album'] for row in cursor.fetchall()]
-            conn.close()
-            log_verbose(f"Found {len(albums)} albums for artist {artist_name}.")
-            for album_idx, album_name in enumerate(albums, 1):
-                progress.current_album = album_name
-                log_unified(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
-                logging.info(f"   💿 [Album {album_idx}/{len(albums)}] {album_name}")
-                if verbose:
-                    log_verbose(f"Processing album: {album_name} ({album_idx}/{len(albums)}) for artist {artist_name}")
-                # Get track count for this album first
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                sql = """
-                    SELECT COUNT(*) as count FROM tracks
-                    WHERE artist = ? AND album = ?
-                """
-                log_verbose(f"Executing SQL: {sql.strip()} with artist_name={artist_name}, album_name={album_name}")
-                cursor.execute(sql, (artist_name, album_name))
-                album_track_count = cursor.fetchone()['count']
-                conn.close()
-                log_verbose(f"Album {album_name} has {album_track_count} tracks.")
-                # Singles Detection & Rating (popularity already done in Phase 1)
-                progress.current_phase = "singles"
-                progress.save()
-                if progress_callback:
-                    progress_callback(progress)
-                log_unified(f"      → Singles detection & rating")
-                logging.info(f"      → Singles detection & rating")
-                try:
-                    rate_artist(artist_id, artist_name, verbose=verbose, force=force)
-                    # Log singles detection scan - source will be added by rate_artist
-                    log_unified(f"      ✓ Singles detection and rating complete for album '{album_name}'")
-                    # --- Navidrome Sync and Logging ---
-                    from start import set_track_rating_for_all, get_db_connection
-                    conn = get_db_connection()
-                    cursor = conn.cursor()
-                    cursor.execute("SELECT id, title, stars, is_single FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
-                    updated_count = 0
-                    singles_count = 0
-                    for row in cursor.fetchall():
-                        track_id, title, stars, is_single = row
-                        # Only update if star rating changed or new single detected
-                        # For this patch, assume rate_artist updates DB, so we just push current DB value
-                        # Log only if star rating was updated or is_single is True
-                        # (You may want to track previous stars in a future version)
-                        if is_single or stars >= 1:
-                            set_track_rating_for_all(track_id, stars)
-                            if is_single:
-                                log_unified(f"         ★ Single detected: '{title}' set to {stars}★ (Navidrome updated)")
-                                singles_count += 1
-                            else:
-                                log_unified(f"         ★ Rating updated: '{title}' set to {stars}★ (Navidrome updated)")
-                                updated_count += 1
-                    conn.close()
-                    log_unified(f"      ✅ Navidrome ratings synced for album '{album_name}' ({updated_count} ratings, {singles_count} singles)")
-                except Exception as e:
-                    logging.error(f"      ✗ Rating failed: {e}")
-                    log_album_scan(artist_name, album_name, 'singles', 0, 'error', str(e))
-                    logging.info(f"      ✗ Singles detection and rating failed for album '{album_name}': {e}")
-                # Log unified scan for this album
-                log_album_scan(artist_name, album_name, 'unified', album_track_count, 'completed')
-                progress.processed_tracks += album_track_count
-                if progress.total_tracks > 0:
-                    progress.processed_files = int((progress.processed_tracks / progress.total_tracks) * progress.total_files)
-                progress.processed_albums += 1
-                progress.save()
-                if progress_callback:
-                    progress_callback(progress)
-                log_unified(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
-                logging.info(f"      ✓ Album complete: {album_name} ({album_track_count} tracks)")
-            # --- Essential Artist Smart Playlist Creation ---
-            try:
-                conn = get_db_connection()
-                cursor = conn.cursor()
-                cursor.execute("SELECT id, title, stars, final_score FROM tracks WHERE artist = ?", (artist_name,))
-                tracks = cursor.fetchall()
-                conn.close()
-                five_star_tracks = [t for t in tracks if t['stars'] == 5]
-                total_tracks = len(tracks)
-                playlist_tracks = []
-                playlist_type = None
-                if len(five_star_tracks) > 10:
-                    playlist_tracks = five_star_tracks
-                    playlist_type = '5star'
-                elif total_tracks > 100:
-                    sorted_tracks = sorted(tracks, key=lambda t: t['final_score'], reverse=True)
-                    top_n = max(1, int(total_tracks * 0.10))
-                    playlist_tracks = sorted_tracks[:top_n]
-                    playlist_type = 'top10pct'
-                if playlist_tracks:
-                    playlist_name = f"Essential {artist_name}"
-                    playlist_comment = "Auto-generated by SPTNR"
-                    playlist_json = {
-                        "name": playlist_name,
-                        "comment": playlist_comment,
-                        "all": [
-                            {"is": {"artist": artist_name}}
-                        ],
-                        "sort": "random"
-                    }
-                    if playlist_type == '5star':
-                        playlist_json['all'].append({"is": {"rating": 5}})
-                    elif playlist_type == 'top10pct':
-                        # For top 10%, add explicit track IDs
-                        playlist_json['any'] = [{"is": {"id": t['id']}} for t in playlist_tracks]
-                    playlists_dir = os.path.join(music_folder, "Playlists")
-                    os.makedirs(playlists_dir, exist_ok=True)
-                    playlist_path = os.path.join(playlists_dir, f"Essential {artist_name}.nsp")
-                    with open(playlist_path, "w", encoding="utf-8") as pf:
-                        json.dump(playlist_json, pf, indent=2)
-                    log_unified(f"✓ Essential Artist playlist created: {playlist_path}")
-                    logging.info(f"✓ Essential Artist playlist created: {playlist_path}")
-                else:
-                    # Artist no longer meets requirements - delete old playlist if exists
-                    playlist_name = f"Essential {artist_name}"
-                    playlists_dir = os.path.join(music_folder, "Playlists")
-                    playlist_path = os.path.join(playlists_dir, f"{playlist_name}.nsp")
-                    if os.path.exists(playlist_path):
-                        os.remove(playlist_path)
-                        log_unified(f"🗑️ Deleted Essential playlist for {artist_name} (no longer meets requirements: {len(five_star_tracks)} five-star tracks, {total_tracks} total tracks)")
-                        logging.info(f"Deleted Essential playlist for {artist_name} (requirements not met)")
-            except Exception as e:
-                logging.error(f"Failed to create Essential Artist playlist for {artist_name}: {e}")
-                log_unified(f"✗ Failed to create Essential Artist playlist for {artist_name}: {e}")
-            # --- End Essential Artist Smart Playlist Creation ---
-            progress.processed_artists += 1
-            progress.save()
-            if progress_callback:
-                progress_callback(progress)
-            time.sleep(1)
+        # Note: Phase 2 (Singles Detection & Star Rating) has been removed as it was redundant.
+        # All functionality (popularity scoring, singles detection, star rating, Navidrome sync,
+        # and essential playlist creation) is now handled by popularity_scan() in Phase 1.
+        
+        # Update progress to mark scan as complete
+        progress.processed_artists = progress.total_artists
+        progress.processed_tracks = progress.total_tracks
+        progress.processed_files = progress.total_files
+        progress.save()
+        if progress_callback:
+            progress_callback(progress)
         
         log_unified("")
         log_unified("🟢 ==================== UNIFIED SCAN COMPLETE ==================== 🟢")
