@@ -59,6 +59,10 @@ def _retry_on_500(func, max_retries: int = 3, retry_delay: float = 2.0):
     raise last_exception
 
 
+# Single/EP format identifiers for Discogs filtering
+DISCOGS_SINGLE_FORMATS = ['single', 'ep', '7"', '12"']
+
+
 class DiscogsClient:
     """Discogs API wrapper for single detection and metadata."""
     
@@ -335,13 +339,16 @@ class DiscogsClient:
             # Search for releases with Single/EP format filter
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
-            # Add format filter to prioritize Singles and EPs
+            # Search without strict format filter first to get more results
+            # Then filter results by format in the response
             params = {
                 "q": f"{artist} {title}", 
                 "type": "release", 
-                "format": "Single, EP",  # Filter for Singles & EPs
-                "per_page": 15
+                "per_page": 25  # Increased from 15 to get more results
             }
+            
+            # Log the search query for debugging
+            logger.debug(f"Discogs search: artist='{artist}', title='{title}'")
             
             res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             if res.status_code == 429:
@@ -351,13 +358,29 @@ class DiscogsClient:
             res.raise_for_status()
             
             results = res.json().get("results", [])
+            logger.debug(f"Discogs returned {len(results)} results for '{title}' by '{artist}'")
             if not results:
                 self._single_cache[cache_key] = False
                 return False
             
+            # Filter results to prioritize Singles and EPs
+            # Accept releases with "Single" or "EP" in format field
+            filtered_results = []
+            for r in results:
+                formats = r.get("format", []) or []
+                format_str = " ".join(formats).lower() if formats else ""
+                if any(fmt in format_str for fmt in DISCOGS_SINGLE_FORMATS):
+                    filtered_results.append(r)
+            
+            # If we have filtered results, use those; otherwise use all results
+            # Fallback to all results is necessary because Discogs data can be incomplete
+            # or inconsistent, and we don't want to miss valid singles due to missing format tags
+            results_to_check = filtered_results if filtered_results else results[:10]  # Limit fallback to 10
+            logger.debug(f"After filtering for Singles/EPs: {len(results_to_check)} results")
+            
             # Inspect releases
             nav_title = title.lower()
-            for r in results[:10]:
+            for r in results_to_check[:10]:
                 rid = r.get("id")
                 if not rid:
                     continue

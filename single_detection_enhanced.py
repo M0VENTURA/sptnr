@@ -299,28 +299,28 @@ def infer_from_popularity(z_score: float, spotify_version_count: int, version_co
     """
     Popularity-based inference per Stage 5.
     
+    UPDATED: Singles are now detected exclusively through metadata sources 
+    (Discogs, MusicBrainz, Spotify). Z-scores are calculated but only used 
+    for rating adjustments in popularity.py, not for single detection.
+    
+    This prevents false negatives on underperforming albums where z-scores
+    are naturally lower due to overall low album popularity.
+    
     Args:
-        z_score: Z-score for the track within its album
+        z_score: Z-score for the track within its album (calculated but not used)
         spotify_version_count: Number of exact-match Spotify versions
         version_count_standout: Whether track has version_count >= mean + 1 for the album
     
     Returns:
         Tuple of (confidence_level, is_inferred_single)
-    
-    Thresholds:
-    - z >= 1.0 → strong single (high)
-    - z >= 0.5 → likely single (medium)
-    - z >= 0.2 AND >= 3 versions → weak single (low)
-    - version_count_standout (version_count >= mean + 1) → medium confidence indicator
-      (for rating boost, but does not mark as single)
+        - confidence_level: 'medium' if version_count_standout, else 'none'
+        - is_inferred_single: Always False (metadata-only detection)
     """
-    if z_score >= 1.0:
-        return 'high', True
-    elif z_score >= 0.5:
-        return 'medium', True
-    elif z_score >= 0.2 and spotify_version_count >= 3:
-        return 'low', True
-    elif version_count_standout:
+    # Z-score based single detection disabled per problem statement
+    # Singles should ONLY be detected via metadata (Discogs, MusicBrainz, Spotify)
+    # Z-score is still calculated and used for rating adjustments in popularity.py
+    
+    if version_count_standout:
         # Version-based medium confidence: doesn't mark as single by itself
         # but contributes to medium confidence which can achieve 5★ via popularity-based system
         return 'medium', False
@@ -342,14 +342,19 @@ def determine_final_status(
     """
     Final single status per Stage 7.
     
+    UPDATED: Z-score is NO LONGER used for single detection on underperforming albums.
+    Singles are ONLY detected via metadata sources (Discogs, MusicBrainz, Spotify).
+    Z-score is still calculated and stored for rating purposes, but does not contribute
+    to single detection confidence.
+    
     HIGH-CONFIDENCE:
-    - Discogs confirms OR z >= 1.0
+    - Discogs confirms
     
     MEDIUM-CONFIDENCE:
-    - Spotify or MusicBrainz confirms OR z >= 0.5
+    - Spotify or MusicBrainz confirms
     
     LOW-CONFIDENCE:
-    - z >= 0.2 AND >= 3 Spotify versions
+    - Not applicable (removed z-score based detection)
     
     NOT A SINGLE:
     - None of the above
@@ -358,16 +363,15 @@ def determine_final_status(
     contributes to rating boost, not final single status.
     """
     # HIGH
-    if discogs_confirmed or z_score >= 1.0:
+    if discogs_confirmed:
         return 'high'
     
     # MEDIUM
-    if spotify_confirmed or musicbrainz_confirmed or z_score >= 0.5:
+    if spotify_confirmed or musicbrainz_confirmed:
         return 'medium'
     
-    # LOW
-    if z_score >= 0.2 and spotify_version_count >= 3:
-        return 'low'
+    # Z-score no longer contributes to single detection
+    # It is still calculated and used for star rating adjustments in popularity.py
     
     return 'none'
 

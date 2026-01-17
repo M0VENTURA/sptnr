@@ -135,12 +135,14 @@ def test_z_score_inference():
     print("\n" + "="*60)
     print("TEST: Popularity-Based Inference (Stage 5)")
     print("="*60)
+    print("NOTE: Z-score no longer marks tracks as singles (metadata only)")
     
     test_cases = [
         # (z_score, spotify_versions, expected_confidence, expected_is_single)
-        (1.5, 2, 'high', True),   # z >= 1.0
-        (0.8, 2, 'medium', True),  # z >= 0.5
-        (0.3, 5, 'low', True),     # z >= 0.2 AND >= 3 versions
+        # Z-score based single detection is DISABLED per problem statement
+        (1.5, 2, 'none', False),   # z >= 1.0 - NO LONGER marks as single
+        (0.8, 2, 'none', False),   # z >= 0.5 - NO LONGER marks as single
+        (0.3, 5, 'none', False),   # z >= 0.2 AND >= 3 versions - NO LONGER marks as single
         (0.3, 2, 'none', False),   # z >= 0.2 but < 3 versions
         (0.1, 5, 'none', False),   # < 0.2 threshold
     ]
@@ -167,15 +169,16 @@ def test_final_status_determination():
     print("\n" + "="*60)
     print("TEST: Final Status Determination (Stage 7)")
     print("="*60)
+    print("NOTE: Z-score no longer contributes to single detection (metadata only)")
     
     test_cases = [
         # (discogs, spotify, mb, z_score, versions, expected_status)
         (True, False, False, 0.0, 0, 'high'),    # Discogs confirms
-        (False, False, False, 1.2, 2, 'high'),   # z >= 1.0
+        (False, False, False, 1.2, 2, 'none'),   # z >= 1.0 - NO LONGER marks as single
         (False, True, False, 0.3, 2, 'medium'),  # Spotify confirms
         (False, False, True, 0.3, 2, 'medium'),  # MusicBrainz confirms
-        (False, False, False, 0.6, 2, 'medium'), # z >= 0.5
-        (False, False, False, 0.3, 5, 'low'),    # z >= 0.2 AND >= 3 versions
+        (False, False, False, 0.6, 2, 'none'),   # z >= 0.5 - NO LONGER marks as single
+        (False, False, False, 0.3, 5, 'none'),   # z >= 0.2 AND >= 3 versions - NO LONGER marks as single
         (False, False, False, 0.1, 5, 'none'),   # None of the above
     ]
     
