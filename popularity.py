@@ -124,7 +124,7 @@ def should_exclude_from_stats(tracks_with_scores):
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
     tracks_with_parens = []
     for i, track in enumerate(tracks_with_scores):
-        title = track["title"] if track["title"] else ""
+        title = track["title"] or ""
         # Check if title contains parenthetical content
         if re.search(r'\([^)]+\)', title):
             tracks_with_parens.append(i)
@@ -1715,7 +1715,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
         tracks: List of track dictionaries with id, artist, album, title, stars
     """
     total_tracks = len(tracks)
-    five_star_tracks = [t for t in tracks if (t["stars"] if t["stars"] else 0) == 5]
+    five_star_tracks = [t for t in tracks if (t["stars"] or 0) == 5]
     playlist_name = f"Essential {artist_name}"
 
     # CASE A – 10+ five-star tracks → purely 5★ essentials
