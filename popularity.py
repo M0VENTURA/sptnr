@@ -1176,11 +1176,17 @@ def popularity_scan(
                     # Progress log every track
                     log_unified(f'Scanning track: "{title}" (Track ID: {track_id})')
 
+                    # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
+                    # This prevents the scan from hanging on albums with many bonus/live tracks
+                    skip_spotify_lookup = any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS)
+                    if skip_spotify_lookup:
+                        log_unified(f'⏭ Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
+
                     # Try to get popularity from Spotify (using cached artist ID)
                     spotify_score = 0
                     spotify_search_results = None
                     try:
-                        if spotify_artist_id:
+                        if spotify_artist_id and not skip_spotify_lookup:
                             log_unified(f'Searching Spotify for track: {title} by {artist}')
                             # For popularity scoring, we pass album for better matching accuracy
                             spotify_search_results = _run_with_timeout(
@@ -1271,33 +1277,36 @@ def popularity_scan(
 
                     # Try to get popularity from Last.fm
                     lastfm_score = 0
-                    try:
-                        log_unified(f'Getting Last.fm info for: {title} by {artist}')
-                        lastfm_info = _run_with_timeout(
-                            get_lastfm_track_info,
-                            API_CALL_TIMEOUT,
-                            f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                            artist, title
-                        )
-                        log_unified(f'Last.fm lookup completed. Result: {lastfm_info}')
-                        if lastfm_info and lastfm_info.get("track_play"):
-                            lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
-                            log_unified(f'Last.fm play count: {lastfm_info.get("track_play")} (score: {lastfm_score})')
-                        else:
-                            log_unified(f'No Last.fm play count found for: {title}')
-                    except TimeoutError as e:
-                        # Log timeout errors explicitly
-                        log_unified(f"⏱ Last.fm lookup timed out for {artist} - {title}: {e}")
-                        log_verbose(f"Timeout details: {str(e)}")
-                        # Continue with next step even if Last.fm times out
-                    except KeyboardInterrupt:
-                        # Allow user to interrupt the scan
-                        raise
-                    except Exception as e:
-                        # Catch all exceptions to prevent scanner from hanging
-                        log_unified(f"⚠ Last.fm lookup failed for {artist} - {title}: {e}")
-                        log_verbose(f"Last.fm error details: {type(e).__name__}: {str(e)}")
-                        # Continue with next step even if Last.fm fails
+                    if not skip_spotify_lookup:  # Skip Last.fm lookup for same tracks we skip Spotify for
+                        try:
+                            log_unified(f'Getting Last.fm info for: {title} by {artist}')
+                            lastfm_info = _run_with_timeout(
+                                get_lastfm_track_info,
+                                API_CALL_TIMEOUT,
+                                f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
+                                artist, title
+                            )
+                            log_unified(f'Last.fm lookup completed. Result: {lastfm_info}')
+                            if lastfm_info and lastfm_info.get("track_play"):
+                                lastfm_score = min(100, int(lastfm_info["track_play"]) // 100)
+                                log_unified(f'Last.fm play count: {lastfm_info.get("track_play")} (score: {lastfm_score})')
+                            else:
+                                log_unified(f'No Last.fm play count found for: {title}')
+                        except TimeoutError as e:
+                            # Log timeout errors explicitly
+                            log_unified(f"⏱ Last.fm lookup timed out for {artist} - {title}: {e}")
+                            log_verbose(f"Timeout details: {str(e)}")
+                            # Continue with next step even if Last.fm times out
+                        except KeyboardInterrupt:
+                            # Allow user to interrupt the scan
+                            raise
+                        except Exception as e:
+                            # Catch all exceptions to prevent scanner from hanging
+                            log_unified(f"⚠ Last.fm lookup failed for {artist} - {title}: {e}")
+                            log_verbose(f"Last.fm error details: {type(e).__name__}: {str(e)}")
+                            # Continue with next step even if Last.fm fails
+                    else:
+                        log_unified(f'⏭ Skipping Last.fm lookup for: {title} (keyword filter)')
 
                     # Calculate popularity score and queue for batch update
                     if spotify_score > 0 or lastfm_score > 0:
