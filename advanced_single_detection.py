@@ -300,8 +300,15 @@ def calculate_global_popularity(versions: List[TrackVersion]) -> float:
         # If all are alternates, return 0
         return 0.0
     
+    # Filter out versions with zero or None popularity
+    valid_pops = [v.popularity for v in canonical_versions if v.popularity and v.popularity > 0]
+    
+    if not valid_pops:
+        # No valid popularity scores
+        return 0.0
+    
     # Return max popularity
-    return max(v.popularity for v in canonical_versions)
+    return max(valid_pops)
 
 
 def is_metadata_single(versions: List[TrackVersion]) -> bool:
@@ -548,6 +555,9 @@ def batch_update_advanced_singles(
     """
     Batch update all tracks with advanced single detection.
     
+    Note: Requires database schema to have the necessary columns.
+    Run check_db.update_schema() first to ensure schema is up to date.
+    
     Args:
         conn: Database connection
         artist: Optional artist filter
@@ -615,29 +625,8 @@ def batch_update_advanced_singles(
             track_id
         ))
     
-    # Batch update
+    # Batch update (assumes schema already has required columns)
     if updates:
-        # Add new columns if they don't exist
-        try:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN global_popularity REAL;")
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN zscore REAL;")
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN metadata_single INTEGER;")
-        except sqlite3.OperationalError:
-            pass
-        
-        try:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN is_compilation INTEGER;")
-        except sqlite3.OperationalError:
-            pass
-        
         cursor.executemany("""
             UPDATE tracks
             SET is_single = ?,

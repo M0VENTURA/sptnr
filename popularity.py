@@ -650,10 +650,12 @@ def detect_single_for_track(
             - metadata_single: Metadata single status (if advanced)
             - is_compilation: Compilation status (if advanced)
     """
-    # Use advanced detection if enabled and all required parameters are provided
+    # Use advanced detection if enabled and minimum required parameters are provided
+    # Note: ISRC, duration, popularity, and album_type are optional - detection works without them
     if use_advanced_detection and track_id and album:
         try:
             from advanced_single_detection import detect_single_advanced
+            # get_db_connection is already available in this module
             conn = get_db_connection()
             
             result = detect_single_advanced(
@@ -662,16 +664,20 @@ def detect_single_for_track(
                 title=title,
                 artist=artist,
                 album=album,
-                isrc=isrc,
-                duration=duration,
+                isrc=isrc,  # Optional
+                duration=duration,  # Optional
                 popularity=popularity or 0.0,
-                album_type=album_type,
+                album_type=album_type,  # Optional
                 zscore_threshold=zscore_threshold,
                 verbose=verbose
             )
             
             conn.close()
             return result
+        except ImportError as e:
+            if verbose:
+                log_unified(f"   ⚠ Advanced detection module not available: {e}")
+            # Fall through to standard detection
         except Exception as e:
             if verbose:
                 log_unified(f"   ⚠ Advanced detection failed, falling back to standard: {e}")
