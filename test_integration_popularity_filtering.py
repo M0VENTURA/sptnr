@@ -7,6 +7,9 @@ results in correct popularity statistics and confidence thresholds.
 from statistics import mean, stdev
 import re
 
+# Constants from popularity.py
+DEFAULT_HIGH_CONF_OFFSET = 6
+
 
 def should_exclude_from_stats(tracks_with_scores):
     """Copy of the function from popularity.py"""
@@ -80,7 +83,7 @@ def test_fegefeuer_album():
     scores_old = [t["popularity_score"] for t in tracks if t["popularity_score"] > 0]
     mean_old = mean(scores_old)
     stddev_old = stdev(scores_old) if len(scores_old) > 1 else 0
-    high_conf_threshold_old = mean_old + 6  # DEFAULT_HIGH_CONF_OFFSET
+    high_conf_threshold_old = mean_old + DEFAULT_HIGH_CONF_OFFSET
     
     print(f"  Mean: {mean_old:.2f}")
     print(f"  Std Dev: {stddev_old:.2f}")
@@ -105,7 +108,7 @@ def test_fegefeuer_album():
     ]
     mean_new = mean(scores_new)
     stddev_new = stdev(scores_new) if len(scores_new) > 1 else 0
-    high_conf_threshold_new = mean_new + 6  # DEFAULT_HIGH_CONF_OFFSET
+    high_conf_threshold_new = mean_new + DEFAULT_HIGH_CONF_OFFSET
     
     print(f"  Excluded {len(excluded_indices)} tracks from statistics:")
     for idx in sorted(excluded_indices)[:3]:

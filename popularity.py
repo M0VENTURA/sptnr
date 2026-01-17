@@ -1439,7 +1439,8 @@ def popularity_scan(
                     
                     # Calculate statistics for popularity-based confidence system
                     scores = [t["popularity_score"] if t["popularity_score"] else 0 for t in album_tracks_with_scores]
-                    # Filter out excluded tracks when calculating statistics (O(n) due to set membership testing)
+                    # Filter out excluded tracks when calculating statistics
+                    # Complexity is O(n) for iteration; set membership testing is O(1)
                     valid_scores = [s for i, s in enumerate(scores) if s > 0 and i not in excluded_indices]
                     
                     # Log exclusions if any
