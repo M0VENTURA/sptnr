@@ -16,22 +16,23 @@ def should_exclude_from_stats(tracks_with_scores):
     if not tracks_with_scores or len(tracks_with_scores) < 3:
         return set()
     
-    tracks_with_parens = []
+    tracks_with_suffix = []
     for i, track in enumerate(tracks_with_scores):
         title = track.get("title", "")
-        if re.search(r'\([^)]+\)', title):
-            tracks_with_parens.append(i)
+        # Check if title ends with a parenthesized suffix
+        if re.match(r'^.*\([^)]*\)$', title):
+            tracks_with_suffix.append(i)
     
-    if len(tracks_with_parens) < 2:
+    if len(tracks_with_suffix) < 2:
         return set()
     
-    tracks_with_parens_set = set(tracks_with_parens)  # O(1) membership testing
+    tracks_with_suffix_set = set(tracks_with_suffix)  # O(1) membership testing
     
     consecutive_at_end = []
     last_track_idx = len(tracks_with_scores) - 1
     
     for i in range(last_track_idx, -1, -1):
-        if i in tracks_with_parens_set:
+        if i in tracks_with_suffix_set:
             if not consecutive_at_end:
                 consecutive_at_end.insert(0, i)
             elif i == consecutive_at_end[0] - 1:

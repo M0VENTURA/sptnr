@@ -102,12 +102,16 @@ DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium 
 
 
 def should_exclude_from_stats(tracks_with_scores):
-    """
+    r"""
     Identify tracks that should be excluded from popularity statistics calculation.
     
-    Excludes tracks at the end of an album when there are multiple consecutive tracks
-    with parenthetical content (e.g., "Live in Wacken 2022"), as these bonus/alternate
-    versions can skew the popularity mean and z-scores.
+    Excludes tracks at the end of an album whose titles end with a parenthesized suffix
+    (e.g., "Track Title (Single)", "Track Title (Live in Wacken 2022)"), as these 
+    bonus/alternate versions can skew the popularity mean and z-scores.
+    
+    A track is excluded if:
+        - It appears after the last "normal" track, AND
+        - The title matches the pattern: `^.*\([^)]*\)$`
     
     Args:
         tracks_with_scores: List of track dictionaries ordered by popularity (descending)
@@ -120,22 +124,23 @@ def should_exclude_from_stats(tracks_with_scores):
         # Don't filter albums with too few tracks
         return set()
     
-    # Check for parentheses in track titles
+    # Check for titles ending with parenthesized suffix
+    # Pattern: ^.*\([^)]*\)$ - matches titles that end with (something)
     # Tracks are ordered by popularity DESC, so the end of album (low popularity) is at the end of the list
-    tracks_with_parens = []
+    tracks_with_suffix = []
     for i, track in enumerate(tracks_with_scores):
         title = track["title"] or ""
-        # Check if title contains parenthetical content
-        if re.search(r'\([^)]+\)', title):
-            tracks_with_parens.append(i)
+        # Check if title ends with a parenthesized suffix
+        if re.match(r'^.*\([^)]*\)$', title):
+            tracks_with_suffix.append(i)
     
-    # Only exclude if we have multiple tracks with parentheses
-    if len(tracks_with_parens) < 2:
+    # Only exclude if we have multiple tracks with suffix
+    if len(tracks_with_suffix) < 2:
         return set()
     
-    # Find consecutive tracks with parentheses at the END of the track list
+    # Find consecutive tracks with suffix at the END of the track list
     # Since tracks are sorted by popularity DESC, the last indices are the end of the album
-    tracks_with_parens_set = set(tracks_with_parens)  # O(1) membership testing
+    tracks_with_suffix_set = set(tracks_with_suffix)  # O(1) membership testing
     
     # Build a list of consecutive tracks starting from the last track index
     consecutive_at_end = []
@@ -143,8 +148,8 @@ def should_exclude_from_stats(tracks_with_scores):
     
     # Start from the last track and work backwards
     for i in range(last_track_idx, -1, -1):
-        if i in tracks_with_parens_set:
-            # This track has parentheses
+        if i in tracks_with_suffix_set:
+            # This track has suffix
             if not consecutive_at_end:
                 # First track in the sequence (must be the last track)
                 consecutive_at_end.insert(0, i)
@@ -155,11 +160,11 @@ def should_exclude_from_stats(tracks_with_scores):
                 # Gap found, stop looking
                 break
         elif consecutive_at_end:
-            # We've started building a sequence but hit a track without parentheses
+            # We've started building a sequence but hit a track without suffix
             # This means the sequence is not at the end
             break
     
-    # Only exclude if we have at least 2 consecutive tracks with parentheses at the end
+    # Only exclude if we have at least 2 consecutive tracks with suffix at the end
     if len(consecutive_at_end) >= 2:
         return set(consecutive_at_end)
     
