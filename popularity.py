@@ -434,7 +434,6 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
 
 
 # --- Dual Logger Setup: sptnr.log and unified_scan.log ---
-import logging
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
 VERBOSE = (
@@ -478,7 +477,6 @@ def _flush_handlers(logger_obj):
             handler.flush()
     except Exception as e:
         # Log flush errors at debug level to aid troubleshooting
-        import logging
         logging.debug(f"Failed to flush log handlers: {e}")
 
 def log_basic(msg):
