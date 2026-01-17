@@ -985,8 +985,17 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
         print(f"ðŸ’¾ Database: {db_artist_count} artists, {db_album_count} albums, {db_track_count} tracks")
         
         if navidrome_track_count != db_track_count or db_track_count == 0:
-            print("ðŸ”„ Track counts don't match. Running full library scan to sync database...")
-            scan_library_to_db(verbose=verbose, force=force)
+            # Check if automatic Navidrome sync is enabled
+            # When perpetual is false, skip automatic sync (user must manually trigger)
+            auto_sync_enabled = config.get("features", {}).get("perpetual", True)
+            
+            if auto_sync_enabled:
+                print("🔄 Track counts don't match. Running full library scan to sync database...")
+                scan_library_to_db(verbose=verbose, force=force)
+            else:
+                print("⚠️ Track counts don't match, but automatic sync is disabled (perpetual=false)")
+                print(f"   Navidrome: {navidrome_track_count} tracks, Database: {db_track_count} tracks")
+                print("   To sync manually, set perpetual=true or run navidrome_import.py directly")
         else:
             print("âœ… Database is in sync with Navidrome. Refreshing artist index...")
             build_artist_index(verbose=verbose)
