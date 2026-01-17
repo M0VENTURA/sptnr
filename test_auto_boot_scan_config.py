@@ -14,6 +14,10 @@ sys.path.insert(0, str(Path(__file__).parent))
 def test_auto_boot_scan_config():
     """Test that auto_boot_navidrome_scan config is read correctly."""
     
+    # Note: We duplicate the logic here to test it in isolation without
+    # importing from app.py, which has many dependencies. This ensures the
+    # test can run independently and validates the logic itself.
+    
     # Test 1: Default value should be False
     print("Test 1: Testing default config value...")
     test_config = {

@@ -765,7 +765,8 @@ def _get_auto_boot_import_setting():
         cfg, _ = _read_yaml(CONFIG_PATH)
         features = cfg.get("features", {})
         return features.get("auto_boot_navidrome_scan", False)
-    except Exception:
+    except (FileNotFoundError, yaml.YAMLError, KeyError, AttributeError) as e:
+        logging.debug(f"Unable to read auto_boot_navidrome_scan from config: {e}")
         return False  # Default to disabled if config can't be read
 
 AUTO_BOOT_ND_IMPORT = _get_auto_boot_import_setting()
