@@ -507,7 +507,7 @@ def detect_single_enhanced(
         if verbose:
             if not discogs_client:
                 logger.info(f"   ⓘ Discogs client not available")
-            elif not discogs_client.enabled:
+            elif not getattr(discogs_client, 'enabled', True):
                 logger.info(f"   ⓘ Discogs client is disabled")
     
     # STAGE 3: Spotify (Secondary Source)
@@ -571,7 +571,7 @@ def detect_single_enhanced(
         if verbose:
             if not musicbrainz_client:
                 logger.info(f"   ⓘ MusicBrainz client not available")
-            elif not musicbrainz_client.enabled:
+            elif not getattr(musicbrainz_client, 'enabled', True):
                 logger.info(f"   ⓘ MusicBrainz client is disabled")
     
     # STAGE 5: Popularity-Based Inference (including version count)
