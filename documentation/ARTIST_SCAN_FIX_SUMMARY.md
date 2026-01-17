@@ -60,32 +60,42 @@ These functions exist in BOTH unified_scan.py and popularity.py:
 
 **Recommendation**: Create shared utilities module
 
-#### 2. Singles Detection - CRITICAL OVERLAP ⚠️
-**Problem**: In unified_scan flow, singles detection happens TWICE:
+#### 2. Singles Detection - FIXED ✅
+**Problem** (Historical): In unified_scan flow, singles detection happened TWICE:
 
 ```
 unified_scan_pipeline()
   └─> Phase 1: popularity_scan()
         └─> Singles detection (Spotify, MusicBrainz, Discogs)
-  └─> Phase 2: rate_artist()
+  └─> Phase 2: rate_artist()  [DEPRECATED - REMOVED]
         └─> Singles detection AGAIN (may overwrite Phase 1 results)
 ```
 
-**Good News**: Artist scan now bypasses this issue!
-- Artist scan: `navidrome_import` → `popularity_scan` ✅
-- No duplicate singles detection for artist scans
+**Solution Implemented**:
+- Removed redundant Phase 2 that called `rate_artist()` from deprecated `sptnr.py`
+- `unified_scan_pipeline()` now only calls `popularity_scan()` once
+- No duplicate singles detection
+- No wasted API calls
+- Consistent results across all scan types
 
-**Still An Issue**: Full unified scan has duplicate detection
-- Wastes API calls
-- Inconsistent results possible
+**Current Flow**:
+```
+unified_scan_pipeline()
+  └─> popularity_scan()
+        └─> Popularity scoring
+        └─> Singles detection (Spotify, MusicBrainz, Discogs)
+        └─> Star rating calculation
+        └─> Navidrome sync
+        └─> Essential playlist creation
+```
 
-**Recommendation**: Remove `rate_artist()` call from unified_scan Phase 2
+All scan types now use the same unified logic in `popularity.py`. ✅
 
-#### 3. Star Rating Calculation - DUPLICATE
-Both `popularity_scan()` and `rate_artist()` calculate star ratings.
+#### 3. Star Rating Calculation - UNIFIED ✅
+**Status**: No longer duplicate. Both artist scan and full scan now use the same logic in `popularity_scan()`.
 
-#### 4. Essential Playlist Creation - DUPLICATE  
-Both `unified_scan.py` and `popularity.py` create Essential playlists.
+#### 4. Essential Playlist Creation - UNIFIED ✅
+**Status**: No longer duplicate. `popularity.py` handles all playlist creation. The redundant code in `unified_scan.py` has been removed.
 
 ## Testing Checklist
 
