@@ -14,6 +14,12 @@ This folder contains deprecated files that are no longer used in the active code
 - Web interface → `app.py`, `server.py`
 - Configuration → `config.yaml` (via `config_loader.py`)
 
-**Migration**: See [MIGRATION_GUIDE.md](../MIGRATION_GUIDE.md) for details on the transition from `.env` to `config.yaml` and the deprecation of this legacy CLI tool.
+**Modern Alternatives**:
+- For popularity scoring and star ratings: Use `popularity.py`
+- For singles detection: Use `single_detector.py`
+- For web interface: Use `app.py` or `server.py`
+- For configuration: Use `config.yaml` via `config_loader.py`
+
+See [MIGRATION_GUIDE.md](../MIGRATION_GUIDE.md) for details on the transition from `.env` to `config.yaml`.
 
 **Do NOT use** this file. It remains here only for historical reference.
