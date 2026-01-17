@@ -98,6 +98,7 @@ features:
   perpetual: true
   batchrate: false
   full_scan: false  # When enabled, automatically run Navidrome import → Popularity → Beets import in sequence
+  auto_boot_navidrome_scan: false  # When enabled, automatically scan Navidrome metadata on startup
   artist: []
   # Single-detection and scoring knobs
   album_skip_days: 7

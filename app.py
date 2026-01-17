@@ -520,8 +520,8 @@ scan_process_singles = None  # Singles detection process
 scan_process_missing_releases = None  # Missing releases scan process
 scan_lock = threading.Lock()
 
-# Optional auto-import toggle (default on)
-AUTO_BOOT_ND_IMPORT = os.environ.get("SPTNR_DISABLE_BOOT_ND_IMPORT", "0") != "1"
+# Optional auto-import toggle placeholder (will be set after config functions are defined)
+AUTO_BOOT_ND_IMPORT = None
 
 
 def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dict | None = None):
@@ -729,6 +729,7 @@ def _baseline_config():
             "force": False,
             "verbose": False,
             "perpetual": True,
+            "auto_boot_navidrome_scan": False,
             "artist": [],
             "album_skip_days": 7,
             "album_skip_min_tracks": 1,
@@ -750,6 +751,24 @@ def _baseline_config():
             "spotify_prefetch_timeout": 30
         }
     }
+
+
+# Initialize auto-boot import setting from config
+def _get_auto_boot_import_setting():
+    """Read auto boot Navidrome scan setting from config, with env var override."""
+    # Environment variable takes precedence if set to disable
+    if os.environ.get("SPTNR_DISABLE_BOOT_ND_IMPORT") == "1":
+        return False
+    
+    # Read from config file
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        features = cfg.get("features", {})
+        return features.get("auto_boot_navidrome_scan", False)
+    except Exception:
+        return False  # Default to disabled if config can't be read
+
+AUTO_BOOT_ND_IMPORT = _get_auto_boot_import_setting()
 
 
 # Kick off Navidrome metadata-only import at startup (missing-only)
