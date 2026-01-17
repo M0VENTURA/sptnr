@@ -650,37 +650,65 @@ def detect_single_for_track(
             - metadata_single: Metadata single status (if advanced)
             - is_compilation: Compilation status (if advanced)
     """
-    # Use advanced detection if enabled and minimum required parameters are provided
-    # Note: ISRC, duration, popularity, and album_type are optional - detection works without them
+    # Use enhanced detection algorithm per problem statement if enabled
+    # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
     if use_advanced_detection and track_id and album:
         try:
-            from advanced_single_detection import detect_single_advanced
+            from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
             conn = get_db_connection()
             
-            result = detect_single_advanced(
+            # Get Spotify results if cached
+            spotify_search_results = None
+            if spotify_results_cache is not None:
+                spotify_search_results = spotify_results_cache.get(title)
+            
+            # Get API clients
+            discogs_client = None
+            if discogs_token and HAVE_DISCOGS:
+                discogs_client = _get_timeout_safe_discogs_client(discogs_token)
+            
+            musicbrainz_client = None
+            if HAVE_MUSICBRAINZ:
+                musicbrainz_client = _get_timeout_safe_musicbrainz_client()
+            
+            # Run enhanced detection
+            result = detect_single_enhanced(
                 conn=conn,
                 track_id=track_id,
                 title=title,
                 artist=artist,
                 album=album,
-                isrc=isrc,  # Optional
-                duration=duration,  # Optional
+                duration=duration,
+                isrc=isrc,
                 popularity=popularity or 0.0,
-                album_type=album_type,  # Optional
-                zscore_threshold=zscore_threshold,
+                spotify_results=spotify_search_results,
+                discogs_client=discogs_client,
+                musicbrainz_client=musicbrainz_client,
                 verbose=verbose
             )
             
+            # Store result in database
+            store_single_detection_result(conn, track_id, result)
+            
             conn.close()
-            return result
+            
+            # Return in expected format
+            return {
+                "sources": result['single_sources'],
+                "confidence": result['single_confidence'],
+                "is_single": result['is_single']
+            }
         except ImportError as e:
             if verbose:
-                log_unified(f"   ⚠ Advanced detection module not available: {e}")
+                log_unified(f"   ⚠ Enhanced detection module not available: {e}")
             # Fall through to standard detection
         except Exception as e:
             if verbose:
-                log_unified(f"   ⚠ Advanced detection failed, falling back to standard: {e}")
+                log_unified(f"   ⚠ Enhanced detection failed, falling back to standard: {e}")
+            import traceback
+            if verbose:
+                log_unified(f"   Error details: {traceback.format_exc()}")
             # Fall through to standard detection
     
     # Ignore obvious non-singles by keywords
