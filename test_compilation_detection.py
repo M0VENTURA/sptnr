@@ -33,7 +33,7 @@ def test_compilation_detection():
     print("="*60)
     
     test_cases = [
-        # (album_type, album_title, track_count, expected)
+        # (album_type, album_title, track_count, expected, reason)
         ("compilation", "Regular Album", 10, True, "album_type=compilation"),
         ("album", "Greatest Hits", 10, True, "title contains 'Greatest Hits'"),
         ("album", "Best of ABBA", 8, True, "title contains 'Best Of'"),
@@ -207,14 +207,22 @@ def test_full_detection_with_compilation():
                 album_type="compilation"  # Mark as compilation
             )
             
-            # Check if track was evaluated (not filtered out)
-            if result['single_status'] != 'none' or result['z_score'] != 0.0:
+            # Check if track was evaluated (passed pre-filter)
+            # A track passes pre-filter if the function didn't immediately return 'none' status
+            # We need to check the actual evaluation occurred (not just default values)
+            # Since compilation albums pass ALL tracks through, they should all be evaluated
+            if result['single_status'] != 'none' or len(result['single_sources']) > 0:
                 checked_count += 1
                 print(f"✓ Track evaluated: {title}")
                 print(f"  Status: {result['single_status']}, Z-score: {result['z_score']:.2f}")
-            else:
-                # Track passed pre-filter but got 'none' status
+            elif result['z_score'] != 0.0:
+                # Track was evaluated (z-score calculated) even if status is 'none'
+                checked_count += 1
                 print(f"• Track checked: {title}")
+                print(f"  Status: {result['single_status']}, Z-score: {result['z_score']:.2f}")
+            else:
+                # Track was filtered out by pre-filter
+                print(f"✗ Track skipped: {title}")
                 print(f"  Status: {result['single_status']}")
             print()
         
