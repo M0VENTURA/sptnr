@@ -1524,6 +1524,9 @@ def popularity_scan(
                         stars = max(1, 4 - band_index)
                         
                         # NEW: Popularity-Based Confidence System
+                        # Track if medium confidence check explicitly denied upgrade due to missing metadata
+                        medium_conf_denied_upgrade = False
+                        
                         # High Confidence (auto 5★): popularity >= mean + 6
                         if popularity_score >= high_conf_threshold:
                             stars = 5
@@ -1559,22 +1562,26 @@ def popularity_scan(
                                         metadata_sources.append("Version Count")
                                     log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_sources)})")
                             else:
+                                # Medium confidence threshold met but no metadata support - do not upgrade
+                                medium_conf_denied_upgrade = True
                                 if verbose:
                                     log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
                         
                         # Legacy logic for backwards compatibility (if not caught by new system)
-                        # Boost to 5 stars if score exceeds threshold (only for singles)
-                        if popularity_score >= jump_threshold and stars < 5:
-                            # Only boost to 5 if it's at least a medium confidence single
-                            if single_confidence in ["high", "medium"]:
-                                stars = 5
-                            else:
-                                stars = 4  # Cap at 4 stars if not a single
-                        
-                        # Boost stars for confirmed singles (legacy)
-                        if single_confidence == "high" and stars < 5:
-                            stars = 5  # High confidence single = 5 stars
-                        # Medium confidence singles no longer get automatic +1 star boost
+                        # Skip legacy logic if medium confidence check explicitly denied upgrade
+                        if not medium_conf_denied_upgrade:
+                            # Boost to 5 stars if score exceeds threshold (only for singles)
+                            if popularity_score >= jump_threshold and stars < 5:
+                                # Only boost to 5 if it's at least a medium confidence single
+                                if single_confidence in ["high", "medium"]:
+                                    stars = 5
+                                else:
+                                    stars = 4  # Cap at 4 stars if not a single
+                            
+                            # Boost stars for confirmed singles (legacy)
+                            if single_confidence == "high" and stars < 5:
+                                stars = 5  # High confidence single = 5 stars
+                            # Medium confidence singles no longer get automatic +1 star boost
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
