@@ -51,8 +51,8 @@ unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
 unified_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
 unified_file_handler.setFormatter(unified_formatter)
 unified_logger.setLevel(logging.INFO)
-# Always add the file handler (even if handlers exist)
-unified_logger.addHandler(unified_file_handler)
+if not unified_logger.hasHandlers():
+    unified_logger.addHandler(unified_file_handler)
 unified_logger.propagate = False
 
 def log_unified(msg):
