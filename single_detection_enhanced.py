@@ -214,7 +214,7 @@ def calculate_mean_version_count(conn, artist: str, album: str) -> float:
         WHERE artist = ? AND album = ? AND spotify_version_count IS NOT NULL
     """, (artist, album))
     
-    version_counts = [row[0] for row in cursor.fetchall() if row[0] is not None]
+    version_counts = [row[0] for row in cursor.fetchall()]
     
     if not version_counts:
         return 0.0
@@ -355,13 +355,7 @@ def determine_final_status(
         return 'high'
     
     # MEDIUM
-    # Version count standout contributes to medium confidence when there's metadata confirmation
     if spotify_confirmed or musicbrainz_confirmed or z_score >= 0.5:
-        return 'medium'
-    
-    # Version count standout alone gives medium confidence for rating boost
-    # but doesn't mark as single unless combined with metadata
-    if version_count_standout and (spotify_confirmed or musicbrainz_confirmed):
         return 'medium'
     
     # LOW
