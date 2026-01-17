@@ -1277,7 +1277,7 @@ def popularity_scan(
 
                     # Try to get popularity from Last.fm
                     lastfm_score = 0
-                    if not skip_spotify_lookup:  # Skip Last.fm lookup for same tracks we skip Spotify for
+                    if not skip_spotify_lookup:  # Use same filter for Last.fm as Spotify
                         try:
                             log_unified(f'Getting Last.fm info for: {title} by {artist}')
                             lastfm_info = _run_with_timeout(

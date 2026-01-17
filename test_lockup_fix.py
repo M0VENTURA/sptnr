@@ -5,6 +5,7 @@ Test script to demonstrate the popularity scan lockup fix.
 This simulates the behavior before and after the fix.
 """
 
+# Constants (matching popularity.py)
 IGNORE_SINGLE_KEYWORDS = [
     "intro", "outro", "jam",
     "live", "unplugged",
@@ -13,6 +14,9 @@ IGNORE_SINGLE_KEYWORDS = [
     "demo", "instrumental", "karaoke",
     "remaster", "remastered"
 ]
+
+# Simulated API timeout (from popularity.py: API_CALL_TIMEOUT default is 30s)
+API_TIMEOUT_SECONDS = 30
 
 def test_before_fix(tracks):
     """Simulate behavior before the fix - all tracks get API lookups."""
@@ -25,7 +29,7 @@ def test_before_fix(tracks):
         print(f"  🔍 Looking up on Last.fm: {track['title']}")
         api_calls += 1
     print(f"\nTotal API calls: {api_calls}")
-    print(f"Estimated time (30s timeout each): {api_calls * 30} seconds ({api_calls * 30 / 60:.1f} minutes)")
+    print(f"Estimated time ({API_TIMEOUT_SECONDS}s timeout each): {api_calls * API_TIMEOUT_SECONDS} seconds ({api_calls * API_TIMEOUT_SECONDS / 60:.1f} minutes)")
     return api_calls
 
 def test_after_fix(tracks):
@@ -46,7 +50,7 @@ def test_after_fix(tracks):
             api_calls += 1
     print(f"\nTotal API calls: {api_calls}")
     print(f"Tracks skipped: {skipped}")
-    print(f"Estimated time (30s timeout each): {api_calls * 30} seconds ({api_calls * 30 / 60:.1f} minutes)")
+    print(f"Estimated time ({API_TIMEOUT_SECONDS}s timeout each): {api_calls * API_TIMEOUT_SECONDS} seconds ({api_calls * API_TIMEOUT_SECONDS / 60:.1f} minutes)")
     return api_calls, skipped
 
 if __name__ == "__main__":
@@ -92,4 +96,4 @@ if __name__ == "__main__":
     print(f"API calls after fix:  {after_calls}")
     print(f"API calls saved:      {before_calls - after_calls} ({(before_calls - after_calls) / before_calls * 100:.1f}%)")
     print(f"Tracks skipped:       {skipped_count}")
-    print(f"\nTime saved: {(before_calls - after_calls) * 30} seconds ({(before_calls - after_calls) * 30 / 60:.1f} minutes)")
+    print(f"Time saved: {(before_calls - after_calls) * API_TIMEOUT_SECONDS} seconds ({(before_calls - after_calls) * API_TIMEOUT_SECONDS / 60:.1f} minutes)")
