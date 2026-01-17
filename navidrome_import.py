@@ -357,6 +357,7 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
     Fetch and store artist biography and images from external APIs.
     
     This is called after a successful artist scan to enhance artist metadata.
+    Only fetches if data doesn't exist or if force=true in config.
     
     Args:
         artist_name: Name of the artist
@@ -369,14 +370,59 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
     try:
         config = load_config()
         
+        # Check if force flag is enabled
+        force = config.get("features", {}).get("force", False)
+        
+        # Check if artist metadata already exists
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create artist_metadata table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS artist_metadata (
+                artist_name TEXT PRIMARY KEY,
+                biography TEXT,
+                image_url TEXT,
+                updated_at TEXT
+            )
+        """)
+        
+        # Check for existing metadata
+        cursor.execute("""
+            SELECT biography, image_url 
+            FROM artist_metadata 
+            WHERE artist_name = ?
+        """, (artist_name,))
+        existing_row = cursor.fetchone()
+        
+        # Determine what needs to be fetched
+        fetch_bio = force
+        fetch_image = force
+        
+        if existing_row and not force:
+            existing_bio = existing_row[0] or ""
+            existing_image = existing_row[1] or ""
+            
+            # Only fetch if missing
+            fetch_bio = not existing_bio
+            fetch_image = not existing_image
+            
+            if not fetch_bio and not fetch_image:
+                if verbose:
+                    logging.info(f"Artist metadata already exists for {artist_name}, skipping fetch (use force=true to re-fetch)")
+                conn.close()
+                return
+        
+        conn.close()
+        
         # Get Discogs configuration
         discogs_config = config.get("api_integrations", {}).get("discogs", {})
         discogs_enabled = discogs_config.get("enabled", False)
         discogs_token = discogs_config.get("token", "")
         
-        # Try to fetch biography from Discogs
+        # Try to fetch biography from Discogs (only if needed)
         biography = ""
-        if discogs_enabled and discogs_token:
+        if fetch_bio and discogs_enabled and discogs_token:
             if verbose:
                 logging.info(f"Fetching biography for {artist_name} from Discogs...")
             bio_data = get_discogs_artist_biography(artist_name, token=discogs_token, enabled=True)
@@ -384,28 +430,19 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
             if biography:
                 log_unified(f"   📖 Retrieved artist biography from Discogs ({len(biography)} chars)")
         
-        # Try to fetch artist image from Apple Music (iTunes Search API - no auth needed)
+        # Try to fetch artist image from Apple Music (only if needed)
         artist_image_url = ""
-        if verbose:
-            logging.info(f"Fetching artist image for {artist_name} from Apple Music...")
-        artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
-        if artist_image_url:
-            log_unified(f"   🖼️  Retrieved artist image from Apple Music")
+        if fetch_image:
+            if verbose:
+                logging.info(f"Fetching artist image for {artist_name} from Apple Music...")
+            artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
+            if artist_image_url:
+                log_unified(f"   🖼️  Retrieved artist image from Apple Music")
         
         # Store in database
         if biography or artist_image_url:
             conn = get_db_connection()
             cursor = conn.cursor()
-            
-            # Create artist_metadata table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS artist_metadata (
-                    artist_name TEXT PRIMARY KEY,
-                    biography TEXT,
-                    image_url TEXT,
-                    updated_at TEXT
-                )
-            """)
             
             # Insert or update artist metadata
             cursor.execute("""

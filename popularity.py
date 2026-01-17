@@ -1461,10 +1461,13 @@ def popularity_scan(
                             has_spotify = "spotify" in single_sources
                             has_musicbrainz = "musicbrainz" in single_sources
                             has_lastfm = "lastfm" in single_sources
+                            has_version_count = "version_count" in single_sources
                             
                             has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
                             
-                            if has_metadata:
+                            # Version count standout combined with popularity threshold = 5 stars
+                            # Per problem statement: "will make it 5*"
+                            if has_metadata or has_version_count:
                                 stars = 5
                                 if verbose:
                                     metadata_sources = []
@@ -1476,6 +1479,8 @@ def popularity_scan(
                                         metadata_sources.append("MusicBrainz")
                                     if has_lastfm:
                                         metadata_sources.append("Last.fm")
+                                    if has_version_count:
+                                        metadata_sources.append("Version Count")
                                     log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_sources)})")
                             else:
                                 if verbose:
