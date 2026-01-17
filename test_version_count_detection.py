@@ -125,33 +125,35 @@ def test_version_count_with_metadata():
     """Test that version count standout works correctly with metadata sources."""
     print("\n=== Test 3: Version Count with Metadata Sources ===")
     
-    # Case 1: Version count standout + Spotify confirmation = medium confidence
+    # Version count standout logic is handled via infer_from_popularity()
+    # and doesn't directly affect determine_final_status()
+    # The final status is determined by z_score and metadata confirmation
+    
+    # Case 1: Spotify confirmation = medium confidence
     status = determine_final_status(
         discogs_confirmed=False,
         spotify_confirmed=True,
         musicbrainz_confirmed=False,
         z_score=0.3,
-        spotify_version_count=8,
-        version_count_standout=True
+        spotify_version_count=8
     )
     
-    print(f"Spotify + Version Count Standout: {status}")
+    print(f"Spotify confirmation: {status}")
     assert status == 'medium', f"Expected 'medium', got '{status}'"
-    print("✓ Version count with Spotify gives medium confidence")
+    print("✓ Spotify confirmation gives medium confidence")
     
-    # Case 2: Version count standout alone (no metadata, low z-score, low version count) = none
+    # Case 2: No metadata, low z-score = low (because spotify_version_count >= 3)
     status2 = determine_final_status(
         discogs_confirmed=False,
         spotify_confirmed=False,
         musicbrainz_confirmed=False,
-        z_score=0.1,  # Below low threshold
-        spotify_version_count=2,  # Below 3 versions
-        version_count_standout=True
+        z_score=0.3,
+        spotify_version_count=8
     )
     
-    print(f"Version Count Standout alone (low z-score): {status2}")
-    assert status2 == 'none', f"Expected 'none', got '{status2}'"
-    print("✓ Version count alone with low z-score doesn't give confidence in final status")
+    print(f"No metadata, low z-score, high version count: {status2}")
+    assert status2 == 'low', f"Expected 'low', got '{status2}'"
+    print("✓ z_score >= 0.2 and version_count >= 3 gives low confidence")
 
 
 def test_high_z_score_overrides():

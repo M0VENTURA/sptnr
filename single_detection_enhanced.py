@@ -331,8 +331,7 @@ def determine_final_status(
     spotify_confirmed: bool,
     musicbrainz_confirmed: bool,
     z_score: float,
-    spotify_version_count: int,
-    version_count_standout: bool = False
+    spotify_version_count: int
 ) -> str:
     """
     Final single status per Stage 7.
@@ -342,13 +341,15 @@ def determine_final_status(
     
     MEDIUM-CONFIDENCE:
     - Spotify or MusicBrainz confirms OR z >= 0.5
-    - Version count standout (version_count >= mean + 1) when matched with metadata
     
     LOW-CONFIDENCE:
     - z >= 0.2 AND >= 3 Spotify versions
     
     NOT A SINGLE:
     - None of the above
+    
+    Note: Version count standout is handled via infer_from_popularity() and
+    contributes to rating boost, not final single status.
     """
     # HIGH
     if discogs_confirmed or z_score >= 1.0:
@@ -569,8 +570,7 @@ def detect_single_enhanced(
         spotify_confirmed,
         musicbrainz_confirmed,
         z_score,
-        spotify_version_count,
-        version_count_standout
+        spotify_version_count
     )
     
     result['single_status'] = final_status
