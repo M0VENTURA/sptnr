@@ -2826,7 +2826,8 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
     a rescan for a specific album, we want to ensure we fetch fresh data from external
     sources and update all metadata, even if the album was recently scanned.
     """
-    log_unified(f"💿 Album scan pipeline started for: {artist_name} - {album_name}")
+    album_display = f"{artist_name} - {album_name}"
+    log_unified(f"💿 Album scan pipeline started for: {album_display}")
     try:
         # Look up artist_id from cache; rebuild index if missing
         log_unified(f"Looking up artist_id for '{artist_name}' in database...")
@@ -2853,16 +2854,16 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
 
         # Step 1: Import metadata from Navidrome for this specific album
         # Force is always True for single album scans to ensure fresh data
-        log_unified(f"Step 1/2: Navidrome import for album '{artist_name} - {album_name}' (force=True)")
+        log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
         scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
 
         # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-        log_unified(f"Step 2/2: Running popularity scan for album '{artist_name} - {album_name}' (force=True)")
+        log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
         popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
         
-        log_unified(f"✅ Scan complete for album '{artist_name} - {album_name}'")
+        log_unified(f"✅ Scan complete for album '{album_display}'")
     except Exception as e:
-        log_unified(f"❌ Scan failed for {artist_name} - {album_name}: {e}")
+        log_unified(f"❌ Scan failed for {album_display}: {e}")
         import traceback
         log_unified(f"Traceback: {traceback.format_exc()}")
 
