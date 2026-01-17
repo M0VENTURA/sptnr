@@ -2809,6 +2809,66 @@ def _run_artist_scan_pipeline(artist_name: str):
         log_unified(f"Traceback: {traceback.format_exc()}")
 
 
+def _run_album_scan_pipeline(artist_name: str, album_name: str):
+    """
+    Helper function to run the complete scan pipeline for a specific album:
+    1. Navidrome import (imports metadata from Navidrome for the album)
+    2. Popularity detection (Spotify, Last.fm, ListenBrainz) + Singles detection + Star rating
+    
+    All steps log to unified_scan.log and Recent Scans page.
+    This is used by the album rescan route.
+    
+    Args:
+        artist_name: Name of the artist
+        album_name: Name of the album to scan
+    
+    Note: Force is always True for single album scans. When a user explicitly requests
+    a rescan for a specific album, we want to ensure we fetch fresh data from external
+    sources and update all metadata, even if the album was recently scanned.
+    """
+    album_display = f"{artist_name} - {album_name}"
+    log_unified(f"💿 Album scan pipeline started for: {album_display}")
+    try:
+        # Look up artist_id from cache; rebuild index if missing
+        log_unified(f"Looking up artist_id for '{artist_name}' in database...")
+        conn = get_db()
+        try:
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist_id FROM artist_stats WHERE artist_name = ?", (artist_name,))
+            row = cursor.fetchone()
+            artist_id = row[0] if row else None
+            log_unified(f"Database lookup result: artist_id={artist_id}")
+        finally:
+            conn.close()
+
+        if not artist_id:
+            log_unified(f"Artist ID not found in cache, rebuilding artist index...")
+            idx = build_artist_index()
+            artist_data = idx.get(artist_name, {})
+            artist_id = artist_data.get("id") if artist_data else None
+            log_unified(f"After index rebuild: artist_id={artist_id}")
+
+        if not artist_id:
+            log_unified(f"❌ Scan aborted: no artist_id for {artist_name}")
+            return
+
+        # Step 1: Import metadata from Navidrome for this specific album
+        # Force is always True for single album scans to ensure fresh data
+        log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
+        scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
+
+        # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
+        log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
+        popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+        
+        log_unified(f"✅ Scan complete for album '{album_display}'")
+    except Exception as e:
+        log_unified(f"❌ Scan failed for {album_display}: {e}")
+        import traceback
+        log_unified(f"Traceback: {traceback.format_exc()}")
+
+
+
 @app.route("/album/<path:artist>/<path:album>/edit", methods=["POST"])
 def album_edit(artist, album):
     """Update album metadata for all tracks in the album"""
@@ -2933,8 +2993,8 @@ def album_rescan(artist, album):
     artist = unquote(artist)
     album = unquote(album)
 
-    threading.Thread(target=_run_artist_scan_pipeline, args=(artist,), daemon=True).start()
-    flash(f"Rescan started for {artist}", "info")
+    threading.Thread(target=_run_album_scan_pipeline, args=(artist, album), daemon=True).start()
+    flash(f"Rescan started for album '{album}' by {artist}", "info")
     return redirect(url_for("album_detail", artist=artist, album=album))
 
 

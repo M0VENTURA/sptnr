@@ -139,7 +139,7 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
         logging.error(f"Failed to save Navidrome scan progress: {e}")
 
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, processed_artists: int = 0, total_artists: int = 0):
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None):
     """
     Scan a single artist from Navidrome and persist tracks to DB.
 
@@ -150,9 +150,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         force: Force re-import even if cached
         processed_artists: Current artist index (1-based) for progress tracking
         total_artists: Total number of artists for progress tracking
+        album_filter: Only scan this specific album (if provided)
     """
     try:
-        log_unified(f"🎤 [Navidrome] Starting import for artist: {artist_name}")
+        if album_filter:
+            log_unified(f"🎤 [Navidrome] Starting import for album: {artist_name} - {album_filter}")
+        else:
+            log_unified(f"🎤 [Navidrome] Starting import for artist: {artist_name}")
         
         # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
@@ -199,6 +203,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         
         for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
+            
+            # Skip albums that don't match the filter (if provided)
+            if album_filter and album_name.strip() != album_filter.strip():
+                continue
+            
             album_id = alb.get("id")
             if not album_id:
                 continue
