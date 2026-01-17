@@ -1183,9 +1183,9 @@ def popularity_scan(
                     title = track["title"]
                     
                     # Get additional fields for advanced detection
-                    track_isrc = track.get("isrc")
-                    track_duration = track.get("duration")
-                    track_album_type = track.get("spotify_album_type")
+                    track_isrc = track["isrc"] if track["isrc"] else None
+                    track_duration = track["duration"] if track["duration"] else None
+                    track_album_type = track["spotify_album_type"] if track["spotify_album_type"] else None
                     
                     # Get the popularity score for this track (may have been calculated earlier)
                     track_popularity = 0.0
