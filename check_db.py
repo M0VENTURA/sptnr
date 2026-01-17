@@ -97,7 +97,12 @@ required_columns = {
     "spotify_artist_id": "TEXT",              # Spotify artist ID for this track's artist
     "lastfm_artist_mbid": "TEXT",             # Last.fm artist MBID (if available)
     "discogs_artist_id": "TEXT",              # Discogs artist ID
-    "musicbrainz_artist_id": "TEXT"           # MusicBrainz artist ID
+    "musicbrainz_artist_id": "TEXT",          # MusicBrainz artist ID
+    # ✅ Advanced single detection fields
+    "global_popularity": "REAL",              # Global popularity across all track versions
+    "zscore": "REAL",                         # Z-score within album for single detection
+    "metadata_single": "INTEGER",             # 1 if marked as single in metadata (Spotify/MB)
+    "is_compilation": "INTEGER"               # 1 if album is compilation/greatest hits
 }
 
 # ✅ Define columns for the artists table
@@ -373,7 +378,12 @@ def update_schema(db_path):
         # Artist ID indexes for fast cache lookups
         ("idx_tracks_spotify_artist_id", "tracks(spotify_artist_id)"),
         ("idx_tracks_musicbrainz_artist_id", "tracks(musicbrainz_artist_id)"),
-        ("idx_tracks_discogs_artist_id", "tracks(discogs_artist_id)")
+        ("idx_tracks_discogs_artist_id", "tracks(discogs_artist_id)"),
+        # Advanced single detection indexes
+        ("idx_tracks_isrc", "tracks(isrc)"),
+        ("idx_tracks_duration", "tracks(duration)"),
+        ("idx_tracks_global_popularity", "tracks(global_popularity)"),
+        ("idx_tracks_zscore", "tracks(zscore)")
     ]
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
