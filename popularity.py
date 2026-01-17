@@ -776,7 +776,7 @@ def detect_single_for_track(
                 track_title=title,
                 track_duration_ms=duration_ms,
                 duration_tolerance_sec=2,
-                logger=logging if verbose else None
+                logger=logger if verbose else None
             )
             
             if matched_release:

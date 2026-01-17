@@ -259,8 +259,14 @@ def extract_version_tag(title: str) -> str | None:
     tag = match.group(1).lower()
     tag = re.sub(r'[^\w\s]', '', tag).strip()
     
-    # Remove common words that aren't version indicators
-    tag = re.sub(r'\b(version|edit|mix)\b', '', tag).strip()
+    # Remove common filler words only when they're part of longer phrases
+    # Don't remove them if they're the only word
+    words = tag.split()
+    if len(words) > 1:
+        # Only filter out these words when combined with other words
+        filtered_words = [w for w in words if w not in ('version', 'edit', 'mix')]
+        if filtered_words:  # Make sure we don't end up with empty string
+            tag = ' '.join(filtered_words)
     
     return tag if tag else None
 

@@ -38,6 +38,8 @@ def test_version_tag_extraction():
         ("Track Name", None),
         ("Song (feat. Artist)", "feat artist"),
         ("Track (Live at Madison Square Garden)", "live at madison square garden"),
+        ("Song (Mix)", "mix"),  # Edge case: "mix" alone should not be removed
+        ("Song (Extended Mix)", "extended"),  # "mix" should be removed from compound phrases
     ]
     
     passed = 0
