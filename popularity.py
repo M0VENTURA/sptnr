@@ -101,11 +101,21 @@ DEFAULT_POPULARITY_MEAN = 10  # Default mean when no valid scores
 DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularity >= mean + 6)
 DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
 
+# Artist-level popularity comparison constants
+UNDERPERFORMING_THRESHOLD = 0.6  # Album median must be >= 60% of artist median to not be underperforming
+MIN_TRACKS_FOR_ARTIST_COMPARISON = 10  # Minimum tracks needed for reliable artist-level comparison
+
 
 def strip_parentheses(title: str) -> str:
     """
-    Remove parenthesized content from track title to get base version.
+    Remove TRAILING parenthesized content from track title to get base version.
+    
+    This differs from helpers.strip_parentheses() which removes ALL parentheses.
+    For alternate take detection, we only want to remove trailing parentheses
+    (e.g., "Track (Live)" -> "Track") but keep middle ones (e.g., "Track (One) Two").
+    
     Example: "Track (Live)" -> "Track"
+    Example: "Track (One) Two" -> "Track (One) Two"  (no change)
     """
     return re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
 
@@ -144,7 +154,8 @@ def detect_alternate_takes(tracks: list) -> dict:
                 # This is an alternate take - link to base track
                 base_track = title_to_track[base_title_lower]
                 alternate_takes[track_id] = base_track['id']
-                log_verbose(f"   Detected alternate take: '{title}' -> base: '{base_track['title']}'")
+                # Safe logging - avoid f-string interpolation with user data
+                log_verbose("   Detected alternate take: '%s' -> base: '%s'" % (title, base_track['title']))
             else:
                 # No base track yet - record this one as a potential base
                 # (in case we see a non-parenthesis version later)
@@ -163,7 +174,8 @@ def detect_alternate_takes(tracks: list) -> dict:
                 # If existing track has parentheses, mark it as alternate
                 if re.match(r'^.*\([^)]*\)$', existing_track['title']):
                     alternate_takes[existing_track['id']] = track_id
-                    log_verbose(f"   Detected alternate take: '{existing_track['title']}' -> base: '{title}'")
+                    # Safe logging - avoid f-string interpolation with user data
+                    log_verbose("   Detected alternate take: '%s' -> base: '%s'" % (existing_track['title'], title))
             
             # Record this as the base track
             title_to_track[title_lower] = {
@@ -207,8 +219,8 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         last_lookup_str = row[0]
         popularity_score = row[1]
         
-        # Check if we have a valid popularity score
-        if not popularity_score or popularity_score == 0:
+        # Check if we have a valid popularity score (None or 0 means no valid data)
+        if popularity_score is None or popularity_score <= 0:
             return False
         
         # Parse timestamp and check if it's less than 24 hours old
@@ -1702,12 +1714,12 @@ def popularity_scan(
                     
                     # Check if this album is significantly underperforming compared to artist's catalog
                     album_is_underperforming = False
-                    if valid_scores and artist_stats['track_count'] > 10:
+                    if valid_scores and artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
                         album_median = median(valid_scores)
                         artist_median = artist_stats['median_popularity']
                         
-                        # Consider album underperforming if median is < 60% of artist median
-                        if artist_median > 0 and album_median < (artist_median * 0.6):
+                        # Consider album underperforming if median is < UNDERPERFORMING_THRESHOLD of artist median
+                        if artist_median > 0 and album_median < (artist_median * UNDERPERFORMING_THRESHOLD):
                             album_is_underperforming = True
                             log_unified(f"   ⚠️ Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
                     
