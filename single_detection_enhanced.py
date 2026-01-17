@@ -512,7 +512,7 @@ def detect_single_enhanced(
     
     result['single_status'] = final_status
     result['single_confidence'] = final_status
-    result['is_single'] = final_status in ('high', 'medium', 'low')
+    result['is_single'] = final_status == 'high'
     
     # Map confidence to numeric score
     confidence_scores = {'high': 1.0, 'medium': 0.67, 'low': 0.33, 'none': 0.0}
