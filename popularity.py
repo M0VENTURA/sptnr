@@ -596,7 +596,8 @@ def detect_single_for_track(
     artist: str,
     album_track_count: int = 1,
     spotify_results_cache: dict = None,
-    verbose: bool = False
+    verbose: bool = False,
+    discogs_token: str = None
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
@@ -610,6 +611,7 @@ def detect_single_for_track(
         album_track_count: Number of tracks on the album (for context-based confidence)
         spotify_results_cache: Optional dict mapping track_id to Spotify search results
         verbose: Enable verbose logging
+        discogs_token: Optional Discogs API token (will load from config if not provided)
         
     Returns:
         Dict with keys:
@@ -629,16 +631,17 @@ def detect_single_for_track(
     
     single_sources = []
     
-    # Load discogs token from config
-    discogs_token = ""
-    try:
-        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-        with open(config_path, 'r') as f:
-            config = yaml.safe_load(f)
-        discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
-    except Exception as e:
-        if verbose:
-            log_verbose(f"   ⚠ Could not load Discogs token from config: {e}")
+    # Load discogs token from config if not provided
+    if discogs_token is None:
+        discogs_token = ""
+        try:
+            config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+            with open(config_path, 'r') as f:
+                config = yaml.safe_load(f)
+            discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+        except Exception as e:
+            # Always log config loading errors, not just in verbose mode
+            log_unified(f"   ⚠ Could not load Discogs token from config at {config_path}: {e}")
     
     # First check: Spotify single detection
     try:
@@ -976,8 +979,8 @@ def popularity_scan(
                                 f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
                                 title, artist, album
                             )
-                            # Cache results for singles detection reuse
-                            spotify_results_cache[track_id] = spotify_search_results
+                            # Cache results for singles detection reuse (using title as key)
+                            spotify_results_cache[title] = spotify_search_results
                             
                             log_unified(f'Spotify search completed. Results count: {len(spotify_search_results) if spotify_search_results else 0}')
                             if spotify_search_results and isinstance(spotify_search_results, list) and len(spotify_search_results) > 0:
@@ -1103,7 +1106,8 @@ def popularity_scan(
                         artist=artist,
                         album_track_count=album_track_count,
                         spotify_results_cache=spotify_results_cache,
-                        verbose=VERBOSE
+                        verbose=verbose,  # Pass function parameter, not module constant
+                        discogs_token=discogs_token  # Pass already-loaded token
                     )
                     
                     single_sources = detection_result["sources"]
