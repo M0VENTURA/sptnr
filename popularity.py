@@ -1367,11 +1367,10 @@ def popularity_scan(
                             stars = 5
                         
                         # Boost stars for confirmed singles
-                        if is_single:
-                            if single_confidence == "high":
-                                stars = 5  # Discogs single = 5 stars
-                            elif single_confidence == "medium":
-                                stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
+                        if single_confidence == "high":
+                            stars = 5  # High confidence single = 5 stars
+                        elif single_confidence == "medium":
+                            stars = min(stars + 1, 5)  # Boost by 1 star for medium confidence
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
