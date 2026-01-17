@@ -205,7 +205,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             album_name = alb.get("name") or ""
             
             # Skip albums that don't match the filter (if provided)
-            if album_filter and album_name != album_filter:
+            if album_filter and album_name.strip() != album_filter.strip():
                 continue
             
             album_id = alb.get("id")

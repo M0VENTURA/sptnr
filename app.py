@@ -2822,7 +2822,9 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
         artist_name: Name of the artist
         album_name: Name of the album to scan
     
-    Note: Force is always True for single album scans to ensure fresh data.
+    Note: Force is always True for single album scans. When a user explicitly requests
+    a rescan for a specific album, we want to ensure we fetch fresh data from external
+    sources and update all metadata, even if the album was recently scanned.
     """
     log_unified(f"💿 Album scan pipeline started for: {artist_name} - {album_name}")
     try:
