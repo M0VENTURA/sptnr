@@ -155,7 +155,8 @@ def update_schema(db_path):
     Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
     Adds missing columns dynamically and creates indexes for performance.
     """
-    conn = sqlite3.connect(db_path)
+    conn = sqlite3.connect(db_path, timeout=120.0)
+    conn.execute("PRAGMA journal_mode=WAL")
     cursor = conn.cursor()
 
     # ✅ Ensure tracks table exists
