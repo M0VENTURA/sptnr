@@ -182,6 +182,52 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     return _lastfm_client.get_track_info(artist, title)
 
 
+def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int = 0) -> float:
+    """
+    Calculate a normalized Last.fm popularity score (0-100) from playcount.
+    
+    Uses logarithmic normalization to avoid capping at 100 for songs with 10,000+ plays.
+    
+    Algorithm:
+    1. If artist_max_playcount is provided, normalize relative to artist (0-100 scale)
+    2. Otherwise, use global logarithmic scale:
+       - log10(10000) = 4.0 → 50 points
+       - log10(100000) = 5.0 → 62.5 points  
+       - log10(1000000) = 6.0 → 75 points
+       - log10(10000000) = 7.0 → 87.5 points
+       
+    Args:
+        playcount: Last.fm playcount for the track
+        artist_max_playcount: Optional maximum playcount for the artist (for artist-relative scoring)
+        
+    Returns:
+        Popularity score (0-100)
+    """
+    if playcount <= 0:
+        return 0.0
+    
+    # Artist-relative scoring (preferred when available)
+    if artist_max_playcount > 0 and playcount <= artist_max_playcount:
+        # Linear scale relative to artist's most popular track
+        return (playcount / artist_max_playcount) * 100.0
+    
+    # Global logarithmic scaling
+    # Use log base 10, scaled to 0-100 range
+    # Formula: score = 12.5 * log10(playcount)
+    # This gives:
+    #   100 plays    → 25 points
+    #   1,000 plays  → 37.5 points
+    #   10,000 plays → 50 points
+    #   100,000 plays → 62.5 points
+    #   1,000,000 plays → 75 points
+    #   10,000,000 plays → 87.5 points
+    import math
+    score = 12.5 * math.log10(playcount)
+    
+    # Cap at 100
+    return min(100.0, max(0.0, score))
+
+
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
     _ensure_clients_from_config()
     if not _listenbrainz_enabled or _listenbrainz_client is None:
