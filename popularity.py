@@ -1960,25 +1960,21 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # Count high-confidence and medium-confidence methods
-                            high_conf_count = 0
-                            medium_conf_count = 0
-                            
-                            # Check single confidence from detection
-                            if single_confidence == "high":
-                                high_conf_count = 1
-                            elif single_confidence == "medium":
-                                medium_conf_count = len(single_sources) if single_sources else 1
-                            
                             # Apply new 5-star rule
-                            if high_conf_count >= 1:
+                            # High confidence always gets 5 stars
+                            if single_confidence == "high":
                                 stars = 5
                                 if verbose:
-                                    log_unified(f"   ⭐ 5-STAR: {title} (has {high_conf_count} high-confidence method)")
-                            elif medium_conf_count >= 2:
-                                stars = 5
-                                if verbose:
-                                    log_unified(f"   ⭐ 5-STAR: {title} (has {medium_conf_count} medium-confidence methods)")
+                                    log_unified(f"   ⭐ 5-STAR: {title} (high-confidence single)")
+                            # Medium confidence with 2+ sources gets 5 stars
+                            elif single_confidence == "medium":
+                                # Count the number of medium-confidence sources
+                                # Each unique source in single_sources represents a medium-confidence method
+                                medium_conf_count = len(single_sources) if single_sources else 0
+                                if medium_conf_count >= 2:
+                                    stars = 5
+                                    if verbose:
+                                        log_unified(f"   ⭐ 5-STAR: {title} (has {medium_conf_count} medium-confidence sources)")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (unless they exceed artist median)

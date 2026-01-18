@@ -462,8 +462,8 @@ def determine_final_status(
     Final single status based on source detection and z-score analysis.
     
     HIGH-CONFIDENCE (NEW RULES):
-    1. popularity >= album_mean + 6, OR
-    2. Discogs confirms exact track version (studio or live) as a single
+    1. Discogs confirms exact track version (studio or live) as a single, OR
+    2. popularity >= album_mean + 6 AND has_metadata (any explicit metadata source)
     
     High confidence is NEVER assigned if metadata_sources is empty.
     
@@ -471,16 +471,16 @@ def determine_final_status(
     - Spotify confirms (strict)
     - MusicBrainz confirms (strict, release_group.type == "Single")
     - Discogs video confirms
-    - Z-score with metadata confirmation
+    - Z-score >= 0.5 (album) OR >= 1.0 (artist) with metadata confirmation
     
     LOW-CONFIDENCE:
-    - album_z >= 0.2 AND >= 3 versions (when z-score enabled)
+    - album_z >= 0.2 AND >= 3 versions (when z-score enabled, no metadata required)
     
     NOT A SINGLE:
     - None of the above
     
-    Z-score can ONLY produce medium confidence, NEVER high confidence.
-    Z-score must ALWAYS require metadata confirmation.
+    Z-score can ONLY produce medium or low confidence, NEVER high confidence.
+    Z-score MUST require metadata confirmation for medium confidence.
     
     Args:
         discogs_confirmed: Whether Discogs confirms this is a single
@@ -504,7 +504,7 @@ def determine_final_status(
     if discogs_confirmed:
         return 'high'
     
-    # RULE 2: popularity >= album_mean + 6
+    # RULE 2: popularity >= album_mean + 6 AND has_metadata
     # This can ONLY produce high confidence if metadata is present
     if has_metadata and popularity >= (album_mean + 6):
         return 'high'
@@ -517,16 +517,17 @@ def determine_final_status(
         return 'medium'
     
     # Z-score can ONLY produce medium confidence, NEVER high confidence
-    # Z-score must ALWAYS require metadata confirmation
+    # Z-score MUST require metadata confirmation for MEDIUM confidence
+    # Z-score does NOT require metadata for LOW confidence
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
-    if use_zscore_detection and has_metadata:
-        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0
-        if album_z >= 0.5 or artist_z >= 1.0:
+    if use_zscore_detection:
+        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (with metadata)
+        if has_metadata and (album_z >= 0.5 or artist_z >= 1.0):
             return 'medium'
         
-        # Low confidence: album_z >= 0.2 AND >= 3 versions
+        # Low confidence: album_z >= 0.2 AND >= 3 versions (no metadata required)
         if album_z >= 0.2 and spotify_version_count >= 3:
             return 'low'
     
