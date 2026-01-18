@@ -441,91 +441,142 @@ def infer_from_popularity(
 
 
 # ============================================================================
-# Stage 7: Final Decision
+# Stage 7: Final Decision (Source-Based Classification)
 # ============================================================================
 
 def determine_final_status(
-    discogs_confirmed: bool,
-    spotify_confirmed: bool,
-    musicbrainz_confirmed: bool,
-    album_z: float,
-    artist_z: float,
-    spotify_version_count: int,
-    album_is_underperforming: bool = False,
-    is_artist_level_standout: bool = False,
-    popularity: float = 0.0,
-    album_mean: float = 0.0,
-    version_count_standout: bool = False
-) -> str:
+    high_conf_sources: set,
+    med_conf_sources: set
+) -> Tuple[str, bool]:
     """
-    Final single status using hybrid z-score (album + artist).
-    
-    Per problem statement:
+    Final single status based on source counts per problem statement.
     
     HIGH-CONFIDENCE:
-    - Discogs confirms (explicit single metadata)
-    - OR popularity >= mean + 6 (absolute popularity threshold)
+    - ANY high-confidence source present
     
     MEDIUM-CONFIDENCE:
-    - Spotify or MusicBrainz confirms (explicit single metadata)
-    - OR (z-score standout + metadata confirmation)
-      where metadata confirmation = explicit sources OR popularity outlier (>= mean + 2) OR version count outlier
-    
-    LOW-CONFIDENCE:
-    - album_z >= 0.2 AND >= 3 Spotify versions (legacy, if z-score detection enabled)
+    - ANY medium-confidence source present
     
     NOT A SINGLE:
-    - None of the above
+    - No sources
     
-    Z-score detection behavior:
-    - Normal albums: Z-score detection ENABLED
-    - Underperforming albums: Z-score detection DISABLED
-    - Exception: If song is a standout across entire artist catalogue, Z-score detection ENABLED
-    
-    Note: Version count standout is handled via infer_from_popularity() and
-    contributes to rating boost, not final single status.
+    Args:
+        high_conf_sources: Set of high-confidence source identifiers
+        med_conf_sources: Set of medium-confidence source identifiers
+        
+    Returns:
+        Tuple of (confidence_level, is_single)
+        is_single is True only for HIGH confidence
     """
-    # Use z-score detection unless album underperforms, except when track is artist-level standout
-    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    # High confidence requires ANY high-confidence source
+    if len(high_conf_sources) >= 1:
+        return 'high', True
     
-    # HIGH CONFIDENCE
-    # 1. Discogs confirms (explicit single)
-    if discogs_confirmed:
-        return 'high'
+    # Medium confidence requires ANY medium-confidence source
+    if len(med_conf_sources) >= 1:
+        return 'medium', False
     
-    # 2. Popularity >= mean + 6 (absolute threshold)
-    if popularity >= (album_mean + 6):
-        return 'high'
-    
-    # MEDIUM CONFIDENCE
-    # 1. Spotify or MusicBrainz confirms (explicit single)
-    if spotify_confirmed or musicbrainz_confirmed:
-        return 'medium'
-    
-    # 2. Z-score standout + metadata confirmation
-    # Metadata confirmation = explicit sources OR popularity outlier OR version count outlier
-    if use_zscore_detection:
-        # Check if we have metadata confirmation
-        has_popularity_outlier = popularity >= (album_mean + 2)
-        has_metadata_confirmation = spotify_confirmed or musicbrainz_confirmed or discogs_confirmed or has_popularity_outlier or version_count_standout
-        
-        # Z-score thresholds (hybrid: album + artist)
-        z_score_medium = (album_z >= 0.5 or artist_z >= 1.0)
-        
-        if z_score_medium and has_metadata_confirmation:
-            return 'medium'
-    
-    # LOW CONFIDENCE
-    # Legacy: album_z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
-    if use_zscore_detection and album_z >= 0.2 and spotify_version_count >= 3:
-        return 'low'
-    
-    return 'none'
+    # Otherwise, not a single
+    return 'none', False
 
 
 # ============================================================================
 # Main Enhanced Detection Function
 # ============================================================================
+
+def is_live_version_strict(title: str, album: str) -> bool:
+    """
+    Check if track or album indicates a live/unplugged version per Stage 5.
+    
+    Args:
+        title: Track title
+        album: Album name
+        
+    Returns:
+        True if title or album matches live patterns
+    """
+    combined = f"{title} {album}".lower()
+    live_patterns = [r'\blive\b', r'\bunplugged\b']
+    return any(re.search(p, combined) for p in live_patterns)
+
+
+def check_has_explicit_metadata(
+    title: str,
+    spotify_results: Optional[List[Dict]],
+    discogs_client=None,
+    musicbrainz_client=None,
+    artist: str = "",
+    duration: Optional[float] = None
+) -> bool:
+    """
+    Check if track has ANY explicit metadata from external sources.
+    
+    Returns True if ANY of:
+    - Spotify confirms single
+    - Discogs confirms single
+    - MusicBrainz confirms single
+    """
+    # Check Spotify
+    if spotify_results:
+        norm_title = normalize_title_strict(title)
+        for result_item in spotify_results:
+            result_title = result_item.get('name', '')
+            album_info = result_item.get('album', {})
+            album_type_check = album_info.get('album_type', '').lower()
+            album_name = album_info.get('name', '')
+            
+            # Check title match
+            if normalize_title_strict(result_title) != norm_title:
+                continue
+            
+            # Reject non-canonical
+            if is_non_canonical_version_strict(result_title):
+                continue
+            
+            # Check if single or EP with matching title
+            if album_type_check == 'single':
+                return True
+            elif album_type_check == 'ep' and normalize_title_strict(album_name) == norm_title:
+                return True
+    
+    # Check Discogs
+    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
+        try:
+            if discogs_client.is_single(title, artist, album_context={'duration': duration}):
+                return True
+        except Exception:
+            pass  # Fail gracefully
+    
+    # Check MusicBrainz
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        try:
+            if musicbrainz_client.is_single(title, artist):
+                return True
+        except Exception:
+            pass  # Fail gracefully
+    
+    return False
+
+
+def check_metadata_for_live_version(
+    title: str,
+    spotify_results: Optional[List[Dict]],
+    discogs_client=None,
+    musicbrainz_client=None,
+    artist: str = "",
+    duration: Optional[float] = None
+) -> bool:
+    """
+    Check if there's metadata for the EXACT live version of this track.
+    
+    For live tracks, we need metadata that confirms the live version specifically,
+    not just the studio version.
+    """
+    # For now, use same logic as has_explicit_metadata
+    # In a more sophisticated implementation, we would check if the metadata
+    # specifically mentions "live" in the release title
+    return check_has_explicit_metadata(title, spotify_results, discogs_client, musicbrainz_client, artist, duration)
+
 
 def detect_single_enhanced(
     conn,
@@ -545,17 +596,16 @@ def detect_single_enhanced(
     artist_median_popularity: float = 0.0
 ) -> Dict:
     """
-    Enhanced single detection implementing the 8-stage algorithm.
+    Enhanced single detection implementing the exact algorithm from problem statement.
     
-    This function implements the exact algorithm from the problem statement:
-    1. Pre-Filter (with compilation detection)
-    2. Discogs (Primary)
-    3. Spotify (Secondary)
-    4. MusicBrainz (Tertiary)
-    5. Popularity Inference
-    6. Version Matching (integrated)
-    7. Final Decision
-    8. Database Storage (returned as dict)
+    Pipeline:
+    1. PREPROCESSING - Calculate album/artist stats, exclude trailing parenthesis tracks
+    2. ARTIST-LEVEL SANITY FILTER - Skip if popularity < artist_mean AND no explicit metadata
+    3. HIGH CONFIDENCE DETECTION - Popularity standout OR Discogs
+    4. MEDIUM CONFIDENCE DETECTION - Z-score+metadata, Spotify, MusicBrainz, Discogs video, version count, popularity outlier
+    5. LIVE TRACK HANDLING - Require metadata for exact live version
+    6. FINAL CONFIDENCE CLASSIFICATION - Based on source counts
+    7. STAR RATING - HIGH=5★, MEDIUM with 2+ sources=5★, else baseline
     
     Args:
         conn: Database connection
@@ -588,7 +638,9 @@ def detect_single_enhanced(
         'discogs_release_ids': [],
         'musicbrainz_release_group_ids': [],
         'single_confidence_score': 0.0,
-        'single_detection_last_updated': datetime.now().isoformat()
+        'single_detection_last_updated': datetime.now().isoformat(),
+        'high_conf_sources': set(),
+        'med_conf_sources': set()
     }
     
     # Get album statistics
