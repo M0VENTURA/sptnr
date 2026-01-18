@@ -452,21 +452,27 @@ def determine_final_status(
     artist_z: float,
     spotify_version_count: int,
     album_is_underperforming: bool = False,
-    is_artist_level_standout: bool = False
+    is_artist_level_standout: bool = False,
+    popularity: float = 0.0,
+    album_mean: float = 0.0,
+    version_count_standout: bool = False
 ) -> str:
     """
     Final single status using hybrid z-score (album + artist).
     
+    Per problem statement:
+    
     HIGH-CONFIDENCE:
-    - Discogs confirms
-    - OR (album_z >= 1.0 AND artist_z >= 0.5) if z-score detection enabled
+    - Discogs confirms (explicit single metadata)
+    - OR popularity >= mean + 6 (absolute popularity threshold)
     
     MEDIUM-CONFIDENCE:
-    - Spotify or MusicBrainz confirms
-    - OR (album_z >= 0.5 OR artist_z >= 1.0) if z-score detection enabled
+    - Spotify or MusicBrainz confirms (explicit single metadata)
+    - OR (z-score standout + metadata confirmation)
+      where metadata confirmation = explicit sources OR popularity outlier (>= mean + 2) OR version count outlier
     
     LOW-CONFIDENCE:
-    - album_z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
+    - album_z >= 0.2 AND >= 3 Spotify versions (legacy, if z-score detection enabled)
     
     NOT A SINGLE:
     - None of the above
@@ -482,19 +488,35 @@ def determine_final_status(
     # Use z-score detection unless album underperforms, except when track is artist-level standout
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
-    # HIGH
+    # HIGH CONFIDENCE
+    # 1. Discogs confirms (explicit single)
     if discogs_confirmed:
         return 'high'
-    if use_zscore_detection and album_z >= 1.0 and artist_z >= 0.5:
+    
+    # 2. Popularity >= mean + 6 (absolute threshold)
+    if popularity >= (album_mean + 6):
         return 'high'
     
-    # MEDIUM
+    # MEDIUM CONFIDENCE
+    # 1. Spotify or MusicBrainz confirms (explicit single)
     if spotify_confirmed or musicbrainz_confirmed:
         return 'medium'
-    if use_zscore_detection and (album_z >= 0.5 or artist_z >= 1.0):
-        return 'medium'
     
-    # LOW
+    # 2. Z-score standout + metadata confirmation
+    # Metadata confirmation = explicit sources OR popularity outlier OR version count outlier
+    if use_zscore_detection:
+        # Check if we have metadata confirmation
+        has_popularity_outlier = popularity >= (album_mean + 2)
+        has_metadata_confirmation = spotify_confirmed or musicbrainz_confirmed or discogs_confirmed or has_popularity_outlier or version_count_standout
+        
+        # Z-score thresholds (hybrid: album + artist)
+        z_score_medium = (album_z >= 0.5 or artist_z >= 1.0)
+        
+        if z_score_medium and has_metadata_confirmation:
+            return 'medium'
+    
+    # LOW CONFIDENCE
+    # Legacy: album_z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
     if use_zscore_detection and album_z >= 0.2 and spotify_version_count >= 3:
         return 'low'
     
@@ -778,8 +800,9 @@ def detect_single_enhanced(
         album_is_underperforming,
         is_artist_level_standout
     )
+    # NOTE: Z-score inference is used for confidence calculation only, NOT added to sources
+    # Per problem statement: z-score should not appear as a high-confidence source
     if popularity_inferred:
-        result['single_sources'].append('z-score')
         if verbose:
             log_debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
     elif version_count_standout:
@@ -797,7 +820,10 @@ def detect_single_enhanced(
         artist_z,
         version_count_value,
         album_is_underperforming,
-        is_artist_level_standout
+        is_artist_level_standout,
+        popularity,
+        album_mean,
+        version_count_standout
     )
     
     result['single_status'] = final_status

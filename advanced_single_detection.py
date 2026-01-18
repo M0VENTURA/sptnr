@@ -522,9 +522,8 @@ def detect_single_advanced(
             if version.musicbrainz_single and 'musicbrainz' not in sources:
                 sources.append('musicbrainz')
     
-    # Add z-score as a source indicator
-    if zscore >= zscore_threshold:
-        sources.append('popularity_zscore')
+    # NOTE: Z-score is used for confidence calculation only, NOT added to sources
+    # Per problem statement: z-score should not appear as a high-confidence source
     
     # Determine confidence
     if is_single:
