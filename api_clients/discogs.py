@@ -3,6 +3,7 @@ import logging
 import difflib
 import time
 import json
+import re
 from typing import Optional, Dict, List, Tuple
 from . import session
 
@@ -327,18 +328,31 @@ class DiscogsClient:
         """
         Check if a video is an official video for a given track.
         
+        A video is considered official if:
+        1. The word "official" appears in the video title or description
+           (avoiding false positives like "unofficial" by checking word boundaries)
+        2. The track title appears in the video title or description
+           (using substring matching for flexibility with formatting variations)
+        
         Args:
-            video: Video dict from Discogs API
-            track_title_lower: Track title in lowercase
+            video: Video dict from Discogs API with 'title' and 'description' keys
+            track_title_lower: Track title in lowercase for case-insensitive matching
             
         Returns:
-            True if video is official and matches track title
+            True if both conditions are met (official video that matches the track)
         """
         video_title = (video.get("title") or "").lower()
         video_desc = (video.get("description") or "").lower()
         
-        # Check if it's an official video for this track
-        is_official = ("official" in video_title or "official" in video_desc)
+        # Check for "official" as a whole word to avoid matching "unofficial"
+        # Use word boundary checking with common separators
+        official_pattern = r'\bofficial\b'
+        is_official = (
+            re.search(official_pattern, video_title) is not None or
+            re.search(official_pattern, video_desc) is not None
+        )
+        
+        # Track title matching uses substring for flexibility (handles formatting variations)
         matches_title = (track_title_lower in video_title or track_title_lower in video_desc)
         
         return is_official and matches_title
