@@ -19,6 +19,8 @@ from statistics import mean, stdev
 from datetime import datetime
 
 # Import centralized logging functions
+# Use centralized logging to ensure API activity appears in unified_scan.log, info.log, and debug.log
+# instead of Python's default logging system which doesn't route to these files
 from logging_config import log_unified, log_info, log_debug
 
 logger = logging.getLogger(__name__)
@@ -646,12 +648,14 @@ def detect_single_enhanced(
             log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
             log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
-        if not discogs_client:
-            log_unified(f"   ⓘ Discogs client not available")
-            log_info(f"   Discogs: Client not available (module import failed)")
-        elif not getattr(discogs_client, 'enabled', True):
-            log_unified(f"   ⓘ Discogs client is disabled")
-            log_info(f"   Discogs: Client is disabled in configuration")
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not discogs_client:
+                log_unified(f"   ⓘ Discogs client not available")
+                log_info(f"   Discogs: Client not available (module import failed)")
+            elif not getattr(discogs_client, 'enabled', True):
+                log_unified(f"   ⓘ Discogs client is disabled")
+                log_info(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
@@ -717,12 +721,14 @@ def detect_single_enhanced(
                 log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
                 log_info(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
     else:
-        if not musicbrainz_client:
-            log_unified(f"   ⓘ MusicBrainz client not available")
-            log_info(f"   MusicBrainz: Client not available (module import failed)")
-        elif not getattr(musicbrainz_client, 'enabled', True):
-            log_unified(f"   ⓘ MusicBrainz client is disabled")
-            log_info(f"   MusicBrainz: Client is disabled in configuration")
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not musicbrainz_client:
+                log_unified(f"   ⓘ MusicBrainz client not available")
+                log_info(f"   MusicBrainz: Client not available (module import failed)")
+            elif not getattr(musicbrainz_client, 'enabled', True):
+                log_unified(f"   ⓘ MusicBrainz client is disabled")
+                log_info(f"   MusicBrainz: Client is disabled in configuration")
     
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
