@@ -167,6 +167,18 @@ required_artist_columns = {
     "genre_display": "TEXT"                 # Primary display genre (aggregated)
 }
 
+# ✅ Define columns for the artist_stats table
+required_artist_stats_columns = {
+    "artist_id": "TEXT",                    # Primary key
+    "artist_name": "TEXT",                  # Artist name
+    "album_count": "INTEGER",               # Number of albums
+    "track_count": "INTEGER",               # Number of tracks
+    "last_updated": "TEXT",                 # Last update timestamp
+    "avg_popularity": "REAL",               # Average popularity across all tracks
+    "median_popularity": "REAL",            # Median popularity across all tracks
+    "popularity_stddev": "REAL"             # Standard deviation of popularity
+}
+
 def update_schema(db_path):
     """
     Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
@@ -235,16 +247,30 @@ def update_schema(db_path):
     # ✅ Ensure artist_stats table exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS artist_stats (
-            artist_id TEXT PRIMARY KEY,
-            artist_name TEXT,
-            album_count INTEGER,
-            track_count INTEGER,
-            last_updated TEXT,
-            avg_popularity REAL,
-            median_popularity REAL,
-            popularity_stddev REAL
+            artist_id TEXT PRIMARY KEY
         );
     """)
+    
+    # Get existing columns for artist_stats
+    cursor.execute("PRAGMA table_info(artist_stats);")
+    existing_artist_stats_columns = [row[1] for row in cursor.fetchall()]
+    
+    # Add missing artist_stats columns
+    artist_stats_columns_added = []
+    for col, col_type in required_artist_stats_columns.items():
+        if col not in existing_artist_stats_columns:
+            try:
+                cursor.execute(f"ALTER TABLE artist_stats ADD COLUMN {col} {col_type};")
+                artist_stats_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                # Column might already exist due to race condition or previous partial run
+                if "duplicate column name" in str(e).lower():
+                    print(f"⚠️ Column {col} already exists in artist_stats table, skipping")
+                else:
+                    raise
+    
+    if artist_stats_columns_added:
+        print(f"✅ Added {len(artist_stats_columns_added)} missing artist_stats column(s): {', '.join(artist_stats_columns_added)}")
     
     # ✅ Ensure navidrome_users table exists (for per-user features)
     cursor.execute("""
