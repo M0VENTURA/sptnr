@@ -324,9 +324,10 @@ def detect_single_new(
     
     # A. Z-score + metadata confirmation (deferred until we check actual metadata sources)
     # We'll check this after collecting explicit metadata sources below
-    z_score = 0.0
     if album_std > 0:
         z_score = (popularity - album_mean) / album_std
+    else:
+        z_score = 0.0
     
     # B. Spotify single (strict)
     if spotify_results:

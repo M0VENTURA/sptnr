@@ -12,9 +12,9 @@ from . import session
 
 logger = logging.getLogger(__name__)
 
-# Version keywords to detect in track titles
-VERSION_KEYWORDS = ['live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
-                   'remaster', 'remastered', 'demo', 'instrumental', 'orchestral']
+# Version keywords to detect in track titles (immutable tuple for performance)
+VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
+                    'remaster', 'remastered', 'demo', 'instrumental', 'orchestral')
 
 def _extract_version_info(title: str) -> tuple[str, set[str]]:
     """
@@ -43,7 +43,15 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     
     # Extract base title (remove parenthesized/bracketed content and dash-based suffixes)
     base_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)  # Remove (anything) or [anything]
-    base_title = re.sub(r'\s*-\s*(?:Live|Remix|Remaster|Edit|Mix|Version|Acoustic|Unplugged).*$', '', base_title, flags=re.IGNORECASE)
+    
+    # Dynamically build pattern from VERSION_KEYWORDS for consistency
+    version_pattern = '|'.join(keyword.capitalize() for keyword in VERSION_KEYWORDS)
+    base_title = re.sub(
+        r'\s*-\s*(?:' + version_pattern + r').*$', 
+        '', 
+        base_title, 
+        flags=re.IGNORECASE
+    )
     base_title = base_title.strip()
     
     return base_title, found_versions
