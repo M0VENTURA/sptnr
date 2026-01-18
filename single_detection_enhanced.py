@@ -328,7 +328,7 @@ def infer_from_popularity(
     - Exception: If song is a standout across entire artist catalogue, Z-score detection ENABLED
     """
     # Use z-score detection unless album underperforms, except when track is artist-level standout
-    use_zscore_detection = not album_is_underperforming or is_artist_level_standout
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
     if use_zscore_detection:
         # Apply z-score based single detection
@@ -385,7 +385,7 @@ def determine_final_status(
     contributes to rating boost, not final single status.
     """
     # Use z-score detection unless album underperforms, except when track is artist-level standout
-    use_zscore_detection = not album_is_underperforming or is_artist_level_standout
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
     # HIGH
     if discogs_confirmed:
