@@ -1597,13 +1597,12 @@ def popularity_scan(
                             if not skip_spotify_lookup:
                                 log_unified(f'Searching Spotify for track: {title} by {artist}')
                                 # For popularity scoring, we pass album for better matching accuracy
-                                # For live/unplugged albums, always include album to avoid matching studio versions
-                                search_album = album if is_live_album else album
+                                # For live/unplugged albums, this is especially important to avoid matching studio versions
                                 spotify_search_results = _run_with_timeout(
                                     search_spotify_track,
                                     API_CALL_TIMEOUT,
                                     f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                    title, artist, search_album
+                                    title, artist, album
                                 )
                                 # Record API request for rate limiting
                                 rate_limiter.record_spotify_request()
@@ -1714,28 +1713,10 @@ def popularity_scan(
                                 # Try to wait if reasonable
                                 if not rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
                                     log_unified(f'⚠️ Skipping Last.fm lookup for {title} due to rate limits')
-                                    # Continue without Last.fm score
-                                else:
-                                    # Successfully waited, proceed with lookup
-                                    log_unified(f'Getting Last.fm info for: {title} by {artist}')
-                                    lastfm_info = _run_with_timeout(
-                                        get_lastfm_track_info,
-                                        API_CALL_TIMEOUT,
-                                        f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        artist, title
-                                    )
-                                    # Record API request for rate limiting
-                                    rate_limiter.record_lastfm_request()
-                                    
-                                    log_unified(f'Last.fm lookup completed. Result: {lastfm_info}')
-                                    if lastfm_info and lastfm_info.get("track_play"):
-                                        playcount = lastfm_info.get("track_play")
-                                        # Use improved logarithmic scoring instead of simple division
-                                        lastfm_score = calculate_lastfm_popularity_score(playcount)
-                                        log_unified(f'Last.fm play count: {playcount} (score: {lastfm_score:.1f})')
-                                    else:
-                                        log_unified(f'No Last.fm play count found for: {title}')
-                            else:
+                                    can_proceed = False  # Mark as failed after waiting
+                            
+                            # Perform lookup if we can proceed (either initially or after waiting)
+                            if can_proceed:
                                 log_unified(f'Getting Last.fm info for: {title} by {artist}')
                                 lastfm_info = _run_with_timeout(
                                     get_lastfm_track_info,
