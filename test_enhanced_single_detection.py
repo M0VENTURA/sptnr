@@ -139,77 +139,80 @@ def test_z_score_inference():
     # Test normal albums (z-score enabled)
     print("\n  Normal albums (z-score enabled):")
     test_cases_normal = [
-        # (z_score, spotify_versions, expected_confidence, expected_is_single)
-        (1.5, 2, 'high', True),   # z >= 1.0
-        (0.8, 2, 'medium', True),  # z >= 0.5
-        (0.3, 5, 'low', True),     # z >= 0.2 AND >= 3 versions
-        (0.3, 2, 'none', False),   # z >= 0.2 but < 3 versions
-        (0.1, 5, 'none', False),   # < 0.2 threshold
+        # (album_z, artist_z, spotify_versions, expected_confidence, expected_is_single)
+        (1.5, 0.8, 2, 'high', True),    # album_z >= 1.0 AND artist_z >= 0.5
+        (1.2, 0.3, 2, 'medium', True),  # album_z >= 1.0 but artist_z < 0.5 → medium (album_z >= 0.5)
+        (0.8, 1.2, 2, 'medium', True),  # album_z >= 0.5 OR artist_z >= 1.0
+        (0.3, 1.5, 2, 'medium', True),  # artist_z >= 1.0 (catalogue-wide single)
+        (0.3, 0.3, 5, 'low', True),     # album_z >= 0.2 AND >= 3 versions (legacy)
+        (0.3, 0.3, 2, 'none', False),   # album_z >= 0.2 but < 3 versions
+        (0.1, 0.1, 5, 'none', False),   # < 0.2 threshold
     ]
     
     passed = 0
     failed = 0
     
-    for z_score, versions, exp_conf, exp_single in test_cases_normal:
+    for album_z, artist_z, versions, exp_conf, exp_single in test_cases_normal:
         conf, is_single = infer_from_popularity(
-            z_score, versions, 
+            album_z, artist_z, versions, 
             version_count_standout=False, 
             album_is_underperforming=False, 
             is_artist_level_standout=False
         )
         if conf == exp_conf and is_single == exp_single:
-            print(f"    ✅ z={z_score:.1f}, v={versions} → {conf}, single={is_single}")
+            print(f"    ✅ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single}")
             passed += 1
         else:
-            print(f"    ❌ z={z_score:.1f}, v={versions} → {conf}, single={is_single}")
+            print(f"    ❌ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single}")
             print(f"       Expected: {exp_conf}, single={exp_single}")
             failed += 1
     
     # Test underperforming albums (z-score disabled)
     print("\n  Underperforming albums (z-score disabled):")
     test_cases_underperforming = [
-        # (z_score, spotify_versions, expected_confidence, expected_is_single)
-        (1.5, 2, 'none', False),   # z >= 1.0 but disabled
-        (0.8, 2, 'none', False),   # z >= 0.5 but disabled
-        (0.3, 5, 'none', False),   # z >= 0.2 but disabled
+        # (album_z, artist_z, spotify_versions, expected_confidence, expected_is_single)
+        (1.5, 0.8, 2, 'none', False),   # album_z >= 1.0 but disabled
+        (0.8, 1.2, 2, 'none', False),   # artist_z >= 1.0 but disabled
+        (0.3, 0.3, 5, 'none', False),   # album_z >= 0.2 but disabled
     ]
     
-    for z_score, versions, exp_conf, exp_single in test_cases_underperforming:
+    for album_z, artist_z, versions, exp_conf, exp_single in test_cases_underperforming:
         conf, is_single = infer_from_popularity(
-            z_score, versions, 
+            album_z, artist_z, versions, 
             version_count_standout=False, 
             album_is_underperforming=True, 
             is_artist_level_standout=False
         )
         if conf == exp_conf and is_single == exp_single:
-            print(f"    ✅ z={z_score:.1f}, v={versions} → {conf}, single={is_single} (underperforming)")
+            print(f"    ✅ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single} (underperforming)")
             passed += 1
         else:
-            print(f"    ❌ z={z_score:.1f}, v={versions} → {conf}, single={is_single} (underperforming)")
+            print(f"    ❌ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single} (underperforming)")
             print(f"       Expected: {exp_conf}, single={exp_single}")
             failed += 1
     
     # Test underperforming albums with artist-level standout (z-score re-enabled)
     print("\n  Underperforming albums with artist-level standout (z-score re-enabled):")
     test_cases_standout = [
-        # (z_score, spotify_versions, expected_confidence, expected_is_single)
-        (1.5, 2, 'high', True),    # z >= 1.0 and standout
-        (0.8, 2, 'medium', True),  # z >= 0.5 and standout
-        (0.3, 5, 'low', True),     # z >= 0.2 AND >= 3 versions and standout
+        # (album_z, artist_z, spotify_versions, expected_confidence, expected_is_single)
+        (1.5, 0.8, 2, 'high', True),    # album_z >= 1.0 AND artist_z >= 0.5 and standout
+        (0.8, 1.2, 2, 'medium', True),  # album_z >= 0.5 OR artist_z >= 1.0 and standout
+        (0.3, 1.5, 2, 'medium', True),  # artist_z >= 1.0 and standout
+        (0.3, 0.3, 5, 'low', True),     # album_z >= 0.2 AND >= 3 versions and standout
     ]
     
-    for z_score, versions, exp_conf, exp_single in test_cases_standout:
+    for album_z, artist_z, versions, exp_conf, exp_single in test_cases_standout:
         conf, is_single = infer_from_popularity(
-            z_score, versions, 
+            album_z, artist_z, versions, 
             version_count_standout=False, 
             album_is_underperforming=True, 
             is_artist_level_standout=True
         )
         if conf == exp_conf and is_single == exp_single:
-            print(f"    ✅ z={z_score:.1f}, v={versions} → {conf}, single={is_single} (standout)")
+            print(f"    ✅ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single} (standout)")
             passed += 1
         else:
-            print(f"    ❌ z={z_score:.1f}, v={versions} → {conf}, single={is_single} (standout)")
+            print(f"    ❌ album_z={album_z:.1f}, artist_z={artist_z:.1f}, v={versions} → {conf}, single={is_single} (standout)")
             print(f"       Expected: {exp_conf}, single={exp_single}")
             failed += 1
     
@@ -226,77 +229,81 @@ def test_final_status_determination():
     # Test normal albums (z-score enabled)
     print("\n  Normal albums (z-score enabled):")
     test_cases_normal = [
-        # (discogs, spotify, mb, z_score, versions, expected_status)
-        (True, False, False, 0.0, 0, 'high'),    # Discogs confirms
-        (False, False, False, 1.2, 2, 'high'),   # z >= 1.0
-        (False, True, False, 0.3, 2, 'medium'),  # Spotify confirms
-        (False, False, True, 0.3, 2, 'medium'),  # MusicBrainz confirms
-        (False, False, False, 0.6, 2, 'medium'), # z >= 0.5
-        (False, False, False, 0.3, 5, 'low'),    # z >= 0.2 AND >= 3 versions
-        (False, False, False, 0.1, 5, 'none'),   # None of the above
+        # (discogs, spotify, mb, album_z, artist_z, versions, expected_status)
+        (True, False, False, 0.0, 0.0, 0, 'high'),      # Discogs confirms
+        (False, False, False, 1.2, 0.8, 2, 'high'),     # album_z >= 1.0 AND artist_z >= 0.5
+        (False, False, False, 1.2, 0.3, 2, 'medium'),   # album_z >= 1.0 but artist_z < 0.5 → medium (album_z >= 0.5)
+        (False, True, False, 0.3, 0.3, 2, 'medium'),    # Spotify confirms
+        (False, False, True, 0.3, 0.3, 2, 'medium'),    # MusicBrainz confirms
+        (False, False, False, 0.6, 0.3, 2, 'medium'),   # album_z >= 0.5
+        (False, False, False, 0.3, 1.2, 2, 'medium'),   # artist_z >= 1.0
+        (False, False, False, 0.3, 0.3, 5, 'low'),      # album_z >= 0.2 AND >= 3 versions
+        (False, False, False, 0.1, 0.1, 5, 'none'),     # None of the above
     ]
     
     passed = 0
     failed = 0
     
-    for discogs, spotify, mb, z, versions, expected in test_cases_normal:
+    for discogs, spotify, mb, album_z, artist_z, versions, expected in test_cases_normal:
         result = determine_final_status(
-            discogs, spotify, mb, z, versions, 
+            discogs, spotify, mb, album_z, artist_z, versions, 
             album_is_underperforming=False, 
             is_artist_level_standout=False
         )
         if result == expected:
-            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result}")
+            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result}")
             passed += 1
         else:
-            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result} (expected {expected})")
+            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result} (expected {expected})")
             failed += 1
     
     # Test underperforming albums (z-score disabled)
     print("\n  Underperforming albums (z-score disabled):")
     test_cases_underperforming = [
-        # (discogs, spotify, mb, z_score, versions, expected_status)
-        (True, False, False, 0.0, 0, 'high'),     # Discogs confirms (always works)
-        (False, True, False, 0.3, 2, 'medium'),   # Spotify confirms (always works)
-        (False, False, True, 0.3, 2, 'medium'),   # MusicBrainz confirms (always works)
-        (False, False, False, 1.2, 2, 'none'),    # z >= 1.0 but disabled
-        (False, False, False, 0.6, 2, 'none'),    # z >= 0.5 but disabled
-        (False, False, False, 0.3, 5, 'none'),    # z >= 0.2 but disabled
+        # (discogs, spotify, mb, album_z, artist_z, versions, expected_status)
+        (True, False, False, 0.0, 0.0, 0, 'high'),      # Discogs confirms (always works)
+        (False, True, False, 0.3, 0.3, 2, 'medium'),    # Spotify confirms (always works)
+        (False, False, True, 0.3, 0.3, 2, 'medium'),    # MusicBrainz confirms (always works)
+        (False, False, False, 1.2, 0.8, 2, 'none'),     # album_z >= 1.0 AND artist_z >= 0.5 but disabled
+        (False, False, False, 0.6, 0.3, 2, 'none'),     # album_z >= 0.5 but disabled
+        (False, False, False, 0.3, 1.2, 2, 'none'),     # artist_z >= 1.0 but disabled
+        (False, False, False, 0.3, 0.3, 5, 'none'),     # album_z >= 0.2 but disabled
     ]
     
-    for discogs, spotify, mb, z, versions, expected in test_cases_underperforming:
+    for discogs, spotify, mb, album_z, artist_z, versions, expected in test_cases_underperforming:
         result = determine_final_status(
-            discogs, spotify, mb, z, versions, 
+            discogs, spotify, mb, album_z, artist_z, versions, 
             album_is_underperforming=True, 
             is_artist_level_standout=False
         )
         if result == expected:
-            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result} (underperforming)")
+            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result} (underperforming)")
             passed += 1
         else:
-            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result} (expected {expected}, underperforming)")
+            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result} (expected {expected}, underperforming)")
             failed += 1
     
     # Test underperforming albums with artist-level standout (z-score re-enabled)
     print("\n  Underperforming albums with artist-level standout (z-score re-enabled):")
     test_cases_standout = [
-        # (discogs, spotify, mb, z_score, versions, expected_status)
-        (False, False, False, 1.2, 2, 'high'),    # z >= 1.0 and standout
-        (False, False, False, 0.6, 2, 'medium'),  # z >= 0.5 and standout
-        (False, False, False, 0.3, 5, 'low'),     # z >= 0.2 AND >= 3 versions and standout
+        # (discogs, spotify, mb, album_z, artist_z, versions, expected_status)
+        (False, False, False, 1.2, 0.8, 2, 'high'),     # album_z >= 1.0 AND artist_z >= 0.5 and standout
+        (False, False, False, 0.6, 0.3, 2, 'medium'),   # album_z >= 0.5 and standout
+        (False, False, False, 0.3, 1.2, 2, 'medium'),   # artist_z >= 1.0 and standout
+        (False, False, False, 0.3, 0.3, 5, 'low'),      # album_z >= 0.2 AND >= 3 versions and standout
     ]
     
-    for discogs, spotify, mb, z, versions, expected in test_cases_standout:
+    for discogs, spotify, mb, album_z, artist_z, versions, expected in test_cases_standout:
         result = determine_final_status(
-            discogs, spotify, mb, z, versions, 
+            discogs, spotify, mb, album_z, artist_z, versions, 
             album_is_underperforming=True, 
             is_artist_level_standout=True
         )
         if result == expected:
-            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result} (standout)")
+            print(f"    ✅ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result} (standout)")
             passed += 1
         else:
-            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, z={z}, v={versions} → {result} (expected {expected}, standout)")
+            print(f"    ❌ D={discogs}, S={spotify}, M={mb}, album_z={album_z}, artist_z={artist_z}, v={versions} → {result} (expected {expected}, standout)")
             failed += 1
     
     print(f"\nResult: {passed} passed, {failed} failed")

@@ -13,6 +13,7 @@ Author: SPTNR Team
 import re
 import json
 import logging
+import sqlite3
 from typing import Dict, List, Optional, Tuple
 from statistics import mean, stdev
 from datetime import datetime
@@ -127,6 +128,18 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
 # Stage 1: Pre-Filter Logic
 # ============================================================================
 
+# Keyword filter for non-singles (used in artist stats calculation)
+# Filters out alternate versions: live, acoustic, orchestral, remixes, demos, etc.
+IGNORE_SINGLE_KEYWORDS = [
+    "intro", "outro", "jam",
+    "live", "unplugged",
+    "remix", "edit", "mix",
+    "acoustic", "orchestral",
+    "demo", "instrumental", "karaoke",
+    "remaster", "remastered"
+]
+
+
 def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, int]:
     """
     Calculate album popularity statistics for pre-filter.
@@ -150,6 +163,54 @@ def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, 
     album_stddev = stdev(popularities)
     
     return album_mean, album_stddev, len(popularities)
+
+
+def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
+    """
+    Calculate artist-level popularity statistics across entire catalogue.
+    
+    Filters out live/remix/alternate versions to ensure statistics reflect
+    the core catalog and are not skewed by bonus tracks or alternate versions.
+    
+    Returns:
+        Tuple of (mean, stddev, count)
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT popularity_score, title, album
+        FROM tracks
+        WHERE artist = ? AND popularity_score > 0
+    """, (artist,))
+    
+    # Filter out live/remix/alternate tracks before calculating statistics
+    # Use word boundary matching to avoid false positives
+    popularities = []
+    for row in cursor.fetchall():
+        popularity_score = row[0]
+        title = row[1] if row[1] else ""
+        album = row[2] if row[2] else ""
+        
+        # Exclude live/remix/alternate versions from artist statistics
+        # Use word boundary matching with regex for more precise detection
+        combined_text = f"{title} {album}".lower()
+        should_exclude = False
+        for keyword in IGNORE_SINGLE_KEYWORDS:
+            # Use word boundary matching to avoid false positives
+            # e.g., "remix" matches "remix" but not "supremix"
+            if re.search(r'\b' + re.escape(keyword) + r'\b', combined_text):
+                should_exclude = True
+                break
+        
+        if not should_exclude:
+            popularities.append(popularity_score)
+    
+    if len(popularities) < 2:
+        return 0.0, 0.0, len(popularities)
+    
+    artist_mean = mean(popularities)
+    artist_stddev = stdev(popularities)
+    
+    return artist_mean, artist_stddev, len(popularities)
 
 
 def count_spotify_versions(spotify_results: List[Dict], title: str, duration: Optional[float], isrc: Optional[str]) -> int:
@@ -288,25 +349,37 @@ def should_check_track(
 # Stage 5: Popularity-Based Inference
 # ============================================================================
 
-def calculate_z_score_strict(popularity: float, album_mean: float, album_stddev: float) -> float:
-    """Calculate z-score per Stage 5."""
-    if album_stddev == 0:
+def calculate_z_score_strict(popularity: float, pop_mean: float, pop_stddev: float) -> float:
+    """
+    Calculate z-score for a track.
+    
+    Args:
+        popularity: Track popularity score
+        pop_mean: Mean popularity (album or artist level)
+        pop_stddev: Standard deviation (album or artist level)
+    
+    Returns:
+        Z-score value (0 if stddev is 0)
+    """
+    if pop_stddev == 0:
         return 0.0
-    return (popularity - album_mean) / album_stddev
+    return (popularity - pop_mean) / pop_stddev
 
 
 def infer_from_popularity(
-    z_score: float, 
+    album_z: float,
+    artist_z: float,
     spotify_version_count: int, 
     version_count_standout: bool = False,
     album_is_underperforming: bool = False,
     is_artist_level_standout: bool = False
 ) -> Tuple[str, bool]:
     """
-    Popularity-based inference per Stage 5.
+    Popularity-based inference using hybrid z-score (album + artist).
     
     Args:
-        z_score: Z-score for the track within its album
+        album_z: Album-level z-score for the track
+        artist_z: Artist-level z-score for the track
         spotify_version_count: Number of exact-match Spotify versions
         version_count_standout: Whether track has version_count >= mean + 1 for the album
         album_is_underperforming: Whether the album is underperforming vs artist median
@@ -315,11 +388,19 @@ def infer_from_popularity(
     Returns:
         Tuple of (confidence_level, is_inferred_single)
     
-    Thresholds:
-    - z >= 1.0 → strong single (high)
-    - z >= 0.5 → likely single (medium)
-    - z >= 0.2 AND >= 3 versions → weak single (low)
-    - version_count_standout (version_count >= mean + 1) → medium confidence indicator
+    Hybrid Z-Score Thresholds (per problem statement):
+    
+    HIGH-CONFIDENCE SINGLE:
+    - album_z >= 1.0 AND artist_z >= 0.5
+    
+    MEDIUM-CONFIDENCE SINGLE:
+    - album_z >= 0.5 OR artist_z >= 1.0
+    
+    LOW-CONFIDENCE (legacy support):
+    - album_z >= 0.2 AND >= 3 versions
+    
+    Version count standout:
+    - version_count >= mean + 1 → medium confidence indicator
       (for rating boost, but does not mark as single)
     
     Z-score detection behavior:
@@ -331,12 +412,18 @@ def infer_from_popularity(
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
     if use_zscore_detection:
-        # Apply z-score based single detection
-        if z_score >= 1.0:
+        # Apply hybrid z-score based single detection per problem statement
+        
+        # HIGH: album_z >= 1.0 AND artist_z >= 0.5
+        if album_z >= 1.0 and artist_z >= 0.5:
             return 'high', True
-        elif z_score >= 0.5:
+        
+        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.0
+        if album_z >= 0.5 or artist_z >= 1.0:
             return 'medium', True
-        elif z_score >= 0.2 and spotify_version_count >= 3:
+        
+        # LOW: Legacy support for album_z >= 0.2 AND >= 3 versions
+        if album_z >= 0.2 and spotify_version_count >= 3:
             return 'low', True
     
     # Version count standout always applies regardless of underperformance
@@ -356,22 +443,25 @@ def determine_final_status(
     discogs_confirmed: bool,
     spotify_confirmed: bool,
     musicbrainz_confirmed: bool,
-    z_score: float,
+    album_z: float,
+    artist_z: float,
     spotify_version_count: int,
     album_is_underperforming: bool = False,
     is_artist_level_standout: bool = False
 ) -> str:
     """
-    Final single status per Stage 7.
+    Final single status using hybrid z-score (album + artist).
     
     HIGH-CONFIDENCE:
-    - Discogs confirms OR z >= 1.0 (if z-score detection enabled)
+    - Discogs confirms
+    - OR (album_z >= 1.0 AND artist_z >= 0.5) if z-score detection enabled
     
     MEDIUM-CONFIDENCE:
-    - Spotify or MusicBrainz confirms OR z >= 0.5 (if z-score detection enabled)
+    - Spotify or MusicBrainz confirms
+    - OR (album_z >= 0.5 OR artist_z >= 1.0) if z-score detection enabled
     
     LOW-CONFIDENCE:
-    - z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
+    - album_z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
     
     NOT A SINGLE:
     - None of the above
@@ -390,17 +480,17 @@ def determine_final_status(
     # HIGH
     if discogs_confirmed:
         return 'high'
-    if use_zscore_detection and z_score >= 1.0:
+    if use_zscore_detection and album_z >= 1.0 and artist_z >= 0.5:
         return 'high'
     
     # MEDIUM
     if spotify_confirmed or musicbrainz_confirmed:
         return 'medium'
-    if use_zscore_detection and z_score >= 0.5:
+    if use_zscore_detection and (album_z >= 0.5 or artist_z >= 1.0):
         return 'medium'
     
     # LOW
-    if use_zscore_detection and z_score >= 0.2 and spotify_version_count >= 3:
+    if use_zscore_detection and album_z >= 0.2 and spotify_version_count >= 3:
         return 'low'
     
     return 'none'
@@ -526,12 +616,19 @@ def detect_single_enhanced(
                 result['is_single'] = True
                 result['single_confidence_score'] = 1.0
                 
-                # Still calculate Z-score for logging purposes
-                z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
-                result['z_score'] = z_score
+                # Still calculate both z-scores for logging purposes
+                album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                result['z_score'] = album_z  # Backward compatibility
+                result['album_z_score'] = album_z
+                
+                # Get artist statistics and calculate artist z-score
+                artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+                artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                result['artist_z_score'] = artist_z
                 
                 # Add final debug summary
                 if verbose:
+                    logger.debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
                     logger.debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
                     logger.debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
                 
@@ -613,8 +710,24 @@ def detect_single_enhanced(
                 logger.info(f"   ⓘ MusicBrainz client is disabled")
     
     # STAGE 5: Popularity-Based Inference (including version count)
-    z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
-    result['z_score'] = z_score
+    # Calculate album-level z-score
+    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+    result['z_score'] = album_z  # Store album z-score for backward compatibility
+    
+    # Get artist statistics
+    artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+    
+    # Calculate artist-level z-score
+    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+    
+    # Store both z-scores in result
+    result['album_z_score'] = album_z
+    result['artist_z_score'] = artist_z
+    
+    if verbose:
+        logger.debug(f"Z-scores for '{title}': album_z={album_z:.2f}, artist_z={artist_z:.2f}")
+        if artist_track_count > 0:
+            logger.debug(f"Artist stats: mean={artist_mean:.1f}, stddev={artist_stddev:.1f}, tracks={artist_track_count}")
     
     # Determine if this track is a standout across the entire artist catalogue
     # A track is considered an artist-level standout if it exceeds the artist median popularity
@@ -635,8 +748,10 @@ def detect_single_enhanced(
     if version_count_standout and verbose:
         logger.debug(f"Version count standout: {title} (count={version_count_value}, mean={mean_version_count:.1f})")
     
+    # Use hybrid z-score inference
     popularity_confidence, popularity_inferred = infer_from_popularity(
-        z_score, 
+        album_z, 
+        artist_z,
         version_count_value, 
         version_count_standout,
         album_is_underperforming,
@@ -645,19 +760,20 @@ def detect_single_enhanced(
     if popularity_inferred:
         result['single_sources'].append('z-score')
         if verbose:
-            logger.debug(f"Popularity: Inferred single for {title} (z={z_score:.2f}, confidence={popularity_confidence})")
+            logger.debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
     elif version_count_standout:
         # Version count standout is medium confidence but doesn't mark as single
         result['single_sources'].append('version_count')
         if verbose:
             logger.debug(f"Version count: Medium confidence indicator for {title} (not marking as single)")
     
-    # STAGE 7: Final Decision
+    # STAGE 7: Final Decision (using hybrid z-scores)
     final_status = determine_final_status(
         discogs_confirmed,
         spotify_confirmed,
         musicbrainz_confirmed,
-        z_score,
+        album_z,
+        artist_z,
         version_count_value,
         album_is_underperforming,
         is_artist_level_standout
@@ -691,7 +807,9 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     - single_status (none, low, medium, high)
     - single_confidence_score (0.0-1.0)
     - single_sources_used (JSON array)
-    - z_score
+    - z_score (album z-score for backward compatibility)
+    - album_z_score (album-level z-score)
+    - artist_z_score (artist-level z-score)
     - spotify_version_count
     - discogs_release_ids (JSON array)
     - musicbrainz_release_group_ids (JSON array)
@@ -699,33 +817,80 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     """
     cursor = conn.cursor()
     
-    cursor.execute("""
-        UPDATE tracks
-        SET single_status = ?,
-            single_confidence_score = ?,
-            single_sources_used = ?,
-            z_score = ?,
-            spotify_version_count = ?,
-            discogs_release_ids = ?,
-            musicbrainz_release_group_ids = ?,
-            single_detection_last_updated = ?,
-            is_single = ?,
-            single_confidence = ?,
-            single_sources = ?
-        WHERE id = ?
-    """, (
-        result['single_status'],
-        result['single_confidence_score'],
-        json.dumps(result['single_sources_used']),
-        result['z_score'],
-        result['spotify_version_count'],
-        json.dumps(result.get('discogs_release_ids', [])),
-        json.dumps(result.get('musicbrainz_release_group_ids', [])),
-        result['single_detection_last_updated'],
-        1 if result['is_single'] else 0,
-        result['single_confidence'],
-        json.dumps(result['single_sources']),
-        track_id
-    ))
+    # Check if new columns exist in schema
+    cursor.execute("PRAGMA table_info(tracks)")
+    columns = {row[1] for row in cursor.fetchall()}
+    has_album_z = 'album_z_score' in columns
+    has_artist_z = 'artist_z_score' in columns
+    
+    # Get z_score values with defaults
+    z_score = result.get('z_score', 0.0)
+    album_z_score = result.get('album_z_score', z_score)
+    artist_z_score = result.get('artist_z_score', 0.0)
+    
+    # Update with new columns if they exist
+    if has_album_z and has_artist_z:
+        cursor.execute("""
+            UPDATE tracks
+            SET single_status = ?,
+                single_confidence_score = ?,
+                single_sources_used = ?,
+                z_score = ?,
+                album_z_score = ?,
+                artist_z_score = ?,
+                spotify_version_count = ?,
+                discogs_release_ids = ?,
+                musicbrainz_release_group_ids = ?,
+                single_detection_last_updated = ?,
+                is_single = ?,
+                single_confidence = ?,
+                single_sources = ?
+            WHERE id = ?
+        """, (
+            result['single_status'],
+            result['single_confidence_score'],
+            json.dumps(result['single_sources_used']),
+            z_score,
+            album_z_score,
+            artist_z_score,
+            result['spotify_version_count'],
+            json.dumps(result.get('discogs_release_ids', [])),
+            json.dumps(result.get('musicbrainz_release_group_ids', [])),
+            result['single_detection_last_updated'],
+            1 if result['is_single'] else 0,
+            result['single_confidence'],
+            json.dumps(result['single_sources']),
+            track_id
+        ))
+    else:
+        # Fallback to old schema without new z-score columns
+        cursor.execute("""
+            UPDATE tracks
+            SET single_status = ?,
+                single_confidence_score = ?,
+                single_sources_used = ?,
+                z_score = ?,
+                spotify_version_count = ?,
+                discogs_release_ids = ?,
+                musicbrainz_release_group_ids = ?,
+                single_detection_last_updated = ?,
+                is_single = ?,
+                single_confidence = ?,
+                single_sources = ?
+            WHERE id = ?
+        """, (
+            result['single_status'],
+            result['single_confidence_score'],
+            json.dumps(result['single_sources_used']),
+            z_score,
+            result['spotify_version_count'],
+            json.dumps(result.get('discogs_release_ids', [])),
+            json.dumps(result.get('musicbrainz_release_group_ids', [])),
+            result['single_detection_last_updated'],
+            1 if result['is_single'] else 0,
+            result['single_confidence'],
+            json.dumps(result['single_sources']),
+            track_id
+        ))
     
     conn.commit()
