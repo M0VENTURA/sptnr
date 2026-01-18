@@ -127,32 +127,30 @@ class DiscogsClient:
             # Search for releases - try without format filter first
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
-            params = {
+            base_params = {
                 "q": f"{artist} {title}",
                 "type": "release",
                 "per_page": 5
             }
             
-            def make_search_request():
-                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            def make_search_request(search_params):
+                response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 if response.status_code == 429:
                     retry_after = int(response.headers.get("Retry-After", 60))
                     time.sleep(retry_after)
                     _throttle_discogs()
-                    response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 response.raise_for_status()
                 return response
             
-            search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+            search_response = _retry_on_500(lambda: make_search_request(base_params), max_retries=2, retry_delay=1.0)
             results = search_response.json().get("results", [])
             
             # If no results, try with format filter as fallback
             if not results:
                 _throttle_discogs()
-                # Create new params dict to avoid mutation
-                fallback_params = {**params, "format": "Single, EP"}
-                params = fallback_params  # Update params for make_search_request closure
-                search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+                fallback_params = {**base_params, "format": "Single, EP"}
+                search_response = _retry_on_500(lambda: make_search_request(fallback_params), max_retries=2, retry_delay=1.0)
                 results = search_response.json().get("results", [])
             
             if not results:
