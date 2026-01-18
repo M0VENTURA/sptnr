@@ -1969,12 +1969,12 @@ def popularity_scan(
                             has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
                             
                             # Helper to get sources display for logging
-                            # If we have metadata sources from single detection, use those
-                            # Otherwise, if we have popularity data, indicate that as the source
+                            # Only show actual metadata sources (discogs, spotify, musicbrainz, etc.)
+                            # Popularity outlier and version count are silent confirmations, not displayed
                             if metadata_info['sources_list']:
                                 sources_str = ', '.join(metadata_info['sources_list'])
                             else:
-                                sources_str = POPULARITY_METADATA_SOURCE_NAME
+                                sources_str = "popularity outlier"  # Fallback for silent confirmation
                             
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
