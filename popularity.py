@@ -154,6 +154,43 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     return any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
 
 
+def is_live_or_alternate_album(album: str) -> bool:
+    """
+    Determine if an album is a live, unplugged, or acoustic album.
+    
+    This helps identify albums where the recorded versions differ from studio versions,
+    such as "Alice in Chains - Unplugged in New York" where tracks should not be matched
+    with their studio counterparts.
+    
+    Args:
+        album: Album name to check
+        
+    Returns:
+        True if this is a live/unplugged/acoustic album, False otherwise
+    """
+    if not album:
+        return False
+    
+    album_lower = album.lower()
+    
+    # Live album indicators
+    live_keywords = [
+        'live',
+        'unplugged',
+        'acoustic',
+        'mtv unplugged',
+        'live at',
+        'live in',
+        'concert',
+        'live from',
+        'in concert',
+        'on stage',
+        'tour'
+    ]
+    
+    return any(keyword in album_lower for keyword in live_keywords)
+
+
 def detect_alternate_takes(tracks: list) -> dict:
     """
     Detect alternate takes in a list of tracks by comparing titles with/without parentheses.
@@ -1445,15 +1482,38 @@ def popularity_scan(
             # Get Spotify artist ID once per artist (before album loop)
             spotify_artist_id = None
             try:
-                log_unified(f'Looking up Spotify artist ID for: {artist}')
-                spotify_artist_id = _run_with_timeout(
-                    get_spotify_artist_id, 
-                    API_CALL_TIMEOUT, 
-                    f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
-                    artist
-                )
+                # First, try to get cached artist ID from database
+                cursor.execute("""
+                    SELECT spotify_artist_id 
+                    FROM tracks 
+                    WHERE artist = ? AND spotify_artist_id IS NOT NULL 
+                    LIMIT 1
+                """, (artist,))
+                row = cursor.fetchone()
+                
+                if row and row[0]:
+                    spotify_artist_id = row[0]
+                    log_unified(f'✓ Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
+                else:
+                    log_unified(f'Looking up Spotify artist ID for: {artist}')
+                    rate_limiter = get_rate_limiter()
+                    can_proceed, reason = rate_limiter.check_spotify_limit()
+                    if not can_proceed:
+                        log_unified(f'⏸️ Spotify rate limit: {reason}')
+                        if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
+                            log_unified(f'⚠️ Skipping Spotify artist ID lookup for {artist} due to rate limits')
+                    else:
+                        spotify_artist_id = _run_with_timeout(
+                            get_spotify_artist_id, 
+                            API_CALL_TIMEOUT, 
+                            f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
+                            artist
+                        )
+                        # Record API request for rate limiting
+                        rate_limiter.record_spotify_request()
+                        
                 if spotify_artist_id:
-                    log_unified(f'✓ Spotify artist ID cached: {spotify_artist_id}')
+                    log_unified(f'✓ Spotify artist ID: {spotify_artist_id}')
                     # Batch update all tracks for this artist with the artist ID
                     update_artist_id_for_artist(artist, spotify_artist_id)
                 else:
@@ -1472,6 +1532,12 @@ def popularity_scan(
                 
                 log_unified(f'Scanning "{artist} - {album}" for Popularity')
                 album_scanned = 0
+                
+                # Detect if this is a live/unplugged album
+                is_live_album = is_live_or_alternate_album(album)
+                if is_live_album:
+                    log_unified(f'   📻 Detected live/unplugged album: "{album}"')
+                    log_unified(f'   → Track lookups will include album context to avoid matching studio versions')
                 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
@@ -1531,11 +1597,13 @@ def popularity_scan(
                             if not skip_spotify_lookup:
                                 log_unified(f'Searching Spotify for track: {title} by {artist}')
                                 # For popularity scoring, we pass album for better matching accuracy
+                                # For live/unplugged albums, always include album to avoid matching studio versions
+                                search_album = album if is_live_album else album
                                 spotify_search_results = _run_with_timeout(
                                     search_spotify_track,
                                     API_CALL_TIMEOUT,
                                     f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                    title, artist, album
+                                    title, artist, search_album
                                 )
                                 # Record API request for rate limiting
                                 rate_limiter.record_spotify_request()
