@@ -6,6 +6,9 @@ import json
 from typing import Optional, Dict, List, Tuple
 from . import session
 
+# Import centralized logging for visible operational messages
+from logging_config import log_unified, log_info, log_debug
+
 logger = logging.getLogger(__name__)
 
 # Rate limiting for Discogs
@@ -426,13 +429,16 @@ class DiscogsClient:
                 # Strong path 3: Check for music videos in the release
                 # If a release has a video for the matched track, it's likely a single
                 videos = data.get("videos", []) or []
+                if videos:
+                    log_info(f"   Discogs: Checking {len(videos)} video(s) in release {rid} for '{title}'")
                 for video in videos:
                     video_title = (video.get("title") or "").lower()
                     video_desc = (video.get("description") or "").lower()
                     # Check if video title/desc contains the track title
                     if nav_title in video_title or nav_title in video_desc:
                         # Video for this track found - likely a single
-                        logger.debug(f"Found video for '{title}' in Discogs release {rid}")
+                        log_unified(f"   ✓ Discogs confirms single via music video in release {rid}: {title}")
+                        log_info(f"   Discogs result: Music video found in release for '{title}' (video: {video.get('title', 'N/A')})")
                         self._single_cache[cache_key] = True
                         return True
                 
