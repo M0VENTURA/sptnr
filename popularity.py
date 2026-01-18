@@ -139,9 +139,9 @@ def detect_alternate_takes(tracks: list) -> dict:
     title_to_track = {}  # Map base title -> track info
     
     for track in tracks:
-        track_id = track.get('id')
-        title = track.get('title', '')
-        track_number = track.get('track_number', 999)
+        track_id = track['id']
+        title = track['title'] if track['title'] else ''
+        track_number = track['track_number'] if track['track_number'] else 999
         
         # Check if this track has parentheses at the end
         if re.match(r'^.*\([^)]*\)$', title):
@@ -325,10 +325,10 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
     # Exclude tracks marked as alternate takes
     if alternate_takes_map:
         for i, track in enumerate(tracks_with_scores):
-            track_id = track.get("id")
+            track_id = track["id"]
             if track_id and track_id in alternate_takes_map:
                 excluded_indices.add(i)
-                log_verbose(f"   Excluding alternate take from stats: {track.get('title')}")
+                log_verbose(f"   Excluding alternate take from stats: {track['title']}")
     
     # Check for titles ending with parenthesized suffix
     # Pattern: ^.*\([^)]*\)$ - matches titles that end with (something)
@@ -888,7 +888,10 @@ def detect_single_for_track(
     popularity: float = None,
     album_type: str = None,
     use_advanced_detection: bool = True,
-    zscore_threshold: float = 0.20
+    zscore_threshold: float = 0.20,
+    # New parameters for conditional z-score detection
+    album_is_underperforming: bool = False,
+    artist_median_popularity: float = 0.0
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
@@ -969,7 +972,9 @@ def detect_single_for_track(
                 discogs_client=discogs_client,
                 musicbrainz_client=musicbrainz_client,
                 verbose=verbose,
-                album_type=album_type
+                album_type=album_type,
+                album_is_underperforming=album_is_underperforming,
+                artist_median_popularity=artist_median_popularity
             )
             
             # Store result in database
@@ -1595,6 +1600,37 @@ def popularity_scan(
                     sources_available.append("Discogs Video")
                 log_unified(f'   Using sources: {", ".join(sources_available)}')
                 
+                # Calculate artist-level popularity statistics BEFORE single detection
+                # Reason: We need to determine if this album is underperforming vs the artist's catalog
+                # so that z-score single detection can be conditionally disabled for underperforming albums
+                # while still using metadata-based detection (Discogs, Spotify, MusicBrainz).
+                artist_stats = calculate_artist_popularity_stats(artist, conn)
+                artist_median = artist_stats['median_popularity'] if artist_stats['track_count'] > 0 else 0.0
+                
+                # Calculate album median to check for underperformance
+                # This enables conditional z-score detection: disabled for underperforming albums,
+                # except when a track is a standout across the entire artist catalogue.
+                album_is_underperforming = False
+                if artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
+                    # Get album popularities for median calculation
+                    cursor.execute("""
+                        SELECT popularity_score 
+                        FROM tracks 
+                        WHERE artist = ? AND album = ? AND popularity_score > 0
+                    """, (artist, album))
+                    album_pops = [row[0] for row in cursor.fetchall()]
+                    
+                    if album_pops and artist_median > 0:
+                        album_median = median(album_pops)
+                        # Consider album underperforming if median is < UNDERPERFORMING_THRESHOLD of artist median
+                        if album_median < (artist_median * UNDERPERFORMING_THRESHOLD):
+                            album_is_underperforming = True
+                            log_unified(f"   ⚠️ Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
+                            log_unified(f"   → Z-score single detection will be disabled except for artist-level standouts")
+                
+                if artist_stats['track_count'] > 0:
+                    log_unified(f"   📊 Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
+                
                 # Batch updates for singles detection
                 singles_updates = []
                 
@@ -1633,7 +1669,10 @@ def popularity_scan(
                         popularity=track_popularity,
                         album_type=track_album_type,
                         use_advanced_detection=True,
-                        zscore_threshold=0.20
+                        zscore_threshold=0.20,
+                        # Conditional z-score detection parameters
+                        album_is_underperforming=album_is_underperforming,
+                        artist_median_popularity=artist_median
                     )
                     
                     single_sources = detection_result["sources"]
@@ -1671,11 +1710,10 @@ def popularity_scan(
                 # Calculate star ratings for album tracks
                 log_unified(f'Calculating star ratings for "{artist} - {album}"')
                 
-                # Calculate artist-level popularity statistics for context
-                artist_stats = calculate_artist_popularity_stats(artist, conn)
+                # Note: artist_stats was already calculated before single detection to support
+                # conditional z-score detection. We only need to update the database here.
+                # Just update the artist_stats table with popularity statistics
                 if artist_stats['track_count'] > 0:
-                    log_unified(f"   📊 Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_stats['median_popularity']:.1f}")
-                    
                     # Update artist_stats table with popularity statistics
                     cursor.execute("""
                         UPDATE artist_stats 
@@ -1712,16 +1750,10 @@ def popularity_scan(
                         excluded_titles = [album_tracks_with_scores[i]["title"] for i in excluded_indices]
                         log_unified(f"   📊 Excluding {len(excluded_indices)} tracks from statistics: {', '.join(excluded_titles)}")
                     
-                    # Check if this album is significantly underperforming compared to artist's catalog
-                    album_is_underperforming = False
-                    if valid_scores and artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
-                        album_median = median(valid_scores)
-                        artist_median = artist_stats['median_popularity']
-                        
-                        # Consider album underperforming if median is < UNDERPERFORMING_THRESHOLD of artist median
-                        if artist_median > 0 and album_median < (artist_median * UNDERPERFORMING_THRESHOLD):
-                            album_is_underperforming = True
-                            log_unified(f"   ⚠️ Album is underperforming: median={album_median:.1f} vs artist median={artist_median:.1f}")
+                    # Note: album_is_underperforming was already calculated before single detection
+                    # to support conditional z-score detection. It's not needed for star rating calculation.
+                    # The underperformance flag was already used during single detection to determine
+                    # whether to apply z-score based single detection for each track.
                     
                     if valid_scores:
                         popularity_mean = mean(valid_scores)
