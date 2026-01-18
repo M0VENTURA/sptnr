@@ -464,7 +464,7 @@ def get_metadata_sources_info(single_sources):
             - has_musicbrainz: bool
             - has_lastfm: bool
             - has_version_count: bool
-            - has_metadata: bool (any metadata source)
+            - has_metadata: bool (any metadata source, excluding score-based indicators)
             - sources_list: list of display names
     """
     has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
@@ -473,6 +473,9 @@ def get_metadata_sources_info(single_sources):
     has_lastfm = "lastfm" in single_sources
     has_version_count = "version_count" in single_sources
     
+    # Exclude score-based indicators from metadata confirmation
+    # Allowed metadata sources: discogs, spotify, musicbrainz, lastfm
+    # Excluded: z-score, popularity_zscore, score (these are popularity inference indicators, not metadata)
     has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
     
     sources_list = []
@@ -1957,10 +1960,10 @@ def popularity_scan(
                             # Get metadata information from single_sources
                             metadata_info = get_metadata_sources_info(single_sources)
                             
-                            # Check if track has actual popularity data (Spotify or Last.fm)
-                            # This is broader than single_sources, which only contains sources that detected as single
-                            # A track with popularity_score > 0 has metadata from Spotify/Last.fm
-                            has_popularity_metadata = popularity_score > 0
+                            # Check if track has standout popularity (>= mean + 2)
+                            # This threshold ensures only tracks with significantly above-average popularity
+                            # are considered to have metadata confirmation
+                            has_popularity_metadata = popularity_score >= (popularity_mean + 2)
                             
                             # Combined metadata check: single sources OR popularity data
                             has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
