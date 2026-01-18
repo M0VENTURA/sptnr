@@ -465,7 +465,7 @@ def determine_final_status(
     1. Discogs confirms exact track version (studio or live) as a single, OR
     2. popularity >= album_mean + 6 AND has_metadata (any explicit metadata source)
     
-    High confidence is NEVER assigned if metadata_sources is empty.
+    High confidence is NEVER assigned if has_metadata is False.
     
     MEDIUM-CONFIDENCE:
     - Spotify confirms (strict)
@@ -509,7 +509,7 @@ def determine_final_status(
     if has_metadata and popularity >= (album_mean + 6):
         return 'high'
     
-    # High confidence must NEVER be assigned if metadata_sources is empty
+    # High confidence must NEVER be assigned if has_metadata is False
     # (already handled by has_metadata check above)
     
     # Check metadata-based medium confidence

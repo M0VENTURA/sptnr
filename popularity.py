@@ -1952,8 +1952,8 @@ def popularity_scan(
                         
                         # NEW: 5-STAR LOGIC PER PROBLEM STATEMENT
                         # A track becomes 5★ ONLY if:
-                        # - it has >= 1 high-confidence method, OR
-                        # - it has >= 2 medium-confidence methods
+                        # - it has high-confidence status, OR
+                        # - it has >= 2 medium-confidence sources
                         #
                         # Do NOT assign 5★ based on popularity alone.
                         
