@@ -124,13 +124,12 @@ class DiscogsClient:
             return None
         
         try:
-            # Search for releases
+            # Search for releases - try without format filter first
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {
                 "q": f"{artist} {title}",
                 "type": "release",
-                "format": "Single, EP",
                 "per_page": 5
             }
             
@@ -146,6 +145,13 @@ class DiscogsClient:
             
             search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
             results = search_response.json().get("results", [])
+            
+            # If no results, try with format filter as fallback
+            if not results:
+                _throttle_discogs()
+                params["format"] = "Single, EP"
+                search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
+                results = search_response.json().get("results", [])
             
             if not results:
                 logger.debug(f"No Discogs results for '{title}' by '{artist}'")
@@ -332,14 +338,12 @@ class DiscogsClient:
             return self._single_cache[cache_key]
         
         try:
-            # Search for releases with Single/EP format filter
+            # Try search without format filter first (to catch singles with non-standard format tags)
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
-            # Add format filter to prioritize Singles and EPs
             params = {
                 "q": f"{artist} {title}", 
                 "type": "release", 
-                "format": "Single, EP",  # Filter for Singles & EPs
                 "per_page": 15
             }
             
@@ -351,6 +355,18 @@ class DiscogsClient:
             res.raise_for_status()
             
             results = res.json().get("results", [])
+            
+            # If no results without filter, try with format filter as fallback
+            if not results:
+                _throttle_discogs()
+                params["format"] = "Single, EP"
+                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                if res.status_code == 429:
+                    retry_after = int(res.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                res.raise_for_status()
+                results = res.json().get("results", [])
+            
             if not results:
                 self._single_cache[cache_key] = False
                 return False

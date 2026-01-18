@@ -599,13 +599,12 @@ class DiscogsVerificationClient:
             }
         
         try:
-            # Search for releases
+            # Search for releases - try without format filter first
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {
                 "q": f"{artist} {track_title}",
                 "type": "release",
-                "format": "Single, EP",  # Prioritize singles and EPs
                 "per_page": 10
             }
             
@@ -621,6 +620,13 @@ class DiscogsVerificationClient:
             
             search_response = _retry_on_500(make_search_request)
             results = search_response.json().get("results", [])
+            
+            # If no results, try with format filter as fallback
+            if not results:
+                _throttle_discogs()
+                params["format"] = "Single, EP"
+                search_response = _retry_on_500(make_search_request)
+                results = search_response.json().get("results", [])
             
             if not results:
                 logger.debug(f"No Discogs results for '{track_title}' by '{artist}'")
