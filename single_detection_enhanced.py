@@ -452,7 +452,8 @@ def determine_final_status(
     artist_z: float,
     spotify_version_count: int,
     album_is_underperforming: bool = False,
-    is_artist_level_standout: bool = False
+    is_artist_level_standout: bool = False,
+    discogs_video_confirmed: bool = False
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -464,6 +465,7 @@ def determine_final_status(
     MEDIUM-CONFIDENCE:
     - Spotify confirms
     - MusicBrainz confirms
+    - Discogs video confirms
     - album_z >= 0.5 OR artist_z >= 1.0 (when z-score enabled)
     
     LOW-CONFIDENCE:
@@ -485,6 +487,7 @@ def determine_final_status(
         spotify_version_count: Number of Spotify versions found
         album_is_underperforming: Whether album is underperforming vs artist median
         is_artist_level_standout: Whether track exceeds artist median popularity
+        discogs_video_confirmed: Whether Discogs confirms this has a music video
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -504,7 +507,7 @@ def determine_final_status(
             return 'high'
     
     # Check metadata-based medium confidence
-    if spotify_confirmed or musicbrainz_confirmed:
+    if spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed:
         return 'medium'
     
     # Check z-score based medium confidence (if enabled)
@@ -843,6 +846,42 @@ def detect_single_enhanced(
                 log_unified(f"   ⓘ MusicBrainz client is disabled")
                 log_info(f"   MusicBrainz: Client is disabled in configuration")
     
+    # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE)
+    discogs_video_confirmed = False
+    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
+        if hasattr(discogs_client, 'has_official_video'):
+            try:
+                # Always log Discogs video checks to unified and info logs
+                log_unified(f"   Checking Discogs for music video: {title}")
+                log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                
+                # Check for official music video
+                discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                if discogs_video_confirmed:
+                    result['single_sources'].append('discogs_video')
+                    result['single_sources_used'].append('discogs_video')
+                    log_unified(f"   ✓ Discogs confirms music video: {title}")
+                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
+                else:
+                    # Always log negative results too (not just in verbose mode)
+                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_info(f"   Discogs result: No music video found for '{title}'")
+            except Exception as e:
+                log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
+                log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+        elif verbose:
+            log_unified(f"   ⓘ Discogs video method not available")
+            log_info(f"   Discogs: has_official_video method not available")
+    else:
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not discogs_client:
+                log_unified(f"   ⓘ Discogs video client not available")
+                log_info(f"   Discogs: Video client not available")
+            elif not getattr(discogs_client, 'enabled', True):
+                log_unified(f"   ⓘ Discogs client is disabled")
+                log_info(f"   Discogs: Client is disabled in configuration")
+    
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
     album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
@@ -911,7 +950,8 @@ def detect_single_enhanced(
         artist_z,
         version_count_value,
         album_is_underperforming,
-        is_artist_level_standout
+        is_artist_level_standout,
+        discogs_video_confirmed
     )
     
     result['single_status'] = final_status
