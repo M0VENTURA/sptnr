@@ -1809,6 +1809,28 @@ def popularity_scan(
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
+                        # Helper function to build metadata sources list for logging
+                        def get_metadata_sources_list(single_sources):
+                            """Build a list of metadata sources from single_sources for display."""
+                            sources = []
+                            has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
+                            has_spotify = "spotify" in single_sources
+                            has_musicbrainz = "musicbrainz" in single_sources
+                            has_lastfm = "lastfm" in single_sources
+                            has_version_count = "version_count" in single_sources
+                            
+                            if has_discogs:
+                                sources.append("Discogs")
+                            if has_spotify:
+                                sources.append("Spotify")
+                            if has_musicbrainz:
+                                sources.append("MusicBrainz")
+                            if has_lastfm:
+                                sources.append("Last.fm")
+                            if has_version_count:
+                                sources.append("Version Count")
+                            return sources
+                        
                         # NEW: Popularity-Based Confidence System
                         # Track if medium confidence check explicitly denied upgrade due to missing metadata
                         medium_conf_denied_upgrade = False
@@ -1830,17 +1852,7 @@ def popularity_scan(
                                 if has_metadata or has_version_count:
                                     stars = 5
                                     if verbose:
-                                        metadata_sources = []
-                                        if has_discogs:
-                                            metadata_sources.append("Discogs")
-                                        if has_spotify:
-                                            metadata_sources.append("Spotify")
-                                        if has_musicbrainz:
-                                            metadata_sources.append("MusicBrainz")
-                                        if has_lastfm:
-                                            metadata_sources.append("Last.fm")
-                                        if has_version_count:
-                                            metadata_sources.append("Version Count")
+                                        metadata_sources = get_metadata_sources_list(single_sources)
                                         log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(metadata_sources)})")
                                 else:
                                     # High confidence threshold met but no metadata support - do not upgrade
@@ -1854,17 +1866,7 @@ def popularity_scan(
                                 if has_metadata or has_version_count:
                                     stars = 5
                                     if verbose:
-                                        metadata_sources = []
-                                        if has_discogs:
-                                            metadata_sources.append("Discogs")
-                                        if has_spotify:
-                                            metadata_sources.append("Spotify")
-                                        if has_musicbrainz:
-                                            metadata_sources.append("MusicBrainz")
-                                        if has_lastfm:
-                                            metadata_sources.append("Last.fm")
-                                        if has_version_count:
-                                            metadata_sources.append("Version Count")
+                                        metadata_sources = get_metadata_sources_list(single_sources)
                                         log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_sources)})")
                                 else:
                                     # Medium confidence threshold met but no metadata support - do not upgrade
