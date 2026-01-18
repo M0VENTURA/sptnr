@@ -679,9 +679,7 @@ def detect_single_enhanced(
         'discogs_release_ids': [],
         'musicbrainz_release_group_ids': [],
         'single_confidence_score': 0.0,
-        'single_detection_last_updated': datetime.now().isoformat(),
-        'high_conf_sources': set(),
-        'med_conf_sources': set()
+        'single_detection_last_updated': datetime.now().isoformat()
     }
     
     # Get album statistics
