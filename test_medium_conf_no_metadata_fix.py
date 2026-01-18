@@ -216,22 +216,28 @@ def test_medium_conf_no_metadata_scenario():
         43.5,  # Bastard von Asgard
     ]
     
+    # Calculate actual mean and thresholds
+    from statistics import mean as calc_mean
+    actual_mean = calc_mean(album_scores)
+    actual_popularity_standout_threshold = actual_mean + 2
+    
     print(f"Album: Feuerschwanz - Fegefeuer")
-    print(f"Mean popularity: 65.4, Stddev: 8.0")
+    print(f"Mean popularity: {actual_mean:.1f}, Stddev: 8.0")
     print(f"High confidence threshold: 71.4")
     print(f"Medium confidence zscore threshold: 0.30")
+    print(f"Popularity standout threshold (mean + 2): {actual_popularity_standout_threshold:.1f}")
     print()
     
     all_tests_passed = True
     
     # Test case 1: Highlander (Single with high confidence, but no metadata sources)
-    # Note: This track has popularity 68.5 >= 67.4 (mean + 2), so it DOES have metadata confirmation
+    # Note: This track has popularity 68.5 >= (mean + 2), so it DOES have metadata confirmation
     print("Test Case 1: Highlander")
     print("  - Popularity: 68.5")
     print("  - Is Single: True (high confidence)")
     print("  - Single Sources: [] (NO explicit metadata sources)")
     print("  - Zscore: (68.5 - 65.4) / 8.0 = 0.38 >= 0.30 ✓")
-    print("  - Popularity >= mean + 2: 68.5 >= 67.4 ✓ (HAS metadata confirmation)")
+    print(f"  - Popularity >= mean + 2: 68.5 >= {actual_popularity_standout_threshold:.1f} ✓ (HAS metadata confirmation)")
     stars1, reason1 = simulate_star_calculation(
         popularity_score=68.5,
         single_sources=[],  # NO explicit metadata sources
@@ -252,7 +258,7 @@ def test_medium_conf_no_metadata_scenario():
     print("  - Is Single: False (low confidence - no metadata)")
     print("  - Single Sources: [] (NO metadata)")
     print("  - Zscore: (64.5 - 65.4) / 8.0 = -0.11 < 0.30 ✗ (below medium threshold)")
-    print("  - Popularity >= mean + 2: 64.5 < 67.4 ✗ (NO metadata confirmation)")
+    print(f"  - Popularity >= mean + 2: 64.5 < {actual_popularity_standout_threshold:.1f} ✗ (NO metadata confirmation)")
     stars2, reason2 = simulate_star_calculation(
         popularity_score=64.5,
         single_sources=[],  # NO metadata sources
@@ -273,7 +279,7 @@ def test_medium_conf_no_metadata_scenario():
     print("  - Is Single: False (low confidence - no metadata)")
     print("  - Single Sources: [] (NO metadata)")
     print("  - Zscore: (67.0 - 65.4) / 8.0 = 0.20 < 0.30 ✗ (below medium threshold)")
-    print("  - Popularity >= mean + 2: 67.0 < 67.4 ✗ (NO metadata confirmation)")
+    print(f"  - Popularity >= mean + 2: 67.0 < {actual_popularity_standout_threshold:.1f} ✗ (NO metadata confirmation)")
     stars3, reason3 = simulate_star_calculation(
         popularity_score=67.0,
         single_sources=[],  # NO metadata sources
