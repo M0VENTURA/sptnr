@@ -123,6 +123,34 @@ def strip_parentheses(title: str) -> str:
     return re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
 
 
+def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
+    """
+    Determine if a track should be excluded from album/artist statistics calculations.
+    
+    Excludes tracks that are:
+    - Live versions
+    - Remixes
+    - Acoustic/orchestral versions
+    - Demos
+    - Instrumentals
+    - Remasters
+    - Other alternate versions
+    
+    This ensures that album median, mean, stddev calculations reflect the core album tracks
+    and are not skewed by bonus/alternate versions.
+    
+    Args:
+        title: Track title to check
+        album: Album name to check (optional, for live album detection)
+        
+    Returns:
+        True if track should be excluded from statistics, False otherwise
+    """
+    # Check title and album name for keywords
+    combined_text = f"{title} {album}".lower()
+    return any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
+
+
 def detect_alternate_takes(tracks: list) -> dict:
     """
     Detect alternate takes in a list of tracks by comparing titles with/without parentheses.
@@ -250,6 +278,9 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
     
     This helps identify underperforming albums/singles within an artist's catalog.
     
+    NOTE: Filters out live/remix/alternate versions to ensure statistics reflect
+    the core catalog and are not skewed by bonus tracks or alternate versions.
+    
     Args:
         artist_name: Name of the artist
         conn: Database connection
@@ -264,12 +295,23 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT popularity_score 
+            SELECT popularity_score, title, album
             FROM tracks 
             WHERE artist = ? AND popularity_score > 0
         """, (artist_name,))
         
-        scores = [row[0] for row in cursor.fetchall()]
+        rows = cursor.fetchall()
+        
+        # Filter out live/remix/alternate tracks before calculating statistics
+        scores = []
+        for row in rows:
+            popularity_score = row[0]
+            title = row[1] if row[1] else ""
+            album = row[2] if row[2] else ""
+            
+            # Exclude live/remix/alternate versions from artist statistics
+            if not should_exclude_track_from_stats(title, album):
+                scores.append(popularity_score)
         
         if not scores:
             return {
@@ -1132,6 +1174,7 @@ def detect_single_for_track(
         try:
             # Always log Discogs API calls (not dependent on verbose)
             log_unified(f"   Checking Discogs for single: {title}")
+            log_info(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1143,24 +1186,31 @@ def detect_single_for_track(
                 if result:
                     single_sources.append("discogs")
                     log_unified(f"   ✓ Discogs confirms single: {title}")
+                    log_info(f"   Discogs result: Single confirmed for '{title}'")
                 else:
-                    if verbose:
-                        log_verbose(f"   ⓘ Discogs does not confirm single: {title}")
+                    # Always log negative results too (not just in verbose mode)
+                    log_unified(f"   ⓘ Discogs does not confirm single: {title}")
+                    log_info(f"   Discogs result: No single found for '{title}'")
         except TimeoutError as e:
             log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
+            log_info(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
             log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS:
             log_unified(f"   ⓘ Discogs client not available")
+            log_info(f"   Discogs: Client not available (module import failed)")
         elif not discogs_token:
             log_unified(f"   ⓘ Discogs token not configured")
+            log_info(f"   Discogs: Token not configured in config.yaml")
     
     # Fourth check: Discogs video detection
     if HAVE_DISCOGS_VIDEO and discogs_token:
         try:
             # Always log Discogs video checks (not dependent on verbose)
             log_unified(f"   Checking Discogs for music video: {title}")
+            log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1172,20 +1222,26 @@ def detect_single_for_track(
                 if result:
                     single_sources.append("discogs_video")
                     log_unified(f"   ✓ Discogs confirms music video: {title}")
+                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
                 else:
-                    if verbose:
-                        log_verbose(f"   ⓘ Discogs does not confirm music video: {title}")
+                    # Always log negative results too
+                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_info(f"   Discogs result: No music video found for '{title}'")
         except TimeoutError as e:
             log_unified(f"   ⏱ Discogs video check timed out for {title}: {e}")
+            log_info(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
             log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
+            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS_VIDEO:
             if verbose:
                 log_verbose(f"   ⓘ Discogs video client not available")
+                log_debug(f"   Discogs: Video client not available")
         elif not discogs_token:
             if verbose:
                 log_verbose(f"   ⓘ Discogs token not configured for video detection")
+                log_debug(f"   Discogs: Token not configured for video detection")
     
     # Calculate confidence based on sources per problem statement
     # High confidence: Discogs single or music video
@@ -1633,15 +1689,28 @@ def popularity_scan(
                 # Calculate album median to check for underperformance
                 # This enables conditional z-score detection: disabled for underperforming albums,
                 # except when a track is a standout across the entire artist catalogue.
+                # NOTE: Filters out live/remix/alternate versions to ensure album median reflects
+                # the core album and is not skewed by bonus tracks.
                 album_is_underperforming = False
                 if artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
                     # Get album popularities for median calculation
                     cursor.execute("""
-                        SELECT popularity_score 
+                        SELECT popularity_score, title, album
                         FROM tracks 
                         WHERE artist = ? AND album = ? AND popularity_score > 0
                     """, (artist, album))
-                    album_pops = [row[0] for row in cursor.fetchall()]
+                    rows = cursor.fetchall()
+                    
+                    # Filter out live/remix/alternate tracks before calculating album median
+                    album_pops = []
+                    for row in rows:
+                        popularity_score = row[0]
+                        title = row[1] if row[1] else ""
+                        album_name = row[2] if row[2] else ""
+                        
+                        # Exclude live/remix/alternate versions from album median calculation
+                        if not should_exclude_track_from_stats(title, album_name):
+                            album_pops.append(popularity_score)
                     
                     if album_pops and artist_median > 0:
                         album_median = median(album_pops)
@@ -1867,12 +1936,21 @@ def popularity_scan(
                             # Get metadata information from single_sources
                             metadata_info = get_metadata_sources_info(single_sources)
                             
+                            # Check if track has actual popularity data (Spotify or Last.fm)
+                            # This is broader than single_sources, which only contains sources that detected as single
+                            # A track with popularity_score > 0 has metadata from Spotify/Last.fm
+                            has_popularity_metadata = popularity_score > 0
+                            
+                            # Combined metadata check: single sources OR popularity data
+                            has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
+                            
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
-                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
+                                if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(metadata_info['sources_list'])})")
+                                        sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
+                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(sources_display)})")
                                 else:
                                     # High confidence threshold met but no metadata support - do not upgrade
                                     if verbose:
@@ -1882,10 +1960,11 @@ def popularity_scan(
                             elif track_zscore >= medium_conf_zscore_threshold:
                                 # Version count standout combined with popularity threshold = 5 stars
                                 # Per problem statement: "will make it 5*"
-                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
+                                if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_info['sources_list'])})")
+                                        sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
+                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(sources_display)})")
                                 else:
                                     # Medium confidence threshold met but no metadata support - do not upgrade
                                     medium_conf_denied_upgrade = True
