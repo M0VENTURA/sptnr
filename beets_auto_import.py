@@ -46,37 +46,17 @@ def log_album_scan(*args, **kwargs):
             _log_album_scan_impl(*args, **kwargs)
     except Exception as e:
         # Log the error but don't raise - we don't want scan history failures to break imports
+        # This will be imported before logging_config, so we use a simple approach
+        import logging
         logging.error(f"Error calling log_album_scan: {e}", exc_info=True)
 
 BEETS_LOG_PATH = os.environ.get("BEETS_LOG_PATH", "/config/beets_import.log")
 
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
 
-import logging
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-VERBOSE = os.environ.get("SPTNR_VERBOSE", "0") == "1"
-SERVICE_PREFIX = "beets_auto_import_"
-
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-def log_basic(msg):
-    logging.info(msg)
-
-def log_verbose(msg):
-    if VERBOSE:
-        logging.info(msg)
+# Set up logging for beets service
+setup_logging("beets")
 
 # Database connection
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
@@ -107,7 +87,7 @@ def save_beets_progress(processed: int, total: int, *, status: str = "running", 
         with open(MP3_PROGRESS_FILE, 'w') as f:
             json.dump(progress_data, f)
     except Exception as e:
-        logging.error(f"Error saving beets progress: {e}")
+        log_debug(f"Error saving beets progress: {e}", exc_info=True)
 
 
 class BeetsAutoImporter:
@@ -150,18 +130,18 @@ class BeetsAutoImporter:
                                 resume_val = existing_config['import'].get('resume')
                                 if resume_val == 'no':
                                     # Fix invalid resume value
-                                    logging.info(f"Fixing invalid resume='no' in {config_path}")
+                                    log_debug(f"Fixing invalid resume='no' in {config_path}")
                                     existing_config['import']['resume'] = True if not readonly else False
                                     with open(config_path, 'w') as fw:
                                         yaml.dump(existing_config, fw, default_flow_style=False, sort_keys=False)
-                                    logging.info(f"Updated resume value in {config_path}")
+                                    log_info(f"Updated resume value in {config_path}")
                                     return
                         except Exception as e:
-                            logging.warning(f"Could not check/fix existing config: {e}")
+                            log_debug(f"Could not check/fix existing config: {e}")
                         # File has valid content, skip
                         return
             
-            logging.info(f"Creating beets config at {config_path} (readonly={readonly})")
+            log_info(f"Creating beets config at {config_path} (readonly={readonly})")
             
             if readonly:
                 config = {
@@ -230,10 +210,10 @@ class BeetsAutoImporter:
             with open(config_path, 'w') as f:
                 yaml.dump(config, f, default_flow_style=False, sort_keys=False)
             
-            logging.info(f"Config created successfully at {config_path}")
+            log_info(f"Config created successfully at {config_path}")
         
         except Exception as e:
-            logging.error(f"Failed to create beets config at {config_path}: {e}")
+            log_debug(f"Failed to create beets config at {config_path}: {e}", exc_info=True)
     
     def _create_default_config_if_missing(self):
         """Create a default beets config file if it doesn't exist or is empty."""
@@ -248,7 +228,7 @@ class BeetsAutoImporter:
                         return
             
             # File doesn't exist, is empty, or is invalid - create default config
-            logging.info(f"Creating default beets config at {self.beets_config}")
+            log_info(f"Creating default beets config at {self.beets_config}")
             
             default_config = {
                 "directory": str(self.music_path),
@@ -270,10 +250,10 @@ class BeetsAutoImporter:
             with open(self.beets_config, 'w') as f:
                 yaml.dump(default_config, f, default_flow_style=False, sort_keys=False)
             
-            logging.info(f"Default beets config created successfully")
+            log_info(f"Default beets config created successfully")
         
         except Exception as e:
-            logging.error(f"Failed to create default beets config: {e}")
+            log_debug(f"Failed to create default beets config: {e}", exc_info=True)
     
     def ensure_beets_config(self, use_update: bool = False):
         """
@@ -288,7 +268,7 @@ class BeetsAutoImporter:
         if not config_file.exists():
             self._create_config_file(config_file, readonly=not use_update)
         
-        logging.info(f"Using beets config: {config_file} (readonly={not use_update})")
+        log_debug(f"Using beets config: {config_file} (readonly={not use_update})")
 
 
     def run_import(self, artist_path: Optional[str] = None, skip_existing: bool = False) -> subprocess.Popen:
@@ -306,15 +286,15 @@ class BeetsAutoImporter:
         try:
             beet_check = subprocess.run(['which', 'beet'], capture_output=True, text=True)
             if beet_check.returncode != 0:
-                logging.error("beet command not found! Is beets installed?")
+                log_debug("beet command not found! Is beets installed?")
                 raise FileNotFoundError("beet command not found")
-            logging.info(f"Found beet at: {beet_check.stdout.strip()}")
+            log_debug(f"Found beet at: {beet_check.stdout.strip()}")
         except Exception as e:
-            logging.error(f"Error checking for beet command: {e}")
+            log_debug(f"Error checking for beet command: {e}", exc_info=True)
         
         # Ensure beets database directory exists
         self.beets_db.parent.mkdir(parents=True, exist_ok=True)
-        logging.info(f"Beets database directory: {self.beets_db.parent}")
+        log_debug(f"Beets database directory: {self.beets_db.parent}")
         
         # Ensure beets config is up-to-date (use read-only config for import by default)
         self.ensure_beets_config(use_update=False)
@@ -322,15 +302,15 @@ class BeetsAutoImporter:
         # Always import from /music - beets auto-detects artist folders
         import_path = self.music_path
         
-        logging.info(f"Import path: {import_path}")
-        logging.info(f"Import path exists: {import_path.exists()}")
+        log_debug(f"Import path: {import_path}")
+        log_debug(f"Import path exists: {import_path.exists()}")
         if import_path.exists():
             # Count artist folders
             artist_folders = [d for d in import_path.iterdir() if d.is_dir()]
-            logging.info(f"Found {len(artist_folders)} artist folder(s) in /music")
+            log_debug(f"Found {len(artist_folders)} artist folder(s) in /music")
             
             file_count = sum(1 for _ in import_path.rglob('*.mp3'))
-            logging.info(f"Found {file_count} .mp3 files total")
+            log_debug(f"Found {file_count} .mp3 files total")
         
         # Check beets database to see how many tracks are already imported
         try:
@@ -340,9 +320,9 @@ class BeetsAutoImporter:
             beets_cursor.execute("SELECT COUNT(*) FROM items")
             existing_count = beets_cursor.fetchone()[0]
             beets_conn.close()
-            logging.info(f"Beets database currently has {existing_count} tracks")
+            log_debug(f"Beets database currently has {existing_count} tracks")
         except Exception as e:
-            logging.warning(f"Could not check beets database: {e}")
+            log_debug(f"Could not check beets database: {e}")
         
         # Simple command - beets auto-detects artist folders and uses incremental import
         cmd = [
@@ -352,10 +332,10 @@ class BeetsAutoImporter:
             str(import_path)
         ]
         
-        logging.info(f"Running: {' '.join(cmd)}")
-        logging.info(f"Beets will auto-detect artist folders in /music")
-        logging.info(f"Incremental mode will skip files already in database")
-        logging.info(f"Non-interactive mode enabled via config (autotag=True, write=False)")
+        log_debug(f"Running: {' '.join(cmd)}")
+        log_debug(f"Beets will auto-detect artist folders in /music")
+        log_debug(f"Incremental mode will skip files already in database")
+        log_debug(f"Non-interactive mode enabled via config (autotag=True, write=False)")
         
         # Run with live output capture
         process = subprocess.Popen(
@@ -425,11 +405,11 @@ class BeetsAutoImporter:
         - beets_import_date
         """
         if not self.beets_db.exists():
-            logging.warning(f"Beets database not found: {self.beets_db}")
+            log_debug(f"Beets database not found: {self.beets_db}")
             return
         
-        logging.info("Syncing beets metadata to sptnr database...")
-        logging.info("This process logs individual album scans to scan_history table")
+        log_info("Syncing beets metadata to sptnr database...")
+        log_debug("This process logs individual album scans to scan_history table")
         
         try:
             # Connect to both databases
@@ -467,7 +447,22 @@ class BeetsAutoImporter:
             
             beets_tracks = beets_cursor.fetchall()
             total_beets = len(beets_tracks)
-            logging.info(f"Found {total_beets} tracks in beets database")
+            log_info(f"Found {total_beets} tracks in beets database")
+
+            # Pre-calculate artist and album counts for unified logging
+            artist_album_counts = {}
+            artist_albums = {}
+            for track in beets_tracks:
+                album_artist = track['album_artist_credit'] or track['albumartist']
+                if album_artist not in artist_albums:
+                    artist_albums[album_artist] = set()
+                artist_albums[album_artist].add(track['album'])
+            
+            # Convert to counts
+            for artist, albums in artist_albums.items():
+                artist_album_counts[artist] = len(albums)
+            
+            log_debug(f"Found {len(artist_album_counts)} artists with albums")
 
             # Mark progress start for the dashboard
             save_beets_progress(0, total_beets, status="running", is_running=True)
@@ -475,7 +470,9 @@ class BeetsAutoImporter:
             updated_count = 0
             processed_tracks = 0
             current_album = None
+            current_artist = None
             album_tracks = 0
+            artist_album_index = {}  # Track album number per artist
             
             for idx, track in enumerate(beets_tracks, 1):
                 processed_tracks = idx
@@ -483,10 +480,19 @@ class BeetsAutoImporter:
                 # Progress reporting every 50 tracks
                 if idx % 50 == 0:
                     save_beets_progress(idx, total_beets, status="running", is_running=True, current=track['album'])
-                    logging.info(f"Beets sync progress: {idx}/{total_beets}")
+                    log_debug(f"Beets sync progress: {idx}/{total_beets}")
                 
                 # Track album changes for scan history logging
                 album_artist = track['album_artist_credit'] or track['albumartist']
+                
+                # Check if we're starting a new artist
+                if current_artist != album_artist:
+                    current_artist = album_artist
+                    artist_album_index[album_artist] = 0
+                    total_albums = artist_album_counts.get(album_artist, 0)
+                    log_unified(f"Beets Import - Scanning Artist {album_artist} ({total_albums} albums)")
+                    log_info(f"Starting artist: {album_artist} with {total_albums} albums")
+                
                 if current_album != (album_artist, track['album']):
                     # Log the previous album if we were processing one
                     if current_album is not None and album_tracks > 0:
@@ -494,12 +500,20 @@ class BeetsAutoImporter:
                         sptnr_conn.commit()
                         try:
                             log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
-                            logging.info(f"Logged beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
+                            log_unified(f"Beets Import - Scanning complete for {current_album[0]} - {current_album[1]}")
+                            log_debug(f"Logged beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
                         except Exception as e:
-                            logging.error(f"Failed to log album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
+                            log_debug(f"Failed to log album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
+                    
+                    # Increment album index for this artist
+                    artist_album_index[album_artist] = artist_album_index.get(album_artist, 0) + 1
+                    album_num = artist_album_index[album_artist]
+                    total_albums = artist_album_counts.get(album_artist, 0)
                     
                     current_album = (album_artist, track['album'])
                     album_tracks = 0
+                    log_unified(f"Beets Import - Scanning {track['album']} ({album_num}/{total_albums})")
+                    log_info(f"Processing album {album_num}/{total_albums}: {album_artist} - {track['album']}")
                 
                 # Decode path if it's bytes for matching
                 track_path = track['path']
@@ -566,11 +580,12 @@ class BeetsAutoImporter:
             if current_album is not None and album_tracks > 0:
                 try:
                     log_album_scan(current_album[0], current_album[1], 'beets', album_tracks, 'completed')
-                    logging.info(f"Logged final beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
+                    log_unified(f"Beets Import - Scanning complete for {current_album[0]} - {current_album[1]}")
+                    log_debug(f"Logged final beets scan for {current_album[0]} - {current_album[1]} ({album_tracks} tracks) to scan_history")
                 except Exception as e:
-                    logging.error(f"Failed to log final album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
+                    log_debug(f"Failed to log final album scan for {current_album[0]} - {current_album[1]}: {e}", exc_info=True)
             
-            logging.info(f"Updated {updated_count} tracks with beets metadata")
+            log_info(f"Updated {updated_count} tracks with beets metadata")
 
             # Mark completion for dashboard
             save_beets_progress(total_beets, total_beets, status="complete", is_running=False)
@@ -579,7 +594,7 @@ class BeetsAutoImporter:
             sptnr_conn.close()
             
         except Exception as e:
-            logging.error(f"Failed to sync beets metadata: {e}")
+            log_debug(f"Failed to sync beets metadata: {e}", exc_info=True)
             try:
                 save_beets_progress(processed_tracks, total_beets if 'total_beets' in locals() else 0, status="error", is_running=False)
             except Exception:
@@ -607,9 +622,9 @@ class BeetsAutoImporter:
             if col_name not in existing_columns:
                 try:
                     cursor.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_type}")
-                    logging.info(f"Added column: {col_name}")
+                    log_info(f"Added column: {col_name}")
                 except Exception as e:
-                    logging.warning(f"Could not add column {col_name}: {e}")
+                    log_debug(f"Could not add column {col_name}: {e}")
     
     def import_and_capture(self, artist_path: Optional[str] = None, skip_existing: bool = False):
         """
@@ -621,42 +636,43 @@ class BeetsAutoImporter:
         """
         self.ensure_beets_config()
         
-        logging.info("\n" + "="*80)
-        logging.info("BEETS AUTO-IMPORT SESSION STARTED")
-        logging.info("="*80)
-        logging.info(f"Music path: {self.music_path}")
-        logging.info(f"Config path: {self.config_path}")
-        logging.info(f"Beets config: {self.beets_config}")
-        logging.info(f"Beets DB: {self.beets_db}")
-        logging.info(f"Skip existing artists: {skip_existing}")
+        log_info("\n" + "="*80)
+        log_info("BEETS AUTO-IMPORT SESSION STARTED")
+        log_info("="*80)
+        log_info(f"Music path: {self.music_path}")
+        log_info(f"Config path: {self.config_path}")
+        log_info(f"Beets config: {self.beets_config}")
+        log_info(f"Beets DB: {self.beets_db}")
+        log_info(f"Skip existing artists: {skip_existing}")
         
         # Count folders and files
         if self.music_path.exists():
             artist_folders = [d for d in self.music_path.iterdir() if d.is_dir()]
-            logging.info(f"Artist folders in /music: {len(artist_folders)}")
+            log_debug(f"Artist folders in /music: {len(artist_folders)}")
         
         total_files = 0
         if self.music_path.exists():
             total_files = sum(1 for _ in self.music_path.rglob('*.mp3'))
-        logging.info(f"Total .mp3 files in /music: {total_files}")
-        logging.info("="*80 + "\n")
+        log_debug(f"Total .mp3 files in /music: {total_files}")
+        log_info("="*80 + "\n")
+        
+        # Log to unified log
+        log_unified("Beets Import - Starting Beets Import Scan")
         
         save_beets_progress(0, total_files, status="starting", is_running=True)
         
         # Log a scan_history entry at the start to show beets import is running
         try:
             log_album_scan("Beets", "Import", "beets", 0, "started")
-            logging.info("Logged beets import start to scan_history")
+            log_debug("Logged beets import start to scan_history")
         except Exception as e:
-            logging.warning(f"Could not log beets import start: {e}")
+            log_debug(f"Could not log beets import start: {e}")
 
         try:
             process = self.run_import(artist_path, skip_existing=skip_existing)
-            logging.info(f"Beets import process started with PID {process.pid}")
+            log_info(f"Beets import process started with PID {process.pid}")
         except Exception as e:
-            logging.error(f"Failed to start beets import process: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
+            log_debug(f"Failed to start beets import process: {e}", exc_info=True)
             save_beets_progress(0, total_files, status="error", is_running=False)
             return False
 
@@ -682,7 +698,7 @@ class BeetsAutoImporter:
                         if line:  # Skip empty lines
                             line_count += 1
                             print(line)  # Echo to console
-                            logging.info(f"BEETS: {line}")
+                            log_debug(f"BEETS: {line}")
 
                             metadata = self.parse_import_output(line)
                             if metadata:
@@ -698,26 +714,24 @@ class BeetsAutoImporter:
                         # No output but process still running - check for timeout
                         elapsed = time.time() - last_output_time
                         if elapsed > output_timeout:
-                            logging.warning(f"Beets import timeout: no output for {output_timeout} seconds")
-                            logging.warning("Attempting to terminate beets process...")
+                            log_debug(f"Beets import timeout: no output for {output_timeout} seconds")
+                            log_debug("Attempting to terminate beets process...")
                             process.terminate()
                             try:
                                 process.wait(timeout=10)
                             except subprocess.TimeoutExpired:
-                                logging.error("Force killing beets process")
+                                log_debug("Force killing beets process")
                                 process.kill()
                             break
                         else:
                             time.sleep(0.1)  # Small sleep to avoid busy-waiting
                 
                 except Exception as e:
-                    logging.error(f"Error reading beets output: {e}")
+                    log_debug(f"Error reading beets output: {e}", exc_info=True)
                     break
 
         except Exception as e:
-            logging.error(f"Unexpected error during beets import: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
+            log_debug(f"Unexpected error during beets import: {e}", exc_info=True)
             try:
                 process.terminate()
                 process.wait(timeout=5)
@@ -730,12 +744,12 @@ class BeetsAutoImporter:
         try:
             process.wait(timeout=10)
         except subprocess.TimeoutExpired:
-            logging.error("Process did not terminate gracefully, killing...")
+            log_debug("Process did not terminate gracefully, killing...")
             process.kill()
             process.wait()
 
-        logging.info(f"Beets process completed with return code: {process.returncode}")
-        logging.info(f"Captured {line_count} output lines from beets")
+        log_info(f"Beets process completed with return code: {process.returncode}")
+        log_debug(f"Captured {line_count} output lines from beets")
         
         # Check how many tracks are now in beets database
         try:
@@ -745,12 +759,12 @@ class BeetsAutoImporter:
             beets_cursor.execute("SELECT COUNT(*) FROM items")
             final_count = beets_cursor.fetchone()[0]
             beets_conn.close()
-            logging.info(f"Beets database now has {final_count} tracks")
+            log_info(f"Beets database now has {final_count} tracks")
         except Exception as e:
-            logging.warning(f"Could not check final beets database count: {e}")
+            log_debug(f"Could not check final beets database count: {e}")
 
         if process.returncode is not None and process.returncode not in (0, -15):  # -15 is SIGTERM
-            logging.error(f"Beets import failed with return code {process.returncode}")
+            log_debug(f"Beets import failed with return code {process.returncode}")
             save_beets_progress(0, total_files, status="error", is_running=False)
             # Don't return False immediately - still try to sync what was imported
         
@@ -760,27 +774,26 @@ class BeetsAutoImporter:
             try:
                 with open(metadata_file, 'w') as f:
                     json.dump(import_metadata, f, indent=2)
-                logging.info(f"Saved {len(import_metadata)} import records to {metadata_file}")
+                log_info(f"Saved {len(import_metadata)} import records to {metadata_file}")
             except Exception as e:
-                logging.error(f"Could not save import metadata: {e}")
+                log_debug(f"Could not save import metadata: {e}", exc_info=True)
         
         if line_count == 0:
-            logging.warning("No output captured from beets - this may indicate an issue")
-            logging.warning("Proceeding to sync any data that was imported...")
+            log_debug("No output captured from beets - this may indicate an issue")
+            log_debug("Proceeding to sync any data that was imported...")
 
         # Sync beets database to sptnr even if import had issues
-        logging.info("Syncing beets metadata to sptnr database...")
+        log_info("Syncing beets metadata to sptnr database...")
         try:
             self.sync_beets_to_sptnr()
-            logging.info("Beets metadata sync completed successfully")
+            log_info("Beets metadata sync completed successfully")
         except Exception as e:
-            logging.error(f"Error syncing beets to sptnr: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
+            log_debug(f"Error syncing beets to sptnr: {e}", exc_info=True)
             save_beets_progress(total_files, total_files, status="error", is_running=False)
             return False
 
-        logging.info("Beets auto-import complete!")
+        log_unified("Beets Import - Beets auto-import complete!")
+        log_info("Beets auto-import complete!")
         save_beets_progress(total_files, total_files, status="complete", is_running=False)
         return True  # Consider it successful if we synced the data
 
@@ -796,13 +809,14 @@ def main():
     
     args = parser.parse_args()
     
+    # Verbose flag doesn't change logging configuration anymore - use log levels
     if args.verbose:
-        logging.getLogger().setLevel(logging.DEBUG)
+        log_debug("Verbose mode enabled")
     
     importer = BeetsAutoImporter()
     
     if args.sync_only:
-        logging.info("Sync-only mode: updating sptnr from beets database")
+        log_info("Sync-only mode: updating sptnr from beets database")
         importer.sync_beets_to_sptnr()
     else:
         success = importer.import_and_capture(artist_path=args.artist)
