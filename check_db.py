@@ -181,7 +181,7 @@ required_artist_stats_columns = {
 
 def update_schema(db_path):
     """
-    Ensure the 'tracks' and 'artist_stats' tables exist and have all required columns.
+    Ensure the 'tracks', 'artists', and 'artist_stats' tables exist and have all required columns.
     Adds missing columns dynamically and creates indexes for performance.
     """
     conn = sqlite3.connect(db_path, timeout=DB_TIMEOUT)
@@ -256,6 +256,7 @@ def update_schema(db_path):
     existing_artist_stats_columns = [row[1] for row in cursor.fetchall()]
     
     # Add missing artist_stats columns
+    # Note: col and col_type values come from required_artist_stats_columns dictionary (not user input)
     artist_stats_columns_added = []
     for col, col_type in required_artist_stats_columns.items():
         if col not in existing_artist_stats_columns:
