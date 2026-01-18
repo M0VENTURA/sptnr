@@ -12,49 +12,20 @@ import time
 from datetime import datetime
 from typing import Dict, Optional, Callable
 
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
 
-# --- Unified Logger Setup (shared with start.py/popularity.py) ---
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-SERVICE_PREFIX = "unified_scan_"
+# Set up logging for unified_scan service
+setup_logging("unified_scan")
+
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_UNIFIEDSCAN") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
+
 def log_verbose(msg):
+    """Legacy verbose logging - redirects to debug"""
     if VERBOSE:
-        logging.info(f"[VERBOSE] {msg}")
-
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-# Dedicated logger for unified_scan.log
-unified_logger = logging.getLogger("unified_scan")
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-unified_file_handler.setFormatter(formatter)
-unified_logger.setLevel(logging.INFO)
-if not unified_logger.hasHandlers():
-    unified_logger.addHandler(unified_file_handler)
-unified_logger.propagate = False
-
-def log_unified(msg):
-    unified_logger.info(msg)
-    for handler in unified_logger.handlers:
-        try:
-            handler.flush()
-        except Exception:
-            pass
+        log_debug(msg)
 
 DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 PROGRESS_FILE = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")

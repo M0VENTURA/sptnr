@@ -225,7 +225,19 @@
             <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
         </div>
         <div class="card-body p-2">
-            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-0" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+            <!-- Log Download Buttons -->
+            <div class="d-flex gap-2 justify-content-end mt-2">
+                <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
+                    <i class="bi bi-download"></i> Unified (1h)
+                </a>
+                <a href="/api/download-log/info" class="btn btn-sm btn-outline-info" download>
+                    <i class="bi bi-download"></i> Info (1h)
+                </a>
+                <a href="/api/download-log/debug" class="btn btn-sm btn-outline-warning" download>
+                    <i class="bi bi-download"></i> Debug (1h)
+                </a>
+            </div>
         </div>
     </div>
     

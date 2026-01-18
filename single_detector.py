@@ -9,6 +9,12 @@ import re
 import difflib
 import os
 
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
+
+# Set up logging for single detector service
+setup_logging("single_detector")
+
 def get_db_connection():
     from start import DB_PATH
     conn = sqlite3.connect(DB_PATH, timeout=120.0)
@@ -41,7 +47,7 @@ def get_current_single_detection(track_id: str) -> dict:
             }
         return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
     except Exception as e:
-        logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
+        log_debug(f"Failed to get current single detection for track {track_id}: {e}")
         return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
 # --- Helper functions for title analysis ---

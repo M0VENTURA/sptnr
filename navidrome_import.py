@@ -5,7 +5,9 @@ Navidrome Import Module - Handles importing metadata from Navidrome to local dat
 This module is responsible for:
 - Scanning artists from Navidrome
 - Importing album and track metadata
-- Logging to unified_scan.log
+- Logging to unified_scan.log (basic details only)
+- Logging to info.log (detailed operations)
+- Logging to debug.log (debug information)
 - Preserving user-edited single detection and ratings
 """
 
@@ -23,46 +25,17 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 # --- Configuration ---
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-SERVICE_PREFIX = "navidrome_import_"
 LOCAL_TZ = os.environ.get("TIMEZONE") or os.environ.get("TZ") or "UTC"
 
-# --- Logging Setup ---
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
+# --- Logging Setup with centralized config ---
+from logging_config import setup_logging, log_unified, log_info, log_debug
 
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
+# Set up logging for navidrome_import service
+setup_logging("navidrome_import")
 
-# Dedicated logger for unified_scan.log
-unified_logger = logging.getLogger("unified_scan")
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-# Use a clean formatter without service prefix for unified log
-unified_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-unified_file_handler.setFormatter(unified_formatter)
-unified_logger.setLevel(logging.INFO)
-if not unified_logger.hasHandlers():
-    unified_logger.addHandler(unified_file_handler)
-unified_logger.propagate = False
-
-def log_unified(msg):
-    """Log to unified_scan.log"""
-    unified_logger.info(msg)
-    for handler in unified_logger.handlers:
-        try:
-            handler.flush()
-        except Exception:
-            pass
+# Keep standard logging for backward compatibility
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # --- Import dependencies ---
 from db_utils import get_db_connection
@@ -193,12 +166,17 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         albums = fetch_artist_albums(artist_id)
         if verbose:
             print(f"🎤 Scanning artist: {artist_name} ({len(albums)} albums)")
-        log_unified(f"   💿 Found {len(albums)} albums for {artist_name}")
-        logging.info(f"🎤 [Navidrome] Scanning artist: {artist_name} ({len(albums)} albums)")
+        # Log basic info to unified log (dashboard viewing)
+        log_unified(f"Navidrome: Scanning {artist_name} ({len(albums)} albums)")
+        # Log detailed info to info log
+        log_info(f"[Navidrome] Scanning artist: {artist_name} ({len(albums)} albums)")
+        # Log debug details
+        log_debug(f"Navidrome import - Artist: {artist_name}, Albums: {len(albums)}, Force: {force}")
         
         # Save artist-level progress
         if total_artists > 0:
             save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
+
 
         total_albums = len(albums)
         tracks_imported = 0
@@ -215,13 +193,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if not album_id:
                 continue
             
-            log_unified(f"      💿 [Album {alb_idx}/{total_albums}] {album_name}")
-            logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
+            # Log basic album info to unified (dashboard)
+            log_unified(f"  Album {alb_idx}/{total_albums}: {album_name}")
+            # Log detailed info
+            log_info(f"[Navidrome] Processing album {alb_idx}/{total_albums}: {album_name}")
+            # Debug logging
+            log_debug(f"Album details - ID: {album_id}, Name: {album_name}, Artist: {artist_name}")
             
             # Detect if this is a live/unplugged album
             album_context = detect_live_album(album_name)
             if album_context.get("is_live") or album_context.get("is_unplugged"):
-                logging.info(f"      🎤 Detected live/unplugged album: {album_name}")
+                log_info(f"Detected live/unplugged album: {album_name}")
+                log_debug(f"Album context: {album_context}")
             
             try:
                 tracks = fetch_album_tracks(album_id)
@@ -324,34 +307,38 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             # Log this album completion to scan_history
             if album_tracks_processed > 0:
                 albums_scanned += 1
-                logging.info(f"Logging to scan_history: {artist_name} - {album_name} ({album_tracks_processed} tracks)")
+                log_info(f"Scan history: {artist_name} - {album_name} ({album_tracks_processed} tracks)")
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
-                log_unified(f"         ✓ Imported {album_tracks_processed} tracks from {album_name}")
-                logging.info(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
+                log_unified(f"    ✓ Imported {album_tracks_processed} tracks from {album_name}")
+                log_debug(f"Completed navidrome scan for {artist_name} - {album_name} ({album_tracks_processed} tracks)")
             
             # Update progress after each album to keep progress bars responsive
             if total_artists > 0:
                 save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
         
-        log_unified(f"✅ [Navidrome] Completed import for {artist_name}: {albums_scanned} albums, {tracks_imported} tracks")
+        # Log completion to unified (basic summary)
+        log_unified(f"Navidrome: Completed {artist_name} - {albums_scanned} albums, {tracks_imported} tracks")
+        # Log detailed completion info
+        log_info(f"[Navidrome] Completed import for {artist_name}: {albums_scanned} albums, {tracks_imported} tracks")
         if verbose:
             print(f"Artist scan complete: {artist_name}")
-            logging.info(f"Artist scan complete: {artist_name}")
+            log_debug(f"Artist scan complete: {artist_name}")
         
         # Fetch artist biography and images after successful import
         try:
             _fetch_artist_metadata(artist_name, verbose=verbose)
         except Exception as e:
-            logging.debug(f"Failed to fetch artist metadata for {artist_name}: {e}")
+            log_debug(f"Failed to fetch artist metadata for {artist_name}: {e}")
         
         # Scan for missing releases from MusicBrainz
         try:
             _scan_missing_musicbrainz_releases(artist_name, verbose=verbose)
         except Exception as e:
-            logging.debug(f"Failed to scan missing MusicBrainz releases for {artist_name}: {e}")
+            log_debug(f"Failed to scan missing MusicBrainz releases for {artist_name}: {e}")
     except Exception as e:
-        log_unified(f"❌ [Navidrome] Import failed for {artist_name}: {e}")
-        logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
+        log_unified(f"ERROR: Navidrome import failed for {artist_name}")
+        log_info(f"[Navidrome] Import error for {artist_name}: {e}")
+        log_debug(f"scan_artist_to_db failed for {artist_name}: {e}", exc_info=True)
         raise
 
 
