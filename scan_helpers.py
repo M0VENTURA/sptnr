@@ -23,7 +23,7 @@ except ImportError as e:
 
 # --- Single Detection DB Helpers ---
 def get_db_connection():
-    from start import DB_PATH
+    from db_utils import DB_PATH
     import sqlite3
     conn = sqlite3.connect(DB_PATH, timeout=120.0)
     conn.execute("PRAGMA journal_mode=WAL")
