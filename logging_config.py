@@ -184,16 +184,17 @@ def log_info(msg, level=logging.INFO):
     info_logger.log(level, msg)
 
 
-def log_debug(msg, level=logging.DEBUG):
+def log_debug(msg, level=logging.DEBUG, exc_info=False):
     """
     Log to debug.log - detailed debugging information.
     
     Args:
         msg: Message to log
         level: Log level (default DEBUG)
+        exc_info: Include exception information (default False)
     """
     _, _, debug_logger = get_loggers()
-    debug_logger.log(level, msg)
+    debug_logger.log(level, msg, exc_info=exc_info)
 
 
 def log_all(msg, level=logging.INFO):

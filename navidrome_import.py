@@ -96,7 +96,7 @@ def get_existing_file_path(track_id: str) -> Optional[str]:
     except Exception as e:
         try:
             log_debug(f"get_existing_file_path failed for track_id {track_id}: {e}", exc_info=True)
-        except:
+        except Exception:
             pass
         return None
 
