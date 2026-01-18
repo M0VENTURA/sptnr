@@ -18,6 +18,9 @@ from typing import Dict, List, Optional, Tuple
 from statistics import mean, stdev
 from datetime import datetime
 
+# Import centralized logging functions
+from logging_config import log_unified, log_info, log_debug
+
 logger = logging.getLogger(__name__)
 
 
@@ -581,7 +584,7 @@ def detect_single_enhanced(
     is_compilation = is_compilation_album(album_type, album, album_track_count)
     
     if is_compilation and verbose:
-        logger.debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
+        log_debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
     
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
@@ -590,25 +593,27 @@ def detect_single_enhanced(
     # STAGE 1: Pre-Filter (with compilation override)
     if not should_check_track(popularity, album_mean, album_stddev, album_popularities, spotify_version_count, is_compilation):
         if verbose:
-            logger.debug(f"Pre-filter: Skipping {title} (not high priority)")
+            log_debug(f"Pre-filter: Skipping {title} (not high priority)")
         return result
     
     if verbose:
-        logger.debug(f"Pre-filter: Checking {title} (high priority)")
+        log_debug(f"Pre-filter: Checking {title} (high priority)")
     
     # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
-            # Always log Discogs checks (not dependent on verbose)
-            logger.info(f"   Checking Discogs for single: {title}")
+            # Always log Discogs checks to unified and info logs (not dependent on verbose)
+            log_unified(f"   Checking Discogs for single: {title}")
+            log_info(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
-                logger.info(f"   ✓ Discogs confirms single: {title}")
+                log_unified(f"   ✓ Discogs confirms single: {title}")
+                log_info(f"   Discogs result: Single confirmed for '{title}'")
                 
                 # Per problem statement: Discogs = HIGH confidence, skip other checks
                 result['single_status'] = 'high'
@@ -628,22 +633,25 @@ def detect_single_enhanced(
                 
                 # Add final debug summary
                 if verbose:
-                    logger.debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
-                    logger.debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
-                    logger.debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
+                    log_debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
+                    log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+                    log_debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
                 
                 return result
             else:
-                if verbose:
-                    logger.info(f"   ⓘ Discogs does not confirm single: {title}")
+                # Always log negative results too (not just in verbose mode)
+                log_unified(f"   ⓘ Discogs does not confirm single: {title}")
+                log_info(f"   Discogs result: No single found for '{title}'")
         except Exception as e:
-            logger.info(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
-        if verbose:
-            if not discogs_client:
-                logger.info(f"   ⓘ Discogs client not available")
-            elif not getattr(discogs_client, 'enabled', True):
-                logger.info(f"   ⓘ Discogs client is disabled")
+        if not discogs_client:
+            log_unified(f"   ⓘ Discogs client not available")
+            log_info(f"   Discogs: Client not available (module import failed)")
+        elif not getattr(discogs_client, 'enabled', True):
+            log_unified(f"   ⓘ Discogs client is disabled")
+            log_info(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
@@ -675,39 +683,46 @@ def detect_single_enhanced(
             result['single_sources'].append('spotify')
             result['single_sources_used'].append('spotify')
             if verbose:
-                logger.debug(f"Spotify: Confirmed single for {title}")
+                log_debug(f"Spotify: Confirmed single for {title}")
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
-            # Always log MusicBrainz checks (not dependent on verbose)
-            logger.info(f"   Checking MusicBrainz for single: {title}")
+            # Always log MusicBrainz checks to unified and info logs (not dependent on verbose)
+            log_unified(f"   Checking MusicBrainz for single: {title}")
+            log_info(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
             musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
             if musicbrainz_confirmed:
                 result['single_sources'].append('musicbrainz')
                 result['single_sources_used'].append('musicbrainz')
-                logger.info(f"   ✓ MusicBrainz confirms single: {title}")
+                log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                log_info(f"   MusicBrainz result: Single confirmed for '{title}'")
             else:
-                if verbose:
-                    logger.info(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                # Always log negative results too (not just in verbose mode)
+                log_unified(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                log_info(f"   MusicBrainz result: No single found for '{title}'")
         except Exception as e:
             # Log SSL and connection errors more gracefully
             error_type = type(e).__name__
             if 'SSL' in error_type or 'ssl' in str(e).lower():
-                logger.info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+                log_unified(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+                log_info(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
             elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
-                logger.info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+                log_unified(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+                log_info(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
             else:
-                logger.info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                log_info(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
     else:
-        if verbose:
-            if not musicbrainz_client:
-                logger.info(f"   ⓘ MusicBrainz client not available")
-            elif not getattr(musicbrainz_client, 'enabled', True):
-                logger.info(f"   ⓘ MusicBrainz client is disabled")
+        if not musicbrainz_client:
+            log_unified(f"   ⓘ MusicBrainz client not available")
+            log_info(f"   MusicBrainz: Client not available (module import failed)")
+        elif not getattr(musicbrainz_client, 'enabled', True):
+            log_unified(f"   ⓘ MusicBrainz client is disabled")
+            log_info(f"   MusicBrainz: Client is disabled in configuration")
     
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
@@ -725,9 +740,9 @@ def detect_single_enhanced(
     result['artist_z_score'] = artist_z
     
     if verbose:
-        logger.debug(f"Z-scores for '{title}': album_z={album_z:.2f}, artist_z={artist_z:.2f}")
+        log_debug(f"Z-scores for '{title}': album_z={album_z:.2f}, artist_z={artist_z:.2f}")
         if artist_track_count > 0:
-            logger.debug(f"Artist stats: mean={artist_mean:.1f}, stddev={artist_stddev:.1f}, tracks={artist_track_count}")
+            log_debug(f"Artist stats: mean={artist_mean:.1f}, stddev={artist_stddev:.1f}, tracks={artist_track_count}")
     
     # Determine if this track is a standout across the entire artist catalogue
     # A track is considered an artist-level standout if it exceeds the artist median popularity
@@ -735,9 +750,9 @@ def detect_single_enhanced(
     
     if verbose and album_is_underperforming:
         if is_artist_level_standout:
-            logger.debug(f"Track '{title}' is artist-level standout: pop={popularity:.1f} >= artist_median={artist_median_popularity:.1f} (z-score detection enabled)")
+            log_debug(f"Track '{title}' is artist-level standout: pop={popularity:.1f} >= artist_median={artist_median_popularity:.1f} (z-score detection enabled)")
         else:
-            logger.debug(f"Album underperforming and track not artist-level standout: pop={popularity:.1f} < artist_median={artist_median_popularity:.1f} (z-score detection disabled)")
+            log_debug(f"Album underperforming and track not artist-level standout: pop={popularity:.1f} < artist_median={artist_median_popularity:.1f} (z-score detection disabled)")
     
     # Calculate mean version count for the album
     mean_version_count = calculate_mean_version_count(conn, artist, album)
@@ -746,7 +761,7 @@ def detect_single_enhanced(
     version_count_standout = is_version_count_standout(version_count_value, mean_version_count)
     
     if version_count_standout and verbose:
-        logger.debug(f"Version count standout: {title} (count={version_count_value}, mean={mean_version_count:.1f})")
+        log_debug(f"Version count standout: {title} (count={version_count_value}, mean={mean_version_count:.1f})")
     
     # Use hybrid z-score inference
     popularity_confidence, popularity_inferred = infer_from_popularity(
@@ -760,12 +775,12 @@ def detect_single_enhanced(
     if popularity_inferred:
         result['single_sources'].append('z-score')
         if verbose:
-            logger.debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
+            log_debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
     elif version_count_standout:
         # Version count standout is medium confidence but doesn't mark as single
         result['single_sources'].append('version_count')
         if verbose:
-            logger.debug(f"Version count: Medium confidence indicator for {title} (not marking as single)")
+            log_debug(f"Version count: Medium confidence indicator for {title} (not marking as single)")
     
     # STAGE 7: Final Decision (using hybrid z-scores)
     final_status = determine_final_status(
@@ -789,8 +804,8 @@ def detect_single_enhanced(
     
     # Add final debug summary per track
     if verbose:
-        logger.debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
-        logger.debug(f"[DEBUG] Final single status for {title}: {final_status}")
+        log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+        log_debug(f"[DEBUG] Final single status for {title}: {final_status}")
     
     return result
 
