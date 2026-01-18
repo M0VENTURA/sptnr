@@ -1250,11 +1250,11 @@ def detect_single_for_track(
         if not HAVE_DISCOGS_VIDEO:
             if verbose:
                 log_verbose(f"   ⓘ Discogs video client not available")
-                log_debug(f"   Discogs: Video client not available")
+            log_debug(f"   Discogs: Video client not available")
         elif not discogs_token:
             if verbose:
                 log_verbose(f"   ⓘ Discogs token not configured for video detection")
-                log_debug(f"   Discogs: Token not configured for video detection")
+            log_debug(f"   Discogs: Token not configured for video detection")
     
     # Calculate confidence based on sources per problem statement
     # High confidence: Discogs single or music video
@@ -1957,12 +1957,14 @@ def popularity_scan(
                             # Combined metadata check: single sources OR popularity data
                             has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
                             
+                            # Helper to get sources display for logging
+                            sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
+                            
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
                                 if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
                                         log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(sources_display)})")
                                 else:
                                     # High confidence threshold met but no metadata support - do not upgrade
@@ -1976,7 +1978,6 @@ def popularity_scan(
                                 if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
                                         log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(sources_display)})")
                                 else:
                                     # Medium confidence threshold met but no metadata support - do not upgrade
