@@ -108,6 +108,9 @@ DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium 
 UNDERPERFORMING_THRESHOLD = 0.6  # Album median must be >= 60% of artist median to not be underperforming
 MIN_TRACKS_FOR_ARTIST_COMPARISON = 10  # Minimum tracks needed for reliable artist-level comparison
 
+# Metadata source display constant
+POPULARITY_METADATA_SOURCE_NAME = "Spotify/Last.fm popularity"  # Display name for tracks with popularity data but no single sources
+
 
 def strip_parentheses(title: str) -> str:
     """
@@ -305,8 +308,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             """, (artist_name,))
             rows = cursor.fetchall()
             has_album_column = True
-        except Exception:
-            # Fallback: album column doesn't exist
+        except sqlite3.OperationalError:
+            # Fallback: album column doesn't exist (OperationalError: no such column: album)
             cursor.execute("""
                 SELECT popularity_score, title
                 FROM tracks 
@@ -1963,7 +1966,7 @@ def popularity_scan(
                             if metadata_info['sources_list']:
                                 sources_str = ', '.join(metadata_info['sources_list'])
                             else:
-                                sources_str = 'Spotify/Last.fm popularity'
+                                sources_str = POPULARITY_METADATA_SOURCE_NAME
                             
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
