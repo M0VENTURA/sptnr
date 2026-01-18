@@ -1647,16 +1647,15 @@ def api_scan_all_missing_releases():
                         # Insert missing release into database
                         cursor.execute("""
                             INSERT OR REPLACE INTO missing_releases 
-                            (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            (artist, title, release_type, release_date, mbid, source, discovered_at)
+                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                         """, (
                             artist_name,
-                            rg.get("id", ""),
                             rg.get("title", ""),
-                            rg.get("primary_type", ""),
+                            rg.get("primary_type", "album"),
                             rg.get("first_release_date", ""),
-                            cover_art_url,
-                            category
+                            rg.get("id", ""),
+                            "musicbrainz"
                         ))
                         total_missing += 1
                     
@@ -2469,16 +2468,15 @@ def api_add_artist():
             try:
                 cursor.execute("""
                     INSERT OR REPLACE INTO missing_releases 
-                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    (artist, title, release_type, release_date, mbid, source, discovered_at)
+                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
                 """, (
                     artist_name,
-                    rg.get("id", ""),
                     rg.get("title", ""),
-                    rg.get("primary_type", ""),
+                    rg.get("primary_type", "album"),
                     rg.get("first_release_date", ""),
-                    rg.get("cover_art_url", ""),
-                    category
+                    rg.get("id", ""),
+                    "musicbrainz"
                 ))
                 added_count += 1
             except Exception as e:
