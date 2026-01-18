@@ -594,7 +594,7 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
                     release["title"],
                     release["release_type"],
                     release["release_date"],
-                    "",  # cover_art_url - can be constructed from mbid if needed
+                    f"https://coverartarchive.org/release-group/{release['mbid']}/front-250" if release["mbid"] else "",
                     release["release_type"].capitalize(),
                     datetime.now().isoformat()
                 ))
