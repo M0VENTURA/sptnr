@@ -295,37 +295,57 @@ def calculate_z_score_strict(popularity: float, album_mean: float, album_stddev:
     return (popularity - album_mean) / album_stddev
 
 
-def infer_from_popularity(z_score: float, spotify_version_count: int, version_count_standout: bool = False) -> Tuple[str, bool]:
+def infer_from_popularity(
+    z_score: float, 
+    spotify_version_count: int, 
+    version_count_standout: bool = False,
+    album_is_underperforming: bool = False,
+    is_artist_level_standout: bool = False
+) -> Tuple[str, bool]:
     """
     Popularity-based inference per Stage 5.
     
-    UPDATED: Singles are now detected exclusively through metadata sources 
-    (Discogs, MusicBrainz, Spotify). Z-scores are calculated but only used 
-    for rating adjustments in popularity.py, not for single detection.
-    
-    This prevents false negatives on underperforming albums where z-scores
-    are naturally lower due to overall low album popularity.
-    
     Args:
-        z_score: Z-score for the track within its album (calculated but not used)
+        z_score: Z-score for the track within its album
         spotify_version_count: Number of exact-match Spotify versions
         version_count_standout: Whether track has version_count >= mean + 1 for the album
+        album_is_underperforming: Whether the album is underperforming vs artist median
+        is_artist_level_standout: Whether track exceeds artist median (standout across entire catalogue)
     
     Returns:
         Tuple of (confidence_level, is_inferred_single)
-        - confidence_level: 'medium' if version_count_standout, else 'none'
-        - is_inferred_single: Always False (metadata-only detection)
-    """
-    # Z-score based single detection disabled per problem statement
-    # Singles should ONLY be detected via metadata (Discogs, MusicBrainz, Spotify)
-    # Z-score is still calculated and used for rating adjustments in popularity.py
     
+    Thresholds:
+    - z >= 1.0 → strong single (high)
+    - z >= 0.5 → likely single (medium)
+    - z >= 0.2 AND >= 3 versions → weak single (low)
+    - version_count_standout (version_count >= mean + 1) → medium confidence indicator
+      (for rating boost, but does not mark as single)
+    
+    Z-score detection behavior:
+    - Normal albums: Z-score detection ENABLED
+    - Underperforming albums: Z-score detection DISABLED
+    - Exception: If song is a standout across entire artist catalogue, Z-score detection ENABLED
+    """
+    # Use z-score detection unless album underperforms, except when track is artist-level standout
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    
+    if use_zscore_detection:
+        # Apply z-score based single detection
+        if z_score >= 1.0:
+            return 'high', True
+        elif z_score >= 0.5:
+            return 'medium', True
+        elif z_score >= 0.2 and spotify_version_count >= 3:
+            return 'low', True
+    
+    # Version count standout always applies regardless of underperformance
     if version_count_standout:
         # Version-based medium confidence: doesn't mark as single by itself
         # but contributes to medium confidence which can achieve 5★ via popularity-based system
         return 'medium', False
-    else:
-        return 'none', False
+    
+    return 'none', False
 
 
 # ============================================================================
@@ -337,41 +357,51 @@ def determine_final_status(
     spotify_confirmed: bool,
     musicbrainz_confirmed: bool,
     z_score: float,
-    spotify_version_count: int
+    spotify_version_count: int,
+    album_is_underperforming: bool = False,
+    is_artist_level_standout: bool = False
 ) -> str:
     """
     Final single status per Stage 7.
     
-    UPDATED: Z-score is NO LONGER used for single detection on underperforming albums.
-    Singles are ONLY detected via metadata sources (Discogs, MusicBrainz, Spotify).
-    Z-score is still calculated and stored for rating purposes, but does not contribute
-    to single detection confidence.
-    
     HIGH-CONFIDENCE:
-    - Discogs confirms
+    - Discogs confirms OR z >= 1.0 (if z-score detection enabled)
     
     MEDIUM-CONFIDENCE:
-    - Spotify or MusicBrainz confirms
+    - Spotify or MusicBrainz confirms OR z >= 0.5 (if z-score detection enabled)
     
     LOW-CONFIDENCE:
-    - Not applicable (removed z-score based detection)
+    - z >= 0.2 AND >= 3 Spotify versions (if z-score detection enabled)
     
     NOT A SINGLE:
     - None of the above
     
+    Z-score detection behavior:
+    - Normal albums: Z-score detection ENABLED
+    - Underperforming albums: Z-score detection DISABLED
+    - Exception: If song is a standout across entire artist catalogue, Z-score detection ENABLED
+    
     Note: Version count standout is handled via infer_from_popularity() and
     contributes to rating boost, not final single status.
     """
+    # Use z-score detection unless album underperforms, except when track is artist-level standout
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    
     # HIGH
     if discogs_confirmed:
+        return 'high'
+    if use_zscore_detection and z_score >= 1.0:
         return 'high'
     
     # MEDIUM
     if spotify_confirmed or musicbrainz_confirmed:
         return 'medium'
+    if use_zscore_detection and z_score >= 0.5:
+        return 'medium'
     
-    # Z-score no longer contributes to single detection
-    # It is still calculated and used for star rating adjustments in popularity.py
+    # LOW
+    if use_zscore_detection and z_score >= 0.2 and spotify_version_count >= 3:
+        return 'low'
     
     return 'none'
 
@@ -393,7 +423,9 @@ def detect_single_enhanced(
     discogs_client=None,
     musicbrainz_client=None,
     verbose: bool = False,
-    album_type: Optional[str] = None
+    album_type: Optional[str] = None,
+    album_is_underperforming: bool = False,
+    artist_median_popularity: float = 0.0
 ) -> Dict:
     """
     Enhanced single detection implementing the 8-stage algorithm.
@@ -422,6 +454,8 @@ def detect_single_enhanced(
         musicbrainz_client: MusicBrainz API client
         verbose: Enable verbose logging
         album_type: Spotify album type (for compilation detection)
+        album_is_underperforming: Whether the album is underperforming vs artist median
+        artist_median_popularity: Artist median popularity (for standout detection)
         
     Returns:
         Dict with single detection results for database storage
@@ -582,6 +616,16 @@ def detect_single_enhanced(
     z_score = calculate_z_score_strict(popularity, album_mean, album_stddev)
     result['z_score'] = z_score
     
+    # Determine if this track is a standout across the entire artist catalogue
+    # A track is considered an artist-level standout if it exceeds the artist median popularity
+    is_artist_level_standout = artist_median_popularity > 0 and popularity >= artist_median_popularity
+    
+    if verbose and album_is_underperforming:
+        if is_artist_level_standout:
+            logger.debug(f"Track '{title}' is artist-level standout: pop={popularity:.1f} >= artist_median={artist_median_popularity:.1f} (z-score detection enabled)")
+        else:
+            logger.debug(f"Album underperforming and track not artist-level standout: pop={popularity:.1f} < artist_median={artist_median_popularity:.1f} (z-score detection disabled)")
+    
     # Calculate mean version count for the album
     mean_version_count = calculate_mean_version_count(conn, artist, album)
     # Handle None spotify_version_count (default to 0)
@@ -591,7 +635,13 @@ def detect_single_enhanced(
     if version_count_standout and verbose:
         logger.debug(f"Version count standout: {title} (count={version_count_value}, mean={mean_version_count:.1f})")
     
-    popularity_confidence, popularity_inferred = infer_from_popularity(z_score, version_count_value, version_count_standout)
+    popularity_confidence, popularity_inferred = infer_from_popularity(
+        z_score, 
+        version_count_value, 
+        version_count_standout,
+        album_is_underperforming,
+        is_artist_level_standout
+    )
     if popularity_inferred:
         result['single_sources'].append('z-score')
         if verbose:
@@ -608,7 +658,9 @@ def detect_single_enhanced(
         spotify_confirmed,
         musicbrainz_confirmed,
         z_score,
-        version_count_value
+        version_count_value,
+        album_is_underperforming,
+        is_artist_level_standout
     )
     
     result['single_status'] = final_status
