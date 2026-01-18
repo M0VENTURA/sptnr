@@ -146,7 +146,9 @@ required_columns = {
     "single_status": "TEXT",                  # none/low/medium/high per detection algorithm
     "single_confidence_score": "REAL",        # Numeric confidence score (0.0-1.0)
     "single_sources_used": "TEXT",            # JSON array: sources that confirmed single
-    "z_score": "REAL",                        # Z-score for single detection (alias for zscore)
+    "z_score": "REAL",                        # Z-score for single detection (alias for zscore, backward compatibility)
+    "album_z_score": "REAL",                  # Album-level z-score for single detection
+    "artist_z_score": "REAL",                 # Artist-level z-score for single detection (NEW)
     "spotify_version_count": "INTEGER",       # Number of exact-match Spotify versions
     "discogs_release_ids": "TEXT",            # JSON array of Discogs release IDs
     "musicbrainz_release_group_ids": "TEXT",  # JSON array of MusicBrainz release group IDs
