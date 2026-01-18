@@ -578,34 +578,24 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         if missing_releases:
             log_unified(f"   🔍 Found {len(missing_releases)} missing releases on MusicBrainz")
             
-            # Create missing_releases table if it doesn't exist
-            cursor.execute("""
-                CREATE TABLE IF NOT EXISTS missing_releases (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    artist TEXT NOT NULL,
-                    title TEXT NOT NULL,
-                    release_type TEXT NOT NULL,
-                    release_date TEXT,
-                    mbid TEXT,
-                    source TEXT DEFAULT 'musicbrainz',
-                    discovered_at TEXT NOT NULL,
-                    UNIQUE(artist, title, source)
-                )
-            """)
+            # Note: missing_releases table is created by check_db.py with schema:
+            # (id, artist, release_id, title, primary_type, first_release_date, 
+            #  cover_art_url, category, last_checked)
             
             # Insert missing releases
             for release in missing_releases:
                 cursor.execute("""
                     INSERT OR IGNORE INTO missing_releases 
-                    (artist, title, release_type, release_date, mbid, source, discovered_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     release["artist"],
+                    release["mbid"],
                     release["title"],
                     release["release_type"],
                     release["release_date"],
-                    release["mbid"],
-                    release["source"],
+                    "",  # cover_art_url - can be constructed from mbid if needed
+                    release["release_type"].capitalize(),
                     datetime.now().isoformat()
                 ))
             

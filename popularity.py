@@ -2183,7 +2183,7 @@ def popularity_scan(
         log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
         log_verbose(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped")
         
-        # Clear progress file on successful completion
+        # Write final progress state (marks scan as completed)
         try:
             progress_data = {
                 "is_running": False,
@@ -2195,7 +2195,7 @@ def popularity_scan(
             with open(POPULARITY_PROGRESS_FILE, 'w') as f:
                 json.dump(progress_data, f)
         except Exception as e:
-            log_basic(f"Error clearing popularity progress: {e}")
+            log_basic(f"Error writing final progress state: {e}")
             
     except Exception as e:
         log_unified(f"❌ Popularity scan failed: {str(e)}")
