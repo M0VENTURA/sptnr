@@ -1648,14 +1648,15 @@ def api_scan_all_missing_releases():
                         cursor.execute("""
                             INSERT OR REPLACE INTO missing_releases 
                             (artist, title, release_type, release_date, mbid, source, discovered_at)
-                            VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            VALUES (?, ?, ?, ?, ?, ?, ?)
                         """, (
                             artist_name,
                             rg.get("title", ""),
                             rg.get("primary_type", "album"),
                             rg.get("first_release_date", ""),
                             rg.get("id", ""),
-                            "musicbrainz"
+                            "musicbrainz",
+                            datetime.now().isoformat()
                         ))
                         total_missing += 1
                     
@@ -2469,14 +2470,15 @@ def api_add_artist():
                 cursor.execute("""
                     INSERT OR REPLACE INTO missing_releases 
                     (artist, title, release_type, release_date, mbid, source, discovered_at)
-                    VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                 """, (
                     artist_name,
                     rg.get("title", ""),
                     rg.get("primary_type", "album"),
                     rg.get("first_release_date", ""),
                     rg.get("id", ""),
-                    "musicbrainz"
+                    "musicbrainz",
+                    datetime.now().isoformat()
                 ))
                 added_count += 1
             except Exception as e:
