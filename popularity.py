@@ -1483,7 +1483,10 @@ def popularity_scan(
                                     try:
                                         from popularity_helpers import fetch_comprehensive_metadata
                                         log_verbose(f"Fetching comprehensive metadata for track ID: {spotify_track_id}")
-                                        metadata_fetched = fetch_comprehensive_metadata(
+                                        metadata_fetched = _run_with_timeout(
+                                            fetch_comprehensive_metadata,
+                                            API_CALL_TIMEOUT,
+                                            f"Comprehensive metadata fetch timed out after {API_CALL_TIMEOUT}s",
                                             db_track_id=track_id,
                                             spotify_track_id=spotify_track_id,
                                             force_refresh=force,
@@ -1493,6 +1496,8 @@ def popularity_scan(
                                             log_verbose(f"✓ Comprehensive metadata fetched for: {title}")
                                         else:
                                             log_verbose(f"⚠ Failed to fetch comprehensive metadata for: {title}")
+                                    except TimeoutError as e:
+                                        log_verbose(f"⏱ Comprehensive metadata fetch timed out for {title}: {e}")
                                     except Exception as e:
                                         log_verbose(f"⚠ Error fetching comprehensive metadata for {title}: {e}")
                             else:

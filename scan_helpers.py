@@ -85,6 +85,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         existing_track_ids: set[str] = set()
         existing_album_tracks: dict[str, set[str]] = {}
         albums_needing_reimport: set[str] = set()  # Track albums with missing fields
+        albums_logged: set[str] = set()  # Track which albums we've already logged
         try:
             conn = get_db_connection()
             cursor = conn.cursor()
@@ -104,8 +105,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 field_values = row[2:]
                 if any(val is None or val == '' or val == 0 for val in field_values):
                     albums_needing_reimport.add(alb_name)
-                    if verbose:
+                    # Only log once per album to avoid duplicate messages
+                    if verbose and alb_name not in albums_logged:
                         logging.info(f"Album '{alb_name}' flagged for re-import due to missing fields")
+                        albums_logged.add(alb_name)
             conn.close()
         except Exception as e:
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
