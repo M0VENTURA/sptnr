@@ -453,20 +453,25 @@ def determine_final_status(
     spotify_version_count: int,
     album_is_underperforming: bool = False,
     is_artist_level_standout: bool = False,
-    discogs_video_confirmed: bool = False
+    discogs_video_confirmed: bool = False,
+    popularity: float = 0.0,
+    album_mean: float = 0.0,
+    has_metadata: bool = False
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
     
-    HIGH-CONFIDENCE:
-    - Discogs confirms
-    - album_z >= 1.0 AND artist_z >= 0.5 (when z-score enabled)
+    HIGH-CONFIDENCE (NEW RULES):
+    1. popularity >= album_mean + 6, OR
+    2. Discogs confirms exact track version (studio or live) as a single
+    
+    High confidence is NEVER assigned if metadata_sources is empty.
     
     MEDIUM-CONFIDENCE:
-    - Spotify confirms
-    - MusicBrainz confirms
+    - Spotify confirms (strict)
+    - MusicBrainz confirms (strict, release_group.type == "Single")
     - Discogs video confirms
-    - album_z >= 0.5 OR artist_z >= 1.0 (when z-score enabled)
+    - Z-score with metadata confirmation
     
     LOW-CONFIDENCE:
     - album_z >= 0.2 AND >= 3 versions (when z-score enabled)
@@ -474,9 +479,8 @@ def determine_final_status(
     NOT A SINGLE:
     - None of the above
     
-    Z-score detection is enabled unless:
-    - Album is underperforming (popularity < artist median)
-    - EXCEPT when track is artist-level standout (track popularity >= artist median)
+    Z-score can ONLY produce medium confidence, NEVER high confidence.
+    Z-score must ALWAYS require metadata confirmation.
     
     Args:
         discogs_confirmed: Whether Discogs confirms this is a single
@@ -488,30 +492,36 @@ def determine_final_status(
         album_is_underperforming: Whether album is underperforming vs artist median
         is_artist_level_standout: Whether track exceeds artist median popularity
         discogs_video_confirmed: Whether Discogs confirms this has a music video
+        popularity: Track popularity score
+        album_mean: Album mean popularity
+        has_metadata: Whether track has any metadata sources
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
     """
-    # Discogs is always high confidence
+    # NEW HIGH-CONFIDENCE RULES:
+    # RULE 1: Discogs confirms exact track version as single
     if discogs_confirmed:
         return 'high'
     
-    # Determine if z-score detection is enabled
-    # Z-score detection disabled for underperforming albums, unless track is artist-level standout
-    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    # RULE 2: popularity >= album_mean + 6
+    # This can ONLY produce high confidence if metadata is present
+    if has_metadata and popularity >= (album_mean + 6):
+        return 'high'
     
-    # Check z-score based high confidence (if enabled)
-    if use_zscore_detection:
-        # High confidence: album_z >= 1.0 AND artist_z >= 0.5
-        if album_z >= 1.0 and artist_z >= 0.5:
-            return 'high'
+    # High confidence must NEVER be assigned if metadata_sources is empty
+    # (already handled by has_metadata check above)
     
     # Check metadata-based medium confidence
     if spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed:
         return 'medium'
     
-    # Check z-score based medium confidence (if enabled)
-    if use_zscore_detection:
+    # Z-score can ONLY produce medium confidence, NEVER high confidence
+    # Z-score must ALWAYS require metadata confirmation
+    # Determine if z-score detection is enabled
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    
+    if use_zscore_detection and has_metadata:
         # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0
         if album_z >= 0.5 or artist_z >= 1.0:
             return 'medium'
@@ -902,6 +912,27 @@ def detect_single_enhanced(
         if artist_track_count > 0:
             log_debug(f"Artist stats: mean={artist_mean:.1f}, stddev={artist_stddev:.1f}, tracks={artist_track_count}")
     
+    # ARTIST-LEVEL SANITY FILTER
+    # If track.popularity < artist_mean_popularity:
+    #     Reject single detection UNLESS the track has explicit metadata:
+    #     - Discogs single
+    #     - Spotify single (strict)
+    #     - MusicBrainz single (strict)
+    #     - Discogs music video
+    #
+    # Do NOT allow z-score or popularity outlier to bypass this filter.
+    has_explicit_metadata = discogs_confirmed or spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed
+    
+    if artist_mean > 0 and popularity < artist_mean:
+        if not has_explicit_metadata:
+            if verbose:
+                log_debug(f"Artist-level sanity filter: Rejecting {title} (pop={popularity:.1f} < artist_mean={artist_mean:.1f}, no explicit metadata)")
+            # Return early - track doesn't qualify for single detection
+            return result
+        else:
+            if verbose:
+                log_debug(f"Artist-level sanity filter: Allowing {title} despite pop={popularity:.1f} < artist_mean={artist_mean:.1f} (has explicit metadata)")
+    
     # Determine if this track is a standout across the entire artist catalogue
     # A track is considered an artist-level standout if it exceeds the artist median popularity
     is_artist_level_standout = artist_median_popularity > 0 and popularity >= artist_median_popularity
@@ -942,6 +973,11 @@ def detect_single_enhanced(
             log_debug(f"Version count: Medium confidence indicator for {title} (not marking as single)")
     
     # STAGE 7: Final Decision (using hybrid z-scores)
+    # Check if we have any metadata sources for high-confidence determination
+    # Metadata sources: discogs, spotify, musicbrainz, discogs_video
+    # NOT z-score, popularity outlier, or version_count
+    has_metadata = has_explicit_metadata
+    
     final_status = determine_final_status(
         discogs_confirmed,
         spotify_confirmed,
@@ -951,7 +987,10 @@ def detect_single_enhanced(
         version_count_value,
         album_is_underperforming,
         is_artist_level_standout,
-        discogs_video_confirmed
+        discogs_video_confirmed,
+        popularity,
+        album_mean,
+        has_metadata
     )
     
     result['single_status'] = final_status
