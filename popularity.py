@@ -1958,14 +1958,19 @@ def popularity_scan(
                             has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
                             
                             # Helper to get sources display for logging
-                            sources_display = metadata_info['sources_list'] if metadata_info['sources_list'] else ['Spotify/Last.fm popularity']
+                            # If we have metadata sources from single detection, use those
+                            # Otherwise, if we have popularity data, indicate that as the source
+                            if metadata_info['sources_list']:
+                                sources_str = ', '.join(metadata_info['sources_list'])
+                            else:
+                                sources_str = 'Spotify/Last.fm popularity'
                             
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
                                 if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(sources_display)})")
+                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={sources_str})")
                                 else:
                                     # High confidence threshold met but no metadata support - do not upgrade
                                     if verbose:
@@ -1978,7 +1983,7 @@ def popularity_scan(
                                 if has_any_metadata:
                                     stars = 5
                                     if verbose:
-                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(sources_display)})")
+                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={sources_str})")
                                 else:
                                     # Medium confidence threshold met but no metadata support - do not upgrade
                                     medium_conf_denied_upgrade = True
