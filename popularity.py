@@ -1866,12 +1866,10 @@ def popularity_scan(
                         if not is_excluded_track:
                             # Get metadata information from single_sources
                             metadata_info = get_metadata_sources_info(single_sources)
-                            has_metadata = metadata_info['has_metadata']
-                            has_version_count = metadata_info['has_version_count']
                             
                             # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
-                                if has_metadata or has_version_count:
+                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
                                     stars = 5
                                     if verbose:
                                         log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(metadata_info['sources_list'])})")
@@ -1884,7 +1882,7 @@ def popularity_scan(
                             elif track_zscore >= medium_conf_zscore_threshold:
                                 # Version count standout combined with popularity threshold = 5 stars
                                 # Per problem statement: "will make it 5*"
-                                if has_metadata or has_version_count:
+                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
                                     stars = 5
                                     if verbose:
                                         log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_info['sources_list'])})")

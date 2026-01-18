@@ -149,7 +149,9 @@ class DiscogsClient:
             # If no results, try with format filter as fallback
             if not results:
                 _throttle_discogs()
-                params["format"] = "Single, EP"
+                # Create new params dict to avoid mutation
+                fallback_params = {**params, "format": "Single, EP"}
+                params = fallback_params  # Update params for make_search_request closure
                 search_response = _retry_on_500(make_search_request, max_retries=2, retry_delay=1.0)
                 results = search_response.json().get("results", [])
             
@@ -347,25 +349,25 @@ class DiscogsClient:
                 "per_page": 15
             }
             
-            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            if res.status_code == 429:
-                # Respect rate limit
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
-            res.raise_for_status()
+            # Helper function for making search requests with rate limit handling
+            def make_discogs_search_request(search_params):
+                """Make a Discogs search request with rate limit handling."""
+                response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
+                    _throttle_discogs()
+                    response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
+                response.raise_for_status()
+                return response.json().get("results", [])
             
-            results = res.json().get("results", [])
+            results = make_discogs_search_request(params)
             
             # If no results without filter, try with format filter as fallback
             if not results:
                 _throttle_discogs()
-                params["format"] = "Single, EP"
-                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-                if res.status_code == 429:
-                    retry_after = int(res.headers.get("Retry-After", 60))
-                    time.sleep(retry_after)
-                res.raise_for_status()
-                results = res.json().get("results", [])
+                fallback_params = {**params, "format": "Single, EP"}
+                results = make_discogs_search_request(fallback_params)
             
             if not results:
                 self._single_cache[cache_key] = False

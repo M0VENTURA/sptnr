@@ -624,7 +624,9 @@ class DiscogsVerificationClient:
             # If no results, try with format filter as fallback
             if not results:
                 _throttle_discogs()
-                params["format"] = "Single, EP"
+                # Create new params dict to avoid mutation
+                fallback_params = {**params, "format": "Single, EP"}
+                params = fallback_params  # Update params for make_search_request closure
                 search_response = _retry_on_500(make_search_request)
                 results = search_response.json().get("results", [])
             
