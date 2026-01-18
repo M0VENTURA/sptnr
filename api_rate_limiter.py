@@ -7,7 +7,11 @@ Helps prevent hitting daily/hourly API limits for Spotify and Last.fm
 import json
 import os
 import time
+import logging
 from datetime import datetime, timedelta
+
+# Set up logger for this module
+logger = logging.getLogger(__name__)
 
 # API Limits (based on research):
 # Spotify: ~250 requests per 30 seconds (client credentials) = ~720,000/day theoretical max
@@ -41,7 +45,7 @@ class APIRateLimiter:
                             state['last_reset'] = datetime.now().isoformat()
                     return state
             except Exception as e:
-                print(f"Warning: Could not load rate limiter state: {e}")
+                logger.debug(f"Could not load rate limiter state: {e}")
         
         # Default state
         return {
@@ -60,7 +64,7 @@ class APIRateLimiter:
             with open(self.state_file, 'w') as f:
                 json.dump(self.state, f, indent=2)
         except Exception as e:
-            print(f"Warning: Could not save rate limiter state: {e}")
+            logger.debug(f"Could not save rate limiter state: {e}")
     
     def check_spotify_limit(self, operation: str = "request") -> tuple[bool, str]:
         """
@@ -164,11 +168,11 @@ class APIRateLimiter:
             try:
                 wait_time = float(reason.split("Wait ")[1].split("s")[0])
                 if wait_time <= max_wait_seconds:
-                    print(f"Rate limiting: waiting {wait_time:.1f}s for Spotify...")
+                    logger.info(f"Rate limiting: waiting {wait_time:.1f}s for Spotify...")
                     time.sleep(wait_time + 0.1)  # Add small buffer
                     return True
                 else:
-                    print(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
+                    logger.warning(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
                     return False
             except (ValueError, IndexError) as e:
                 # Could not parse wait time from message
@@ -198,7 +202,7 @@ class APIRateLimiter:
                     time.sleep(wait_time + 0.1)  # Add small buffer
                     return True
                 else:
-                    print(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
+                    logger.warning(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
                     return False
             except (ValueError, IndexError) as e:
                 # Could not parse wait time from message

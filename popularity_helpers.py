@@ -213,9 +213,10 @@ def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int 
         return 0.0
     
     # Artist-relative scoring (preferred when available)
-    if artist_max_playcount > 0 and playcount <= artist_max_playcount:
+    if artist_max_playcount > 0:
         # Linear scale relative to artist's most popular track
-        return (playcount / artist_max_playcount) * 100.0
+        # Cap at 100 if track exceeds artist max (shouldn't happen in practice)
+        return min(100.0, (playcount / artist_max_playcount) * 100.0)
     
     # Global logarithmic scaling
     # Use log base 10, scaled to 0-100 range

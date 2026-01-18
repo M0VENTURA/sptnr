@@ -174,18 +174,18 @@ def is_live_or_alternate_album(album: str) -> bool:
     album_lower = album.lower()
     
     # Live album indicators
+    # Note: 'unplugged' covers 'mtv unplugged', so no need for separate entry
     live_keywords = [
         'live',
         'unplugged',
         'acoustic',
-        'mtv unplugged',
         'live at',
         'live in',
         'concert',
         'live from',
         'in concert',
         'on stage',
-        'tour'
+        'live tour'  # More specific than just 'tour' to avoid false positives
     ]
     
     return any(keyword in album_lower for keyword in live_keywords)
