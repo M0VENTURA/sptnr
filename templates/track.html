@@ -407,36 +407,6 @@
                                 {% endif %}
                             </div>
                         </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Year</div>
-                            <div class="metadata-value">{{ track.year or '—' }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Album Artist</div>
-                            <div class="metadata-value">
-                                {% if track.album_artist %}
-                                    <a href="{{ url_for('artist_detail', name=track.album_artist) }}">{{ track.album_artist }}</a>
-                                {% else %}
-                                    —
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Track Number</div>
-                            <div class="metadata-value">{{ track.track_number or '—' }}</div>
-                        </div>
-                        {% if track.disc_number %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Disc Number</div>
-                            <div class="metadata-value">{{ track.disc_number }}</div>
-                        </div>
-                        {% endif %}
-                        {% if track.stars %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Rating</div>
-                            <div class="metadata-value">{{ track.stars }}/5</div>
-                        </div>
-                        {% endif %}
                         {% if track.bpm %}
                         <div class="metadata-row">
                             <div class="metadata-label">BPM</div>
@@ -453,12 +423,6 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Sample Rate</div>
                             <div class="metadata-value">{{ (track.sample_rate / 1000)|round(1) }} kHz</div>
-                        </div>
-                        {% endif %}
-                        {% if track.composer %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Composer</div>
-                            <div class="metadata-value">{{ track.composer }}</div>
                         </div>
                         {% endif %}
                         {% if track.isrc %}
