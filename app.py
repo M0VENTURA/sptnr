@@ -39,7 +39,15 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         db_path: Path to database
     Returns:
         list: Sorted list of unique genres
+        
+    Note: Returns empty list for Various Artists and Soundtracks as they
+          have a lot of different artists and genres.
     """
+    # Skip genre aggregation for Various Artists and Soundtracks
+    artist_lower = artist_name.lower()
+    if artist_lower == "various artists" or "soundtrack" in artist_lower:
+        return []
+    
     genres = set()
     try:
         import sqlite3
@@ -1640,15 +1648,16 @@ def api_scan_all_missing_releases():
                         cursor.execute("""
                             INSERT OR REPLACE INTO missing_releases 
                             (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                            VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                         """, (
                             artist_name,
                             rg.get("id", ""),
                             rg.get("title", ""),
-                            rg.get("primary_type", ""),
+                            rg.get("primary_type", "Album"),
                             rg.get("first_release_date", ""),
                             cover_art_url,
-                            category
+                            category,
+                            datetime.now().isoformat()
                         ))
                         total_missing += 1
                     
@@ -1729,10 +1738,10 @@ def api_cached_missing_releases():
             })
         
         cursor.execute("""
-            SELECT id, title, release_type, release_date, mbid, discovered_at
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked
             FROM missing_releases
             WHERE artist = ?
-            ORDER BY release_date DESC
+            ORDER BY first_release_date DESC
         """, (artist,))
         
         rows = cursor.fetchall()
@@ -1740,17 +1749,16 @@ def api_cached_missing_releases():
         
         missing = []
         for row in rows:
-            mbid = row[4] if len(row) > 4 else ""
-            cover_art_url = f"https://coverartarchive.org/release-group/{mbid}/front-250" if mbid else ""
+            release_id = row[0] if len(row) > 0 else ""
             
             missing.append({
-                "id": mbid or str(row[0]),
-                "title": row[1],
+                "id": release_id,
+                "title": row[1] if len(row) > 1 else "",
                 "primary_type": row[2] if len(row) > 2 else "Album",
                 "first_release_date": row[3] if len(row) > 3 else "",
-                "cover_art_url": cover_art_url,
-                "category": (row[2] if len(row) > 2 else "Album").capitalize(),
-                "last_checked": row[5] if len(row) > 5 else ""
+                "cover_art_url": row[4] if len(row) > 4 else "",
+                "category": row[5] if len(row) > 5 else "Album",
+                "last_checked": row[6] if len(row) > 6 else ""
             })
         
         return jsonify({
@@ -2462,15 +2470,16 @@ def api_add_artist():
                 cursor.execute("""
                     INSERT OR REPLACE INTO missing_releases 
                     (artist, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     artist_name,
                     rg.get("id", ""),
                     rg.get("title", ""),
-                    rg.get("primary_type", ""),
+                    rg.get("primary_type", "Album"),
                     rg.get("first_release_date", ""),
                     rg.get("cover_art_url", ""),
-                    category
+                    category,
+                    datetime.now().isoformat()
                 ))
                 added_count += 1
             except Exception as e:
