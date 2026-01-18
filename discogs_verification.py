@@ -599,28 +599,34 @@ class DiscogsVerificationClient:
             }
         
         try:
-            # Search for releases
+            # Search for releases - try without format filter first
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
-            params = {
+            base_params = {
                 "q": f"{artist} {track_title}",
                 "type": "release",
-                "format": "Single, EP",  # Prioritize singles and EPs
                 "per_page": 10
             }
             
-            def make_search_request():
-                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            def make_search_request(search_params):
+                response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 if response.status_code == 429:
                     retry_after = int(response.headers.get("Retry-After", 60))
                     time.sleep(retry_after)
                     _throttle_discogs()
-                    response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    response = self.session.get(search_url, headers=self.headers, params=search_params, timeout=timeout)
                 response.raise_for_status()
                 return response
             
-            search_response = _retry_on_500(make_search_request)
+            search_response = _retry_on_500(lambda: make_search_request(base_params))
             results = search_response.json().get("results", [])
+            
+            # If no results, try with format filter as fallback
+            if not results:
+                _throttle_discogs()
+                fallback_params = {**base_params, "format": "Single, EP"}
+                search_response = _retry_on_500(lambda: make_search_request(fallback_params))
+                results = search_response.json().get("results", [])
             
             if not results:
                 logger.debug(f"No Discogs results for '{track_title}' by '{artist}'")

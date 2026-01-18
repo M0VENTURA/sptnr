@@ -83,9 +83,12 @@ def determine_rating(track_name, popularity, has_metadata, high_threshold, mediu
     else:
         zscore = 0
     
-    # Check high confidence
+    # Check high confidence - NOW REQUIRES METADATA
     if popularity >= high_threshold:
-        return (5, f"HIGH CONFIDENCE (pop={popularity:.1f} >= {high_threshold:.1f})")
+        if has_metadata:
+            return (5, f"HIGH CONFIDENCE (pop={popularity:.1f} >= {high_threshold:.1f}, has metadata)")
+        else:
+            return (3, f"High threshold met but no metadata (pop={popularity:.1f})")
     
     # Check medium confidence
     if zscore >= medium_threshold:

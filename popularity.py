@@ -387,6 +387,54 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
     return excluded_indices
 
 
+def get_metadata_sources_info(single_sources):
+    """
+    Extract metadata information from single_sources list.
+    
+    Args:
+        single_sources: List of sources (e.g., ["discogs", "spotify"])
+        
+    Returns:
+        Dictionary with:
+            - has_discogs: bool
+            - has_spotify: bool
+            - has_musicbrainz: bool
+            - has_lastfm: bool
+            - has_version_count: bool
+            - has_metadata: bool (any metadata source)
+            - sources_list: list of display names
+    """
+    has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
+    has_spotify = "spotify" in single_sources
+    has_musicbrainz = "musicbrainz" in single_sources
+    has_lastfm = "lastfm" in single_sources
+    has_version_count = "version_count" in single_sources
+    
+    has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
+    
+    sources_list = []
+    if has_discogs:
+        sources_list.append("Discogs")
+    if has_spotify:
+        sources_list.append("Spotify")
+    if has_musicbrainz:
+        sources_list.append("MusicBrainz")
+    if has_lastfm:
+        sources_list.append("Last.fm")
+    if has_version_count:
+        sources_list.append("Version Count")
+    
+    return {
+        'has_discogs': has_discogs,
+        'has_spotify': has_spotify,
+        'has_musicbrainz': has_musicbrainz,
+        'has_lastfm': has_lastfm,
+        'has_version_count': has_version_count,
+        'has_metadata': has_metadata,
+        'sources_list': sources_list
+    }
+
+
 def normalize_genre(genre):
     """
     Normalize genre names to avoid duplicates and inconsistencies.
@@ -1816,45 +1864,33 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # High Confidence (auto 5★): popularity >= mean + 6
+                            # Get metadata information from single_sources
+                            metadata_info = get_metadata_sources_info(single_sources)
+                            
+                            # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
                             if popularity_score >= high_conf_threshold:
-                                stars = 5
-                                if verbose:
-                                    log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f})")
+                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
+                                    stars = 5
+                                    if verbose:
+                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={', '.join(metadata_info['sources_list'])})")
+                                else:
+                                    # High confidence threshold met but no metadata support - do not upgrade
+                                    if verbose:
+                                        log_unified(f"   ⚠️ High conf threshold met but no metadata: {title} (pop={popularity_score:.1f}, keeping stars={stars})")
                             
                             # Medium Confidence (requires metadata): zscore >= mean_top50_zscore - 0.3 + metadata
                             elif track_zscore >= medium_conf_zscore_threshold:
-                            # Check if we have metadata confirmation from any source
-                            has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
-                            has_spotify = "spotify" in single_sources
-                            has_musicbrainz = "musicbrainz" in single_sources
-                            has_lastfm = "lastfm" in single_sources
-                            has_version_count = "version_count" in single_sources
-                            
-                            has_metadata = has_discogs or has_spotify or has_musicbrainz or has_lastfm
-                            
-                            # Version count standout combined with popularity threshold = 5 stars
-                            # Per problem statement: "will make it 5*"
-                            if has_metadata or has_version_count:
-                                stars = 5
-                                if verbose:
-                                    metadata_sources = []
-                                    if has_discogs:
-                                        metadata_sources.append("Discogs")
-                                    if has_spotify:
-                                        metadata_sources.append("Spotify")
-                                    if has_musicbrainz:
-                                        metadata_sources.append("MusicBrainz")
-                                    if has_lastfm:
-                                        metadata_sources.append("Last.fm")
-                                    if has_version_count:
-                                        metadata_sources.append("Version Count")
-                                    log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_sources)})")
-                            else:
-                                # Medium confidence threshold met but no metadata support - do not upgrade
-                                medium_conf_denied_upgrade = True
-                                if verbose:
-                                    log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
+                                # Version count standout combined with popularity threshold = 5 stars
+                                # Per problem statement: "will make it 5*"
+                                if metadata_info['has_metadata'] or metadata_info['has_version_count']:
+                                    stars = 5
+                                    if verbose:
+                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={', '.join(metadata_info['sources_list'])})")
+                                else:
+                                    # Medium confidence threshold met but no metadata support - do not upgrade
+                                    medium_conf_denied_upgrade = True
+                                    if verbose:
+                                        log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
                         
                             # Legacy logic for backwards compatibility (if not caught by new system)
                             # Skip legacy logic if medium confidence check explicitly denied upgrade
