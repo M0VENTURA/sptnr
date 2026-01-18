@@ -13,3 +13,6 @@ dist/
 build/
 logs/*.log
 test_*.py
+*.db
+*.db-shm
+*.db-wal
