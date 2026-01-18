@@ -212,7 +212,7 @@
           </div>
         </div>
         <div class="col-md-4">
-          <label class="form-label fw-bold small">Last.fm Artist MBID</label>
+          <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
           <div class="input-group input-group-sm">
             <input type="text" class="form-control" id="lastfmArtistMbid" value="{{ stats.lastfm_artist_mbid or '' }}" readonly>
             {% if stats.lastfm_artist_mbid %}
@@ -1368,10 +1368,10 @@ function openEditArtistIdsModal() {
               </div>
             </div>
             <div class="mb-3">
-              <label for="editLastfmArtistMbid" class="form-label">Last.fm Artist MBID</label>
+              <label for="editLastfmArtistMbid" class="form-label">MusicBrainz Artist ID</label>
               <input type="text" class="form-control" id="editLastfmArtistMbid" value="${escapeHtml(lastfmMbid)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
               <div class="form-text">
-                <a href="https://www.last.fm/music/${encodeURIComponent(artistName)}" target="_blank">Search Last.fm</a> for the artist
+                <a href="https://www.last.fm/music/${encodeURIComponent(artistName)}" target="_blank">Search Last.fm</a> or <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> for the artist ID
               </div>
             </div>
             <div class="mb-3">
