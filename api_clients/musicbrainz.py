@@ -4,12 +4,57 @@ import difflib
 import time
 import json
 import os
+import re
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from . import session
 
 logger = logging.getLogger(__name__)
+
+# Version keywords to detect in track titles (immutable tuple for performance)
+VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
+                    'remaster', 'remastered', 'demo', 'instrumental', 'orchestral')
+
+def _extract_version_info(title: str) -> tuple[str, set[str]]:
+    """
+    Extract base title and version keywords from a track title.
+    
+    Args:
+        title: Track title (e.g., "Song Title (Live)", "Song Title - Acoustic Version")
+        
+    Returns:
+        Tuple of (base_title, version_keywords_set)
+        - base_title: Title without version suffixes
+        - version_keywords_set: Set of version keywords found (e.g., {'live', 'acoustic'})
+    
+    Examples:
+        "Untot im Drachenboot (Live in Wacken 2022)" -> ("Untot im Drachenboot", {'live'})
+        "Song Title - Acoustic Version" -> ("Song Title", {'acoustic'})
+        "Regular Song" -> ("Regular Song", set())
+    """
+    title_lower = title.lower()
+    found_versions = set()
+    
+    # Check for version keywords in the title
+    for keyword in VERSION_KEYWORDS:
+        if re.search(r'\b' + re.escape(keyword) + r'\b', title_lower):
+            found_versions.add(keyword)
+    
+    # Extract base title (remove parenthesized/bracketed content and dash-based suffixes)
+    base_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)  # Remove (anything) or [anything]
+    
+    # Dynamically build pattern from VERSION_KEYWORDS for consistency
+    version_pattern = '|'.join(keyword.capitalize() for keyword in VERSION_KEYWORDS)
+    base_title = re.sub(
+        r'\s*-\s*(?:' + version_pattern + r').*$', 
+        '', 
+        base_title, 
+        flags=re.IGNORECASE
+    )
+    base_title = base_title.strip()
+    
+    return base_title, found_versions
 
 # Simple MBID cache to avoid repeated lookups
 _mbid_cache = {}
@@ -83,15 +128,21 @@ class MusicBrainzClient:
         """
         Query MusicBrainz release-group by title+artist and check primary-type=Single.
         
+        Also verifies that the version matches (e.g., doesn't match a studio single
+        when checking a live version).
+        
         Args:
             title: Track title
             artist: Artist name
             
         Returns:
-            True if release-group type is Single
+            True if release-group type is Single AND version matches
         """
         if not self.enabled:
             return False
+        
+        # Extract version information from the track title
+        base_title, track_versions = _extract_version_info(title)
         
         max_retries = 3
         retry_delay = 1.0
@@ -100,11 +151,12 @@ class MusicBrainzClient:
                 # Add rate limiting delay before each request to avoid server issues
                 time.sleep(1.0)
                 
-                query = f'{title} AND artist:{artist} AND primarytype:Single'
+                # Search using base title to find all versions
+                query = f'{base_title} AND artist:{artist} AND primarytype:Single'
                 params = {
                     "query": query,
                     "fmt": "json",
-                    "limit": 5
+                    "limit": 10  # Increased to check more results for version matching
                 }
                 # Only log first attempt at debug level to reduce noise
                 if attempt == 0:
@@ -120,7 +172,28 @@ class MusicBrainzClient:
                 logger.debug(f"MusicBrainz is_single response: status={res.status_code}")
                 res.raise_for_status()
                 rgs = res.json().get("release-groups", [])
-                return any((rg.get("primary-type") or "").lower() == "single" for rg in rgs)
+                
+                # Check if any result is a single with matching version
+                for rg in rgs:
+                    if (rg.get("primary-type") or "").lower() != "single":
+                        continue
+                    
+                    # Extract version from release-group title
+                    rg_title = rg.get("title", "")
+                    _, rg_versions = _extract_version_info(rg_title)
+                    
+                    # Match if:
+                    # 1. Both have same version keywords (e.g., both live, both acoustic)
+                    # 2. OR both have no version keywords (both are studio versions)
+                    if track_versions == rg_versions:
+                        logger.debug(f"MusicBrainz single match: '{title}' matched '{rg_title}' (versions: {track_versions})")
+                        return True
+                    else:
+                        logger.debug(f"MusicBrainz version mismatch: track '{title}' ({track_versions}) vs release '{rg_title}' ({rg_versions})")
+                
+                # No matching single found with same version
+                return False
+                
             except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
                 # Log SSL/connection/timeout errors at appropriate levels to reduce noise
                 error_type = type(e).__name__

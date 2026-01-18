@@ -322,31 +322,12 @@ def detect_single_new(
     
     med_conf_sources = set()
     
-    # A. Z-score + metadata confirmation
+    # A. Z-score + metadata confirmation (deferred until we check actual metadata sources)
+    # We'll check this after collecting explicit metadata sources below
     if album_std > 0:
         z_score = (popularity - album_mean) / album_std
-        
-        if z_score >= z_threshold:
-            # Check for metadata confirmation
-            # Metadata confirmation requires at least ONE of:
-            # 1. Explicit metadata (Spotify, MusicBrainz, Discogs) - will be checked below
-            # 2. Popularity outlier (>= mean + 2)
-            # 3. Version count standout (>= mean + 1) - TODO: implement when version count data available
-            
-            has_popularity_outlier = popularity >= (album_mean + 2)
-            
-            # For now, we'll use popularity outlier as metadata confirmation
-            # The explicit metadata sources (Spotify, MusicBrainz, Discogs) will be checked below
-            # and if found, they will also provide metadata confirmation retroactively
-            
-            # We'll mark this as a potential medium confidence source
-            # and finalize it after checking explicit sources
-            has_metadata_confirmation = has_popularity_outlier
-            
-            if has_metadata_confirmation:
-                med_conf_sources.add('zscore+metadata')
-                if verbose:
-                    log_debug(f"[MEDIUM CONF] Z-score + metadata: {title} (z={z_score:.2f} >= {z_threshold:.2f})")
+    else:
+        z_score = 0.0
     
     # B. Spotify single (strict)
     if spotify_results:
@@ -409,11 +390,19 @@ def detect_single_new(
     # 
     # Implementation deferred until version count data is available in the pipeline.
     
-    # F. Popularity outlier (>= album_mean + 2)
-    if popularity >= (album_mean + 2):
-        med_conf_sources.add('popularity_outlier')
-        if verbose:
-            log_debug(f"[MEDIUM CONF] Popularity outlier: {title} ({popularity:.1f} >= {album_mean + 2:.1f})")
+    # F. Z-score + metadata confirmation (now that we have checked actual metadata sources)
+    # Metadata confirmation requires at least ONE of:
+    # 1. Explicit metadata (Spotify, MusicBrainz, Discogs) already collected above
+    # 2. Version count standout (not yet implemented)
+    # NOTE: Popularity outlier is NOT considered metadata confirmation
+    if z_score >= z_threshold:
+        # Check if we have actual metadata from external sources
+        has_actual_metadata = len(med_conf_sources) > 0 or len(high_conf_sources) > 0
+        
+        if has_actual_metadata:
+            med_conf_sources.add('zscore+metadata')
+            if verbose:
+                log_debug(f"[MEDIUM CONF] Z-score + metadata: {title} (z={z_score:.2f} >= {z_threshold:.2f}, metadata sources: {med_conf_sources | high_conf_sources})")
     
     # -----------------------------------------------------
     # 5. LIVE TRACK HANDLING
