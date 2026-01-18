@@ -323,6 +323,26 @@ class DiscogsClient:
         
         return False
     
+    def _is_official_video_for_track(self, video: dict, track_title_lower: str) -> bool:
+        """
+        Check if a video is an official video for a given track.
+        
+        Args:
+            video: Video dict from Discogs API
+            track_title_lower: Track title in lowercase
+            
+        Returns:
+            True if video is official and matches track title
+        """
+        video_title = (video.get("title") or "").lower()
+        video_desc = (video.get("description") or "").lower()
+        
+        # Check if it's an official video for this track
+        is_official = ("official" in video_title or "official" in video_desc)
+        matches_title = (track_title_lower in video_title or track_title_lower in video_desc)
+        
+        return is_official and matches_title
+    
     def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:
         """
         Discogs single detection (best-effort, rate-limit safe).
@@ -444,13 +464,7 @@ class DiscogsClient:
                 if videos:
                     log_info(f"   Discogs: Checking {len(videos)} video(s) in release {rid} for '{title}'")
                 for video in videos:
-                    video_title = (video.get("title") or "").lower()
-                    video_desc = (video.get("description") or "").lower()
-                    # Check if it's an official video for this track
-                    is_official = ("official" in video_title or "official" in video_desc)
-                    matches_title = (nav_title in video_title or nav_title in video_desc)
-                    
-                    if is_official and matches_title:
+                    if self._is_official_video_for_track(video, nav_title):
                         # Official video for this track found - likely a single
                         log_unified(f"   ✓ Discogs confirms single via official music video in release {rid}: {title}")
                         log_info(f"   Discogs result: Official music video found in release for '{title}' (video: {video.get('title', 'N/A')})")
@@ -532,14 +546,7 @@ class DiscogsClient:
                 # Check videos in the master release
                 videos = master_data.get("videos", []) or []
                 for video in videos:
-                    video_title = (video.get("title") or "").lower()
-                    video_desc = (video.get("description") or "").lower()
-                    
-                    # Check if it's an official video for this track
-                    is_official = ("official" in video_title or "official" in video_desc)
-                    matches_title = (nav_title_lower in video_title or nav_title_lower in video_desc)
-                    
-                    if is_official and matches_title:
+                    if self._is_official_video_for_track(video, nav_title_lower):
                         logger.debug(f"Found official video for '{title}' by '{artist}' on Discogs")
                         return True
             
