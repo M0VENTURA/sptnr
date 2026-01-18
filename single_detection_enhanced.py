@@ -452,7 +452,8 @@ def determine_final_status(
     artist_z: float,
     spotify_version_count: int,
     album_is_underperforming: bool = False,
-    is_artist_level_standout: bool = False
+    is_artist_level_standout: bool = False,
+    discogs_video_confirmed: bool = False
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -464,6 +465,7 @@ def determine_final_status(
     MEDIUM-CONFIDENCE:
     - Spotify confirms
     - MusicBrainz confirms
+    - Discogs video confirms
     - album_z >= 0.5 OR artist_z >= 1.0 (when z-score enabled)
     
     LOW-CONFIDENCE:
@@ -485,6 +487,7 @@ def determine_final_status(
         spotify_version_count: Number of Spotify versions found
         album_is_underperforming: Whether album is underperforming vs artist median
         is_artist_level_standout: Whether track exceeds artist median popularity
+        discogs_video_confirmed: Whether Discogs confirms this has a music video
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -504,7 +507,7 @@ def determine_final_status(
             return 'high'
     
     # Check metadata-based medium confidence
-    if spotify_confirmed or musicbrainz_confirmed:
+    if spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed:
         return 'medium'
     
     # Check z-score based medium confidence (if enabled)
@@ -947,7 +950,8 @@ def detect_single_enhanced(
         artist_z,
         version_count_value,
         album_is_underperforming,
-        is_artist_level_standout
+        is_artist_level_standout,
+        discogs_video_confirmed
     )
     
     result['single_status'] = final_status
