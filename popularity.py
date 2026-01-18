@@ -1795,6 +1795,10 @@ def popularity_scan(
                         except json.JSONDecodeError:
                             single_sources = []
                         
+                        # Check if this track was excluded from statistics
+                        # Excluded tracks should not participate in confidence-based star rating upgrades
+                        is_excluded_track = i in excluded_indices
+                        
                         # Calculate z-score for this track
                         if popularity_stddev > 0 and popularity_score > 0:
                             track_zscore = (popularity_score - popularity_mean) / popularity_stddev
@@ -1809,14 +1813,17 @@ def popularity_scan(
                         # Track if medium confidence check explicitly denied upgrade due to missing metadata
                         medium_conf_denied_upgrade = False
                         
-                        # High Confidence (auto 5★): popularity >= mean + 6
-                        if popularity_score >= high_conf_threshold:
-                            stars = 5
-                            if verbose:
-                                log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f})")
-                        
-                        # Medium Confidence (requires metadata): zscore >= mean_top50_zscore - 0.3 + metadata
-                        elif track_zscore >= medium_conf_zscore_threshold:
+                        # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
+                        # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
+                        if not is_excluded_track:
+                            # High Confidence (auto 5★): popularity >= mean + 6
+                            if popularity_score >= high_conf_threshold:
+                                stars = 5
+                                if verbose:
+                                    log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f})")
+                            
+                            # Medium Confidence (requires metadata): zscore >= mean_top50_zscore - 0.3 + metadata
+                            elif track_zscore >= medium_conf_zscore_threshold:
                             # Check if we have metadata confirmation from any source
                             has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
                             has_spotify = "spotify" in single_sources
@@ -1849,33 +1856,37 @@ def popularity_scan(
                                 if verbose:
                                     log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
                         
-                        # Legacy logic for backwards compatibility (if not caught by new system)
-                        # Skip legacy logic if medium confidence check explicitly denied upgrade
-                        if not medium_conf_denied_upgrade:
-                            # Boost to 5 stars if score exceeds threshold (only for singles)
-                            if popularity_score >= jump_threshold and stars < 5:
-                                # Only boost to 5 if it's at least a medium confidence single
-                                if single_confidence in ["high", "medium"]:
-                                    stars = 5
-                                else:
-                                    stars = 4  # Cap at 4 stars if not a single
+                            # Legacy logic for backwards compatibility (if not caught by new system)
+                            # Skip legacy logic if medium confidence check explicitly denied upgrade
+                            if not medium_conf_denied_upgrade:
+                                # Boost to 5 stars if score exceeds threshold (only for singles)
+                                if popularity_score >= jump_threshold and stars < 5:
+                                    # Only boost to 5 if it's at least a medium confidence single
+                                    if single_confidence in ["high", "medium"]:
+                                        stars = 5
+                                    else:
+                                        stars = 4  # Cap at 4 stars if not a single
+                                
+                                # Boost stars for confirmed singles (legacy)
+                                if single_confidence == "high" and stars < 5:
+                                    stars = 5  # High confidence single = 5 stars
+                                # Medium confidence singles no longer get automatic +1 star boost
                             
-                            # Boost stars for confirmed singles (legacy)
-                            if single_confidence == "high" and stars < 5:
-                                stars = 5  # High confidence single = 5 stars
-                            # Medium confidence singles no longer get automatic +1 star boost
-                        
-                        # NEW: Artist-level popularity context
-                        # Downgrade singles from underperforming albums (unless they exceed artist median)
-                        if album_is_underperforming and single_confidence in ["medium", "high"]:
-                            if artist_stats['median_popularity'] > 0:
-                                # Only downgrade if track popularity is also below artist median
-                                if popularity_score < artist_stats['median_popularity']:
-                                    # Downgrade by 1 star (but keep at least 3 stars for confirmed singles)
-                                    original_stars = stars
-                                    stars = max(stars - 1, 3 if single_confidence == "high" else 2)
-                                    if verbose and stars < original_stars:
-                                        log_unified(f"   📉 Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
+                            # NEW: Artist-level popularity context
+                            # Downgrade singles from underperforming albums (unless they exceed artist median)
+                            if album_is_underperforming and single_confidence in ["medium", "high"]:
+                                if artist_stats['median_popularity'] > 0:
+                                    # Only downgrade if track popularity is also below artist median
+                                    if popularity_score < artist_stats['median_popularity']:
+                                        # Downgrade by 1 star (but keep at least 3 stars for confirmed singles)
+                                        original_stars = stars
+                                        stars = max(stars - 1, 3 if single_confidence == "high" else 2)
+                                        if verbose and stars < original_stars:
+                                            log_unified(f"   📉 Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
+                        else:
+                            # Track is excluded from statistics - log if verbose
+                            if verbose:
+                                log_unified(f"   ⏭️ Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
                         
                         # Ensure at least 1 star
                         stars = max(stars, 1)
