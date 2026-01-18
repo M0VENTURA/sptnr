@@ -7,7 +7,19 @@ from typing import Optional, Dict, List, Tuple
 from . import session
 
 # Import centralized logging for visible operational messages
-from logging_config import log_unified, log_info, log_debug
+# Use try-except to handle cases where logging_config is not available (e.g., in tests)
+try:
+    from logging_config import log_unified, log_info, log_debug
+    _HAVE_CENTRALIZED_LOGGING = True
+except (ImportError, PermissionError):
+    # Fallback to standard logger if centralized logging not available
+    _HAVE_CENTRALIZED_LOGGING = False
+    def log_unified(msg, level=logging.INFO):
+        logging.getLogger(__name__).log(level, msg)
+    def log_info(msg, level=logging.INFO):
+        logging.getLogger(__name__).log(level, msg)
+    def log_debug(msg, level=logging.DEBUG):
+        logging.getLogger(__name__).log(level, msg)
 
 logger = logging.getLogger(__name__)
 
