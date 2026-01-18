@@ -7,7 +7,7 @@ This tests the fix for the issue where tracks that meet medium confidence
 threshold but lack metadata were incorrectly upgraded to 5 stars by legacy logic.
 """
 
-from statistics import mean, stdev
+from statistics import mean, stdev, median
 import heapq
 
 # Constants from popularity.py
@@ -75,11 +75,10 @@ def simulate_star_calculation(
         medium_conf_zscore_threshold = DEFAULT_MEDIUM_CONF_THRESHOLD
     
     # Calculate median score for band-based threshold (legacy)
-    from statistics import median as calc_median
     scores = album_popularity_scores
     valid_scores = [s for s in scores if s > 0]
     if valid_scores:
-        median_score = calc_median(valid_scores)
+        median_score = median(valid_scores)
     else:
         median_score = DEFAULT_POPULARITY_MEAN
     if median_score == 0:
@@ -217,8 +216,7 @@ def test_medium_conf_no_metadata_scenario():
     ]
     
     # Calculate actual mean and thresholds
-    from statistics import mean as calc_mean
-    actual_mean = calc_mean(album_scores)
+    actual_mean = mean(album_scores)
     actual_popularity_standout_threshold = actual_mean + 2
     
     print(f"Album: Feuerschwanz - Fegefeuer")
