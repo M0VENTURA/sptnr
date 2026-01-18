@@ -5,9 +5,6 @@ Calculates popularity scores and updates database.
 Note: Singles detection is handled separately by sptnr.py rate_artist() function.
 """
 
-
-
-
 import os
 import sqlite3
 import logging
@@ -27,22 +24,28 @@ import concurrent.futures
 from api_clients import session, timeout_safe_session
 from helpers import find_matching_spotify_single
 
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
+
+# Set up logging for popularity service
+setup_logging("popularity")
+
 # Import API clients for single detection at module level
 try:
     from api_clients.musicbrainz import MusicBrainzClient
     HAVE_MUSICBRAINZ = True
 except ImportError as e:
+    log_debug(f"MusicBrainz client unavailable: {e}")
     HAVE_MUSICBRAINZ = False
-    logging.debug(f"MusicBrainz client unavailable: {e}")
     
 try:
     from api_clients.discogs import DiscogsClient
     HAVE_DISCOGS = True
     HAVE_DISCOGS_VIDEO = True
 except ImportError as e:
+    log_debug(f"Discogs client unavailable: {e}")
     HAVE_DISCOGS = False
     HAVE_DISCOGS_VIDEO = False
-    logging.debug(f"Discogs client unavailable: {e}")
 
 # Timeout-safe clients for use within _run_with_timeout() context
 # These use timeout_safe_session with reduced retry count to prevent exceeding timeout
@@ -635,68 +638,22 @@ def api_timeout(seconds: int, error_message: str = "API call timed out"):
     yield
 
 
-# Dedicated popularity logger (no propagation to root)
-
-
-
-# --- Dual Logger Setup: sptnr.log and unified_scan.log ---
-LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
-UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
+# Legacy configuration for backward compatibility
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_POPULARITY") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
 # Force rescan of albums even if they were already scanned
 FORCE_RESCAN = os.environ.get("SPTNR_FORCE_RESCAN", "0") == "1"
-SERVICE_PREFIX = "popularity_"
 
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
-
-# Dedicated logger for unified_scan.log
-unified_logger = logging.getLogger("unified_scan")
-unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-# Use a clean formatter without service prefix for unified log
-unified_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-unified_file_handler.setFormatter(unified_formatter)
-unified_logger.setLevel(logging.INFO)
-# Always add the file handler (even if handlers exist)
-unified_logger.addHandler(unified_file_handler)
-unified_logger.propagate = False
-print("unified_logger handlers:", unified_logger.handlers)
-
-def _flush_handlers(logger_obj):
-    """Flush all handlers for a logger to ensure messages are written immediately"""
-    try:
-        for handler in logger_obj.handlers:
-            handler.flush()
-    except Exception as e:
-        # Log flush errors at debug level to aid troubleshooting
-        logging.debug(f"Failed to flush log handlers: {e}")
-
+# Legacy logging functions - now redirected to centralized logging
 def log_basic(msg):
-    logging.info(msg)
-    _flush_handlers(logging.getLogger())
-
-def log_unified(msg):
-    unified_logger.info(msg)
-    _flush_handlers(unified_logger)
+    """Legacy function - logs to info.log"""
+    log_info(msg)
 
 def log_verbose(msg):
+    """Legacy function - logs to debug.log"""
     if VERBOSE:
-        logging.info(msg)
-        _flush_handlers(logging.getLogger())
+        log_debug(msg)
 
 
 
@@ -1224,10 +1181,15 @@ def popularity_scan(
         force: Force re-scan of albums even if they were already scanned
     """
     if not skip_header:
-        log_unified("=" * 60)
-        log_unified("Popularity Scanner Started")
-        log_unified("=" * 60)
-        log_unified(f"🟢 Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        # Log to unified (basic summary for dashboard)
+        log_unified(f"Popularity: Scan started at {datetime.now().strftime('%H:%M:%S')}")
+        # Log detailed info
+        log_info("=" * 60)
+        log_info("Popularity Scanner Started")
+        log_info("=" * 60)
+        log_info(f"Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+        # Log debug details
+        log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}")
     
     # Log scan mode
     if FORCE_RESCAN or force:

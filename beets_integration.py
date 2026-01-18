@@ -8,10 +8,17 @@ import os
 import json
 import subprocess
 import logging
-import sqlite3
 from pathlib import Path
 
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
+
+# Set up logging for beets service
+setup_logging("beets")
+
+# Keep standard logger for backward compatibility
 logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
 
 # Import auto-importer
 try:

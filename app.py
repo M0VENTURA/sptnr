@@ -93,70 +93,35 @@ import unicodedata
 import requests
 import hashlib
 
-# Unified logging setup
+# Import centralized logging configuration
+from logging_config import (
+    setup_logging, 
+    log_unified, 
+    log_info, 
+    log_debug,
+    UNIFIED_LOG_PATH,
+    INFO_LOG_PATH,
+    DEBUG_LOG_PATH
+)
 
+# Set up logging with WebUI service name
+setup_logging("WebUI")
+
+# Legacy compatibility - keep old functions
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = (
     os.environ.get("SPTNR_VERBOSE_APP") or os.environ.get("SPTNR_VERBOSE") or "0"
 ) == "1"
-SERVICE_PREFIX = "WebUI_"
-
-class ServicePrefixFormatter(logging.Formatter):
-    def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
-        self.prefix = prefix
-    def format(self, record):
-        record.msg = f"{self.prefix}{record.msg}"
-        return super().format(record)
-
-formatter = ServicePrefixFormatter(SERVICE_PREFIX)
-file_handler = logging.FileHandler(LOG_PATH)
-file_handler.setFormatter(formatter)
-stream_handler = logging.StreamHandler()
-stream_handler.setFormatter(formatter)
-logging.basicConfig(level=logging.INFO, handlers=[file_handler, stream_handler])
 
 def log_basic(msg):
+    """Legacy function - logs to info.log"""
     if VERBOSE:
-        logging.info(msg)
+        log_info(msg)
 
 def log_verbose(msg):
+    """Legacy function - logs to debug.log"""
     if VERBOSE:
-        logging.info(f"[VERBOSE] {msg}")
-
-# Unified scan log function
-UNIFIED_LOG_PATH = os.environ.get("UNIFIED_SCAN_LOG_PATH", "/config/unified_scan.log")
-_unified_logger_initialized = False
-
-def _setup_unified_logger():
-    """Setup unified logger (called once)"""
-    global _unified_logger_initialized
-    if _unified_logger_initialized:
-        return
-    
-    unified_logger = logging.getLogger("unified_scan_webui")
-    if not unified_logger.hasHandlers():
-        unified_file_handler = logging.FileHandler(UNIFIED_LOG_PATH)
-        unified_file_handler.setFormatter(ServicePrefixFormatter(SERVICE_PREFIX))
-        unified_logger.setLevel(logging.INFO)
-        unified_logger.addHandler(unified_file_handler)
-        unified_logger.propagate = False
-    _unified_logger_initialized = True
-
-_setup_unified_logger()
-
-def log_unified(msg):
-    """Log to unified_scan.log"""
-    unified_logger = logging.getLogger("unified_scan_webui")
-    unified_logger.info(msg)
-    # Flush handlers, but log errors instead of silently ignoring
-    for handler in unified_logger.handlers:
-        try:
-            handler.flush()
-        except (OSError, IOError) as e:
-            logging.warning(f"Failed to flush unified log handler: {e}")
-        except Exception as e:
-            logging.error(f"Unexpected error flushing unified log handler: {e}")
+        log_debug(f"[VERBOSE] {msg}")
 
 app = Flask(__name__)
 
@@ -190,10 +155,73 @@ def api_unified_log():
     except Exception as e:
         log_verbose(f"[api_unified_log] Exception processing log lines: {e}")
         return jsonify({"error": str(e), "lines": []}), 500
-if VERBOSE:
-    logging.basicConfig(level=logging.WARNING, handlers=[file_handler, stream_handler])
-else:
-    logging.basicConfig(level=logging.ERROR, handlers=[file_handler, stream_handler])
+
+# --- Log Download API ---
+@app.route("/api/download-log/<log_type>")
+def api_download_log(log_type):
+    """
+    Download the last hour of a specific log file.
+    
+    Args:
+        log_type: One of 'unified', 'info', 'debug'
+    """
+    from datetime import datetime, timedelta
+    
+    # Map log type to file path
+    log_paths = {
+        'unified': UNIFIED_LOG_PATH,
+        'info': INFO_LOG_PATH,
+        'debug': DEBUG_LOG_PATH
+    }
+    
+    if log_type not in log_paths:
+        return jsonify({"error": "Invalid log type. Must be 'unified', 'info', or 'debug'"}), 400
+    
+    log_path = log_paths[log_type]
+    
+    if not os.path.exists(log_path):
+        return jsonify({"error": f"Log file not found: {log_path}"}), 404
+    
+    try:
+        # Read log file and filter for last hour
+        cutoff_time = datetime.now() - timedelta(hours=1)
+        filtered_lines = []
+        
+        with open(log_path, "r", encoding="utf-8", errors="ignore") as f:
+            for line in f:
+                # Try to parse timestamp from log line (format: YYYY-MM-DD HH:MM:SS)
+                try:
+                    # Extract timestamp from beginning of line
+                    parts = line.split('[', 1)
+                    if parts and len(parts[0].strip()) >= 19:
+                        timestamp_str = parts[0].strip()[:19]
+                        line_time = datetime.strptime(timestamp_str, '%Y-%m-%d %H:%M:%S')
+                        if line_time >= cutoff_time:
+                            filtered_lines.append(line)
+                except (ValueError, IndexError):
+                    # If we can't parse timestamp, include the line anyway
+                    filtered_lines.append(line)
+        
+        # Create response with log content
+        log_content = ''.join(filtered_lines)
+        
+        # Generate filename with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        filename = f"{log_type}_log_{timestamp}.txt"
+        
+        # Return as downloadable file
+        return Response(
+            log_content,
+            mimetype='text/plain',
+            headers={
+                'Content-Disposition': f'attachment; filename={filename}',
+                'Content-Type': 'text/plain; charset=utf-8'
+            }
+        )
+        
+    except Exception as e:
+        log_info(f"Error downloading {log_type} log: {e}")
+        return jsonify({"error": str(e)}), 500
 
 # --- Navidrome Playlists API ---
 @app.route("/api/navidrome/playlists", methods=["GET"])
