@@ -506,9 +506,8 @@ def determine_final_status(
     # Metadata confirmation = explicit sources OR popularity outlier OR version count outlier
     if use_zscore_detection:
         # Check if we have metadata confirmation
-        has_explicit_metadata = spotify_confirmed or musicbrainz_confirmed or discogs_confirmed
         has_popularity_outlier = popularity >= (album_mean + 2)
-        has_metadata_confirmation = has_explicit_metadata or has_popularity_outlier or version_count_standout
+        has_metadata_confirmation = spotify_confirmed or musicbrainz_confirmed or discogs_confirmed or has_popularity_outlier or version_count_standout
         
         # Z-score thresholds (hybrid: album + artist)
         z_score_medium = (album_z >= 0.5 or artist_z >= 1.0)
