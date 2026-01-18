@@ -6,7 +6,13 @@ Functions are used by both the main scanner (start.py) and popularity.py.
 
 import os
 import yaml
+import math
+import logging
+import json
+import time
 from typing import Any, Tuple
+from datetime import datetime
+from collections import defaultdict
 
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
@@ -221,7 +227,6 @@ def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int 
     #   100,000 plays → 62.5 points
     #   1,000,000 plays → 75 points
     #   10,000,000 plays → 87.5 points
-    import math
     score = 12.5 * math.log10(playcount)
     
     # Cap at 100
@@ -241,12 +246,6 @@ def score_by_age(playcount: Any, release_str: str):
 
 
 # --- Shared DB/API/Helper Functions (moved from start.py) ---
-import math
-import logging
-import json
-import time
-from datetime import datetime
-from collections import defaultdict
 from db_utils import get_db_connection
 
 # Cache for NavidromeClient instance

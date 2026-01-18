@@ -8,7 +8,6 @@ import json
 import os
 import time
 from datetime import datetime, timedelta
-from pathlib import Path
 
 # API Limits (based on research):
 # Spotify: ~250 requests per 30 seconds (client credentials) = ~720,000/day theoretical max
@@ -171,7 +170,8 @@ class APIRateLimiter:
                 else:
                     print(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
                     return False
-            except:
+            except (ValueError, IndexError) as e:
+                # Could not parse wait time from message
                 pass
         
         return False
@@ -200,7 +200,8 @@ class APIRateLimiter:
                 else:
                     print(f"Rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
                     return False
-            except:
+            except (ValueError, IndexError) as e:
+                # Could not parse wait time from message
                 pass
         
         return False
