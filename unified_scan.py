@@ -247,7 +247,7 @@ def unified_scan_pipeline(
 
         # Run popularity scan ONCE for all tracks before processing artists
         # This ensures artist IDs are looked up only once per artist and cached in the database
-        log_unified("⭐ STEP 1/1: Popularity Detection")
+        log_unified("⭐ Popularity Detection")
         log_unified("-" * 80)
         log_unified("Detecting track popularity and singles...")
         logging.info("📊 Running popularity scan for all tracks...")
@@ -263,8 +263,8 @@ def unified_scan_pipeline(
             log_unified("")
             logging.info("✅ Popularity scan completed for all tracks")
         except Exception as e:
-            logging.error(f"❌ Popularity scan failed: {e}")
-            log_unified(f"❌ Popularity scan failed: {e}")
+            logging.error(f"❌ Popularity detection failed: {e}")
+            log_unified(f"❌ Popularity detection failed: {e}")
             # Continue with singles detection even if popularity scan fails
         
         # Note: Phase 2 (Singles Detection & Star Rating) has been removed as it was redundant.
