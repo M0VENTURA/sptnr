@@ -1402,6 +1402,7 @@ def popularity_scan(
         # Load strict matching configuration from config.yaml
         strict_spotify_matching = False
         duration_tolerance_sec = 2
+        album_skip_days = 7  # Default value
         try:
             config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
             with open(config_path, 'r') as f:
@@ -1409,10 +1410,12 @@ def popularity_scan(
             features = config.get('features', {})
             strict_spotify_matching = features.get('strict_spotify_matching', False)
             duration_tolerance_sec = features.get('spotify_duration_tolerance', 2)
+            album_skip_days = features.get('album_skip_days', 7)
             if strict_spotify_matching:
                 log_unified(f"✅ Strict Spotify matching enabled (duration tolerance: ±{duration_tolerance_sec}s)")
             else:
                 log_verbose("Standard Spotify matching mode (highest popularity)")
+            log_unified(f"📅 Album skip days: {album_skip_days} (albums scanned within {album_skip_days} days will be skipped)")
         except Exception as e:
             log_verbose(f"Could not load strict matching config (using defaults): {e}")
 
@@ -1525,8 +1528,8 @@ def popularity_scan(
             
             for album, album_tracks in albums.items():
                 # Check if album was already scanned (unless force rescan is enabled)
-                if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity'):
-                    log_unified(f'⏭ Skipping already-scanned album: "{artist} - {album}"')
+                if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
+                    log_unified(f'⏭ Skipping already-scanned album: "{artist} - {album}" (scanned within last {album_skip_days} days)')
                     skipped_count += 1
                     continue
                 

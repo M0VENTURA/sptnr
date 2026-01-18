@@ -132,7 +132,7 @@ def log_album_scan(artist: str, album: str, scan_type: str, tracks_processed: in
             logging.error(traceback.format_exc())
             return
 
-def was_album_scanned(artist: str, album: str, scan_type: str) -> bool:
+def was_album_scanned(artist: str, album: str, scan_type: str, days_threshold: int = None) -> bool:
     """
     Check if an album was already successfully scanned by a specific scan type.
     
@@ -140,9 +140,11 @@ def was_album_scanned(artist: str, album: str, scan_type: str) -> bool:
         artist: Artist name
         album: Album name
         scan_type: Type of scan to check ('navidrome', 'popularity', 'singles', 'unified', 'beets')
+        days_threshold: Optional number of days to check. If provided, returns True only if scanned 
+                       within the last N days. If None, checks if ever scanned (legacy behavior).
         
     Returns:
-        True if album was already successfully scanned, False otherwise
+        True if album was already successfully scanned (within days_threshold if provided), False otherwise
     """
     try:
         conn = sqlite3.connect(DB_PATH, timeout=120.0)
@@ -163,11 +165,21 @@ def was_album_scanned(artist: str, album: str, scan_type: str) -> bool:
         
         # Check for successful scans of this album with this scan type
         # Using LIMIT 1 for efficiency - we only need to know if any record exists
-        cursor.execute("""
-            SELECT 1 FROM scan_history
-            WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
-            LIMIT 1
-        """, (artist, album, scan_type))
+        if days_threshold is not None:
+            # Time-based check: only consider scans within the last N days
+            cursor.execute("""
+                SELECT 1 FROM scan_history
+                WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+                AND datetime(scan_timestamp) > datetime('now', '-' || ? || ' days')
+                LIMIT 1
+            """, (artist, album, scan_type, days_threshold))
+        else:
+            # Legacy behavior: check if ever scanned
+            cursor.execute("""
+                SELECT 1 FROM scan_history
+                WHERE artist = ? AND album = ? AND scan_type = ? AND status = 'completed'
+                LIMIT 1
+            """, (artist, album, scan_type))
         
         result = cursor.fetchone()
         conn.close()

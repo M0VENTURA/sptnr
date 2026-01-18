@@ -999,7 +999,7 @@ function renderFeaturesWeights(features, weights) {
         'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'
       ],
       explanations: {
-        album_skip_days: 'Skip albums that were released within this many days (prevents importing very new releases).',
+        album_skip_days: 'Number of days before rescanning an album. Albums scanned within this many days will be skipped unless force rescan is enabled.',
         album_skip_min_tracks: 'Minimum number of tracks required for an album to be considered valid.',
         clamp_min: 'Minimum allowed value for score normalization (prevents scores from dropping too low).',
         clamp_max: 'Maximum allowed value for score normalization (prevents scores from exceeding this value).',

@@ -101,7 +101,7 @@ features:
   auto_boot_navidrome_scan: false  # When enabled, automatically scan Navidrome metadata on startup
   artist: []
   # Single-detection and scoring knobs
-  album_skip_days: 7
+  album_skip_days: 7  # Number of days before rescanning an album (albums scanned within this many days will be skipped)
   album_skip_min_tracks: 1
   clamp_min: 0.75
   clamp_max: 1.25
