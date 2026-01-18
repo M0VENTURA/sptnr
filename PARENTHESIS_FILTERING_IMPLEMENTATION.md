@@ -31,7 +31,12 @@ Added a filtering function `should_exclude_from_stats()` that:
 - Pattern matches only titles that END with a parenthesized suffix (e.g., "Title (Single)", "Title (Live)")
 - Does NOT match titles with parentheses in the middle (e.g., "Track (One) Name")
 - Uses set membership for O(1) lookup performance
-- All tracks are still rated, but statistics (mean/stddev) use only filtered scores
+- All tracks are still rated, but statistics (mean/stddev/z-scores/top 50%) use only filtered scores
+- Excluded tracks are NOT included in:
+  - Mean calculation for the album
+  - Standard deviation calculation
+  - Z-score calculation
+  - Top 50% z-score calculation (used for medium confidence threshold)
 - Works backwards from the last track to find consecutive tracks with suffix
 
 ## Impact

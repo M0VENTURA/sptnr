@@ -301,9 +301,16 @@ def should_exclude_from_stats(tracks_with_scores, alternate_takes_map: dict = No
     
     Excludes tracks at the end of an album whose titles end with a parenthesized suffix
     (e.g., "Track Title (Single)", "Track Title (Live in Wacken 2022)"), as these 
-    bonus/alternate versions can skew the popularity mean and z-scores.
+    bonus/alternate versions can skew the popularity mean, standard deviation, z-scores,
+    and top 50% calculations.
     
     NEW: Also excludes tracks marked as alternate takes (via alternate_takes_map).
+    
+    Excluded tracks are NOT included in:
+        - Mean calculation for the album
+        - Standard deviation calculation
+        - Z-score calculation
+        - Top 50% z-score calculation (used for medium confidence threshold)
     
     A track is excluded if:
         - It appears after the last "normal" track, AND
