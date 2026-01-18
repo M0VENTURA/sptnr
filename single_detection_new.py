@@ -270,24 +270,26 @@ def detect_single_new(
     # -----------------------------------------------------
     
     if popularity < artist_mean:
-        # Check if track has explicit metadata
-        spotify_single = False
-        discogs_single = False
-        musicbrainz_single = False
-        discogs_video = False
+        # Check if track has any explicit metadata
+        # We'll do the actual detailed checks later, but we need to know
+        # if we should skip this track entirely
         
-        # Quick check for any metadata (we'll do detailed checks later if this passes)
-        # For now, just check if we have clients available
-        has_any_metadata = (discogs_client is not None) or (musicbrainz_client is not None) or (spotify_results is not None)
+        # Quick check: do we have any metadata sources available?
+        has_potential_metadata = (
+            (discogs_client is not None and hasattr(discogs_client, 'enabled') and discogs_client.enabled) or
+            (musicbrainz_client is not None and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled) or
+            (spotify_results is not None and len(spotify_results) > 0)
+        )
         
-        if not has_any_metadata:
+        if not has_potential_metadata:
+            # No metadata sources available at all, skip this track
             result['single_confidence'] = 'none'
             if verbose:
                 log_debug(f"[SANITY FILTER] Skipping {title}: popularity={popularity:.1f} < artist_mean={artist_mean:.1f}, no metadata sources available")
             return result
         
-        # If we have metadata sources, continue to check them
-        # (This will be done in the next stages)
+        # If we have potential metadata sources, continue checking
+        # The actual metadata confirmation will happen in the detection stages below
     
     # -----------------------------------------------------
     # 3. HIGH CONFIDENCE DETECTION
@@ -326,20 +328,20 @@ def detect_single_new(
         
         if z_score >= z_threshold:
             # Check for metadata confirmation
-            # Metadata = explicit sources OR popularity outlier (>= mean + 2) OR version count standout
-            has_metadata_confirmation = False
+            # Metadata confirmation requires at least ONE of:
+            # 1. Explicit metadata (Spotify, MusicBrainz, Discogs) - will be checked below
+            # 2. Popularity outlier (>= mean + 2)
+            # 3. Version count standout (>= mean + 1) - TODO: implement when version count data available
             
-            # Check explicit metadata (will be set by Spotify, MusicBrainz, Discogs checks below)
-            # For now, assume we need to check other sources first
-            
-            # Check popularity outlier
             has_popularity_outlier = popularity >= (album_mean + 2)
             
-            # For simplicity, if we have popularity outlier, that's enough metadata confirmation
-            if has_popularity_outlier:
-                has_metadata_confirmation = True
+            # For now, we'll use popularity outlier as metadata confirmation
+            # The explicit metadata sources (Spotify, MusicBrainz, Discogs) will be checked below
+            # and if found, they will also provide metadata confirmation retroactively
             
-            # TODO: Add version count check when implemented
+            # We'll mark this as a potential medium confidence source
+            # and finalize it after checking explicit sources
+            has_metadata_confirmation = has_popularity_outlier
             
             if has_metadata_confirmation:
                 med_conf_sources.add('zscore+metadata')
@@ -399,7 +401,13 @@ def detect_single_new(
             log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
     
     # E. Version-count standout
-    # TODO: Implement when version count data is available
+    # NOTE: Version count standout requires Spotify version matching data which is not
+    # currently available in the track dict. This would need to be calculated by:
+    # 1. Counting exact-match Spotify versions per strict matching rules
+    # 2. Comparing to album mean version count
+    # 3. If >= mean + 1, add 'version_count' to medium confidence sources
+    # 
+    # Implementation deferred until version count data is available in the pipeline.
     
     # F. Popularity outlier (>= album_mean + 2)
     if popularity >= (album_mean + 2):
