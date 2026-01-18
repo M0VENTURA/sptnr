@@ -2171,9 +2171,11 @@ def popularity_scan(
                 create_or_update_playlist_for_artist(artist, tracks_list)
 
             # Update artist progress tracking after completing all albums for this artist
-            # Note: Progress is saved per-artist rather than per-track to avoid excessive I/O
-            # (could be thousands of writes for large libraries). If scan is interrupted,
-            # it can resume from the last completed artist.
+            # Note: Progress is saved once per artist (not per track) to balance granularity
+            # with I/O efficiency. Original code saved after every track which could result
+            # in thousands of writes for large libraries. Per-artist updates provide adequate
+            # progress visibility while reducing file I/O by orders of magnitude.
+            # If scan is interrupted, it can resume from the last completed artist.
             processed_artists += 1
             save_popularity_progress(processed_artists, total_artists)
 
