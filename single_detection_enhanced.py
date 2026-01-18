@@ -327,10 +327,10 @@ def infer_from_popularity(
     - Underperforming albums: Z-score detection DISABLED
     - Exception: If song is a standout across entire artist catalogue, Z-score detection ENABLED
     """
-    # Determine if z-score detection should be used
-    use_zscore = not album_is_underperforming or is_artist_level_standout
+    # Use z-score detection unless album underperforms, except when track is artist-level standout
+    use_zscore_detection = not album_is_underperforming or is_artist_level_standout
     
-    if use_zscore:
+    if use_zscore_detection:
         # Apply z-score based single detection
         if z_score >= 1.0:
             return 'high', True
@@ -384,23 +384,23 @@ def determine_final_status(
     Note: Version count standout is handled via infer_from_popularity() and
     contributes to rating boost, not final single status.
     """
-    # Determine if z-score detection should be used
-    use_zscore = not album_is_underperforming or is_artist_level_standout
+    # Use z-score detection unless album underperforms, except when track is artist-level standout
+    use_zscore_detection = not album_is_underperforming or is_artist_level_standout
     
     # HIGH
     if discogs_confirmed:
         return 'high'
-    if use_zscore and z_score >= 1.0:
+    if use_zscore_detection and z_score >= 1.0:
         return 'high'
     
     # MEDIUM
     if spotify_confirmed or musicbrainz_confirmed:
         return 'medium'
-    if use_zscore and z_score >= 0.5:
+    if use_zscore_detection and z_score >= 0.5:
         return 'medium'
     
     # LOW
-    if use_zscore and z_score >= 0.2 and spotify_version_count >= 3:
+    if use_zscore_detection and z_score >= 0.2 and spotify_version_count >= 3:
         return 'low'
     
     return 'none'
