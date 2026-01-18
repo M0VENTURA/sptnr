@@ -1950,72 +1950,31 @@ def popularity_scan(
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
-                        # NEW: Popularity-Based Confidence System
-                        # Track if medium confidence check explicitly denied upgrade due to missing metadata
-                        medium_conf_denied_upgrade = False
+                        # NEW: 5-STAR LOGIC PER PROBLEM STATEMENT
+                        # A track becomes 5★ ONLY if:
+                        # - it has high-confidence status, OR
+                        # - it has >= 2 medium-confidence sources
+                        #
+                        # Do NOT assign 5★ based on popularity alone.
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # Get metadata information from single_sources
-                            metadata_info = get_metadata_sources_info(single_sources)
-                            
-                            # Check if track has standout popularity (>= mean + 2)
-                            # This threshold ensures only tracks with significantly above-average popularity
-                            # are considered to have metadata confirmation
-                            has_popularity_metadata = popularity_score >= (popularity_mean + 2)
-                            
-                            # Combined metadata check: single sources OR popularity data
-                            has_any_metadata = metadata_info['has_metadata'] or metadata_info['has_version_count'] or has_popularity_metadata
-                            
-                            # Helper to get sources display for logging
-                            # Only show actual metadata sources (discogs, spotify, musicbrainz, etc.)
-                            # Popularity outlier and version count are silent confirmations, not displayed
-                            if metadata_info['sources_list']:
-                                sources_str = ', '.join(metadata_info['sources_list'])
-                            else:
-                                sources_str = "popularity outlier"  # Fallback for silent confirmation
-                            
-                            # High Confidence (requires metadata): popularity >= mean + 6 + metadata confirmation
-                            if popularity_score >= high_conf_threshold:
-                                if has_any_metadata:
+                            # Apply new 5-star rule
+                            # High confidence always gets 5 stars
+                            if single_confidence == "high":
+                                stars = 5
+                                if verbose:
+                                    log_unified(f"   ⭐ 5-STAR: {title} (high-confidence single)")
+                            # Medium confidence with 2+ sources gets 5 stars
+                            elif single_confidence == "medium":
+                                # Count the number of medium-confidence sources
+                                # Each unique source in single_sources represents a medium-confidence method
+                                medium_conf_count = len(single_sources) if single_sources else 0
+                                if medium_conf_count >= 2:
                                     stars = 5
                                     if verbose:
-                                        log_unified(f"   ⭐ HIGH CONFIDENCE: {title} (pop={popularity_score:.1f} >= {high_conf_threshold:.1f}, metadata={sources_str})")
-                                else:
-                                    # High confidence threshold met but no metadata support - do not upgrade
-                                    if verbose:
-                                        log_unified(f"   ⚠️ High conf threshold met but no metadata: {title} (pop={popularity_score:.1f}, keeping stars={stars})")
-                            
-                            # Medium Confidence (requires metadata): zscore >= mean_top50_zscore - 0.3 + metadata
-                            elif track_zscore >= medium_conf_zscore_threshold:
-                                # Version count standout combined with popularity threshold = 5 stars
-                                # Per problem statement: "will make it 5*"
-                                if has_any_metadata:
-                                    stars = 5
-                                    if verbose:
-                                        log_unified(f"   ⭐ MEDIUM CONFIDENCE: {title} (zscore={track_zscore:.2f} >= {medium_conf_zscore_threshold:.2f}, metadata={sources_str})")
-                                else:
-                                    # Medium confidence threshold met but no metadata support - do not upgrade
-                                    medium_conf_denied_upgrade = True
-                                    if verbose:
-                                        log_unified(f"   ⚠️ Medium conf threshold met but no metadata: {title} (zscore={track_zscore:.2f}, keeping stars={stars})")
-                        
-                            # Legacy logic for backwards compatibility (if not caught by new system)
-                            # Skip legacy logic if medium confidence check explicitly denied upgrade
-                            if not medium_conf_denied_upgrade:
-                                # Boost to 5 stars if score exceeds threshold (only for singles)
-                                if popularity_score >= jump_threshold and stars < 5:
-                                    # Only boost to 5 if it's at least a medium confidence single
-                                    if single_confidence in ["high", "medium"]:
-                                        stars = 5
-                                    else:
-                                        stars = 4  # Cap at 4 stars if not a single
-                                
-                                # Boost stars for confirmed singles (legacy)
-                                if single_confidence == "high" and stars < 5:
-                                    stars = 5  # High confidence single = 5 stars
-                                # Medium confidence singles no longer get automatic +1 star boost
+                                        log_unified(f"   ⭐ 5-STAR: {title} (has {medium_conf_count} medium-confidence sources)")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (unless they exceed artist median)
