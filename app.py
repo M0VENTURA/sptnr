@@ -39,7 +39,15 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         db_path: Path to database
     Returns:
         list: Sorted list of unique genres
+        
+    Note: Returns empty list for Various Artists and Soundtracks as they
+          have a lot of different artists and genres.
     """
+    # Skip genre aggregation for Various Artists and Soundtracks
+    artist_lower = artist_name.lower()
+    if artist_lower == "various artists" or "soundtrack" in artist_lower:
+        return []
+    
     genres = set()
     try:
         import sqlite3

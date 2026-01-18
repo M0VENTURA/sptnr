@@ -1467,6 +1467,12 @@ def popularity_scan(
         
         scanned_count = 0
         skipped_count = 0
+        
+        # Calculate total artists for progress tracking
+        total_artists = len(artist_album_tracks)
+        processed_artists = 0
+        log_unified(f"Found {total_artists} artists to scan")
+        
         for artist, albums in artist_album_tracks.items():
             # Skip until resume match
             if not resume_hit:
@@ -1763,9 +1769,6 @@ def popularity_scan(
                         log_unified(f'✓ Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
                     else:
                         log_unified(f"⚠ No popularity score found for {artist} - {title}")
-
-                    # Save progress after each track
-                    save_popularity_progress(scanned_count, len(tracks))
 
                 # Batch update all popularity scores for this album in one commit
                 if track_updates:
@@ -2167,11 +2170,30 @@ def popularity_scan(
                 # Logging happens inside the function based on whether playlist was actually created
                 create_or_update_playlist_for_artist(artist, tracks_list)
 
+            # Update artist progress tracking
+            processed_artists += 1
+            save_popularity_progress(processed_artists, total_artists)
+
         log_verbose("Committing changes to database.")
         conn.commit()
 
         log_unified(f"✅ Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped (already scanned)")
         log_verbose(f"Popularity scan completed: {scanned_count} tracks updated, {skipped_count} albums skipped")
+        
+        # Clear progress file on successful completion
+        try:
+            progress_data = {
+                "is_running": False,
+                "scan_type": "popularity_scan",
+                "processed_artists": total_artists,
+                "total_artists": total_artists,
+                "percent_complete": 100
+            }
+            with open(POPULARITY_PROGRESS_FILE, 'w') as f:
+                json.dump(progress_data, f)
+        except Exception as e:
+            log_basic(f"Error clearing popularity progress: {e}")
+            
     except Exception as e:
         log_unified(f"❌ Popularity scan failed: {str(e)}")
         raise
