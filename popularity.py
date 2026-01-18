@@ -294,20 +294,33 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
     """
     try:
         cursor = conn.cursor()
-        cursor.execute("""
-            SELECT popularity_score, title, album
-            FROM tracks 
-            WHERE artist = ? AND popularity_score > 0
-        """, (artist_name,))
         
-        rows = cursor.fetchall()
+        # Try to get album column if it exists, otherwise use empty string
+        # This ensures backward compatibility with databases that don't have album column
+        try:
+            cursor.execute("""
+                SELECT popularity_score, title, album
+                FROM tracks 
+                WHERE artist = ? AND popularity_score > 0
+            """, (artist_name,))
+            rows = cursor.fetchall()
+            has_album_column = True
+        except Exception:
+            # Fallback: album column doesn't exist
+            cursor.execute("""
+                SELECT popularity_score, title
+                FROM tracks 
+                WHERE artist = ? AND popularity_score > 0
+            """, (artist_name,))
+            rows = cursor.fetchall()
+            has_album_column = False
         
         # Filter out live/remix/alternate tracks before calculating statistics
         scores = []
         for row in rows:
             popularity_score = row[0]
             title = row[1] if row[1] else ""
-            album = row[2] if row[2] else ""
+            album = row[2] if (has_album_column and len(row) > 2 and row[2]) else ""
             
             # Exclude live/remix/alternate versions from artist statistics
             if not should_exclude_track_from_stats(title, album):
