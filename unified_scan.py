@@ -179,10 +179,12 @@ def unified_scan_pipeline(
     from start import build_artist_index
     from scan_history import log_album_scan
     
-    log_unified("\n🟢 ==================== UNIFIED SCAN PIPELINE STARTED ==================== 🟢")
-    log_unified(f"🕒 Start Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log_unified("=" * 70)
-    log_unified(f"🟢 Unified scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_unified("=" * 80)
+    log_unified("🔄 UNIFIED SCAN PIPELINE STARTED")
+    log_unified("=" * 80)
+    log_unified(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_unified(f"Verbose: {verbose}, Force: {force}")
+    log_unified("")
     if verbose:
         log_verbose("Unified scan pipeline started.")
     
@@ -245,9 +247,9 @@ def unified_scan_pipeline(
 
         # Run popularity scan ONCE for all tracks before processing artists
         # This ensures artist IDs are looked up only once per artist and cached in the database
-        log_unified("=" * 70)
-        log_unified("📊 Popularity, Singles Detection, Star Rating & Playlist Creation")
-        log_unified("=" * 70)
+        log_unified("⭐ Popularity Detection")
+        log_unified("-" * 80)
+        log_unified("Detecting track popularity and singles...")
         logging.info("📊 Running popularity scan for all tracks...")
         try:
             # Pass artist_filter if specified, and skip_header to avoid duplicate headers
@@ -257,11 +259,12 @@ def unified_scan_pipeline(
                 skip_header=True,
                 force=force
             )
-            log_unified("✅ Popularity scan completed for all tracks")
+            log_unified("✅ Popularity detection complete")
+            log_unified("")
             logging.info("✅ Popularity scan completed for all tracks")
         except Exception as e:
-            logging.error(f"❌ Popularity scan failed: {e}")
-            log_unified(f"❌ Popularity scan failed: {e}")
+            logging.error(f"❌ Popularity detection failed: {e}")
+            log_unified(f"❌ Popularity detection failed: {e}")
             # Continue with singles detection even if popularity scan fails
         
         # Note: Phase 2 (Singles Detection & Star Rating) has been removed as it was redundant.
@@ -276,12 +279,11 @@ def unified_scan_pipeline(
         if progress_callback:
             progress_callback(progress)
         
-        log_unified("")
-        log_unified("🟢 ==================== UNIFIED SCAN COMPLETE ==================== 🟢")
-        log_unified(f"🏁 End Time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        log_unified(f"✅ Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
-        log_unified("=" * 70)
-        log_unified(f"🟢 Unified scan complete at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}. Processed: {progress.processed_artists} artists, {progress.processed_tracks} tracks")
+        # Pipeline complete
+        log_unified("=" * 80)
+        log_unified("✅ UNIFIED SCAN PIPELINE COMPLETE")
+        log_unified("=" * 80)
+        log_unified(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
         
     except Exception as e:
         logging.error(f"Unified scan failed: {e}")
