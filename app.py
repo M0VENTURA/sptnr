@@ -53,7 +53,8 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         import sqlite3
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
-        cursor.execute("SELECT genres FROM tracks WHERE artist = ?", (artist_name,))
+        # Use navidrome_genres which are populated from Navidrome during import
+        cursor.execute("SELECT navidrome_genres FROM tracks WHERE artist = ?", (artist_name,))
         rows = cursor.fetchall()
         conn.close()
         for row in rows:
@@ -2693,16 +2694,16 @@ def album_detail(artist, album):
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
         
-        # Aggregate genres from tracks in this album
+        # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
         cursor.execute("""
-            SELECT DISTINCT genres FROM tracks
-            WHERE artist = ? AND album = ? AND genres IS NOT NULL AND genres != ''
+            SELECT DISTINCT navidrome_genres FROM tracks
+            WHERE artist = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
         for row in genre_rows:
             try:
-                genre_value = row['genres'] if isinstance(row, dict) else row[0]
+                genre_value = row['navidrome_genres'] if isinstance(row, dict) else row[0]
                 if genre_value:
                     genres = [g.strip() for g in genre_value.split(',') if g.strip()]
                     album_genres.update(genres)
@@ -2721,10 +2722,10 @@ def album_detail(artist, album):
                     # Already a dict or tuple, try to convert
                     track_dict = track if isinstance(track, dict) else dict(track)
                 
-                # Parse track's genres
+                # Parse track's genres - use navidrome_genres which comes from Navidrome
                 track_genres = set()
-                if track_dict.get('genres'):
-                    track_genres.update([g.strip() for g in track_dict['genres'].split(',') if g.strip()])
+                if track_dict.get('navidrome_genres'):
+                    track_genres.update([g.strip() for g in track_dict['navidrome_genres'].split(',') if g.strip()])
                 
                 # Calculate how many album genres this track contains
                 genre_matches = len(track_genres & album_genres) if album_genres else 0
