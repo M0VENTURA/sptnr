@@ -128,6 +128,18 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
 # Stage 1: Pre-Filter Logic
 # ============================================================================
 
+# Keyword filter for non-singles (used in artist stats calculation)
+# Filters out alternate versions: live, acoustic, orchestral, remixes, demos, etc.
+IGNORE_SINGLE_KEYWORDS = [
+    "intro", "outro", "jam",
+    "live", "unplugged",
+    "remix", "edit", "mix",
+    "acoustic", "orchestral",
+    "demo", "instrumental", "karaoke",
+    "remaster", "remastered"
+]
+
+
 def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, int]:
     """
     Calculate album popularity statistics for pre-filter.
@@ -170,17 +182,8 @@ def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
         WHERE artist = ? AND popularity_score > 0
     """, (artist,))
     
-    # Define filter keywords inline to avoid import issues
-    IGNORE_SINGLE_KEYWORDS = [
-        "intro", "outro", "jam",
-        "live", "unplugged",
-        "remix", "edit", "mix",
-        "acoustic", "orchestral",
-        "demo", "instrumental", "karaoke",
-        "remaster", "remastered"
-    ]
-    
     # Filter out live/remix/alternate tracks before calculating statistics
+    # Use word boundary matching to avoid false positives
     popularities = []
     for row in cursor.fetchall():
         popularity_score = row[0]
@@ -188,8 +191,15 @@ def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
         album = row[2] if row[2] else ""
         
         # Exclude live/remix/alternate versions from artist statistics
+        # Use word boundary matching with regex for more precise detection
         combined_text = f"{title} {album}".lower()
-        should_exclude = any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
+        should_exclude = False
+        for keyword in IGNORE_SINGLE_KEYWORDS:
+            # Use word boundary matching to avoid false positives
+            # e.g., "remix" matches "remix" but not "supremix"
+            if re.search(r'\b' + re.escape(keyword) + r'\b', combined_text):
+                should_exclude = True
+                break
         
         if not should_exclude:
             popularities.append(popularity_score)
@@ -807,8 +817,19 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     """
     cursor = conn.cursor()
     
-    # Try to update with new columns, fallback to old schema if columns don't exist
-    try:
+    # Check if new columns exist in schema
+    cursor.execute("PRAGMA table_info(tracks)")
+    columns = {row[1] for row in cursor.fetchall()}
+    has_album_z = 'album_z_score' in columns
+    has_artist_z = 'artist_z_score' in columns
+    
+    # Get z_score values with defaults
+    z_score = result.get('z_score', 0.0)
+    album_z_score = result.get('album_z_score', z_score)
+    artist_z_score = result.get('artist_z_score', 0.0)
+    
+    # Update with new columns if they exist
+    if has_album_z and has_artist_z:
         cursor.execute("""
             UPDATE tracks
             SET single_status = ?,
@@ -829,9 +850,9 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
             result['single_status'],
             result['single_confidence_score'],
             json.dumps(result['single_sources_used']),
-            result['z_score'],
-            result.get('album_z_score', result['z_score']),  # Fallback to z_score
-            result.get('artist_z_score', 0.0),
+            z_score,
+            album_z_score,
+            artist_z_score,
             result['spotify_version_count'],
             json.dumps(result.get('discogs_release_ids', [])),
             json.dumps(result.get('musicbrainz_release_group_ids', [])),
@@ -841,38 +862,35 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
             json.dumps(result['single_sources']),
             track_id
         ))
-    except sqlite3.OperationalError as e:
-        # If new columns don't exist, fallback to old schema
-        if "no such column" in str(e).lower():
-            cursor.execute("""
-                UPDATE tracks
-                SET single_status = ?,
-                    single_confidence_score = ?,
-                    single_sources_used = ?,
-                    z_score = ?,
-                    spotify_version_count = ?,
-                    discogs_release_ids = ?,
-                    musicbrainz_release_group_ids = ?,
-                    single_detection_last_updated = ?,
-                    is_single = ?,
-                    single_confidence = ?,
-                    single_sources = ?
-                WHERE id = ?
-            """, (
-                result['single_status'],
-                result['single_confidence_score'],
-                json.dumps(result['single_sources_used']),
-                result['z_score'],
-                result['spotify_version_count'],
-                json.dumps(result.get('discogs_release_ids', [])),
-                json.dumps(result.get('musicbrainz_release_group_ids', [])),
-                result['single_detection_last_updated'],
-                1 if result['is_single'] else 0,
-                result['single_confidence'],
-                json.dumps(result['single_sources']),
-                track_id
-            ))
-        else:
-            raise
+    else:
+        # Fallback to old schema without new z-score columns
+        cursor.execute("""
+            UPDATE tracks
+            SET single_status = ?,
+                single_confidence_score = ?,
+                single_sources_used = ?,
+                z_score = ?,
+                spotify_version_count = ?,
+                discogs_release_ids = ?,
+                musicbrainz_release_group_ids = ?,
+                single_detection_last_updated = ?,
+                is_single = ?,
+                single_confidence = ?,
+                single_sources = ?
+            WHERE id = ?
+        """, (
+            result['single_status'],
+            result['single_confidence_score'],
+            json.dumps(result['single_sources_used']),
+            z_score,
+            result['spotify_version_count'],
+            json.dumps(result.get('discogs_release_ids', [])),
+            json.dumps(result.get('musicbrainz_release_group_ids', [])),
+            result['single_detection_last_updated'],
+            1 if result['is_single'] else 0,
+            result['single_confidence'],
+            json.dumps(result['single_sources']),
+            track_id
+        ))
     
     conn.commit()
