@@ -98,7 +98,8 @@ def test_medium_confidence_without_single_marking():
     
     # Test with version count standout (low z-score and version count to avoid other triggers)
     confidence, is_single = infer_from_popularity(
-        z_score=0.1,  # Below all thresholds
+        album_z=0.1,  # Below all thresholds
+        artist_z=0.1,  # Below all thresholds
         spotify_version_count=2,  # Below 3 versions
         version_count_standout=True
     )
@@ -110,7 +111,8 @@ def test_medium_confidence_without_single_marking():
     
     # Test without version count standout
     confidence2, is_single2 = infer_from_popularity(
-        z_score=0.1,  # Below low threshold
+        album_z=0.1,  # Below low threshold
+        artist_z=0.1,  # Below low threshold
         spotify_version_count=2,  # Below 3 versions
         version_count_standout=False
     )
@@ -127,14 +129,15 @@ def test_version_count_with_metadata():
     
     # Version count standout logic is handled via infer_from_popularity()
     # and doesn't directly affect determine_final_status()
-    # The final status is determined by z_score and metadata confirmation
+    # The final status is determined by album_z, artist_z and metadata confirmation
     
     # Case 1: Spotify confirmation = medium confidence
     status = determine_final_status(
         discogs_confirmed=False,
         spotify_confirmed=True,
         musicbrainz_confirmed=False,
-        z_score=0.3,
+        album_z=0.3,
+        artist_z=0.3,
         spotify_version_count=8
     )
     
@@ -147,13 +150,14 @@ def test_version_count_with_metadata():
         discogs_confirmed=False,
         spotify_confirmed=False,
         musicbrainz_confirmed=False,
-        z_score=0.3,
+        album_z=0.3,
+        artist_z=0.3,
         spotify_version_count=8
     )
     
     print(f"No metadata, low z-score, high version count: {status2}")
     assert status2 == 'low', f"Expected 'low', got '{status2}'"
-    print("✓ z_score >= 0.2 and version_count >= 3 gives low confidence")
+    print("✓ album_z >= 0.2 and version_count >= 3 gives low confidence")
 
 
 def test_high_z_score_overrides():
@@ -162,7 +166,8 @@ def test_high_z_score_overrides():
     
     # High z-score should give high confidence
     confidence, is_single = infer_from_popularity(
-        z_score=1.2,
+        album_z=1.2,
+        artist_z=0.8,
         spotify_version_count=2,
         version_count_standout=False
     )
@@ -174,7 +179,8 @@ def test_high_z_score_overrides():
     
     # Medium z-score should give medium confidence
     confidence2, is_single2 = infer_from_popularity(
-        z_score=0.6,
+        album_z=0.6,
+        artist_z=0.3,
         spotify_version_count=2,
         version_count_standout=False
     )
