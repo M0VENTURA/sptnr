@@ -37,16 +37,16 @@ def cleanup_test_db():
     if test_db_path and os.path.exists(test_db_path):
         try:
             os.unlink(test_db_path)
-        except:
-            pass
+        except (OSError, PermissionError) as e:
+            print(f"Warning: Could not delete test database: {e}")
     # Also remove WAL files if they exist
     for ext in ['-wal', '-shm']:
         wal_file = test_db_path + ext
         if wal_file and os.path.exists(wal_file):
             try:
                 os.unlink(wal_file)
-            except:
-                pass
+            except (OSError, PermissionError) as e:
+                print(f"Warning: Could not delete WAL file: {e}")
 
 
 def clear_test_db():
@@ -58,8 +58,8 @@ def clear_test_db():
         cursor.execute("DELETE FROM scan_history")
         conn.commit()
         conn.close()
-    except:
-        pass
+    except sqlite3.Error as e:
+        print(f"Warning: Could not clear test database: {e}")
 
 
 def insert_scan_with_custom_timestamp(artist, album, scan_type, days_ago):
