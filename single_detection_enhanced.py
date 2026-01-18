@@ -848,37 +848,39 @@ def detect_single_enhanced(
     
     # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE)
     discogs_video_confirmed = False
-    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled and hasattr(discogs_client, 'has_official_video'):
-        try:
-            # Always log Discogs video checks to unified and info logs
-            log_unified(f"   Checking Discogs for music video: {title}")
-            log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
-            
-            # Check for official music video
-            discogs_video_confirmed = discogs_client.has_official_video(title, artist)
-            if discogs_video_confirmed:
-                result['single_sources'].append('discogs_video')
-                result['single_sources_used'].append('discogs_video')
-                log_unified(f"   ✓ Discogs confirms music video: {title}")
-                log_info(f"   Discogs result: Music video confirmed for '{title}'")
-            else:
-                # Always log negative results too (not just in verbose mode)
-                log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
-                log_info(f"   Discogs result: No music video found for '{title}'")
-        except Exception as e:
-            log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
-    elif verbose:
-        # Only log client availability messages in verbose mode to reduce log noise
-        if not discogs_client:
-            log_unified(f"   ⓘ Discogs video client not available")
-            log_info(f"   Discogs: Video client not available")
-        elif not hasattr(discogs_client, 'has_official_video'):
+    if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
+        if hasattr(discogs_client, 'has_official_video'):
+            try:
+                # Always log Discogs video checks to unified and info logs
+                log_unified(f"   Checking Discogs for music video: {title}")
+                log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                
+                # Check for official music video
+                discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                if discogs_video_confirmed:
+                    result['single_sources'].append('discogs_video')
+                    result['single_sources_used'].append('discogs_video')
+                    log_unified(f"   ✓ Discogs confirms music video: {title}")
+                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
+                else:
+                    # Always log negative results too (not just in verbose mode)
+                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_info(f"   Discogs result: No music video found for '{title}'")
+            except Exception as e:
+                log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
+                log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+        elif verbose:
             log_unified(f"   ⓘ Discogs video method not available")
             log_info(f"   Discogs: has_official_video method not available")
-        elif not getattr(discogs_client, 'enabled', True):
-            log_unified(f"   ⓘ Discogs client is disabled")
-            log_info(f"   Discogs: Client is disabled in configuration")
+    else:
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not discogs_client:
+                log_unified(f"   ⓘ Discogs video client not available")
+                log_info(f"   Discogs: Video client not available")
+            elif not getattr(discogs_client, 'enabled', True):
+                log_unified(f"   ⓘ Discogs client is disabled")
+                log_info(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
