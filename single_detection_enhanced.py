@@ -445,39 +445,80 @@ def infer_from_popularity(
 # ============================================================================
 
 def determine_final_status(
-    high_conf_sources: set,
-    med_conf_sources: set
-) -> Tuple[str, bool]:
+    discogs_confirmed: bool,
+    spotify_confirmed: bool,
+    musicbrainz_confirmed: bool,
+    album_z: float,
+    artist_z: float,
+    spotify_version_count: int,
+    album_is_underperforming: bool = False,
+    is_artist_level_standout: bool = False
+) -> str:
     """
-    Final single status based on source counts per problem statement.
+    Final single status based on source detection and z-score analysis.
     
     HIGH-CONFIDENCE:
-    - ANY high-confidence source present
+    - Discogs confirms
+    - album_z >= 1.0 AND artist_z >= 0.5 (when z-score enabled)
     
     MEDIUM-CONFIDENCE:
-    - ANY medium-confidence source present
+    - Spotify confirms
+    - MusicBrainz confirms
+    - album_z >= 0.5 OR artist_z >= 1.0 (when z-score enabled)
+    
+    LOW-CONFIDENCE:
+    - album_z >= 0.2 AND >= 3 versions (when z-score enabled)
     
     NOT A SINGLE:
-    - No sources
+    - None of the above
+    
+    Z-score detection is enabled unless:
+    - Album is underperforming (popularity < artist median)
+    - EXCEPT when track is artist-level standout (track popularity >= artist median)
     
     Args:
-        high_conf_sources: Set of high-confidence source identifiers
-        med_conf_sources: Set of medium-confidence source identifiers
+        discogs_confirmed: Whether Discogs confirms this is a single
+        spotify_confirmed: Whether Spotify confirms this is a single
+        musicbrainz_confirmed: Whether MusicBrainz confirms this is a single
+        album_z: Album-level z-score
+        artist_z: Artist-level z-score
+        spotify_version_count: Number of Spotify versions found
+        album_is_underperforming: Whether album is underperforming vs artist median
+        is_artist_level_standout: Whether track exceeds artist median popularity
         
     Returns:
-        Tuple of (confidence_level, is_single)
-        is_single is True only for HIGH confidence
+        Confidence level: 'high', 'medium', 'low', or 'none'
     """
-    # High confidence requires ANY high-confidence source
-    if len(high_conf_sources) >= 1:
-        return 'high', True
+    # Discogs is always high confidence
+    if discogs_confirmed:
+        return 'high'
     
-    # Medium confidence requires ANY medium-confidence source
-    if len(med_conf_sources) >= 1:
-        return 'medium', False
+    # Determine if z-score detection is enabled
+    # Z-score detection disabled for underperforming albums, unless track is artist-level standout
+    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
-    # Otherwise, not a single
-    return 'none', False
+    # Check z-score based high confidence (if enabled)
+    if use_zscore_detection:
+        # High confidence: album_z >= 1.0 AND artist_z >= 0.5
+        if album_z >= 1.0 and artist_z >= 0.5:
+            return 'high'
+    
+    # Check metadata-based medium confidence
+    if spotify_confirmed or musicbrainz_confirmed:
+        return 'medium'
+    
+    # Check z-score based medium confidence (if enabled)
+    if use_zscore_detection:
+        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0
+        if album_z >= 0.5 or artist_z >= 1.0:
+            return 'medium'
+        
+        # Low confidence: album_z >= 0.2 AND >= 3 versions
+        if album_z >= 0.2 and spotify_version_count >= 3:
+            return 'low'
+    
+    # No confidence indicators
+    return 'none'
 
 
 # ============================================================================
@@ -638,9 +679,7 @@ def detect_single_enhanced(
         'discogs_release_ids': [],
         'musicbrainz_release_group_ids': [],
         'single_confidence_score': 0.0,
-        'single_detection_last_updated': datetime.now().isoformat(),
-        'high_conf_sources': set(),
-        'med_conf_sources': set()
+        'single_detection_last_updated': datetime.now().isoformat()
     }
     
     # Get album statistics
@@ -872,10 +911,7 @@ def detect_single_enhanced(
         artist_z,
         version_count_value,
         album_is_underperforming,
-        is_artist_level_standout,
-        popularity,
-        album_mean,
-        version_count_standout
+        is_artist_level_standout
     )
     
     result['single_status'] = final_status
