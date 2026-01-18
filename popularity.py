@@ -1486,7 +1486,8 @@ def popularity_scan(
                                         metadata_fetched = fetch_comprehensive_metadata(
                                             db_track_id=track_id,
                                             spotify_track_id=spotify_track_id,
-                                            force_refresh=force
+                                            force_refresh=force,
+                                            db_connection=conn
                                         )
                                         if metadata_fetched:
                                             log_verbose(f"✓ Comprehensive metadata fetched for: {title}")
