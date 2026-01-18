@@ -1298,7 +1298,7 @@ def popularity_scan(
             sql_params.append(album_filter)
         
         sql = f"""
-            SELECT id, artist, title, album, isrc, duration, spotify_album_type
+            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
