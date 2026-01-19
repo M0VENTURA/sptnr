@@ -2409,7 +2409,7 @@ def popularity_scan(
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (high-confidence single)")
                                 log_debug(f"High confidence single detected - track_id: {track_id}")
-                            # Medium confidence with 2+ sources gets 5 stars
+                            # Medium confidence with 2+ sources OR is_single=1 gets 5 stars
                             elif single_confidence == "medium":
                                 # Count the number of medium-confidence sources
                                 # Each unique source in single_sources represents a medium-confidence method
@@ -2420,14 +2420,16 @@ def popularity_scan(
                                     if not is_single:
                                         single_upgrades.append(track_id)
                                         log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                    elif medium_conf_count >= 2:
+                                        log_info(f"5-star assignment: {title} (medium confidence with {medium_conf_count} sources)")
                                     else:
-                                        log_info(f"5-star assignment: {title} (medium confidence single)")
-                                    log_debug(f"Medium confidence - track_id: {track_id}, sources: {medium_conf_count}")
-                            # Any track marked as single (is_single=1) gets 5 stars
+                                        log_info(f"5-star assignment: {title} (detected single, medium confidence)")
+                                    log_debug(f"Medium confidence - track_id: {track_id}, sources: {medium_conf_count}, is_single: {is_single}")
+                            # Low confidence but is_single=1 gets 5 stars
                             elif is_single:
                                 stars = 5
-                                log_info(f"5-star assignment: {title} (detected single)")
-                                log_debug(f"Single detected - track_id: {track_id}, confidence: {single_confidence}")
+                                log_info(f"5-star assignment: {title} (detected single, low confidence)")
+                                log_debug(f"Low confidence single - track_id: {track_id}, confidence: {single_confidence}")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (unless they exceed artist median)
