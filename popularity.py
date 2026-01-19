@@ -2211,13 +2211,15 @@ def popularity_scan(
                     
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
-                    # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
-                    if track_id in user_set_singles and not is_single:
+                    # Preserve user-set singles: if track was user-marked, always keep it marked with "user" confidence
+                    # This ensures user-set singles always get 5 stars regardless of automated detection results
+                    if track_id in user_set_singles:
                         is_single = True
                         single_confidence = "user"  # Mark as user-set
                         # Keep sources empty to indicate user-set
+                        single_sources = []
                         log_info(f"Preserving user-set single flag for: {title}")
-                        log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
+                        log_debug(f"User-set single preserved - track_id: {track_id}, overriding automated detection")
                     
                     # Queue single detection results for batch update
                     if is_single or single_sources:
