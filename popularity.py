@@ -1306,8 +1306,7 @@ def detect_single_for_track(
     # Second check: MusicBrainz single detection
     if HAVE_MUSICBRAINZ:
         try:
-            if verbose:
-                log_unified(f"   Checking MusicBrainz for single: {title}")
+            log_info(f"   Checking MusicBrainz for single: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             mb_client = _get_timeout_safe_musicbrainz_client()
             if mb_client:
@@ -1319,27 +1318,21 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("musicbrainz")
-                    if verbose:
-                        log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                    log_info(f"   ✓ MusicBrainz confirms single: {title}")
                 else:
-                    if verbose:
-                        log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                    log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
         except TimeoutError as e:
-            if verbose:
-                log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
+            log_info(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
         except Exception as e:
-            if verbose:
-                log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+            log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
     else:
-        if verbose:
-            log_verbose(f"   ⓘ MusicBrainz client not available")
+        log_info(f"   ⓘ MusicBrainz client not available")
     
     # Third check: Discogs single detection
     if HAVE_DISCOGS and discogs_token:
         try:
-            # Always log Discogs API calls (not dependent on verbose)
-            log_unified(f"   Checking Discogs for single: {title}")
-            log_info(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+            log_info(f"   Checking Discogs for single: {title}")
+            log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1350,32 +1343,30 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs")
-                    log_unified(f"   ✓ Discogs confirms single: {title}")
-                    log_info(f"   Discogs result: Single confirmed for '{title}'")
+                    log_info(f"   ✓ Discogs confirms single: {title}")
+                    log_debug(f"   Discogs result: Single confirmed for '{title}'")
                 else:
-                    # Always log negative results too (not just in verbose mode)
-                    log_unified(f"   ⓘ Discogs does not confirm single: {title}")
-                    log_info(f"   Discogs result: No single found for '{title}'")
+                    log_info(f"   ⓘ Discogs does not confirm single: {title}")
+                    log_debug(f"   Discogs result: No single found for '{title}'")
         except TimeoutError as e:
-            log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
-            log_info(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
+            log_info(f"   ⏱ Discogs single check timed out for {title}: {e}")
+            log_debug(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
-            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS:
-            log_unified(f"   ⓘ Discogs client not available")
-            log_info(f"   Discogs: Client not available (module import failed)")
+            log_info(f"   ⓘ Discogs client not available")
+            log_debug(f"   Discogs: Client not available (module import failed)")
         elif not discogs_token:
-            log_unified(f"   ⓘ Discogs token not configured")
-            log_info(f"   Discogs: Token not configured in config.yaml")
+            log_info(f"   ⓘ Discogs token not configured")
+            log_debug(f"   Discogs: Token not configured in config.yaml")
     
     # Fourth check: Discogs video detection
     if HAVE_DISCOGS_VIDEO and discogs_token:
         try:
-            # Always log Discogs video checks (not dependent on verbose)
-            log_unified(f"   Checking Discogs for music video: {title}")
-            log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+            log_info(f"   Checking Discogs for music video: {title}")
+            log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1386,26 +1377,23 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs_video")
-                    log_unified(f"   ✓ Discogs confirms music video: {title}")
-                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
+                    log_info(f"   ✓ Discogs confirms music video: {title}")
+                    log_debug(f"   Discogs result: Music video confirmed for '{title}'")
                 else:
-                    # Always log negative results too
-                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
-                    log_info(f"   Discogs result: No music video found for '{title}'")
+                    log_info(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_debug(f"   Discogs result: No music video found for '{title}'")
         except TimeoutError as e:
-            log_unified(f"   ⏱ Discogs video check timed out for {title}: {e}")
-            log_info(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
+            log_info(f"   ⏱ Discogs video check timed out for {title}: {e}")
+            log_debug(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
-            log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
+            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS_VIDEO:
-            if verbose:
-                log_verbose(f"   ⓘ Discogs video client not available")
+            log_info(f"   ⓘ Discogs video client not available")
             log_debug(f"   Discogs: Video client not available")
         elif not discogs_token:
-            if verbose:
-                log_verbose(f"   ⓘ Discogs token not configured for video detection")
+            log_info(f"   ⓘ Discogs token not configured for video detection")
             log_debug(f"   Discogs: Token not configured for video detection")
     
     # Calculate confidence based on sources per problem statement
@@ -2433,6 +2421,60 @@ def popularity_scan(
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
                     log_debug(f'Star distribution details: {star_distribution}')
+                    
+                    # Generate unified log summary for singles and star ratings
+                    # Re-fetch tracks with their final star ratings and single detection results
+                    cursor.execute(
+                        """SELECT id, title, stars, is_single, single_confidence, single_sources 
+                        FROM tracks 
+                        WHERE artist = ? AND album = ? 
+                        ORDER BY is_single DESC, stars DESC, popularity_score DESC""",
+                        (artist, album)
+                    )
+                    final_tracks = cursor.fetchall()
+                    
+                    # Separate singles from non-singles
+                    singles = []
+                    non_singles = []
+                    for track_row in final_tracks:
+                        track_title = track_row["title"]
+                        track_stars = track_row["stars"] if track_row["stars"] else 0
+                        track_is_single = track_row["is_single"] if track_row["is_single"] else 0
+                        track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
+                        
+                        # Parse single sources
+                        try:
+                            if track_sources_json and isinstance(track_sources_json, str):
+                                track_sources = json.loads(track_sources_json)
+                            else:
+                                track_sources = []
+                        except json.JSONDecodeError:
+                            track_sources = []
+                        
+                        # Format sources for display (capitalize first letter)
+                        formatted_sources = [s.capitalize() if s != "discogs_video" else "Discogs Video" 
+                                           for s in track_sources]
+                        sources_str = ", ".join(formatted_sources) if formatted_sources else ""
+                        
+                        stars_str = "*" * track_stars
+                        
+                        if track_is_single:
+                            singles.append((track_title, stars_str, sources_str))
+                        else:
+                            non_singles.append((track_title, stars_str))
+                    
+                    # Log singles detected header
+                    if singles:
+                        log_unified(f"Single Detection Scan - Singles Detected in {artist} - {album}")
+                        for title, stars, sources in singles:
+                            source_info = f" ({sources})" if sources else ""
+                            log_unified(f"Single Detection Scan - {stars:5s} {artist} - {title}{source_info}")
+                    
+                    # Log popularity ratings for remaining songs
+                    if non_singles:
+                        log_unified(f"Single Detection Scan - Popularity Rating for Remaining Songs")
+                        for title, stars in non_singles:
+                            log_unified(f"Single Detection Scan - {stars:5s} {artist} - {title}")
                 
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
