@@ -2423,6 +2423,11 @@ def popularity_scan(
                                     else:
                                         log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                            # Any track marked as single (is_single=1) gets 5 stars
+                            elif is_single:
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (detected single)")
+                                log_debug(f"Single detected - track_id: {track_id}, confidence: {single_confidence}")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (unless they exceed artist median)
