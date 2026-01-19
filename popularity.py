@@ -2414,15 +2414,15 @@ def popularity_scan(
                                 # Count the number of medium-confidence sources
                                 # Each unique source in single_sources represents a medium-confidence method
                                 medium_conf_count = len(single_sources) if single_sources else 0
-                                if medium_conf_count >= 2:
+                                if medium_conf_count >= 2 or is_single:
                                     stars = 5
                                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                                     if not is_single:
                                         single_upgrades.append(track_id)
                                         log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
                                     else:
-                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
-                                    log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                                        log_info(f"5-star assignment: {title} (medium confidence single)")
+                                    log_debug(f"Medium confidence - track_id: {track_id}, sources: {medium_conf_count}")
                             # Any track marked as single (is_single=1) gets 5 stars
                             elif is_single:
                                 stars = 5
