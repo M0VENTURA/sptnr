@@ -274,6 +274,34 @@
                 </div>
             </div>
 
+            <!-- Top Genres Section -->
+            {% if top_genres %}
+            <div class="card mb-4">
+                <div class="card-header bg-success text-white">
+                    <h6 class="mb-0">🎸 Top Genres</h6>
+                </div>
+                <div class="card-body">
+                    <p class="small text-muted mb-3">Most used genres in your library - click to create a playlist</p>
+                    <div class="list-group list-group-flush">
+                        {% for genre in top_genres %}
+                        <div class="list-group-item d-flex justify-content-between align-items-center p-2" 
+                             style="cursor: pointer; border: none; border-bottom: 1px solid #eee;"
+                             onclick="createGenrePlaylist('{{ genre.name }}')">
+                            <span class="text-truncate" style="max-width: 70%;">
+                                <i class="bi bi-music-note-beamed me-1"></i>
+                                {{ genre.name }}
+                            </span>
+                            <span class="badge bg-spotify-green rounded-pill">{{ genre.count }}</span>
+                        </div>
+                        {% endfor %}
+                    </div>
+                    <small class="text-muted d-block mt-2">
+                        <i class="bi bi-info-circle"></i> Click a genre to create a smart playlist for it
+                    </small>
+                </div>
+            </div>
+            {% endif %}
+
             <div class="card">
                 <div class="card-header bg-secondary text-white">
                     <h6 class="mb-0">📚 About Smart Playlists</h6>
@@ -659,6 +687,38 @@ function resetForm() {
     `;
     filterCounter = 1;
     updateJsonPreview();
+}
+
+function createGenrePlaylist(genreName) {
+    // Auto-fill the form with a genre-based playlist
+    const sanitizedGenre = genreName.replace(/[^a-zA-Z0-9]/g, '_').toLowerCase();
+    
+    document.getElementById('playlistName').value = `${genreName} Playlist`;
+    document.getElementById('fileName').value = `genre_${sanitizedGenre}`;
+    document.getElementById('playlistComment').value = `All tracks with the ${genreName} genre`;
+    document.getElementById('sortField').value = 'rating';
+    document.getElementById('sortOrder').value = 'desc';
+    document.getElementById('playlistLimit').value = '';
+    
+    // Clear existing filters
+    document.getElementById('filtersList').innerHTML = '';
+    filterCounter = 0;
+    
+    // Add genre filter
+    addFilter();
+    const lastFilter = document.querySelector('.filter-group:last-child');
+    lastFilter.querySelector('.filter-field').value = 'genre';
+    updateOperators(lastFilter.querySelector('.filter-field'));
+    lastFilter.querySelector('.filter-operator').value = 'contains';
+    lastFilter.querySelector('.filter-value').value = genreName;
+    
+    updateJsonPreview();
+    
+    // Scroll to top of form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+    
+    // Show success message
+    showToast('success', `Playlist template created for ${genreName}! Customize and save.`);
 }
 
 function loadExample(exampleKey) {

@@ -1963,11 +1963,19 @@ def api_artist_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # Check if we have custom artist_images table
+        # First check custom artist_images table
         cursor.execute("""
             SELECT image_url FROM artist_images WHERE artist_name = ?
         """, (artist_name,))
         row = cursor.fetchone()
+        
+        # If not found, check artist_metadata table
+        if not row or not row['image_url']:
+            cursor.execute("""
+                SELECT image_url FROM artist_metadata WHERE artist_name = ?
+            """, (artist_name,))
+            row = cursor.fetchone()
+        
         conn.close()
         
         if row and row['image_url']:
@@ -2646,7 +2654,9 @@ def album_detail(artist, album):
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(beets_album_mbid) as beets_album_mbid,
                     MAX(discogs_album_id) as discogs_album_id,
-                    MAX(spotify_album_id) as spotify_album_id
+                    MAX(spotify_album_id) as spotify_album_id,
+                    MAX(spotify_artist_id) as spotify_artist_id,
+                    MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -2664,7 +2674,9 @@ def album_detail(artist, album):
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     NULL as beets_album_mbid,
                     NULL as discogs_album_id,
-                    NULL as spotify_album_id
+                    NULL as spotify_album_id,
+                    NULL as spotify_artist_id,
+                    NULL as discogs_artist_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -6650,7 +6662,38 @@ def downloads_manager():
 @app.route("/smart-playlists")
 def smart_playlists():
     """Smart Playlist creation UI page"""
-    return render_template("smart_playlists.html")
+    # Get top 20 most used genres across the database
+    top_genres = []
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Query to get all genres and count songs
+        # Genres are stored as comma-separated values in the 'genres' field
+        cursor.execute("""
+            SELECT genres FROM tracks 
+            WHERE genres IS NOT NULL AND genres != ''
+        """)
+        
+        # Count genre occurrences
+        genre_counts = {}
+        for row in cursor.fetchall():
+            genres_str = row[0]
+            if genres_str:
+                # Split by comma and trim whitespace
+                genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
+                for genre in genres_list:
+                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
+        
+        # Sort by count (descending) and get top 20
+        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
+        
+        conn.close()
+    except Exception as e:
+        logging.error(f"Error fetching top genres: {e}")
+    
+    return render_template("smart_playlists.html", top_genres=top_genres)
 
 
 @app.route("/downloads-monitor")
