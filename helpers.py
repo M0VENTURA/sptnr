@@ -9,6 +9,42 @@ def strip_parentheses(s: str) -> str:
     return re.sub(r"\s*\(.*?\)\s*", " ", (s or "")).strip()
 
 
+def clean_discogs_biography(text: str) -> str:
+    """
+    Clean up Discogs biography text by removing artist ID references.
+    
+    Discogs biographies often contain artist IDs in square brackets like [a755006]
+    which should be removed for cleaner display.
+    
+    Args:
+        text: Raw biography text from Discogs
+        
+    Returns:
+        Cleaned biography text
+    """
+    if not text:
+        return text
+    
+    # Remove artist ID references like [a755006], [a2891826], etc.
+    # Pattern: [a followed by digits]
+    cleaned = re.sub(r'\[a\d+\]', '', text)
+    
+    # Remove orphaned "aka" when both sides were artist IDs
+    # Example: "[a123] aka [a456]" becomes " aka " which should be removed
+    # Matches "aka" followed by whitespace and then specific punctuation, parentheses, or end of string
+    # (indicating there's no actual name after the "aka")
+    cleaned = re.sub(r'\baka\s*(?=\s*\(|,|\.|$)', '', cleaned)
+    
+    # Remove leading "aka " at the start of content after removing IDs
+    # Example: "[a111111] aka John Smith" becomes "aka John Smith" -> "John Smith"
+    cleaned = re.sub(r'^\s*aka\s+', '', cleaned)
+    
+    # Clean up multiple consecutive spaces left after removals
+    cleaned = re.sub(r'\s+', ' ', cleaned)
+    
+    return cleaned.strip()
+
+
 def detect_live_album(album_title: str) -> dict:
     """
     Detect if an album is a live or unplugged album based on its title.

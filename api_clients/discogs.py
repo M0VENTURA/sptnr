@@ -6,6 +6,7 @@ import json
 import re
 from typing import Optional, Dict, List, Tuple
 from . import session
+from helpers import clean_discogs_biography
 
 # Import centralized logging for visible operational messages
 # Use try-except to handle cases where logging_config is not available (e.g., in tests)
@@ -654,9 +655,13 @@ class DiscogsClient:
             
             artist_data = artist_res.json()
             
+            # Extract and clean biography profile
+            raw_profile = artist_data.get("profile", "")
+            cleaned_profile = clean_discogs_biography(raw_profile)
+            
             # Extract relevant biography info
             bio_info = {
-                "profile": artist_data.get("profile", ""),
+                "profile": cleaned_profile,
                 "real_name": artist_data.get("realname", ""),
                 "urls": artist_data.get("urls", []),
                 "images": artist_data.get("images", []),

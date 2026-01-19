@@ -96,7 +96,7 @@ import re
 from api_clients.slskd import SlskdClient
 from metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
-from helpers import create_retry_session
+from helpers import create_retry_session, clean_discogs_biography
 import difflib
 import unicodedata
 import requests
@@ -1796,10 +1796,13 @@ def api_artist_bio():
             metadata_row = cursor.fetchone()
             
             if metadata_row and metadata_row[0]:
+                # Clean up the biography text (for old cached data with artist IDs)
+                cleaned_bio = clean_discogs_biography(metadata_row[0])
+                
                 # Return cached biography
                 conn.close()
                 return jsonify({
-                    "bio": metadata_row[0],
+                    "bio": cleaned_bio,
                     "source": "Cached (Discogs)",
                     "image_url": metadata_row[1] if len(metadata_row) > 1 else ""
                 })
