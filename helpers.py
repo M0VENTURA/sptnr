@@ -31,9 +31,9 @@ def clean_discogs_biography(text: str) -> str:
     
     # Remove orphaned "aka" when both sides were artist IDs
     # Example: "[a123] aka [a456]" becomes " aka " which should be removed
-    # Matches "aka" followed by whitespace and then specific punctuation or parentheses
+    # Matches "aka" followed by whitespace and then specific punctuation, parentheses, or end of string
     # (indicating there's no actual name after the "aka")
-    cleaned = re.sub(r'\baka\s*(?=\s*\(|,|\.)', '', cleaned)
+    cleaned = re.sub(r'\baka\s*(?=\s*\(|,|\.|$)', '', cleaned)
     
     # Remove leading "aka " at the start of content after removing IDs
     # Example: "[a111111] aka John Smith" becomes "aka John Smith" -> "John Smith"
