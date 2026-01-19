@@ -7559,6 +7559,9 @@ if __name__ == "__main__":
         print(f"Error checking auto-start configuration: {e}")
         print(traceback.format_exc())
     
+    # Start Flask application
+    app.run(debug=False, host="0.0.0.0", port=5000)
+
     # API endpoints for metadata lookups
     @app.route("/api/track/discogs", methods=["POST"])
     def api_track_discogs_lookup():
@@ -8651,4 +8654,3 @@ def api_cleanup_duplicates():
         logging.error(f"Duplicate cleanup error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
-    app.run(debug=False, host="0.0.0.0", port=5000)
