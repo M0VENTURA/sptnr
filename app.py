@@ -1248,7 +1248,8 @@ def artist_detail(name):
                     MAX(beets_artist_mbid) as beets_artist_mbid,
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id
+                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                    MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -1266,7 +1267,8 @@ def artist_detail(name):
                     NULL as beets_artist_mbid,
                     NULL as spotify_artist_id,
                     NULL as lastfm_artist_mbid,
-                    NULL as musicbrainz_artist_id
+                    NULL as musicbrainz_artist_id,
+                    NULL as discogs_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -2183,13 +2185,14 @@ def api_artist_set_image():
 
 @app.route("/api/artist/update-ids", methods=["POST"])
 def api_artist_update_ids():
-    """Update artist IDs (Spotify, Last.fm, MusicBrainz) for an artist"""
+    """Update artist IDs (Spotify, Last.fm, MusicBrainz, Discogs) for an artist"""
     try:
         data = request.get_json()
         artist_name = data.get("artist")
         spotify_id = data.get("spotify_artist_id", "").strip()
         lastfm_mbid = data.get("lastfm_artist_mbid", "").strip()
         musicbrainz_id = data.get("musicbrainz_artist_id", "").strip()
+        discogs_id = data.get("discogs_artist_id", "").strip()
         
         if not artist_name:
             return jsonify({"error": "Missing artist name"}), 400
@@ -2214,6 +2217,10 @@ def api_artist_update_ids():
             updates.append("musicbrainz_artist_id = ?")
             params.append(musicbrainz_id)
         
+        if discogs_id:
+            updates.append("discogs_artist_id = ?")
+            params.append(discogs_id)
+        
         if updates:
             params.append(artist_name)
             query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ?"
@@ -2228,7 +2235,8 @@ def api_artist_update_ids():
             "updated": {
                 "spotify_artist_id": spotify_id if spotify_id else None,
                 "lastfm_artist_mbid": lastfm_mbid if lastfm_mbid else None,
-                "musicbrainz_artist_id": musicbrainz_id if musicbrainz_id else None
+                "musicbrainz_artist_id": musicbrainz_id if musicbrainz_id else None,
+                "discogs_artist_id": discogs_id if discogs_id else None
             }
         })
     except Exception as e:

@@ -214,20 +214,20 @@
         <div class="col-md-4">
           <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
           <div class="input-group input-group-sm">
-            <input type="text" class="form-control" id="lastfmArtistMbid" value="{{ stats.lastfm_artist_mbid or '' }}" readonly>
-            {% if stats.lastfm_artist_mbid %}
-            <a href="https://musicbrainz.org/artist/{{ stats.lastfm_artist_mbid }}" target="_blank" class="btn btn-outline-secondary">
+            <input type="text" class="form-control" id="musicbrainzArtistId" value="{{ stats.musicbrainz_artist_id or stats.lastfm_artist_mbid or stats.beets_artist_mbid or '' }}" readonly>
+            {% if stats.musicbrainz_artist_id or stats.lastfm_artist_mbid or stats.beets_artist_mbid %}
+            <a href="https://musicbrainz.org/artist/{{ stats.musicbrainz_artist_id or stats.lastfm_artist_mbid or stats.beets_artist_mbid }}" target="_blank" class="btn btn-outline-secondary">
               <i class="bi bi-box-arrow-up-right"></i>
             </a>
             {% endif %}
           </div>
         </div>
         <div class="col-md-4">
-          <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
+          <label class="form-label fw-bold small">Discogs Artist ID</label>
           <div class="input-group input-group-sm">
-            <input type="text" class="form-control" id="musicbrainzArtistId" value="{{ stats.musicbrainz_artist_id or '' }}" readonly>
-            {% if stats.musicbrainz_artist_id %}
-            <a href="https://musicbrainz.org/artist/{{ stats.musicbrainz_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+            <input type="text" class="form-control" id="discogsArtistId" value="{{ stats.discogs_artist_id or '' }}" readonly>
+            {% if stats.discogs_artist_id %}
+            <a href="https://www.discogs.com/artist/{{ stats.discogs_artist_id }}" target="_blank" class="btn btn-outline-secondary">
               <i class="bi bi-box-arrow-up-right"></i>
             </a>
             {% endif %}
@@ -1348,7 +1348,6 @@ function applySelectedArtistGenres() {
 function openEditArtistIdsModal() {
   const artistName = '{{ artist_name }}';
   const spotifyId = document.getElementById('spotifyArtistId').value;
-  const lastfmMbid = document.getElementById('lastfmArtistMbid').value;
   const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
   
   const modalHtml = `
@@ -1368,17 +1367,17 @@ function openEditArtistIdsModal() {
               </div>
             </div>
             <div class="mb-3">
-              <label for="editLastfmArtistMbid" class="form-label">MusicBrainz Artist ID</label>
-              <input type="text" class="form-control" id="editLastfmArtistMbid" value="${escapeHtml(lastfmMbid)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
-              <div class="form-text">
-                <a href="https://www.last.fm/music/${encodeURIComponent(artistName)}" target="_blank">Search Last.fm</a> or <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> for the artist ID
-              </div>
-            </div>
-            <div class="mb-3">
               <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
               <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
               <div class="form-text">
                 <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> to find the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editDiscogsArtistId" class="form-label">Discogs Artist ID</label>
+              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml(document.getElementById('discogsArtistId')?.value || '')}" placeholder="e.g., 123456">
+              <div class="form-text">
+                <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search Discogs</a> to find the artist ID
               </div>
             </div>
           </div>
@@ -1405,8 +1404,8 @@ function openEditArtistIdsModal() {
 function saveArtistIds() {
   const artistName = '{{ artist_name }}';
   const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
-  const lastfmMbid = document.getElementById('editLastfmArtistMbid').value.trim();
   const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
+  const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
   
   fetch('/api/artist/update-ids', {
     method: 'POST',
@@ -1414,8 +1413,9 @@ function saveArtistIds() {
     body: JSON.stringify({
       artist: artistName,
       spotify_artist_id: spotifyId,
-      lastfm_artist_mbid: lastfmMbid,
-      musicbrainz_artist_id: musicbrainzId
+      lastfm_artist_mbid: musicbrainzId,  // Set both fields to same value for backwards compatibility
+      musicbrainz_artist_id: musicbrainzId,
+      discogs_artist_id: discogsId
     })
   })
     .then(r => r.json())
@@ -1423,8 +1423,10 @@ function saveArtistIds() {
       if (data.success) {
         // Update the readonly fields
         document.getElementById('spotifyArtistId').value = spotifyId;
-        document.getElementById('lastfmArtistMbid').value = lastfmMbid;
         document.getElementById('musicbrainzArtistId').value = musicbrainzId;
+        if (document.getElementById('discogsArtistId')) {
+          document.getElementById('discogsArtistId').value = discogsId;
+        }
         
         bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'))?.hide();
         alert('✅ Artist IDs updated successfully!');
