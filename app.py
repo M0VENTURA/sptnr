@@ -1963,11 +1963,19 @@ def api_artist_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # Check if we have custom artist_images table
+        # First check custom artist_images table
         cursor.execute("""
             SELECT image_url FROM artist_images WHERE artist_name = ?
         """, (artist_name,))
         row = cursor.fetchone()
+        
+        # If not found, check artist_metadata table
+        if not row or not row['image_url']:
+            cursor.execute("""
+                SELECT image_url FROM artist_metadata WHERE artist_name = ?
+            """, (artist_name,))
+            row = cursor.fetchone()
+        
         conn.close()
         
         if row and row['image_url']:
