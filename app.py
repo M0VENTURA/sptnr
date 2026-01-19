@@ -2737,7 +2737,7 @@ def album_detail(artist, album):
                     MAX(last_scanned) as last_scanned,
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(beets_album_mbid) as beets_album_mbid,
-                    MAX(discogs_album_id) as discogs_album_id,
+                    COALESCE(MAX(discogs_album_id), MAX(discogs_release_id)) as discogs_album_id,
                     MAX(spotify_album_id) as spotify_album_id,
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
