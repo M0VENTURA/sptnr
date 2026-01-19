@@ -2315,6 +2315,8 @@ def popularity_scan(
                     
                     # Batch updates for better performance
                     updates = []
+                    # Track which medium-confidence tracks should be upgraded to is_single=1
+                    single_upgrades = []
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
@@ -2373,7 +2375,12 @@ def popularity_scan(
                                 medium_conf_count = len(single_sources) if single_sources else 0
                                 if medium_conf_count >= 2:
                                     stars = 5
-                                    log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
+                                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                    else:
+                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
                             
                             # NEW: Artist-level popularity context
@@ -2407,6 +2414,16 @@ def popularity_scan(
                         """UPDATE tracks SET stars = ? WHERE id = ?""",
                         updates
                     )
+                    
+                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                    if single_upgrades:
+                        cursor.executemany(
+                            """UPDATE tracks SET is_single = 1 WHERE id = ?""",
+                            [(track_id,) for track_id in single_upgrades]
+                        )
+                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources)")
+                        log_debug(f"Upgraded tracks: {single_upgrades}")
+                    
                     conn.commit()
                     log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
                     
