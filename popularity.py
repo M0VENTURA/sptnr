@@ -1435,7 +1435,7 @@ def popularity_scan(
             sql_params.append(album_filter)
         
         sql = f"""
-            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number
+            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -1807,16 +1807,87 @@ def popularity_scan(
                     else:
                         log_info(f'Skipping Last.fm lookup for: {title} (keyword filter)')
 
-                    # Calculate popularity score and queue for batch update
-                    if spotify_score > 0 or lastfm_score > 0:
-                        popularity_score = (spotify_score + lastfm_score) / 2.0
+                    # Try to get ListenBrainz score if mbid is available
+                    listenbrainz_score = 0
+                    track_mbid = track.get("mbid")
+                    if track_mbid and not skip_spotify_lookup:  # Use same filter
+                        try:
+                            log_info(f'Getting ListenBrainz score for: {title}')
+                            log_debug(f'ListenBrainz lookup params - mbid: {track_mbid}, artist: {artist}, title: {title}')
+                            listenbrainz_count = _run_with_timeout(
+                                get_listenbrainz_score,
+                                API_CALL_TIMEOUT,
+                                f"ListenBrainz lookup timed out after {API_CALL_TIMEOUT}s",
+                                track_mbid, artist, title
+                            )
+                            if listenbrainz_count and listenbrainz_count > 0:
+                                # Convert listen count to score (similar to Last.fm logarithmic scoring)
+                                listenbrainz_score = calculate_lastfm_popularity_score(listenbrainz_count)
+                                log_info(f'ListenBrainz listen count: {listenbrainz_count} (score: {listenbrainz_score:.1f})')
+                                log_debug(f'ListenBrainz scoring - count: {listenbrainz_count}, calculated score: {listenbrainz_score}')
+                            else:
+                                log_debug(f'No ListenBrainz data found for: {title}')
+                        except TimeoutError as e:
+                            log_info(f"ListenBrainz lookup timed out for {artist} - {title}")
+                            log_debug(f"Timeout error: {e}")
+                        except Exception as e:
+                            log_debug(f"ListenBrainz lookup failed for {artist} - {title}: {e}")
+                    else:
+                        if not track_mbid:
+                            log_debug(f'Skipping ListenBrainz lookup for: {title} (no MBID available)')
+                        else:
+                            log_debug(f'Skipping ListenBrainz lookup for: {title} (keyword filter)')
+
+                    # Calculate age score if year is available
+                    age_score = 0
+                    track_year = track.get("year")
+                    if track_year:
+                        try:
+                            log_debug(f'Calculating age score for year: {track_year}')
+                            age_score = score_by_age(track_year)
+                            log_debug(f'Age score calculated: {age_score:.1f} (year: {track_year})')
+                        except Exception as e:
+                            log_debug(f"Age score calculation failed: {e}")
+                    else:
+                        log_debug(f'No year available for age scoring: {title}')
+
+                    # Calculate weighted popularity score
+                    # Only include sources that have data (score > 0)
+                    scores = []
+                    weights = []
+                    
+                    if spotify_score > 0:
+                        scores.append(spotify_score)
+                        weights.append(SPOTIFY_WEIGHT)
+                        log_debug(f'Including Spotify score: {spotify_score} (weight: {SPOTIFY_WEIGHT})')
+                    
+                    if lastfm_score > 0:
+                        scores.append(lastfm_score)
+                        weights.append(LASTFM_WEIGHT)
+                        log_debug(f'Including Last.fm score: {lastfm_score} (weight: {LASTFM_WEIGHT})')
+                    
+                    if listenbrainz_score > 0:
+                        scores.append(listenbrainz_score)
+                        weights.append(LISTENBRAINZ_WEIGHT)
+                        log_debug(f'Including ListenBrainz score: {listenbrainz_score} (weight: {LISTENBRAINZ_WEIGHT})')
+                    
+                    if age_score > 0:
+                        scores.append(age_score)
+                        weights.append(AGE_WEIGHT)
+                        log_debug(f'Including age score: {age_score} (weight: {AGE_WEIGHT})')
+                    
+                    # Calculate weighted average
+                    if scores and weights:
+                        total_weight = sum(weights)
+                        popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
                         track_updates.append((popularity_score, track_id))
                         scanned_count += 1
                         album_scanned += 1
                         log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
-                        log_debug(f'Track popularity calculation - spotify: {spotify_score}, lastfm: {lastfm_score}, final: {popularity_score}')
+                        log_debug(f'Weighted popularity calculation - spotify: {spotify_score}, lastfm: {lastfm_score}, listenbrainz: {listenbrainz_score}, age: {age_score}, final: {popularity_score:.1f}')
                     else:
                         log_info(f"No popularity score found for {artist} - {title}")
+                        log_debug(f'No data sources available for scoring')
                     
                     # Track progress and show percentage milestones
                     tracks_processed += 1
