@@ -1,0 +1,1341 @@
+{% extends "base.html" %}
+{% block title %}Config · Popularr{% endblock %}
+{% block content %}
+<div class="container-fluid py-3 py-md-4">
+  <div class="row mb-3">
+    <div class="col-12 col-md-auto">
+      <h1 class="h3 mb-2">
+        Configuration
+        <a href="/help/MULTI_USER_CONFIG_GUIDE" class="btn btn-sm btn-outline-success ms-2" title="Help for Configuration">
+            <i class="bi bi-question-circle"></i>
+        </a>
+      </h1>
+      <p class="text-muted mb-0">Edit settings below or use the setup wizard for guided configuration.</p>
+    </div>
+    <div class="col-12 col-md-auto ms-md-auto d-flex gap-2 flex-wrap">
+      <a href="{{ url_for('setup') }}" class="btn btn-outline-primary btn-sm">
+        <i class="bi bi-stars"></i> <span class="d-none d-sm-inline">Setup Wizard</span>
+      </a>
+      <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-toggle="modal" data-bs-target="#rawYamlModal">
+        <i class="bi bi-code"></i> <span class="d-none d-sm-inline">Raw YAML</span>
+      </button>
+    </div>
+  </div>
+
+  {% if needs_setup %}
+  <div class="alert alert-warning mb-4">
+    <strong>First-run setup incomplete:</strong> Some required fields are missing. Please complete setup using the Setup Wizard or fill in all required fields below.
+  </div>
+  {% endif %}
+
+  <!-- Multi-User Configuration Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
+          <small class="text-muted">Configure Navidrome, Spotify, and ListenBrainz for each user</small>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
+          <i class="bi bi-plus-circle"></i> Add Another User
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <!-- Users Container -->
+      <div id="usersContainer">
+        {% set navidrome_users = config.get('navidrome_users', []) %}
+        {% if navidrome_users %}
+          {% for user in navidrome_users %}
+          <div class="user-card mb-4 p-3 border rounded" data-user-index="{{ loop.index0 }}">
+            <div class="d-flex justify-content-between align-items-center mb-3">
+              <h6 class="mb-0">User {{ loop.index }}: {{ user.get('display_name', user.get('username', 'Unknown')) }}</h6>
+              {% if loop.length > 1 %}
+              <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser({{ loop.index0 }})">
+                <i class="bi bi-trash"></i> Remove
+              </button>
+              {% endif %}
+            </div>
+            
+            <!-- Navidrome Configuration -->
+            <div class="mb-3">
+              <h6 class="text-primary mb-2"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label form-label-sm">Display Name</label>
+                  <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" value="{{ user.get('display_name', '') }}">
+                </div>
+                <div class="col-12">
+                  <label class="form-label form-label-sm">Navidrome Base URL</label>
+                  <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533" value="{{ user.get('base_url', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Username</label>
+                  <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username" value="{{ user.get('user', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Password</label>
+                  <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••" value="{{ user.get('pass', '') }}">
+                </div>
+              </div>
+            </div>
+            
+            <!-- Spotify Configuration -->
+            <div class="mb-3">
+              <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+              <div class="row g-2">
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Client ID</label>
+                  <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id" value="{{ user.get('spotify_client_id', '') }}">
+                </div>
+                <div class="col-12 col-sm-6">
+                  <label class="form-label form-label-sm">Client Secret</label>
+                  <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••" value="{{ user.get('spotify_client_secret', '') }}">
+                </div>
+              </div>
+            </div>
+            
+            <!-- ListenBrainz Configuration -->
+            <div class="mb-3">
+              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+              <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label form-label-sm">User Token</label>
+                  <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token" value="{{ user.get('listenbrainz_user_token', '') }}">
+                  <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
+                </div>
+              </div>
+            </div>
+          </div>
+          {% endfor %}
+        {% else %}
+          <!-- No users yet, show empty message -->
+          <div class="alert alert-info mb-3">
+            <i class="bi bi-info-circle"></i> <strong>No users configured.</strong> Click "Add Another User" above to create your first user, or use the Setup Wizard for guided configuration.
+          </div>
+        {% endif %}
+      </div>
+    </div>
+  </div>
+
+  <!-- qBittorrent Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-download"></i> qBittorrent</h5>
+          <small class="text-muted">Torrent download client integration</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="qbit_enabled" {% if config.get('qbittorrent', {}).get('enabled') %}checked{% endif %}>
+          <label class="form-check-label" for="qbit_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="qbit_web_url" placeholder="http://localhost:8080" value="{{ config.get('qbittorrent', {}).get('web_url', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Username</label>
+          <input type="text" class="form-control" id="qbit_username" placeholder="admin" value="{{ config.get('qbittorrent', {}).get('username', '') }}">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Password</label>
+          <input type="password" class="form-control" id="qbit_password" placeholder="••••••••" value="{{ config.get('qbittorrent', {}).get('password', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- slskd Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-music-note-list"></i> slskd (Soulseek)</h5>
+          <small class="text-muted">Peer-to-peer music sharing client</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="slskd_enabled" {% if config.get('slskd', {}).get('enabled') %}checked{% endif %}>
+          <label class="form-check-label" for="slskd_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Web URL</label>
+          <input type="text" class="form-control" id="slskd_web_url" placeholder="http://localhost:5030" value="{{ config.get('slskd', {}).get('web_url', '') }}">
+        </div>
+        <div class="col-12">
+          <label class="form-label">API Key</label>
+          <input type="password" class="form-control" id="slskd_api_key" placeholder="API Key" value="{{ config.get('slskd', {}).get('api_key', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Bookmarks Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-bookmark-star"></i> Bookmarks</h5>
+          <small class="text-muted">Custom bookmarks and links</small>
+        </div>
+        <div class="form-check form-switch">
+          <input class="form-check-input" type="checkbox" id="bookmarks_enabled" {% if config.get('bookmarks', {}).get('enabled', true) %}checked{% endif %}>
+          <label class="form-check-label" for="bookmarks_enabled">Enabled</label>
+        </div>
+      </div>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Max Bookmarks</label>
+          <input type="number" class="form-control" id="bookmarks_max" placeholder="100" value="{{ config.get('bookmarks', {}).get('max_bookmarks', 100) }}" min="1" max="1000">
+          <div class="form-text">Maximum number of bookmarks allowed per user</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Custom Links</label>
+          <div class="form-text mb-2">Add custom links to the Bookmarks dropdown menu</div>
+          <div id="customBookmarksList" class="mb-2">
+            {% set custom_links = config.get('bookmarks', {}).get('custom_links', []) %}
+            {% if custom_links %}
+              {% for link in custom_links %}
+              <div class="input-group mb-2 bookmark-link-item">
+                <input type="text" class="form-control bookmark-link-title" placeholder="Link Title" value="{{ link.title }}">
+                <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com" value="{{ link.url }}">
+                <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+                  <i class="bi bi-trash"></i>
+                </button>
+              </div>
+              {% endfor %}
+            {% endif %}
+          </div>
+          <button type="button" class="btn btn-sm btn-outline-primary" onclick="addBookmarkLink()">
+            <i class="bi bi-plus-circle"></i> Add Link
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Downloads Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
+      <small class="text-muted">Configure download folder for music files (used by qBittorrent and slskd)</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Downloads Folder</label>
+          <input type="text" class="form-control" id="downloads_folder" placeholder="/downloads/Music" value="{{ config.get('downloads', {}).get('folder', '') }}">
+          <div class="form-text">Path to watch for downloaded music files. qBittorrent and slskd should be configured to download to this location.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- API Integrations Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-link-45deg"></i> API Integrations</h5>
+      <small class="text-muted">External data sources for music metadata</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <!-- Spotify -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Spotify (Global)</h6>
+              <small class="text-muted d-block">Global Spotify API credentials (optional - use per-user credentials above if different for each user)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="spotify_enabled" {% if config.get('api_integrations', {}).get('spotify', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">Client ID</label>
+              <input type="text" class="form-control form-control-sm" id="spotify_client_id" placeholder="your_spotify_client_id" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_id', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">Client Secret</label>
+              <input type="password" class="form-control form-control-sm" id="spotify_client_secret" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('client_secret', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">User ID (Optional)</label>
+              <input type="text" class="form-control form-control-sm" id="spotify_user_id" placeholder="spotify" value="{{ config.get('api_integrations', {}).get('spotify', {}).get('user_id', '') }}">
+              <small class="form-text text-muted">Optional: Spotify User ID to fetch public playlists from</small>
+            </div>
+          </div>
+        </div>
+
+        <!-- Last.fm -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Last.fm</h6>
+              <small class="text-muted d-block">Listening history and user ratings</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="lastfm_enabled" {% if config.get('api_integrations', {}).get('lastfm', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="text" class="form-control form-control-sm" id="lastfm_api_key" placeholder="your_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- ListenBrainz -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">ListenBrainz</h6>
+              <small class="text-muted d-block">Community music database (public API)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+        </div>
+
+        <!-- Discogs -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Discogs</h6>
+              <small class="text-muted d-block">Release database and catalog info</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="discogs_enabled" {% if config.get('api_integrations', {}).get('discogs', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">Token</label>
+              <input type="password" class="form-control form-control-sm" id="discogs_token" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('discogs', {}).get('token', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- MusicBrainz -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">MusicBrainz</h6>
+              <small class="text-muted d-block">Music metadata database (public API)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="musicbrainz_enabled" {% if config.get('api_integrations', {}).get('musicbrainz', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+        </div>
+
+        <!-- AudioDB -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">AudioDB</h6>
+              <small class="text-muted d-block">Album artwork and artist info (optional)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="audiodb_enabled" {% if config.get('api_integrations', {}).get('audiodb', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="audiodb_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- Google -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">Google Custom Search</h6>
+              <small class="text-muted d-block">Web search integration</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="google_enabled" {% if config.get('api_integrations', {}).get('google', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12 col-sm-6">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="google_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('google', {}).get('api_key', '') }}">
+            </div>
+            <div class="col-12 col-sm-6">
+              <label class="form-label form-label-sm">CSE ID</label>
+              <input type="password" class="form-control form-control-sm" id="google_cse_id" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('google', {}).get('cse_id', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- YouTube -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">YouTube</h6>
+              <small class="text-muted d-block">Video and music search</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="youtube_enabled" {% if config.get('api_integrations', {}).get('youtube', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="youtube_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('youtube', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+
+        <!-- SearchAPI -->
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">SearchAPI (DuckDuckGo)</h6>
+              <small class="text-muted d-block">DuckDuckGo search integration via SearchAPI.io</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="searchapi_enabled" {% if config.get('api_integrations', {}).get('searchapi', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="password" class="form-control form-control-sm" id="searchapi_api_key" placeholder="••••••••" value="{{ config.get('api_integrations', {}).get('searchapi', {}).get('api_key', '') }}">
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Database Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-database"></i> Database</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <label class="form-label">Database Path</label>
+          <input type="text" class="form-control" id="db_path" placeholder="/database/sptnr.db" value="{{ config.get('database', {}).get('path', '') }}">
+        </div>
+        <div class="col-12">
+          <div class="form-check">
+            <input class="form-check-input" type="checkbox" id="db_vacuum" {% if config.get('database', {}).get('vacuum_on_start') %}checked{% endif %}>
+            <label class="form-check-label" for="db_vacuum">
+              Vacuum on start (optimize database file)
+            </label>
+          </div>
+        </div>
+      </div>
+      
+      <!-- Database Cleanup Section -->
+      <hr class="my-4">
+      <h5 class="mb-3"><i class="bi bi-trash"></i> Clean Up Duplicate Albums</h5>
+      <div class="row g-3">
+        <div class="col-12">
+          <p class="text-muted">
+            Remove duplicate albums that may have been created when Navidrome rescanned the library with different track IDs.
+            This tool identifies tracks with the same artist, album, and title, keeping only the track with the best metadata.
+          </p>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-primary" id="cleanupDryRunBtn" onclick="cleanupDuplicates(true)">
+              <i class="bi bi-eye"></i> Preview Cleanup
+            </button>
+            <button type="button" class="btn btn-danger" id="cleanupApplyBtn" onclick="cleanupDuplicates(false)">
+              <i class="bi bi-trash"></i> Apply Cleanup
+            </button>
+          </div>
+          <div id="cleanupMsg" class="mt-2"></div>
+        </div>
+      </div>
+      
+      <!-- Postgres Migration Section -->
+      <hr class="my-4">
+      <h5 class="mb-3"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</h5>
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label">Postgres Host</label>
+          <input type="text" class="form-control" id="pg_host" placeholder="localhost" value="{{ config.get('PG_HOST', '') }}">
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Postgres Port</label>
+          <input type="text" class="form-control" id="pg_port" placeholder="5432" value="{{ config.get('PG_PORT', '5432') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres User</label>
+          <input type="text" class="form-control" id="pg_user" placeholder="postgres" value="{{ config.get('PG_USER', '') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres Password</label>
+          <input type="password" class="form-control" id="pg_password" placeholder="••••••••" value="{{ config.get('PG_PASSWORD', '') }}">
+        </div>
+        <div class="col-12 col-md-4">
+          <label class="form-label">Postgres Database</label>
+          <input type="text" class="form-control" id="pg_database" placeholder="sptnr" value="{{ config.get('PG_DATABASE', '') }}">
+        </div>
+        <div class="col-12">
+          <button type="button" class="btn btn-warning btn-lg mt-2" id="migratePostgresBtn" onclick="migrateToPostgres()">
+            <i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL
+          </button>
+          <div class="form-text text-danger mt-2">This will copy all data from SQLite to PostgreSQL and update your configuration. This may take several minutes for large databases.</div>
+          <div id="pgMigrateMsg" class="mt-2"></div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Logging Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-file-text"></i> Logging</h5>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Log Level</label>
+          <select class="form-select" id="log_level">
+            {% set current_level = config.get('logging', {}).get('level', 'INFO') %}
+            <option value="DEBUG" {% if current_level == 'DEBUG' %}selected{% endif %}>DEBUG</option>
+            <option value="INFO" {% if current_level == 'INFO' %}selected{% endif %}>INFO</option>
+            <option value="WARNING" {% if current_level == 'WARNING' %}selected{% endif %}>WARNING</option>
+            <option value="ERROR" {% if current_level == 'ERROR' %}selected{% endif %}>ERROR</option>
+          </select>
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label">Log to Console</label>
+          <select class="form-select" id="log_console">
+            {% set current_console = config.get('logging', {}).get('console', true) %}
+            <option value="true" {% if current_console == true or current_console == 'true' %}selected{% endif %}>Yes</option>
+            <option value="false" {% if current_console == false or current_console == 'false' %}selected{% endif %}>No</option>
+          </select>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Log File Path</label>
+          <input type="text" class="form-control" id="log_file" placeholder="/config/app.log" value="{{ config.get('logging', {}).get('file', '') }}">
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Web API Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-key"></i> Web API Authentication</h5>
+      <small class="text-muted">Configure API key authentication for web interface</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12">
+          <div class="form-check form-switch">
+            <input class="form-check-input" type="checkbox" id="enable_web_api_key" {% if config.get('enable_web_api_key', True) %}checked{% endif %}>
+            <label class="form-check-label" for="enable_web_api_key">
+              Enable Web API Key Authentication
+            </label>
+          </div>
+          <div class="form-text">When enabled, requires API key for web interface access</div>
+        </div>
+        <div class="col-12">
+          <label class="form-label">Web API Key</label>
+          <input type="password" class="form-control" id="web_api_key" placeholder="Enter API key" value="{{ config.get('web_api_key', '') }}">
+          <div class="form-text">API key for authenticating web interface requests</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Features & Weights Section - Dynamically Rendered -->
+  <div id="featuresWeightsContainer"></div>
+
+  <!-- Save Button -->
+  <div class="d-grid gap-2 d-md-flex justify-content-md-end mb-4">
+    <button type="button" class="btn btn-outline-secondary" id="cancelBtn">Cancel</button>
+    <button type="button" class="btn btn-primary btn-lg" id="saveBtn" onclick="saveConfig()">
+      <i class="bi bi-check-circle"></i> Save Configuration
+    </button>
+  </div>
+  <!-- Toast notification -->
+  <div class="position-fixed bottom-0 end-0 p-3" style="z-index: 11">
+    <div id="configToast" class="toast" role="alert">
+      <div class="toast-header">
+        <i class="bi bi-info-circle me-2"></i>
+        <strong class="me-auto" id="toastTitle">Status</strong>
+        <button type="button" class="btn-close" data-bs-dismiss="toast"></button>
+      </div>
+      <div class="toast-body" id="toastMessage">
+        Message
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Raw YAML Modal -->
+<div class="modal fade" id="rawYamlModal" tabindex="-1">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title"><i class="bi bi-code"></i> Raw YAML Editor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+      </div>
+      <div class="modal-body">
+        <label for="config_content" class="form-label">config.yaml</label>
+        <textarea class="form-control monospace" id="config_content" style="font-family: monospace; font-size: 0.875rem;" rows="24">{{ config_raw }}</textarea>
+        <div class="form-text mt-2">Changes are written as-is. Confirm YAML indentation before saving.</div>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary" data-bs-dismiss="modal">Cancel</button>
+        <button type="button" class="btn btn-primary" onclick="saveRawYaml()">Save</button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script>
+document.addEventListener('DOMContentLoaded', function() {
+  var cancelBtn = document.getElementById('cancelBtn');
+  if (cancelBtn) {
+    cancelBtn.addEventListener('click', function(e) {
+      window.location.href = "{{ url_for('dashboard') }}";
+      e.preventDefault();
+      return false;
+    });
+  }
+});
+function showToast(title, message, type = 'info') {
+  const toast = new bootstrap.Toast(document.getElementById('configToast'));
+  document.getElementById('toastTitle').textContent = title;
+  document.getElementById('toastMessage').textContent = message;
+  
+  const toastEl = document.getElementById('configToast');
+  toastEl.classList.remove('bg-success', 'bg-danger', 'bg-warning');
+  if (type === 'success') toastEl.classList.add('bg-success', 'text-white');
+  else if (type === 'error') toastEl.classList.add('bg-danger', 'text-white');
+  else if (type === 'warning') toastEl.classList.add('bg-warning', 'text-dark');
+  
+  toast.show();
+}
+
+function buildConfigObject() {
+  // Helper function to safely get element value
+  function getValue(id, defaultValue = '') {
+    const el = document.getElementById(id);
+    return el ? el.value : defaultValue;
+  }
+  
+  function getChecked(id, defaultValue = false) {
+    const el = document.getElementById(id);
+    return el ? el.checked : defaultValue;
+  }
+  
+  // Build multi-user array
+  const navidrome_users = [];
+  const userCards = document.querySelectorAll('.user-card');
+  
+  userCards.forEach((card, index) => {
+    const user = {
+      user: card.querySelector('.user-nav-username').value,
+      display_name: card.querySelector('.user-display-name').value,
+      base_url: card.querySelector('.user-nav-url').value,
+      pass: card.querySelector('.user-nav-password').value,
+      spotify_client_id: card.querySelector('.user-spotify-id').value,
+      spotify_client_secret: card.querySelector('.user-spotify-secret').value,
+      listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
+    };
+    // Only add user if it has at least username and Navidrome URL
+    if (user.user && user.base_url) {
+      navidrome_users.push(user);
+    }
+  });
+  
+  return {
+    navidrome_users: navidrome_users,
+    qbittorrent: {
+      enabled: getChecked('qbit_enabled', false),
+      web_url: getValue('qbit_web_url', ''),
+      username: getValue('qbit_username', ''),
+      password: getValue('qbit_password', '')
+    },
+    slskd: {
+      enabled: getChecked('slskd_enabled', false),
+      web_url: getValue('slskd_web_url', ''),
+      api_key: getValue('slskd_api_key', '')
+    },
+    bookmarks: {
+      enabled: getChecked('bookmarks_enabled', true),
+      max_bookmarks: parseInt(getValue('bookmarks_max', '100')) || 100,
+      custom_links: getCustomBookmarkLinks()
+    },
+    downloads: {
+      folder: getValue('downloads_folder', '')
+    },
+    api_integrations: {
+      spotify: {
+        enabled: getChecked('spotify_enabled', false),
+        client_id: getValue('spotify_client_id', ''),
+        client_secret: getValue('spotify_client_secret', ''),
+        user_id: getValue('spotify_user_id', '')
+      },
+      lastfm: {
+        enabled: getChecked('lastfm_enabled', false),
+        api_key: getValue('lastfm_api_key', '')
+      },
+      listenbrainz: {
+        enabled: getChecked('listenbrainz_enabled', false)
+      },
+      discogs: {
+        enabled: getChecked('discogs_enabled', false),
+        token: getValue('discogs_token', '')
+      },
+      musicbrainz: {
+        enabled: getChecked('musicbrainz_enabled', false)
+      },
+      audiodb: {
+        enabled: getChecked('audiodb_enabled', false),
+        api_key: getValue('audiodb_api_key', '')
+      },
+      google: {
+        enabled: getChecked('google_enabled', false),
+        api_key: getValue('google_api_key', ''),
+        cse_id: getValue('google_cse_id', '')
+      },
+      youtube: {
+        enabled: getChecked('youtube_enabled', false),
+        api_key: getValue('youtube_api_key', '')
+      },
+      searchapi: {
+        enabled: getChecked('searchapi_enabled', false),
+        api_key: getValue('searchapi_api_key', '')
+      }
+    },
+    database: {
+      path: getValue('db_path', ''),
+      vacuum_on_start: getChecked('db_vacuum', false)
+    },
+    logging: {
+      level: getValue('log_level', 'INFO'),
+      file: getValue('log_file', ''),
+      console: getValue('log_console', 'true') === 'true'
+    },
+    web_api_key: getValue('web_api_key', ''),
+    enable_web_api_key: getChecked('enable_web_api_key', true)
+  };
+}
+
+function saveConfig() {
+  const saveBtn = document.getElementById('saveBtn');
+  saveBtn.disabled = true;
+  const originalText = saveBtn.innerHTML;
+  saveBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Saving...';
+  
+  const config = buildConfigObject();
+  
+  fetch('{{ url_for("config_save_json") }}', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify(config)
+  })
+  .then(response => {
+    // Check if response is JSON
+    const contentType = response.headers.get('content-type');
+    if (!contentType || !contentType.includes('application/json')) {
+      return response.text().then(text => {
+        throw new Error('Server returned non-JSON response: ' + text.substring(0, 100));
+      });
+    }
+    return response.json().then(data => ({
+      status: response.status,
+      data: data
+    }));
+  })
+  .then(result => {
+    if (result.status !== 200) {
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
+    } else if (result.data.success) {
+      showToast('Success', 'Configuration saved successfully', 'success');
+    } else {
+      showToast('Error', result.data.error || 'Failed to save configuration', 'error');
+    }
+  })
+  .catch(error => {
+    showToast('Error', error.message || 'Network error: ' + error.toString(), 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.innerHTML = originalText;
+  });
+}
+
+function saveRawYaml() {
+  const saveBtn = event.target;
+  saveBtn.disabled = true;
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Saving...';
+  
+  const configContent = document.getElementById('config_content').value;
+  
+  const formData = new FormData();
+  formData.append('config_content', configContent);
+  
+  fetch('{{ url_for("config_editor") }}', {
+    method: 'POST',
+    body: formData
+  })
+  .then(response => response.text())
+  .then(() => {
+    showToast('Success', 'Configuration saved successfully', 'success');
+    bootstrap.Modal.getInstance(document.getElementById('rawYamlModal')).hide();
+  })
+  .catch(error => {
+    showToast('Error', 'Network error: ' + error.message, 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalText;
+  });
+}
+
+// Custom Bookmark Link Management Functions
+function addBookmarkLink() {
+  const container = document.getElementById('customBookmarksList');
+  const newItem = document.createElement('div');
+  newItem.className = 'input-group mb-2 bookmark-link-item';
+  newItem.innerHTML = `
+    <input type="text" class="form-control bookmark-link-title" placeholder="Link Title">
+    <input type="text" class="form-control bookmark-link-url" placeholder="https://example.com">
+    <button class="btn btn-outline-danger" type="button" onclick="removeBookmarkLink(this)">
+      <i class="bi bi-trash"></i>
+    </button>
+  `;
+  container.appendChild(newItem);
+}
+
+function removeBookmarkLink(button) {
+  button.closest('.bookmark-link-item').remove();
+}
+
+function getCustomBookmarkLinks() {
+  const items = document.querySelectorAll('.bookmark-link-item');
+  const links = [];
+  items.forEach(item => {
+    const title = item.querySelector('.bookmark-link-title').value.trim();
+    const url = item.querySelector('.bookmark-link-url').value.trim();
+    if (title && url) {
+      links.push({ title, url });
+    }
+  });
+  return links;
+}
+
+// Multi-User Management Functions
+function addNewUser() {
+  const container = document.getElementById('usersContainer');
+  
+  // Hide empty message if it exists
+  const emptyMessage = document.getElementById('emptyUsersMessage');
+  if (emptyMessage) {
+    emptyMessage.remove();
+  }
+  
+  // Get next user index
+  const existingCards = container.querySelectorAll('.user-card');
+  const userIndex = existingCards.length;
+  
+  const userCard = document.createElement('div');
+  userCard.className = 'user-card mb-4 p-3 border rounded';
+  userCard.setAttribute('data-user-index', userIndex);
+  userCard.innerHTML = `
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h6 class="mb-0">User ${userIndex + 1}: <span class="user-display-value">New User</span></h6>
+      <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser(${userIndex})">
+        <i class="bi bi-trash"></i> Remove
+      </button>
+    </div>
+    
+    <!-- Navidrome Configuration -->
+    <div class="mb-3">
+      <h6 class="text-primary mb-2"><i class="bi bi-music-note-beamed"></i> Navidrome</h6>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label form-label-sm">Display Name</label>
+          <input type="text" class="form-control form-control-sm user-display-name" placeholder="My Name" onchange="updateUserTitle(this)">
+        </div>
+        <div class="col-12">
+          <label class="form-label form-label-sm">Navidrome Base URL</label>
+          <input type="text" class="form-control form-control-sm user-nav-url" placeholder="http://localhost:4533">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Username</label>
+          <input type="text" class="form-control form-control-sm user-nav-username" placeholder="username">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Password</label>
+          <input type="password" class="form-control form-control-sm user-nav-password" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+    
+    <!-- Spotify Configuration -->
+    <div class="mb-3">
+      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+      <div class="row g-2">
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Client ID</label>
+          <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id">
+        </div>
+        <div class="col-12 col-sm-6">
+          <label class="form-label form-label-sm">Client Secret</label>
+          <input type="password" class="form-control form-control-sm user-spotify-secret" placeholder="••••••••">
+        </div>
+      </div>
+    </div>
+    
+    <!-- ListenBrainz Configuration -->
+    <div class="mb-3">
+      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label form-label-sm">User Token</label>
+          <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token">
+          <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  container.appendChild(userCard);
+}
+
+function removeUser(idx) {
+  // Remove the user card from the DOM
+  const userCards = document.querySelectorAll('.user-card');
+  if (userCards[idx]) {
+    userCards[idx].remove();
+  }
+  // Optionally, update the underlying config data structure if needed
+  // TODO: Add logic to update config and persist changes if required
+}
+
+function updateUserTitle(displayNameInput) {
+  // Update the user title when display name changes
+  const userCard = displayNameInput.closest('.user-card');
+  const displayValue = userCard.querySelector('.user-display-value');
+  const displayName = displayNameInput.value.trim() || 'New User';
+  displayValue.textContent = displayName;
+}
+// --- Features & Weights Editing ---
+function renderFeaturesWeights(features, weights) {
+  let html = '';
+
+  // --- Groupings and Explanations ---
+  const featureGroups = [
+    {
+      heading: 'General Operation',
+      description: 'Core options that control the overall behavior of the app, including dry-run/testing, syncing, and batch operations.',
+      keys: ['dry_run', 'sync', 'force', 'verbose', 'perpetual', 'batchrate', 'full_scan', 'auto_boot_navidrome_scan', 'artist'],
+      explanations: {
+        dry_run: 'Run all operations in test mode without making any changes to your files or database. Useful for safely testing configuration changes.',
+        sync: 'Enable automatic syncing of your music libraries between sources and the app.',
+        force: 'Force rescanning of albums even if they were already scanned. When enabled, ignores scan history and rescans all albums during artist/album rescans.',
+        verbose: 'Show detailed logs and debug information for troubleshooting and advanced users.',
+        perpetual: 'Keep background services (like folder watchers and scanners) running continuously.',
+        batchrate: 'Enable batch rating mode to rate multiple albums or tracks at once.',
+        full_scan: 'Run full scan pipeline: Navidrome import → Popularity detection → Beets import. When enabled, automatically executes all three scans in sequence.',
+        auto_boot_navidrome_scan: 'Automatically scan Navidrome metadata on application startup. When enabled, imports Navidrome library data when the app starts.',
+        artist: 'Comma-separated list of artist names to prioritize or filter during scans and imports.'
+      }
+    },
+    {
+      heading: 'Spotify Matching',
+      description: 'Controls how Spotify tracks are matched and selected for popularity scoring.',
+      keys: [
+        'strict_spotify_matching', 'spotify_duration_tolerance'
+      ],
+      explanations: {
+        strict_spotify_matching: 'Enable strict exact-match rules for Spotify tracks. When enabled, only tracks with exact title match, ±2s duration, and matching ISRC (if available) are selected. Rejects all alternate versions (remixes, live, acoustic, etc.).',
+        spotify_duration_tolerance: 'Maximum duration difference in seconds for strict matching (default: 2). Only used when strict_spotify_matching is enabled.'
+      }
+    },
+    {
+      heading: 'Single Detection & Scoring',
+      description: 'Advanced controls for how singles and albums are detected, scored, and filtered. Adjust these for fine-tuning detection accuracy and automation.',
+      keys: [
+        'album_skip_days', 'album_skip_min_tracks', 'clamp_min', 'clamp_max', 'cap_top4_pct', 'title_sim_threshold',
+        'short_release_counts_as_match', 'secondary_single_lookup_enabled', 'secondary_lookup_metric', 'secondary_lookup_delta',
+        'secondary_required_strong_sources', 'median_gate_strategy', 'use_lastfm_single', 'refresh_artist_index_on_start',
+        'discogs_min_interval_sec', 'include_user_ratings_on_scan', 'scan_worker_threads', 'spotify_prefetch_timeout'
+      ],
+      explanations: {
+        album_skip_days: 'Number of days before rescanning an album. Albums scanned within this many days will be skipped unless force rescan is enabled.',
+        album_skip_min_tracks: 'Minimum number of tracks required for an album to be considered valid.',
+        clamp_min: 'Minimum allowed value for score normalization (prevents scores from dropping too low).',
+        clamp_max: 'Maximum allowed value for score normalization (prevents scores from exceeding this value).',
+        cap_top4_pct: 'Maximum percentage weight that the top 4 sources can contribute to the overall score.',
+        title_sim_threshold: 'How similar two album titles must be (0-1) to be considered a match. Higher values mean stricter matching.',
+        short_release_counts_as_match: 'If enabled, short releases (like singles/EPs) are treated as valid matches.',
+        secondary_single_lookup_enabled: 'Enable a secondary lookup step for singles to improve detection accuracy.',
+        secondary_lookup_metric: 'Which metric to use for secondary lookup (e.g., score, popularity).',
+        secondary_lookup_delta: 'How much the score must differ to trigger a secondary lookup.',
+        secondary_required_strong_sources: 'Number of strong sources required to confirm a secondary lookup match.',
+        median_gate_strategy: 'Strategy for handling ambiguous matches: "hard" (strict) or "soft" (lenient).',
+        use_lastfm_single: 'Use Last.fm data as an additional source for single detection.',
+        refresh_artist_index_on_start: 'Refresh the artist index every time the app starts (may slow startup).',
+        discogs_min_interval_sec: 'Minimum time (in seconds) between Discogs API calls to avoid rate limits.',
+        include_user_ratings_on_scan: 'Include user ratings when scanning and scoring albums.',
+        scan_worker_threads: 'Number of parallel worker threads to use for scanning (higher = faster, but more CPU).',
+        spotify_prefetch_timeout: 'Timeout (in seconds) for Spotify data prefetching during scans.'
+      }
+    }
+  ];
+
+  const weightExplanations = {
+    spotify: 'Weight for Spotify data in scoring.',
+    lastfm: 'Weight for Last.fm data in scoring.',
+    listenbrainz: 'Weight for ListenBrainz data in scoring.',
+    age: 'Weight for album age in scoring.'
+  };
+
+  html += '<div class="card shadow-sm mb-3">';
+  html += '<div class="card-header bg-secondary bg-opacity-10 border-bottom">';
+  html += '<h5 class="mb-0"><i class="bi bi-sliders"></i> Features & Weights</h5>';
+  html += '<small class="text-muted">Advanced options for scoring and detection</small>';
+  html += '</div>';
+  html += '<div class="card-body">';
+  html += '<form id="featuresWeightsForm">';
+  html += '<div class="row g-3">';
+
+  // Render grouped features
+  for (const group of featureGroups) {
+    html += `<div class="col-12 mt-4"><h5>${group.heading}</h5>`;
+    if (group.description) {
+      html += `<div class="text-muted mb-2">${group.description}</div>`;
+    }
+    html += `</div>`;
+    for (const key of group.keys) {
+      if (features.hasOwnProperty(key)) {
+        html += '<div class="col-md-4">';
+        html += `<label class="form-label">${key}</label>`;
+        if (group.explanations[key]) {
+          html += `<div class="text-muted small mb-1">${group.explanations[key]}</div>`;
+        }
+        const value = features[key];
+        if (typeof value === 'boolean') {
+          html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+        } else if (typeof value === 'number') {
+          html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+        } else if (Array.isArray(value)) {
+          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+        } else {
+          html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+        }
+        html += '</div>';
+      }
+    }
+  }
+
+  // Render any other features not grouped
+  const groupedKeys = featureGroups.flatMap(g => g.keys);
+  for (const [key, value] of Object.entries(features)) {
+    if (!groupedKeys.includes(key)) {
+      html += '<div class="col-md-4">';
+      html += `<label class="form-label">${key}</label>`;
+      html += `<div class="text-muted small mb-1">(Custom/Other feature)</div>`;
+      if (typeof value === 'boolean') {
+        html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+      } else if (typeof value === 'number') {
+        html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+      } else if (Array.isArray(value)) {
+        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+      } else {
+        html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+      }
+      html += '</div>';
+    }
+  }
+
+  // Weights section
+  html += '<div class="col-12 mt-4"><h6>Weights</h6></div>';
+  for (const [key, value] of Object.entries(weights)) {
+    html += '<div class="col-md-4">';
+    html += `<label class="form-label">${key}</label>`;
+    if (weightExplanations[key]) {
+      html += `<div class="text-muted small mb-1">${weightExplanations[key]}</div>`;
+    }
+    html += `<input type="number" step="any" class="form-control weight-field" name="weight_${key}" value="${value}">`;
+    html += '</div>';
+  }
+
+  html += '</div>';
+  html += '<div class="mt-3 text-end">';
+  html += '<button type="button" class="btn btn-primary" onclick="saveFeaturesWeights()">Save Features & Weights</button>';
+  html += '</div>';
+  html += '</form>';
+  html += '</div></div>';
+  return html;
+}
+
+function saveFeaturesWeights() {
+  // Start with the current config from buildConfigObject (all other sections)
+  const config = buildConfigObject();
+  
+  // Features
+  const features = {};
+  document.querySelectorAll('.feature-field').forEach(input => {
+    let key = input.name.replace('feature_', '');
+    let val = input.value;
+    if (input.tagName === 'SELECT') {
+      val = (val === 'true');
+    } else if (window.currentConfig.features && Array.isArray(window.currentConfig.features[key])) {
+      val = val.split(',').map(s => s.trim()).filter(Boolean);
+    } else if (!isNaN(val) && val !== '') {
+      val = Number(val);
+    }
+    features[key] = val;
+  });
+  
+  // Weights
+  const weights = {};
+  document.querySelectorAll('.weight-field').forEach(input => {
+    let key = input.name.replace('weight_', '');
+    let val = input.value;
+    if (!isNaN(val) && val !== '') {
+      val = Number(val);
+    }
+    weights[key] = val;
+  });
+  
+  // Merge into config
+  config.features = features;
+  config.weights = weights;
+  
+  // Save via AJAX
+  const saveBtn = event.target;
+  saveBtn.disabled = true;
+  const originalText = saveBtn.textContent;
+  saveBtn.textContent = 'Saving...';
+  
+  fetch('/config/save-json', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(config)
+  })
+  .then(r => r.json())
+  .then(resp => {
+    if (resp.success) {
+      showToast('Success', 'Features & weights saved successfully', 'success');
+      setTimeout(() => location.reload(), 1000);
+    } else {
+      showToast('Error', resp.error || 'Unknown error', 'error');
+    }
+  })
+  .catch(err => {
+    showToast('Error', 'Network error: ' + err.message, 'error');
+  })
+  .finally(() => {
+    saveBtn.disabled = false;
+    saveBtn.textContent = originalText;
+  });
+}
+
+</script>
+<script>
+// On page load, render features/weights section
+window.currentConfig = JSON.parse('{{ config|tojson | safe }}');
+document.addEventListener('DOMContentLoaded', function() {
+  // Render features/weights section
+  if (window.currentConfig) {
+    const features = window.currentConfig.features || {};
+    const weights = window.currentConfig.weights || {};
+    const container = document.getElementById('featuresWeightsContainer');
+    if (container) {
+      container.innerHTML = renderFeaturesWeights(features, weights);
+    }
+  }
+});
+</script>
+
+<style>
+.form-label-sm {
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.form-control-sm {
+  font-size: 0.9rem;
+}
+
+.monospace {
+  font-family: 'Courier New', monospace !important;
+  font-size: 0.875rem;
+}
+
+@media (max-width: 576px) {
+  .card {
+    border: none;
+    border-top: 1px solid #dee2e6;
+    border-radius: 0;
+    box-shadow: none !important;
+  }
+  
+  .card:first-of-type {
+    border-top: none;
+  }
+  
+  .card-header {
+    padding: 1rem 0 0.5rem 0;
+    border: none;
+    background: none !important;
+  }
+  
+  .card-body {
+    padding: 1rem 0;
+  }
+  
+  h5 {
+    font-size: 1rem;
+  }
+}
+
+/* Dark theme improvements for config page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+}
+</style>
+<script>
+function cleanupDuplicates(dryRun) {
+  const previewBtn = document.getElementById('cleanupDryRunBtn');
+  const applyBtn = document.getElementById('cleanupApplyBtn');
+  const msg = document.getElementById('cleanupMsg');
+  
+  // Disable both buttons
+  previewBtn.disabled = true;
+  applyBtn.disabled = true;
+  
+  if (dryRun) {
+    previewBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analyzing...';
+  } else {
+    applyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Cleaning...';
+  }
+  
+  msg.innerHTML = '';
+  
+  fetch('/api/database/cleanup-duplicates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: dryRun })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      const stats = data.stats;
+      let html = '<div class="alert alert-' + (dryRun ? 'info' : 'success') + '">';
+      html += '<strong>' + (dryRun ? 'Preview Results:' : 'Cleanup Complete!') + '</strong><br>';
+      html += data.message + '<br>';
+      html += '<ul class="mb-0 mt-2">';
+      html += '<li>Duplicate sets found: ' + stats.duplicate_sets + '</li>';
+      html += '<li>Tracks to keep: ' + stats.tracks_kept + '</li>';
+      html += '<li>Tracks ' + (dryRun ? 'to delete' : 'deleted') + ': ' + stats.tracks_deleted + '</li>';
+      html += '<li>Albums affected: ' + stats.albums_affected + '</li>';
+      html += '</ul>';
+      html += '</div>';
+      msg.innerHTML = html;
+      
+      if (dryRun && stats.tracks_deleted > 0) {
+        msg.innerHTML += '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> To apply these changes, click "Apply Cleanup"</div>';
+      }
+    } else {
+      msg.innerHTML = '<div class="alert alert-danger">Error: ' + (data.error || 'Unknown error') + '</div>';
+    }
+  })
+  .catch(error => {
+    msg.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+  })
+  .finally(() => {
+    // Re-enable buttons and reset text
+    previewBtn.disabled = false;
+    applyBtn.disabled = false;
+    previewBtn.innerHTML = '<i class="bi bi-eye"></i> Preview Cleanup';
+    applyBtn.innerHTML = '<i class="bi bi-trash"></i> Apply Cleanup';
+  });
+}
+
+function migrateToPostgres() {
+  const btn = document.getElementById('migratePostgresBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Migrating...';
+  const msg = document.getElementById('pgMigrateMsg');
+  msg.innerHTML = '';
+  const data = {
+    pg_host: document.getElementById('pg_host').value,
+    pg_port: document.getElementById('pg_port').value,
+    pg_user: document.getElementById('pg_user').value,
+    pg_password: document.getElementById('pg_password').value,
+    pg_database: document.getElementById('pg_database').value
+  };
+  fetch('/config/migrate_postgres', {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify(data)
+  })
+  .then(r => r.json())
+  .then(resp => {
+    if (resp.success) {
+      msg.innerHTML = '<span class="text-success">Migration successful! Please restart the server to use PostgreSQL.</span>';
+    } else {
+      msg.innerHTML = '<span class="text-danger">' + (resp.error || 'Migration failed.') + '</span>';
+    }
+  })
+  .catch(function(e) {
+    msg.innerHTML = '<span class="text-danger">' + (e && e.message ? e.message : 'Unknown error') + '</span>';
+  })
+  .finally(function() {
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
+  });
+}
+</script>
+{% endblock %}

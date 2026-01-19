@@ -1,0 +1,1621 @@
+{% extends "base.html" %}
+
+{% block title %}{{ artist_name }} · Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <nav aria-label="breadcrumb">
+    <ol class="breadcrumb">
+      <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+      <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+      <li class="breadcrumb-item active" aria-current="page">{{ artist_name }}</li>
+    </ol>
+  </nav>
+
+  {% if qbit_config.enabled %}
+    <div class="flex-grow-1">
+      <h1 class="h2 mb-2" data-artist-name="{{ artist_name }}">
+        <i class="bi bi-person-music"></i> {{ artist_name }}
+      </h1>
+      <p class="text-muted mb-0">Artist overview</p>
+    </div>
+    <div class="d-flex flex-column flex-sm-row gap-2 w-100 w-md-auto">
+      <button class="btn btn-outline-info" id="singlesCountBtn" onclick="showArtistSingles('{{ artist_name }}')" title="View singles for this artist">
+        <i class="bi bi-single-music"></i> <span class="d-none d-sm-inline">Singles</span> <span class="badge bg-info" id="singlesCount">0</span>
+      </button>
+      <button class="btn btn-outline-success" onclick="createEssentialPlaylist('{{ artist_name }}')" title="Create Essential Playlist based on single detection">
+        <i class="bi bi-star-fill"></i> <span class="d-none d-sm-inline">Essential</span>
+      </button>
+      <button class="btn btn-outline-success" onclick="addBookmark('artist', '{{ artist_name }}', '{{ artist_name }}', null, null)" title="Add to favourites">
+        <i class="bi bi-star"></i> <span class="d-none d-sm-inline\">Favourite</span>
+      </button>
+      <button class="btn btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+        <i class="bi bi-flag"></i> <span class="d-none d-sm-inline">Missing</span>
+      </button>
+      <button class="btn btn-outline-warning" onclick="updateArtistAlbumsWithBeets('{{ artist_name }}')" title="Update all albums with beets (write tags and organize files)">
+        <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
+      </button>
+      {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
+      <button class="btn btn-outline-info" onclick="openDownloadSearch('{{ artist_name }}')" title="Download {{ artist_name }} releases">
+        <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+      </button>
+      {% endif %}
+      <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
+        <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
+      </a>
+      <form class="flex-grow-1" action="{{ url_for('scan_start') }}" method="post">
+        <input type="hidden" name="scan_type" value="artist">
+        <input type="hidden" name="artist" value="{{ artist_name }}">
+        <button type="submit" class="btn btn-warning w-100" title="Full scan: Navidrome + Popularity + Singles">
+          <i class="bi bi-play-circle"></i> <span class="d-none d-sm-inline">Scan Artist</span>
+        </button>
+      </form>
+    </div>
+  </div>
+  {% endif %}
+
+  <!-- Artist Image Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-body">
+        <div class="row g-4">
+          <!-- Artist Image -->
+          <div class="col-12 col-md-3 d-flex flex-column align-items-center">
+            <div class="position-relative mb-3" style="width: 200px; height: 200px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+              <img id="artistImage" src="{{ url_for('api_artist_image', name=artist_name) }}" 
+                   alt="{{ artist_name }}" 
+                   style="width: 100%; height: 100%; object-fit: cover;"
+                   onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
+              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openArtistImageModal('{{ artist_name }}')" title="Change artist image">
+                <i class="bi bi-pencil"></i> Change Image
+              </button>
+            </div>
+          </div>
+          <!-- Artist Bio -->
+          <div class="col-12 col-md-9">
+            <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
+            <div id="artistBio" class="text-muted" style="min-height: 150px;">
+              <p class="text-center mt-4">
+                <small>Loading artist information from MusicBrainz...</small>
+              </p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Genre Display and Management -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection"></i> Genres
+        </h5>
+        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistGenreRecommendations()" id="fetchArtistGenresBtn">
+          <i class="bi bi-cloud-download"></i> Get Online Suggestions
+        </button>
+      </div>
+      <div class="card-body">
+        <!-- Current Genres from All Tracks -->
+        <div class="mb-3">
+          <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
+          <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist</p>
+          <div class="d-flex flex-wrap gap-2" id="currentArtistGenres">
+            {% if genres %}
+              {% for genre in genres %}
+              <span class="badge badge-success">{{ genre }}</span>
+              {% endfor %}
+            {% else %}
+              <span class="text-muted small">No genres found in library</span>
+            {% endif %}
+          </div>
+        </div>
+        
+        <!-- Recommended Genres Section -->
+        <div id="recommendedArtistGenresSection" style="display: none;">
+          <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz</h6>
+          <p class="text-muted small mb-2">Click genres to select, then apply to all tracks by this artist</p>
+          <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedArtistGenres">
+            <span class="text-muted small">Loading...</span>
+          </div>
+          <button class="btn btn-sm btn-success" onclick="applySelectedArtistGenres()" id="applyArtistGenresBtn" style="display: none;">
+            <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Statistics Cards -->
+  <div class="row g-2 g-md-3 mb-4">
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-disc"></i> Albums
+          </div>
+          <div class="h4 mb-0">{{ stats.album_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-music-note"></i> Tracks
+          </div>
+          <div class="h4 mb-0">{{ stats.track_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-star-fill"></i> Avg
+          </div>
+          <div class="h4 mb-0">{{ stats.avg_stars|round(2) if stats.avg_stars else "—" }}</div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-star-fill"></i> 5★
+          </div>
+          <div class="h4 mb-0">{{ stats.five_star_count or 0 }}</div>
+        </div>
+      </div>
+    </div>
+    {% if stats.beets_artist_mbid %}
+    <div class="col-6 col-md-3">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-database-check"></i> MusicBrainz
+          </div>
+          <div class="h6 mb-0">
+            <a href="https://musicbrainz.org/artist/{{ stats.beets_artist_mbid }}" target="_blank" class="text-decoration-none" style="font-size: 0.7rem;">
+              {{ stats.beets_artist_mbid[:10] }}...
+              <i class="bi bi-box-arrow-up-right" style="font-size: 0.6rem;"></i>
+            </a>
+          </div>
+        </div>
+      </div>
+    </div>
+    {% endif %}
+  </div>
+
+  <!-- Artist IDs Section -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-link-45deg"></i> Artist IDs
+      </h5>
+      <button class="btn btn-sm btn-primary" onclick="openEditArtistIdsModal()">
+        <i class="bi bi-pencil"></i> Edit IDs
+      </button>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">Spotify Artist ID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="spotifyArtistId" value="{{ stats.spotify_artist_id or '' }}" readonly>
+            {% if stats.spotify_artist_id %}
+            <a href="https://open.spotify.com/artist/{{ stats.spotify_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="lastfmArtistMbid" value="{{ stats.lastfm_artist_mbid or '' }}" readonly>
+            {% if stats.lastfm_artist_mbid %}
+            <a href="https://musicbrainz.org/artist/{{ stats.lastfm_artist_mbid }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+        <div class="col-md-4">
+          <label class="form-label fw-bold small">MusicBrainz Artist ID</label>
+          <div class="input-group input-group-sm">
+            <input type="text" class="form-control" id="musicbrainzArtistId" value="{{ stats.musicbrainz_artist_id or '' }}" readonly>
+            {% if stats.musicbrainz_artist_id %}
+            <a href="https://musicbrainz.org/artist/{{ stats.musicbrainz_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+              <i class="bi bi-box-arrow-up-right"></i>
+            </a>
+            {% endif %}
+          </div>
+        </div>
+      </div>
+      <div class="mt-3">
+        <small class="text-muted">
+          <i class="bi bi-info-circle"></i> These IDs are used for API lookups and can be manually edited to correct matching issues.
+        </small>
+      </div>
+    </div>
+  </div>
+
+  <!-- Additional Stats: Duration and Year Range -->
+  <div class="row g-2 g-md-3 mb-4">
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-hourglass"></i> Total Duration
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.total_duration %}
+              {% set hours = (stats.total_duration / 3600)|int %}
+              {% set minutes = ((stats.total_duration % 3600) / 60)|int %}
+              {% if hours > 0 %}
+                {{ hours }}h {{ minutes }}m
+              {% else %}
+                {{ minutes }}m
+              {% endif %}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar-range"></i> Year Range
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.earliest_year and stats.latest_year %}
+              {{ stats.earliest_year }} – {{ stats.latest_year }}
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="col-6 col-md-4">
+      <div class="card h-100">
+        <div class="card-body text-center">
+          <div class="text-muted mb-2" style="font-size: 0.85rem;">
+            <i class="bi bi-calendar"></i> Avg Score
+          </div>
+          <div class="h5 mb-0">
+            {% if stats.avg_stars %}
+              <span class="badge badge-info">{{ (stats.avg_stars * 20)|round(0)|int }}%</span>
+            {% else %}
+              —
+            {% endif %}
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Unified Albums and Releases Section (Discovered + Missing) -->
+  <div class="card mb-4" id="albumsSection">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection-play"></i> Albums & Releases
+      </h5>
+      <div class="d-flex gap-2 align-items-center">
+        <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+          <i class="bi bi-flag"></i> Check for Missing
+        </button>
+        <span id="albumsStatus" class="text-muted small">Showing discovered albums</span>
+      </div>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0" id="albumsTable">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 120px;">Album Art</th>
+            <th>Album Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 80px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 80px;">Singles</th>
+            <th class="text-center" style="width: 150px;">Last Scanned</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody id="albumsTableBody">
+          {% if albums and albums|length > 0 %}
+            {% for album in albums %}
+              <tr class="d-flex flex-column d-md-table-row album-row" data-year="{{ album.album_year or 9999 }}" data-status="discovered">
+                <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+                  <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
+                       alt="{{ album.album }}" 
+                       class="img-thumbnail"
+                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                       onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
+                  <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    {{ album.album }}
+                  </a>
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+                  {{ album.album_year or '—' }}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+                  <span class="badge bg-success">Available</span>
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
+                  {{ album.track_count }}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
+                  {% if album.avg_stars %}
+                    <span class="badge badge-success">{{ album.avg_stars|round(2) }}★</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
+                  {% if album.singles_count > 0 %}
+                    <span class="badge bg-info">{{ album.singles_count }}</span>
+                  {% else %}
+                    <span class="text-muted">—</span>
+                  {% endif %}
+                </td>
+                <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
+                  {% if album.last_updated %}
+                    {{ album.last_updated }}
+                  {% else %}
+                    <span>Never</span>
+                  {% endif %}
+                </td>
+                <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')">
+                    <i class="bi bi-search"></i>
+                  </button>
+                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+                    <i class="bi bi-arrow-right"></i>
+                  </a>
+                </td>
+              </tr>
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="9" class="text-center text-muted">
+                <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>. Click "Check for Missing" to find releases.
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Hidden: Old Missing Releases Section - now merged into albums table above -->
+  <div style="display: none;" id="oldMissingReleasesSection"></div>
+
+</div>
+
+<!-- Download Search Modal (qBittorrent & Soulseek) -->
+{% if qbit_config.enabled or slskd_config.enabled %}
+<div class="modal fade" id="downloadModal" tabindex="-1" aria-labelledby="downloadModalLabel" aria-hidden="true">
+  <div class="modal-dialog modal-xl">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="downloadModalLabel">
+          <i class="bi bi-download"></i> Download Album: <span id="downloadArtistName"></span>
+        </h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+      </div>
+      <div class="modal-body">
+        <!-- Tabs Navigation -->
+        <ul class="nav nav-tabs mb-3" id="downloadTabs" role="tablist">
+          {% if qbit_config.enabled and qbit_config.web_url %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="qbit-tab" data-bs-toggle="tab" data-bs-target="#qbit-content" 
+                    type="button" role="tab" aria-controls="qbit-content" aria-selected="true">
+              <i class="bi bi-cloud-download"></i> qBittorrent
+            </button>
+          </li>
+          {% endif %}
+          {% if slskd_config.enabled %}
+          <li class="nav-item" role="presentation">
+            <button class="nav-link {% if not (qbit_config.enabled and qbit_config.web_url) %}active{% endif %}" 
+                    id="slskd-tab" data-bs-toggle="tab" data-bs-target="#slskd-content" 
+                    type="button" role="tab" aria-controls="slskd-content" 
+                    aria-selected="{% if not (qbit_config.enabled and qbit_config.web_url) %}true{% else %}false{% endif %}">
+              <i class="bi bi-music-note-list"></i> Soulseek
+            </button>
+          </li>
+          {% endif %}
+        </ul>
+
+        <!-- Tabs Content -->
+        <div class="tab-content" id="downloadTabsContent">
+          <!-- qBittorrent Tab -->
+          {% if qbit_config.enabled and qbit_config.web_url %}
+          <div class="tab-pane fade show active" id="qbit-content" role="tabpanel" aria-labelledby="qbit-tab">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="text" class="form-control" id="qbitSearchInput" placeholder="Search query...">
+                <button class="btn btn-primary" onclick="performQbitSearch()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <div class="form-text">Search for albums, discographies, or specific releases</div>
+            </div>
+            
+            <div id="qbitLoading" class="text-center py-4" style="display: none;">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Searching...</span>
+              </div>
+              <p class="mt-2">Searching qBittorrent...</p>
+            </div>
+            
+            <div id="qbitResults"></div>
+          </div>
+          {% endif %}
+
+          <!-- Soulseek Tab -->
+          {% if slskd_config.enabled %}
+          <div class="tab-pane fade {% if not (qbit_config.enabled and qbit_config.web_url) %}show active{% endif %}" 
+               id="slskd-content" role="tabpanel" aria-labelledby="slskd-tab">
+            <div class="mb-3">
+              <div class="input-group">
+                <input type="text" class="form-control" id="slskdSearchInput" placeholder="Search query...">
+                <button class="btn btn-primary" onclick="performSlskdSearch()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <div class="form-text">Search for albums or tracks on Soulseek network</div>
+            </div>
+            
+            <div id="slskdLoading" class="text-center py-4" style="display: none;">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Searching...</span>
+              </div>
+              <p class="mt-2">Searching Soulseek...</p>
+            </div>
+            
+            <div id="slskdResults"></div>
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+{% endif %}
+
+<script>
+// Constants for slskd search polling
+const SLSKD_MAX_POLL_ATTEMPTS = 20;
+const SLSKD_POLL_INTERVAL_MS = 2000;
+const BYTES_TO_MB = 1024 * 1024;
+
+function openDownloadSearch(artistName, albumName) {
+  document.getElementById('downloadArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
+  
+  // Set search query for both tabs
+  const query = albumName ? artistName + ' ' + albumName : artistName;
+  
+  const qbitInput = document.getElementById('qbitSearchInput');
+  if (qbitInput) {
+    qbitInput.value = query;
+    document.getElementById('qbitResults').innerHTML = '';
+  }
+  
+  const slskdInput = document.getElementById('slskdSearchInput');
+  if (slskdInput) {
+    slskdInput.value = query;
+    document.getElementById('slskdResults').innerHTML = '';
+  }
+  
+  const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
+  modal.show();
+  
+  // Auto-search on the active tab
+  setTimeout(() => {
+    const activeTab = document.querySelector('#downloadTabs .nav-link.active');
+    if (activeTab && activeTab.id === 'qbit-tab') {
+      performQbitSearch();
+    } else if (activeTab && activeTab.id === 'slskd-tab') {
+      performSlskdSearch();
+    }
+  }, 300);
+}
+
+function performSlskdSearch() {
+  const query = document.getElementById('slskdSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('slskdLoading').style.display = 'block';
+  document.getElementById('slskdResults').innerHTML = '';
+  
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      document.getElementById('slskdLoading').style.display = 'none';
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${escapeHtml(data.error)}
+        </div>
+      `;
+      return;
+    }
+    
+    const searchId = data.searchId;
+    // Poll for results
+    pollSlskdResults(searchId, query);
+  })
+  .catch(error => {
+    document.getElementById('slskdLoading').style.display = 'none';
+    document.getElementById('slskdResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Network error: ${escapeHtml(error.message)}
+      </div>
+    `;
+  });
+}
+
+function pollSlskdResults(searchId, query, pollCount = 0) {
+  if (pollCount > SLSKD_MAX_POLL_ATTEMPTS) {
+    document.getElementById('slskdLoading').style.display = 'none';
+    document.getElementById('slskdResults').innerHTML = `
+      <div class="alert alert-warning">
+        <i class="bi bi-clock"></i> Search timed out. Try again or check Downloads page.
+      </div>
+    `;
+    return;
+  }
+  
+  fetch(`/api/slskd/search/${searchId}`)
+    .then(response => response.json())
+    .then(data => {
+      if (!data.isComplete) {
+        setTimeout(() => pollSlskdResults(searchId, query, pollCount + 1), SLSKD_POLL_INTERVAL_MS);
+        return;
+      }
+      
+      document.getElementById('slskdLoading').style.display = 'none';
+      
+      if (data.fileCount === 0 || !data.results || data.results.length === 0) {
+        document.getElementById('slskdResults').innerHTML = `
+          <div class="alert alert-info">
+            <i class="bi bi-info-circle"></i> No results found. Try a different search query.
+          </div>
+        `;
+        return;
+      }
+      
+      let html = `
+        <div class="table-responsive">
+          <table class="table table-hover">
+            <thead>
+              <tr>
+                <th>File</th>
+                <th class="text-center">User</th>
+                <th class="text-center">Size</th>
+                <th class="text-center">Bitrate</th>
+                <th class="text-center">Action</th>
+              </tr>
+            </thead>
+            <tbody>
+      `;
+      
+      data.results.forEach((result, idx) => {
+        const sizeMB = result.size_mb || (result.size ? (result.size / BYTES_TO_MB).toFixed(2) : 'N/A');
+        const bitrate = result.bitrate || 'unknown';
+        
+        html += `
+          <tr>
+            <td>
+              <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
+                ${escapeHtml(result.filename || 'Unknown')}
+              </div>
+            </td>
+            <td class="text-center">
+              <small class="text-muted">${escapeHtml(result.username || 'N/A')}</small>
+            </td>
+            <td class="text-center">${sizeMB} MB</td>
+            <td class="text-center">
+              <small class="text-muted">${bitrate}</small>
+            </td>
+            <td class="text-center">
+              <button class="btn btn-sm btn-success" 
+                      onclick="downloadSlskdFile('${escapeJsString(result.username)}', '${escapeJsString(result.filename)}', ${parseInt(result.size) || 0})">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+      
+      html += `
+            </tbody>
+          </table>
+        </div>
+        <div class="text-muted small mt-2">
+          Found ${data.results.length} result(s)
+        </div>
+      `;
+      
+      document.getElementById('slskdResults').innerHTML = html;
+    })
+    .catch(error => {
+      document.getElementById('slskdLoading').style.display = 'none';
+      document.getElementById('slskdResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${escapeHtml(error.message)}
+        </div>
+      `;
+    });
+}
+
+function downloadSlskdFile(username, filename, size) {
+  if (!confirm('Download this file from Soulseek?')) return;
+  
+  fetch('/api/slskd/download-single', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      username: username,
+      filename: filename,
+      size: parseInt(size)
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      alert('❌ Error: ' + data.error);
+    } else {
+      alert('✅ Download started! Check the Downloads page for progress.');
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+function performQbitSearch() {
+  const query = document.getElementById('qbitSearchInput').value;
+  if (!query) return;
+  
+  document.getElementById('qbitLoading').style.display = 'block';
+  document.getElementById('qbitResults').innerHTML = '';
+  
+  fetch('/api/qbittorrent/search', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ query: query })
+  })
+  .then(response => response.json())
+  .then(data => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    
+    if (data.error) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Error: ${data.error}
+        </div>
+      `;
+      return;
+    }
+    
+    const results = data.results || [];
+    
+    if (results.length === 0) {
+      document.getElementById('qbitResults').innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i> No results found. Try a different search query.
+        </div>
+      `;
+      return;
+    }
+    
+    let html = `
+      <div class="table-responsive">
+        <table class="table table-hover">
+          <thead>
+            <tr>
+              <th>Name</th>
+              <th class="text-center">Size</th>
+              <th class="text-center">Seeds</th>
+              <th class="text-center">Peers</th>
+              <th class="text-center">Action</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+    
+    results.forEach((result, idx) => {
+      const size = formatBytes(result.fileSize || 0);
+      const seedClass = result.nbSeeders > 10 ? 'text-success' : (result.nbSeeders > 0 ? 'text-warning' : 'text-danger');
+      
+      html += `
+        <tr>
+          <td>
+            <div class="small" style="max-width: 500px; overflow: hidden; text-overflow: ellipsis;">
+              ${escapeHtml(result.fileName || 'Unknown')}
+            </div>
+            <div class="text-muted" style="font-size: 0.75rem;">
+              ${escapeHtml(result.siteUrl || '')}
+            </div>
+          </td>
+          <td class="text-center">${size}</td>
+          <td class="text-center ${seedClass}">
+            <i class="bi bi-arrow-up-circle"></i> ${result.nbSeeders || 0}
+          </td>
+          <td class="text-center">
+            <i class="bi bi-arrow-down-circle"></i> ${result.nbLeechers || 0}
+          </td>
+          <td class="text-center">
+            <button class="btn btn-sm btn-success" onclick="addTorrent('${escapeJsString(result.fileUrl)}')"
+              ${!result.fileUrl ? 'disabled' : ''}>
+              <i class="bi bi-plus-circle"></i> Add
+            </button>
+          </td>
+        </tr>
+      `;
+    });
+    
+    html += `
+          </tbody>
+        </table>
+      </div>
+      <div class="text-muted small mt-2">
+        Found ${results.length} results
+      </div>
+    `;
+    
+    document.getElementById('qbitResults').innerHTML = html;
+  })
+  .catch(error => {
+    document.getElementById('qbitLoading').style.display = 'none';
+    document.getElementById('qbitResults').innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i> Network error: ${error.message}
+      </div>
+    `;
+  });
+}
+
+function addTorrent(url) {
+  if (!url || !confirm('Add this torrent to qBittorrent?')) return;
+  
+  fetch('/api/qbittorrent/add', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({ url: url })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert('✅ Torrent added successfully!');
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add torrent'));
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+function formatBytes(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return Math.round((bytes / Math.pow(k, i)) * 100) / 100 + ' ' + sizes[i];
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function escapeJsString(str) {
+  if (!str) return '';
+  return str.replace(/\\/g, '\\\\')
+            .replace(/'/g, "\\'")
+            .replace(/"/g, '\\"')
+            .replace(/\n/g, '\\n')
+            .replace(/\r/g, '\\r');
+}
+
+// Allow Enter key to trigger search
+document.addEventListener('DOMContentLoaded', function() {
+  const qbitSearchInput = document.getElementById('qbitSearchInput');
+  if (qbitSearchInput) {
+    qbitSearchInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        performQbitSearch();
+      }
+    });
+  }
+  
+  const slskdSearchInput = document.getElementById('slskdSearchInput');
+  if (slskdSearchInput) {
+    slskdSearchInput.addEventListener('keypress', function(e) {
+      if (e.key === 'Enter') {
+        performSlskdSearch();
+      }
+    });
+  }
+});
+
+function importMissingRelease(artistName, releaseId, releaseTitle) {
+  if (!confirm(`Import all tracks from "${releaseTitle}"?`)) return;
+  
+  const btn = event.target.closest('button');
+  const originalContent = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  fetch('/api/artist/import-release', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      artist: artistName,
+      release_id: releaseId,
+      title: releaseTitle
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      alert(`✅ ${data.message}`);
+      // Refresh the page to show imported album
+      setTimeout(() => {
+        location.reload();
+      }, 1000);
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to import'));
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    }
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = originalContent;
+  });
+}
+
+function checkMissingReleases(artistName) {
+  const statusEl = document.getElementById('albumsStatus');
+  const tableBody = document.getElementById('albumsTableBody');
+  
+  if (statusEl) {
+    statusEl.textContent = 'Loading missing releases...';
+  }
+
+  // First try to load from cache
+  fetch('/api/artist/cached-missing-releases?artist=' + encodeURIComponent(artistName))
+    .then(r => r.json())
+    .then(data => {
+      if (data.error || !data.missing || data.missing.length === 0) {
+        // If no cached data, fall back to live MusicBrainz check
+        if (statusEl) statusEl.textContent = 'No cached data found. Checking MusicBrainz...';
+        
+        return fetch('/api/artist/missing-releases?artist=' + encodeURIComponent(artistName))
+          .then(r => r.json());
+      }
+      return data;
+    })
+    .then(data => {
+      if (data.error) {
+        if (statusEl) statusEl.textContent = 'Error: ' + data.error;
+        return;
+      }
+
+      const missing = data.missing || [];
+      if (statusEl) {
+        const cacheMsg = data.from_cache ? ' (from cache)' : '';
+        const currentRows = tableBody.querySelectorAll('tr[data-status="discovered"]').length;
+        statusEl.textContent = missing.length ? 
+          `Showing ${currentRows} discovered + ${missing.length} missing release(s)${cacheMsg}` : 
+          `Showing ${currentRows} discovered releases. All MusicBrainz releases are present.`;
+      }
+
+      // Add missing releases to the table
+      missing.forEach(item => {
+        const year = (item.first_release_date || '').slice(0, 4) || '????';
+        const fallbackArt = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';
+        const artUrl = item.cover_art_url || fallbackArt;
+        
+        const row = document.createElement('tr');
+        row.className = 'd-flex flex-column d-md-table-row album-row';
+        row.setAttribute('data-year', year === '????' ? '9999' : year);
+        row.setAttribute('data-status', 'missing');
+        
+        row.innerHTML = `
+          <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
+            <img src="${artUrl}" 
+                 alt="${escapeHtml(item.title)}" 
+                 class="img-thumbnail"
+                 style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                 onerror="this.src='${fallbackArt}';">
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
+            <span>${escapeHtml(item.title)}</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+            ${year}
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+            <span class="badge bg-warning text-dark">Missing</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-flex justify-content-between d-md-table-cell text-center">
+            <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
+            <span class="text-muted">—</span>
+          </td>
+          <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
+            <span class="text-muted">Not in library</span>
+          </td>
+          <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+            <button class="btn btn-sm btn-primary" onclick="importMissingRelease('${escapeJsString(artistName)}', '${escapeJsString(item.id)}', '${escapeJsString(item.title)}')" title="Import full tracklisting">
+              <i class="bi bi-download"></i>
+            </button>
+            <button class="btn btn-sm btn-outline-secondary" onclick="openDownloadSearch('${escapeJsString(artistName)}', '${escapeJsString(item.title)}')" title="Search for download">
+              <i class="bi bi-search"></i>
+            </button>
+          </td>
+        `;
+        
+        tableBody.appendChild(row);
+      });
+
+      // Sort all rows by year (newest first)
+      sortAlbumsByYear();
+    })
+    .catch(err => {
+      if (statusEl) statusEl.textContent = 'Error: ' + err.message;
+    });
+}
+
+function sortAlbumsByYear() {
+  const tableBody = document.getElementById('albumsTableBody');
+  const rows = Array.from(tableBody.querySelectorAll('tr.album-row'));
+  
+  rows.sort((a, b) => {
+    const yearA = parseInt(a.getAttribute('data-year')) || 9999;
+    const yearB = parseInt(b.getAttribute('data-year')) || 9999;
+    // Sort descending (newest first)
+    return yearB - yearA;
+  });
+  
+  // Clear and re-append in sorted order
+  tableBody.innerHTML = '';
+  rows.forEach(row => tableBody.appendChild(row));
+}
+
+
+// Load artist bio on page load
+document.addEventListener('DOMContentLoaded', () => {
+  const artistName = '{{ artist_name }}';
+  loadArtistBio(artistName);
+  loadSinglesCount(artistName);
+});
+
+function loadArtistBio(artistName) {
+  const bioContainer = document.getElementById('artistBio');
+  if (!bioContainer) return;
+
+  fetch(`/api/artist/bio?name=${encodeURIComponent(artistName)}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.bio && data.bio.length > 0) {
+        bioContainer.innerHTML = `<p>${escapeHtml(data.bio)}</p>`;
+        if (data.source) {
+          bioContainer.innerHTML += `<p class="small text-muted mt-2"><em>Source: ${escapeHtml(data.source)}</em></p>`;
+        }
+      } else {
+        bioContainer.innerHTML = '<p class="text-muted"><em>No biography available for this artist.</em></p>';
+      }
+    })
+    .catch(err => {
+      bioContainer.innerHTML = '<p class="text-muted"><em>Unable to load artist biography.</em></p>';
+    });
+}
+
+function loadSinglesCount(artistName) {
+  fetch(`/api/artist/singles-count?name=${encodeURIComponent(artistName)}`)
+    .then(r => r.json())
+    .then(data => {
+      const badge = document.getElementById('singlesCount');
+      if (badge && data.count !== undefined) {
+        badge.textContent = data.count;
+      }
+    })
+    .catch(err => console.error('Failed to load singles count:', err));
+}
+
+function showArtistSingles(artistName) {
+  window.location.href = `/artist/${encodeURIComponent(artistName)}/singles`;
+}
+
+function createEssentialPlaylist(artistName) {
+  if (!confirm(`Create Essential Playlist for ${artistName}?\\nThis will use single detection to pick the best tracks.`)) return;
+
+  const btn = event.target.closest('button');
+  const originalContent = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Creating...';
+
+  fetch('/api/artist/create-essential-playlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message}\\nPlaylist: ${data.playlist_name}`);
+        if (data.navidrome_url) {
+          if (confirm('Open playlist in Navidrome?')) {
+            window.open(data.navidrome_url, '_blank');
+          }
+        }
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to create playlist'));
+      }
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    })
+    .catch(err => {
+      alert('❌ Network error: ' + err.message);
+      btn.disabled = false;
+      btn.innerHTML = originalContent;
+    });
+}
+
+function openArtistImageModal(artistName) {
+  // For now, create a simple modal for image search
+  const modalHtml = `
+    <div class="modal fade" id="artistImageModal" tabindex="-1">
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-image"></i> Change Artist Image</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="manualImageUrl" class="form-label">Manual Image URL</label>
+              <input type="text" class="form-control" id="manualImageUrl" placeholder="https://example.com/image.jpg">
+            </div>
+            <div class="d-flex gap-2 mb-4 flex-wrap">
+              <button class="btn btn-primary" onclick="applyManualImage('${escapeJsString(artistName)}')">
+                <i class="bi bi-check"></i> Apply URL
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'musicbrainz')">
+                <i class="bi bi-search"></i> MusicBrainz
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'discogs')">
+                <i class="bi bi-disc"></i> Discogs
+              </button>
+              <button class="btn btn-secondary" onclick="searchArtistImages('${escapeJsString(artistName)}', 'spotify')">
+                <i class="bi bi-spotify"></i> Spotify
+              </button>
+            </div>
+            <div id="artistImageResults"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existingModal = document.getElementById('artistImageModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('artistImageModal'));
+  modal.show();
+}
+
+function applyManualImage(artistName) {
+  const url = document.getElementById('manualImageUrl').value;
+  if (!url) {
+    alert('Please enter an image URL');
+    return;
+  }
+  applyArtistImage(artistName, url);
+}
+
+function searchArtistImages(artistName, source) {
+  const resultsDiv = document.getElementById('artistImageResults');
+  resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border"></span> Searching...</div>';
+
+  fetch(`/api/artist/search-images?name=${encodeURIComponent(artistName)}&source=${source}`)
+    .then(r => r.json())
+    .then(data => {
+      if (data.error || !data.images || data.images.length === 0) {
+        resultsDiv.innerHTML = '<div class="alert alert-info">No images found</div>';
+        return;
+      }
+
+      let html = '<div class="row g-3">';
+      data.images.forEach(img => {
+        html += `
+          <div class="col-6 col-md-4">
+            <div class="card">
+              <img src="${escapeHtml(img.url)}" class="card-img-top" style="height: 200px; object-fit: cover;">
+              <div class="card-body p-2">
+                <button class="btn btn-sm btn-primary w-100" onclick="applyArtistImage('${escapeJsString(artistName)}', '${escapeJsString(img.url)}')">
+                  <i class="bi bi-check"></i> Use This
+                </button>
+              </div>
+            </div>
+          </div>
+        `;
+      });
+      html += '</div>';
+      resultsDiv.innerHTML = html;
+    })
+    .catch(err => {
+      resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + err.message + '</div>';
+    });
+}
+
+function applyArtistImage(artistName, imageUrl) {
+  fetch('/api/artist/set-image', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist: artistName, image_url: imageUrl })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('artistImage').src = imageUrl + '?t=' + Date.now();
+        bootstrap.Modal.getInstance(document.getElementById('artistImageModal'))?.hide();
+        alert('✅ Artist image updated!');
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update image'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
+}
+
+function openSlskdSearch(query, artistName) {
+  // If artistName is provided, search for "artist + query", otherwise just query
+  const searchQuery = artistName ? artistName + ' ' + query : query;
+  window.location.href = `/downloads?search=${encodeURIComponent(searchQuery)}`;
+}
+
+function fetchArtistGenreRecommendations() {
+  const artistName = '{{ artist_name }}';
+  const btn = document.getElementById('fetchArtistGenresBtn');
+  const container = document.getElementById('recommendedArtistGenres');
+  const section = document.getElementById('recommendedArtistGenresSection');
+  
+  // Show the recommendations section
+  section.style.display = 'block';
+  
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+  container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
+  
+  // Fetch artist info from MusicBrainz to get genres/tags
+  fetch(`https://musicbrainz.org/ws/2/artist?query=artist:"${encodeURIComponent(artistName)}"&fmt=json&limit=5`, {
+    headers: { 'User-Agent': 'sptnr-web/1.0' }
+  })
+    .then(r => r.json())
+    .then(data => {
+      const genres = new Set();
+      
+      // MusicBrainz artists have tags which can be used as genres
+      if (data.artists && data.artists.length > 0) {
+        const artist = data.artists[0];
+        if (artist.tags) {
+          artist.tags.slice(0, 15).forEach(tag => {
+            if (tag.name) genres.add(tag.name);
+          });
+        }
+      }
+      
+      if (genres.size === 0) {
+        container.innerHTML = '<span class="text-muted small">No genre recommendations found from MusicBrainz</span>';
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+        return;
+      }
+      
+      // Display genres as selectable badges
+      let html = '';
+      Array.from(genres).sort().forEach(genre => {
+        html += `<span class="badge badge-outline-primary artist-genre-badge" 
+          onclick="toggleArtistGenreSelection('${escapeHtml(genre)}')" 
+          data-artist-genre="${escapeHtml(genre)}"
+          style="cursor: pointer; border: 2px solid #0d6efd; background-color: transparent; color: #0d6efd;">
+          ${escapeHtml(genre)}
+        </span>`;
+      });
+      container.innerHTML = html;
+      
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+      document.getElementById('applyArtistGenresBtn').style.display = 'inline-block';
+    })
+    .catch(error => {
+      container.innerHTML = '<span class="text-danger small">Error fetching recommendations</span>';
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+    });
+}
+
+// Artist genre selection tracking
+let selectedArtistGenres = new Set();
+
+function toggleArtistGenreSelection(genre) {
+  const badge = document.querySelector(`[data-artist-genre="${escapeHtml(genre)}"]`);
+  if (!badge) return;
+  
+  if (selectedArtistGenres.has(genre)) {
+    selectedArtistGenres.delete(genre);
+    badge.style.backgroundColor = 'transparent';
+    badge.style.color = '#0d6efd';
+  } else {
+    selectedArtistGenres.add(genre);
+    badge.style.backgroundColor = '#0d6efd';
+    badge.style.color = '#fff';
+  }
+}
+
+function applySelectedArtistGenres() {
+  if (selectedArtistGenres.size === 0) {
+    alert('Please select at least one genre to apply');
+    return;
+  }
+  
+  const artistName = '{{ artist_name }}';
+  const genresArray = Array.from(selectedArtistGenres);
+  
+  if (!confirm(`Apply genres [${genresArray.join(', ')}] to ALL tracks by ${artistName}?\n\nThis will update the MP3 files for all albums by this artist.`)) {
+    return;
+  }
+  
+  const btn = document.getElementById('applyArtistGenresBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+  
+  fetch('/api/artist/apply-genres', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: artistName,
+      genres: genresArray
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message || 'Genres applied successfully to all artist tracks'}`);
+        // Refresh the page to show updated genres
+        location.reload();
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to apply genres'));
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)';
+      }
+    })
+    .catch(error => {
+      alert('❌ Network error: ' + error.message);
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)';
+    });
+}
+
+function openEditArtistIdsModal() {
+  const artistName = '{{ artist_name }}';
+  const spotifyId = document.getElementById('spotifyArtistId').value;
+  const lastfmMbid = document.getElementById('lastfmArtistMbid').value;
+  const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
+  
+  const modalHtml = `
+    <div class="modal fade" id="editArtistIdsModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist IDs</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="editSpotifyArtistId" class="form-label">Spotify Artist ID</label>
+              <input type="text" class="form-control" id="editSpotifyArtistId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 3TVXtAsR1Inumwj472S9r4">
+              <div class="form-text">
+                <a href="https://open.spotify.com/search/${encodeURIComponent(artistName)}" target="_blank">Search Spotify</a> to find the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editLastfmArtistMbid" class="form-label">MusicBrainz Artist ID</label>
+              <input type="text" class="form-control" id="editLastfmArtistMbid" value="${escapeHtml(lastfmMbid)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+              <div class="form-text">
+                <a href="https://www.last.fm/music/${encodeURIComponent(artistName)}" target="_blank">Search Last.fm</a> or <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> for the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
+              <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+              <div class="form-text">
+                <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> to find the artist ID
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
+              <i class="bi bi-save"></i> Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Remove existing modal if any
+  const existingModal = document.getElementById('editArtistIdsModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
+  modal.show();
+}
+
+function saveArtistIds() {
+  const artistName = '{{ artist_name }}';
+  const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
+  const lastfmMbid = document.getElementById('editLastfmArtistMbid').value.trim();
+  const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
+  
+  fetch('/api/artist/update-ids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: artistName,
+      spotify_artist_id: spotifyId,
+      lastfm_artist_mbid: lastfmMbid,
+      musicbrainz_artist_id: musicbrainzId
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        // Update the readonly fields
+        document.getElementById('spotifyArtistId').value = spotifyId;
+        document.getElementById('lastfmArtistMbid').value = lastfmMbid;
+        document.getElementById('musicbrainzArtistId').value = musicbrainzId;
+        
+        bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'))?.hide();
+        alert('✅ Artist IDs updated successfully!');
+        
+        // Reload page to update links
+        setTimeout(() => location.reload(), 1000);
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
+}
+</script>
+<style>
+/* Dark theme improvements for artist page */
+
+.missing-release-card {
+  background-color: var(--primary-bg);
+  border: 1px solid var(--border-color);
+  border-radius: 0.5rem;
+  padding: 0.75rem;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+}
+
+.missing-release-art img {
+  width: 80px;
+  height: 80px;
+  border-radius: 0.35rem;
+  object-fit: cover;
+  border: 1px solid var(--border-color);
+  background-color: #2a2a2a;
+}
+
+/* Fix outline buttons visibility on dark theme */
+.btn-outline-primary {
+    color: #0d6efd !important;
+    border-color: #0d6efd !important;
+    background-color: rgba(13, 110, 253, 0.1) !important;
+}
+
+.btn-outline-primary:hover {
+    color: #fff !important;
+    background-color: #0d6efd !important;
+    border-color: #0d6efd !important;
+}
+
+.btn-outline-info {
+    color: #0dcaf0 !important;
+    border-color: #0dcaf0 !important;
+    background-color: rgba(13, 202, 240, 0.1) !important;
+}
+
+.btn-outline-info:hover {
+    color: #000 !important;
+    background-color: #0dcaf0 !important;
+    border-color: #0dcaf0 !important;
+}
+
+.btn-outline-secondary {
+    color: #6c757d !important;
+    border-color: #6c757d !important;
+    background-color: rgba(108, 117, 125, 0.1) !important;
+}
+
+.btn-outline-secondary:hover {
+    color: #fff !important;
+    background-color: #6c757d !important;
+    border-color: #6c757d !important;
+}
+
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-content {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.modal-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-control {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-control:focus {
+    background-color: var(--primary-bg) !important;
+    border-color: var(--spotify-green) !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .form-text {
+    color: var(--text-secondary) !important;
+}
+
+.modal-body .table {
+    background-color: transparent !important;
+}
+
+.modal-body .table thead {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-body .table tbody {
+    background-color: transparent !important;
+}
+
+.modal-body .table tbody tr {
+    background-color: transparent !important;
+}
+
+.modal-body .table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+}
+
+.modal-body .table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+}
+
+.modal-body .table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+</style>
+
+{% endblock %}

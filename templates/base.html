@@ -1,0 +1,1423 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>{% block title %}Popularr Dashboard{% endblock %}</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <!-- Bootstrap 5 CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/css/bootstrap.min.css" rel="stylesheet">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.1/font/bootstrap-icons.css">
+  <style>
+    :root {
+      --primary-bg: #121212;
+      --secondary-bg: #1e1e1e;
+      --tertiary-bg: #282828;
+      --spotify-green: #1db954;
+      --spotify-green-hover: #1ed760;
+      --text-primary: #ffffff;
+      --text-secondary: #d0d0d0;
+      --text-tertiary: #a0a0a0;
+      --border-color: #282828;
+    }
+
+    * {
+      color-scheme: dark;
+    }
+
+    body {
+      background: linear-gradient(135deg, var(--primary-bg) 0%, var(--secondary-bg) 100%);
+      color: var(--text-primary);
+      padding-top: 4rem;
+      min-height: 100vh;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "Roboto", "Oxygen", "Ubuntu", "Cantarell", "Fira Sans", "Droid Sans", "Helvetica Neue", sans-serif;
+    }
+
+    /* Ensure all text is readable - override Bootstrap defaults */
+    p, div, span, label, h1, h2, h3, h4, h5, h6, li, td, th {
+      color: var(--text-primary) !important;
+    }
+
+    a {
+      color: var(--spotify-green) !important;
+    }
+
+    a:hover {
+      color: var(--spotify-green-hover) !important;
+    }
+
+    strong, b {
+      color: var(--text-primary) !important;
+    }
+
+    /* Placeholder text */
+    ::placeholder {
+      color: var(--text-secondary) !important;
+      opacity: 1 !important;
+    }
+
+    /* Input and select text */
+    input, select, textarea {
+      color: var(--text-primary) !important;
+      background-color: var(--secondary-bg) !important;
+      border-color: var(--border-color) !important;
+    }
+
+    input:focus, select:focus, textarea:focus {
+      color: var(--text-primary) !important;
+      background-color: var(--tertiary-bg) !important;
+      border-color: var(--spotify-green) !important;
+      box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25) !important;
+    }
+
+    input::placeholder, select::placeholder, textarea::placeholder {
+      color: var(--text-secondary) !important;
+      opacity: 0.9 !important;
+    }
+
+    /* Form control labels */
+    .form-label {
+      color: var(--text-primary) !important;
+      font-weight: 500;
+    }
+
+    /* Form text help */
+    .form-text {
+      color: var(--text-secondary) !important;
+    }
+
+    /* Select dropdown options background - need to style selected state */
+    option {
+      background-color: var(--secondary-bg);
+      color: var(--text-primary);
+    }
+
+    option:checked {
+      background-color: var(--spotify-green);
+      color: #000;
+    }
+
+    /* Navbar Styling */
+    .navbar {
+      background-color: var(--primary-bg) !important;
+      border-bottom: 1px solid var(--border-color);
+      backdrop-filter: blur(10px);
+      background: rgba(18, 18, 18, 0.95) !important;
+    }
+
+    .navbar-brand {
+      font-weight: 700;
+      font-size: 1.5rem;
+      color: var(--spotify-green) !important;
+      letter-spacing: -0.5px;
+    }
+
+    .navbar-brand i {
+      margin-right: 0.5rem;
+    }
+
+    .nav-link {
+      color: var(--text-secondary) !important;
+      transition: all 0.3s ease;
+      position: relative;
+      padding-bottom: 0.5rem !important;
+    }
+
+    .nav-link:hover {
+      color: var(--spotify-green) !important;
+    }
+
+    .nav-link.active {
+      color: var(--spotify-green) !important;
+      border-bottom: 2px solid var(--spotify-green);
+    }
+
+    /* Cards */
+    .card {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      transition: all 0.3s ease;
+      color: var(--text-primary);
+    }
+
+    .card:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      transform: translateY(-4px);
+      box-shadow: 0 8px 24px rgba(29, 185, 84, 0.2);
+    }
+
+    .card-body {
+      color: var(--text-primary);
+    }
+
+    .card-header {
+      background-color: var(--tertiary-bg);
+      border-bottom: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    /* Tables */
+    .table {
+      color: var(--text-primary);
+      border-color: var(--border-color);
+      background-color: var(--secondary-bg);
+    }
+
+    .table thead th {
+      border-bottom: 2px solid var(--border-color);
+      color: var(--text-secondary);
+      font-weight: 600;
+      text-transform: uppercase;
+      font-size: 0.75rem;
+      letter-spacing: 0.5px;
+      background-color: var(--tertiary-bg);
+    }
+
+    .table tbody tr {
+      border-color: var(--border-color);
+      transition: background-color 0.2s ease;
+      background-color: var(--secondary-bg);
+      color: var(--text-primary);
+    }
+
+    .table tbody tr:hover {
+      background-color: var(--tertiary-bg);
+    }
+
+    .table td {
+      vertical-align: middle;
+      color: var(--text-primary);
+      border-color: var(--border-color);
+    }
+
+    .table-striped tbody tr:nth-of-type(odd) {
+      background-color: var(--secondary-bg);
+    }
+    
+    .table-striped tbody tr:nth-of-type(even) {
+      background-color: rgba(255, 255, 255, 0.02);
+    }    /* Buttons */
+    .btn-primary {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+      font-weight: 600;
+    }
+
+    .btn-primary:hover {
+      background-color: var(--spotify-green-hover);
+      border-color: var(--spotify-green-hover);
+    }
+
+    .btn-outline-primary {
+      color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      background-color: transparent;
+    }
+
+    .btn-outline-primary:hover {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+      font-weight: 600;
+    }
+
+    .btn-secondary {
+      background-color: var(--tertiary-bg);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .btn-secondary:hover {
+      background-color: var(--border-color);
+      border-color: var(--text-secondary);
+      color: var(--text-primary);
+    }
+
+    .btn-outline-secondary {
+      color: var(--text-primary);
+      border-color: var(--border-color);
+      background-color: transparent;
+    }
+
+    .btn-outline-secondary:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--spotify-green);
+    }
+
+    .btn-warning {
+      background-color: #ff6b00;
+      border-color: #ff6b00;
+      color: #fff;
+      font-weight: 600;
+    }
+
+    .btn-warning:hover {
+      background-color: #ff8000;
+      border-color: #ff8000;
+    }
+
+    .btn-sm {
+      font-size: 0.8rem;
+    }
+
+    /* List Group Styling */
+    .list-group {
+      background-color: transparent;
+      border: none;
+    }
+
+    .list-group-item {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      margin-bottom: 0.5rem;
+      border-radius: 6px;
+    }
+
+    .list-group-item:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+    }
+
+    .list-group-item.active {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+    }
+
+    .list-group-item a {
+      color: var(--spotify-green);
+    }
+
+    .list-group-item a:hover {
+      color: var(--spotify-green-hover);
+    }
+
+    /* Alerts */
+    .alert {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .alert-info {
+      border-left: 4px solid var(--spotify-green);
+    }
+
+    .alert-warning {
+      border-left: 4px solid #ff6b00;
+    }
+
+    .alert-danger {
+      border-left: 4px solid #e74c3c;
+    }
+
+    .alert-success {
+      border-left: 4px solid #1db954;
+    }
+
+    /* Forms */
+    .form-control,
+    .form-select,
+    textarea {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+      transition: border-color 0.2s ease;
+    }
+
+    .form-control:focus,
+    .form-select:focus,
+    textarea:focus {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--text-primary);
+      box-shadow: 0 0 0 0.2rem rgba(29, 185, 84, 0.25);
+    }
+
+    .form-label {
+      color: var(--text-primary) !important;
+      font-weight: 500;
+      margin-bottom: 0.5rem;
+    }
+
+    /* Breadcrumb */
+    .breadcrumb {
+      background-color: transparent;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 1rem;
+      margin-bottom: 1rem;
+    }
+
+    .breadcrumb-item {
+      color: var(--text-secondary);
+    }
+
+    .breadcrumb-item.active {
+      color: var(--text-primary);
+    }
+
+    .breadcrumb a {
+      color: var(--spotify-green);
+      text-decoration: none;
+      transition: color 0.2s ease;
+    }
+
+    .breadcrumb a:hover {
+      color: var(--spotify-green-hover);
+      text-decoration: underline;
+    }
+
+    /* Badge */
+    .badge {
+      background-color: var(--tertiary-bg);
+      color: var(--text-primary);
+      padding: 0.35em 0.65em;
+      border-radius: 12px;
+      font-weight: 500;
+      border: 1px solid var(--border-color);
+    }
+
+    .badge-success {
+      background-color: rgba(29, 185, 84, 0.25);
+      color: var(--spotify-green);
+      border-color: var(--spotify-green);
+    }
+    
+    .bg-success {
+      background-color: #1db954 !important;
+      color: #000 !important;
+    }
+    
+    .bg-danger {
+      background-color: #e74c3c !important;
+      color: #fff !important;
+    }
+    
+    .bg-info {
+      background-color: #3498db !important;
+      color: #fff !important;
+    }
+    
+    .bg-secondary {
+      background-color: var(--tertiary-bg) !important;
+      color: var(--text-primary) !important;
+    }
+
+    /* Typography */
+    h1, h2, h3, h4, h5, h6 {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .text-muted {
+      color: var(--text-secondary);
+    }
+
+    .text-secondary {
+      color: var(--text-secondary) !important;
+    }
+
+    /* Override any greyed-out text to be readable */
+    .text-muted {
+      color: var(--text-secondary) !important;
+    }
+
+    /* Catch-all for any remaining grey text */
+    *:not(.badge):not(.badge-success) {
+      color-scheme: dark;
+    }
+
+    /* Ensure links are always readable */
+    a, .link, [role="button"] {
+      color: var(--spotify-green) !important;
+      text-decoration: none;
+    }
+
+    a:hover, .link:hover, [role="button"]:hover {
+      color: var(--spotify-green-hover) !important;
+    }
+
+    /* Modal */
+    .modal-content {
+      background-color: var(--secondary-bg);
+      border: 1px solid var(--border-color);
+      color: var(--text-primary);
+    }
+
+    .modal-header {
+      border-bottom: 1px solid var(--border-color);
+      background-color: var(--tertiary-bg);
+    }
+
+    .modal-title {
+      color: var(--text-primary);
+      font-weight: 700;
+    }
+
+    .modal-body {
+      color: var(--text-primary);
+    }
+
+    .modal-footer {
+      border-top: 1px solid var(--border-color);
+      background-color: var(--tertiary-bg);
+    }
+
+    .btn-close {
+      filter: invert(1);
+    }
+
+    /* Utilities */
+    .bg-dark {
+      background-color: var(--primary-bg) !important;
+    }
+
+    .bg-light {
+      background-color: var(--secondary-bg) !important;
+    }
+
+    .border {
+      border-color: var(--border-color) !important;
+    }
+
+    .monospace {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+      color: var(--text-secondary);
+    }
+
+    /* Rating Stars */
+    .star-rating {
+      font-size: 1.5rem;
+      color: #ffc107;
+      margin: 0 0.25rem;
+    }
+
+    /* Main content area */
+    main.container-fluid {
+      padding: 2rem 3rem;
+    }
+
+    @media (max-width: 768px) {
+      main.container-fluid {
+        padding: 1rem 1rem;
+      }
+    }
+
+    /* Metadata modal styling */
+    .metadata-row {
+      display: flex;
+      justify-content: space-between;
+      padding: 0.75rem 0;
+      border-bottom: 1px solid var(--border-color);
+    }
+
+    .metadata-row:last-child {
+      border-bottom: none;
+    }
+
+    .metadata-label {
+      color: var(--text-secondary);
+      font-weight: 500;
+      flex: 0 0 35%;
+    }
+
+    .metadata-value {
+      color: var(--text-primary);
+      flex: 1;
+      text-align: right;
+      word-break: break-word;
+    }
+
+    .text-spotify-green {
+      color: var(--spotify-green);
+    }
+
+    /* Loading state */
+    .loading {
+      opacity: 0.6;
+      pointer-events: none;
+    }
+
+    /* Mobile Responsive Improvements */
+    @media (max-width: 576px) {
+      body {
+        padding-top: 3.5rem;
+        font-size: 14px;
+      }
+
+      main.container-fluid {
+        padding: 0.75rem;
+      }
+
+      h1 { font-size: 1.5rem; }
+      h2 { font-size: 1.3rem; }
+      h3 { font-size: 1.1rem; }
+      h4 { font-size: 1rem; }
+      h5 { font-size: 0.95rem; }
+
+      .navbar-brand {
+        font-size: 1.2rem;
+      }
+
+      .nav-link {
+        padding: 0.5rem 0.75rem !important;
+        font-size: 0.9rem;
+      }
+
+      .card {
+        margin-bottom: 0.75rem;
+      }
+
+      .card-body {
+        padding: 0.75rem;
+      }
+
+      .btn {
+        padding: 0.5rem 0.75rem;
+        font-size: 0.85rem;
+        min-height: 44px;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+      }
+
+      .btn-lg {
+        padding: 0.75rem 1rem;
+        min-height: 48px;
+        font-size: 0.9rem;
+      }
+
+      .btn-sm {
+        padding: 0.35rem 0.5rem;
+        font-size: 0.75rem;
+        min-height: auto;
+      }
+
+      .btn i {
+        margin-right: 0.25rem;
+      }
+
+      .btn-group {
+        gap: 0.25rem;
+        flex-wrap: wrap;
+        display: flex;
+        flex-direction: column;
+        width: 100%;
+      }
+
+      .btn-group .btn {
+        flex: 1;
+        width: 100%;
+        margin-bottom: 0.25rem;
+      }
+
+      .btn-group .btn:last-child {
+        margin-bottom: 0;
+      }
+
+      .breadcrumb {
+        padding: 0.5rem 0;
+        margin-bottom: 0.75rem;
+        font-size: 0.85rem;
+      }
+
+      .breadcrumb-item + .breadcrumb-item::before {
+        padding: 0 0.25rem;
+      }
+
+      .table {
+        font-size: 0.85rem;
+      }
+
+      .table thead th {
+        padding: 0.4rem;
+        font-size: 0.75rem;
+      }
+
+      .table td {
+        padding: 0.5rem;
+      }
+
+      .badge {
+        padding: 0.25em 0.4em;
+        font-size: 0.7rem;
+      }
+
+      .form-label {
+        margin-bottom: 0.25rem;
+        font-size: 0.85rem;
+      }
+
+      .form-control,
+      .form-select,
+      textarea {
+        padding: 0.5rem;
+        font-size: 16px; /* Prevents zoom on iOS */
+        min-height: 44px;
+      }
+
+      .row {
+        margin-bottom: 0.5rem;
+      }
+
+      .col-lg-6, .col-md-6 {
+        padding-left: 0.25rem;
+        padding-right: 0.25rem;
+      }
+
+      .d-flex {
+        gap: 0.5rem;
+      }
+
+      .metadata-row {
+        padding: 0.5rem 0;
+        flex-direction: column;
+        align-items: flex-start;
+      }
+
+      .metadata-label {
+        flex: 1 !important;
+        text-align: left;
+        margin-bottom: 0.25rem;
+      }
+
+      .metadata-value {
+        text-align: left !important;
+        width: 100%;
+      }
+
+      /* Improved table responsiveness */
+      .table-responsive {
+        border: none;
+      }
+
+      /* Stack columns on mobile */
+      .table-stack tbody tr {
+        display: flex;
+        flex-direction: column;
+        border: 1px solid var(--border-color);
+        border-radius: 6px;
+        margin-bottom: 0.75rem;
+        padding: 0.5rem;
+      }
+
+      .table-stack thead {
+        display: none;
+      }
+
+      .table-stack tbody td {
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        padding: 0.5rem 0;
+        border: none;
+        border-bottom: 1px solid var(--border-color);
+      }
+
+      .table-stack tbody td:last-child {
+        border-bottom: none;
+      }
+
+      .table-stack td::before {
+        content: attr(data-label);
+        font-weight: 600;
+        color: var(--text-secondary);
+        min-width: 100px;
+      }
+
+      /* Icon spacing in tables */
+      .table i {
+        margin-right: 0.25rem;
+      }
+
+      /* Improved modal on mobile */
+      .modal-dialog {
+        margin: 0.5rem;
+      }
+
+      .modal-content {
+        border-radius: 12px;
+      }
+
+      /* Sidebar content adjustment */
+      .card-header {
+        padding: 0.75rem;
+      }
+
+      .alert {
+        padding: 0.75rem;
+        margin-bottom: 0.5rem;
+        font-size: 0.9rem;
+      }
+    }
+
+    @media (max-width: 768px) {
+      main.container-fluid {
+        padding: 1rem;
+      }
+
+      .row.g-3 {
+        gap: 0.5rem;
+      }
+
+      .col-md-3, .col-md-4, .col-md-6 {
+        padding-left: 0.25rem;
+        padding-right: 0.25rem;
+      }
+
+      .d-flex.justify-content-between {
+        flex-direction: column;
+        gap: 0.75rem;
+      }
+
+      .d-flex.align-items-start {
+        flex-direction: column;
+        align-items: flex-start !important;
+      }
+
+      /* Better spacing for two-column layouts */
+      .row > .col-lg-6 {
+        margin-bottom: 1rem;
+      }
+
+      .btn-group {
+        width: 100%;
+      }
+
+      .btn-group .btn {
+        flex: 1;
+      }
+    }
+
+    /* Touch-friendly interactions */
+    @media (hover: none) {
+      .card:hover {
+        transform: none;
+      }
+
+      .btn {
+        cursor: pointer;
+      }
+
+      /* Increase touch target sizes */
+      a, button {
+        min-height: 44px;
+        min-width: 44px;
+      }
+    }
+
+    /* Landscape mobile */
+    @media (max-width: 576px) and (orientation: landscape) {
+      body {
+        padding-top: 3rem;
+      }
+
+      main.container-fluid {
+        padding: 0.5rem;
+      }
+
+      h1 { font-size: 1.3rem; }
+      h2 { font-size: 1.1rem; }
+
+      .btn {
+        padding: 0.4rem 0.6rem;
+        min-height: 40px;
+      }
+
+      .card-body {
+        padding: 0.5rem;
+      }
+    }
+
+    /* Large screens - improve spacing */
+    @media (min-width: 1400px) {
+      main.container-fluid {
+        padding: 3rem 4rem;
+      }
+
+      .container-fluid.mt-4 {
+        max-width: 1400px;
+        margin-left: auto;
+        margin-right: auto;
+      }
+    }
+
+    /* === COMPREHENSIVE TEXT COLOR FIXES === */
+    /* Force all text to be bright and readable */
+    
+    /* Bootstrap overrides - ensure no grey text appears */
+    .text-dark { color: var(--text-primary) !important; }
+    .text-light { color: var(--text-primary) !important; }
+    .text-body { color: var(--text-primary) !important; }
+    
+    /* Input group styling */
+    .input-group-text {
+      background-color: var(--tertiary-bg) !important;
+      border-color: var(--border-color) !important;
+      color: var(--text-primary) !important;
+    }
+    
+    /* Dropdown menu styling */
+    .dropdown-menu {
+      background-color: var(--secondary-bg) !important;
+      border-color: var(--border-color) !important;
+    }
+    
+    .dropdown-item {
+      color: var(--text-primary) !important;
+      background-color: var(--secondary-bg) !important;
+    }
+    
+    .dropdown-item:hover,
+    .dropdown-item:focus {
+      background-color: var(--tertiary-bg) !important;
+      color: var(--spotify-green) !important;
+    }
+    
+    .dropdown-item.active {
+      background-color: var(--spotify-green) !important;
+      color: #000 !important;
+    }
+    
+    /* Pagination styling */
+    .pagination .page-link {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .pagination .page-link:hover {
+      background-color: var(--tertiary-bg);
+      border-color: var(--spotify-green);
+      color: var(--spotify-green);
+    }
+    
+    .pagination .page-item.active .page-link {
+      background-color: var(--spotify-green);
+      border-color: var(--spotify-green);
+      color: #000;
+    }
+    
+    /* Collapse/Accordion styling */
+    .collapse {
+      background-color: var(--secondary-bg);
+    }
+    
+    .accordion-button {
+      background-color: var(--secondary-bg) !important;
+      color: var(--text-primary) !important;
+      border-color: var(--border-color) !important;
+    }
+    
+    .accordion-button:not(.collapsed) {
+      background-color: var(--tertiary-bg) !important;
+      color: var(--spotify-green) !important;
+      box-shadow: none !important;
+    }
+    
+    .accordion-button:focus {
+      border-color: var(--spotify-green) !important;
+      box-shadow: none !important;
+    }
+    
+    /* Popover and Tooltip styling */
+    .popover {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color);
+    }
+    
+    .popover-header {
+      background-color: var(--tertiary-bg);
+      border-bottom-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .popover-body {
+      color: var(--text-primary);
+    }
+    
+    /* Spinners and loading indicators */
+    .spinner-border {
+      color: var(--spotify-green);
+    }
+    
+    /* Nav tabs styling */
+    .nav-tabs {
+      border-bottom-color: var(--border-color);
+    }
+    
+    .nav-tabs .nav-link {
+      color: var(--text-secondary);
+      border-color: transparent;
+    }
+    
+    .nav-tabs .nav-link:hover {
+      border-color: var(--border-color);
+      color: var(--text-primary);
+    }
+    
+    .nav-tabs .nav-link.active {
+      background-color: var(--secondary-bg);
+      border-color: var(--border-color) var(--border-color) var(--secondary-bg);
+      color: var(--spotify-green);
+    }
+    
+    /* Ensure every text element has proper contrast */
+    body {
+      background-color: var(--primary-bg);
+      color: var(--text-primary);
+    }
+    
+    /* Catch any remaining text that might be hard to read */
+    * {
+      background-color-scheme: dark;
+    }
+  </style>
+</head>
+<body>
+  <nav class="navbar navbar-expand-lg navbar-dark fixed-top">
+    <div class="container-fluid">
+      <a class="navbar-brand" href="{{ url_for('dashboard') }}">
+        <i class="bi bi-music-note-beamed"></i> Popularr
+      </a>
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#navbarNav" aria-controls="navbarNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="navbarNav">
+        <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('dashboard') }}">
+              <i class="bi bi-speedometer2"></i> Dashboard
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('search') }}">
+              <i class="bi bi-search"></i> Search
+            </a>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="artistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-people"></i> Artists
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="artistsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('artists') }}">
+                <i class="bi bi-people"></i> All Artists
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('bookmarks') }}?filter=artist">
+                <i class="bi bi-star-fill"></i> Favourite Artists
+              </a></li>
+            </ul>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="downloadsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-download"></i> Downloads
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="downloadsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('downloads') }}">
+                <i class="bi bi-search"></i> Search & Download
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('downloads_manager') }}">
+                <i class="bi bi-folder-plus"></i> Organize Library
+              </a></li>
+            </ul>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="playlistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-music-note-list"></i> Playlists
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="playlistsDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('smart_playlists') }}">
+                <i class="bi bi-sparkles"></i> Smart Playlists
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('playlist_import') }}">
+                <i class="bi bi-cloud-arrow-down"></i> Import Playlist
+              </a></li>
+              <li><a class="dropdown-item" href="{{ url_for('playlist_manager') }}">
+                <i class="bi bi-music-note-list"></i> Playlist Manager
+              </a></li>
+            </ul>
+          </li>
+          {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="bookmarksDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-bookmark-star"></i> Bookmarks
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="bookmarksDropdown">
+              {% for link in custom_bookmark_links %}
+              <li><a class="dropdown-item" href="{{ link.url }}" target="_blank" rel="noopener noreferrer">
+                <i class="bi bi-link-45deg"></i> {{ link.title }}
+              </a></li>
+              {% endfor %}
+            </ul>
+          </li>
+          {% endif %}
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('beets_page') }}">
+              <i class="bi bi-music-note"></i> Beets Tagger
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('logs') }}">
+              <i class="bi bi-file-text"></i> Logs
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('help_page') }}">
+              <i class="bi bi-question-circle"></i> Help
+            </a>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('config_editor') }}">
+              <i class="bi bi-gear"></i> Config
+            </a>
+          </li>
+          {% if session.get('username') %}
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="userDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-person-circle"></i> {{ session.get('username') }}
+            </a>
+            <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="userDropdown">
+              <li><a class="dropdown-item" href="{{ url_for('logout') }}">
+                <i class="bi bi-box-arrow-right"></i> Logout
+              </a></li>
+            </ul>
+          </li>
+          {% endif %}
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <main class="container-fluid">
+    {% with messages = get_flashed_messages(with_categories=true) %}
+      {% if messages %}
+        {% for category, msg in messages %}
+          <div class="alert alert-{{ category if category != 'message' else 'info' }} alert-dismissible fade show" role="alert">
+            {{ msg }}
+            <button type="button" class="btn-close" data-bs-dismiss="alert" aria-label="Close"></button>
+          </div>
+        {% endfor %}
+      {% endif %}
+    {% endwith %}
+
+    {% block content %}{% endblock %}
+  </main>
+
+  <!-- Metadata Modal -->
+  <div class="modal fade" id="metadataModal" tabindex="-1" aria-labelledby="metadataModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg modal-dialog-scrollable">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h5 class="modal-title" id="metadataModalLabel">
+            <i class="bi bi-info-circle"></i> Metadata Information
+          </h5>
+          <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+        </div>
+        <div class="modal-body" id="metadataModalBody">
+          <div class="spinner-border" role="status">
+            <span class="visually-hidden">Loading...</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.2/dist/js/bootstrap.bundle.min.js"></script>
+  <script>
+    // Format file path to show \Music\ prefix
+    function formatFilePath(filePath) {
+      if (!filePath) return 'Not available';
+      
+      // Extract the part after /music or \music
+      const musicMatch = filePath.match(/[\/\\]music[\/\\](.+)$/i);
+      if (musicMatch) {
+        return '\\Music\\' + musicMatch[1].replace(/\//g, '\\');
+      }
+      
+      return filePath;
+    }
+
+    // Metadata lookup function
+    async function lookupMetadata(type, identifier) {
+      const modal = document.getElementById('metadataModal');
+      const body = document.getElementById('metadataModalBody');
+      const bsModal = new bootstrap.Modal(modal);
+      
+      body.innerHTML = '<div class="spinner-border" role="status"><span class="visually-hidden">Loading...</span></div>';
+      bsModal.show();
+      
+      try {
+        const response = await fetch(`/api/metadata?type=${type}&id=${encodeURIComponent(identifier)}`);
+        if (!response.ok) throw new Error('Metadata lookup failed');
+        const data = await response.json();
+        
+        // Define field categories and ordering
+        const fieldCategories = {
+          'Track Info': ['title', 'artist', 'album', 'track', 'track_id', 'date', 'length'],
+          'Tags': ['genre', 'comment', 'bpm'],
+          'IDs': ['mbid', 'musicbrainz_id', 'isrc', 'ean', 'spotify_uri'],
+          'Scores': ['spotify_score', 'lastfm_ratio', 'listenbrainz_score', 'final_score'],
+          'File Info': ['file_path'],
+          'Notes': ['note']
+        };
+        
+        let html = '';
+        const processedKeys = new Set();
+        
+        // Render fields by category
+        for (const [category, fields] of Object.entries(fieldCategories)) {
+          let categoryHtml = '';
+          
+          for (const field of fields) {
+            if (field in data && !processedKeys.has(field)) {
+              processedKeys.add(field);
+              const value = data[field];
+              const displayKey = field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+              
+              let displayValue = value || '—';
+              
+              // Special formatting for file path
+              if (field === 'file_path' && value) {
+                displayValue = `<code style="word-break: break-all; font-size: 0.85rem;">${escapeHtml(formatFilePath(value))}</code>`;
+              } else if (Array.isArray(value)) {
+                displayValue = value.join(', ');
+              } else if (typeof displayValue === 'string') {
+                displayValue = escapeHtml(displayValue);
+              }
+              
+              categoryHtml += `
+                <div class="metadata-row">
+                  <div class="metadata-label">${displayKey}</div>
+                  <div class="metadata-value">${displayValue}</div>
+                </div>
+              `;
+            }
+          }
+          
+          // Add other fields not in categories
+          if (category === 'Notes') {
+            for (const [key, value] of Object.entries(data)) {
+              if (!processedKeys.has(key)) {
+                processedKeys.add(key);
+                const displayKey = key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
+                const displayValue = Array.isArray(value) ? value.join(', ') : (value || '—');
+                
+                categoryHtml += `
+                  <div class="metadata-row">
+                    <div class="metadata-label">${displayKey}</div>
+                    <div class="metadata-value">${escapeHtml(String(displayValue))}</div>
+                  </div>
+                `;
+              }
+            }
+          }
+          
+          if (categoryHtml) {
+            html += `
+              <div class="mb-4">
+                <h6 class="text-spotify-green mb-2" style="border-bottom: 1px solid var(--border-color); padding-bottom: 0.5rem;">${category}</h6>
+                ${categoryHtml}
+              </div>
+            `;
+          }
+        }
+        
+        body.innerHTML = html || '<div class="alert alert-info">No metadata available</div>';
+      } catch (error) {
+        body.innerHTML = `<div class="alert alert-danger">Error loading metadata: ${error.message}</div>`;
+      }
+    }
+
+    // HTML escape helper
+    function escapeHtml(text) {
+      const div = document.createElement('div');
+      div.textContent = text;
+      return div.innerHTML;
+    }
+
+    // Bookmark functionality
+    function addBookmark(type, name, artist, album, trackId) {
+      fetch('/api/bookmarks', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          type: type,
+          name: name,
+          artist: artist,
+          album: album,
+          track_id: trackId
+        })
+      })
+      .then(response => response.json())
+      .then(data => {
+        if (data.success) {
+          // Show success notification
+          if (typeof showToast === 'function') {
+            showToast('Success', 'Bookmark added successfully', 'success');
+          } else {
+            alert('Bookmark added successfully');
+          }
+        } else {
+          if (typeof showToast === 'function') {
+            showToast('Info', data.error || 'Bookmark may already exist', 'warning');
+          } else {
+            alert(data.error || 'Bookmark may already exist');
+          }
+        }
+      })
+      .catch(error => {
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to add bookmark: ' + error.message, 'error');
+        } else {
+          alert('Failed to add bookmark: ' + error.message);
+        }
+      });
+    }
+
+    // Beets update functions
+    function updateAlbumWithBeets(artist, album) {
+      const confirmed = confirm(`Update "${album}" by "${artist}" with beets?\n\nThis will:\n1. Write metadata tags to files\n2. Reorganize files based on metadata\n3. Trigger Navidrome rescan`);
+      
+      if (!confirmed) return;
+      
+      const btn = event.target.closest('button');
+      const originalText = btn.innerHTML;
+      btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Updating...';
+      btn.disabled = true;
+      
+      fetch('/api/beets/update-album', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          artist: artist,
+          album: album
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        if (data.success) {
+          btn.innerHTML = '<i class="bi bi-check-circle"></i> Updated!';
+          btn.classList.remove('btn-outline-warning');
+          btn.classList.add('btn-success');
+          
+          if (typeof showToast === 'function') {
+            showToast('Success', `Album updated with beets: ${data.message}`, 'success');
+          } else {
+            alert('Album updated successfully!');
+          }
+          
+          // Reload page after 2 seconds to show updated info
+          setTimeout(() => {
+            location.reload();
+          }, 2000);
+        } else {
+          btn.innerHTML = originalText;
+          btn.disabled = false;
+          
+          if (typeof showToast === 'function') {
+            showToast('Error', `Failed to update album: ${data.error}`, 'error');
+          } else {
+            alert('Error: ' + data.error);
+          }
+        }
+      })
+      .catch(error => {
+        btn.innerHTML = originalText;
+        btn.disabled = false;
+        
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to update album: ' + error.message, 'error');
+        } else {
+          alert('Error: ' + error.message);
+        }
+      });
+    }
+
+    function updateArtistAlbumsWithBeets(artist) {
+      const confirmed = confirm(`Update all albums by "${artist}" with beets?\n\nThis will update all albums for this artist:\n1. Write metadata tags to files\n2. Reorganize files based on metadata\n3. Trigger Navidrome rescan\n\nThis may take some time...`);
+      
+      if (!confirmed) return;
+      
+      // Get all albums for this artist first
+      fetch(`/api/beets/album-folders/${encodeURIComponent(artist)}`)
+      .then(res => res.json())
+      .then(data => {
+        if (data.success && data.album_folders && data.album_folders.length > 0) {
+          const folders = data.album_folders;
+          const btn = event.target.closest('button');
+          const originalText = btn.innerHTML;
+          
+          btn.innerHTML = `<i class="bi bi-hourglass-split"></i> Updating ${folders.length} album(s)...`;
+          btn.disabled = true;
+          
+          // Update albums sequentially
+          updateAlbumsSequentially(folders, 0, () => {
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Complete!';
+            btn.classList.remove('btn-outline-warning');
+            btn.classList.add('btn-success');
+            
+            if (typeof showToast === 'function') {
+              showToast('Success', `Updated ${folders.length} album(s)`, 'success');
+            }
+            
+            setTimeout(() => {
+              location.reload();
+            }, 2000);
+          });
+        } else {
+          if (typeof showToast === 'function') {
+            showToast('Info', 'No albums found with folder information', 'info');
+          } else {
+            alert('No albums found with folder information');
+          }
+        }
+      })
+      .catch(error => {
+        if (typeof showToast === 'function') {
+          showToast('Error', 'Failed to get album folders: ' + error.message, 'error');
+        } else {
+          alert('Error: ' + error.message);
+        }
+      });
+    }
+
+    function updateAlbumsSequentially(folders, index, onComplete) {
+      if (index >= folders.length) {
+        onComplete();
+        return;
+      }
+      
+      const folder = folders[index];
+      
+      fetch('/api/beets/update-album', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          folder: folder
+        })
+      })
+      .then(res => res.json())
+      .then(data => {
+        console.log(`Updated album ${index + 1}/${folders.length}: ${folder}`);
+        // Continue to next album
+        updateAlbumsSequentially(folders, index + 1, onComplete);
+      })
+      .catch(error => {
+        console.error(`Error updating ${folder}:`, error);
+        // Continue anyway
+        updateAlbumsSequentially(folders, index + 1, onComplete);
+      });
+    }
+  </script>
+</body>
+</html>

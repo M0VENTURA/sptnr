@@ -1,0 +1,138 @@
+{% extends "base.html" %}
+
+{% block title %}Logs - Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <h1 class="mb-4">Application Logs</h1>
+    
+    <div class="mb-3">
+        <div class="row g-2 align-items-center">
+            <div class="col-auto">
+                <button id="toggleStream" class="btn btn-primary btn-sm">Start Live Stream</button>
+            </div>
+            <div class="col-auto">
+                <button id="pauseStream" class="btn btn-secondary btn-sm" disabled>Pause</button>
+            </div>
+            <div class="col-auto">
+                <button id="clearLogs" class="btn btn-warning btn-sm">Clear Display</button>
+            </div>
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-body">
+            <pre id="logOutput" class="bg-dark text-light p-3" style="height: 600px; overflow-y: scroll; font-family: monospace; font-size: 12px;"></pre>
+        </div>
+    </div>
+</div>
+
+<script>
+
+let eventSource = null;
+let isStreaming = false;
+let isPaused = false;
+
+document.getElementById('toggleStream').addEventListener('click', function() {
+    if (isStreaming) {
+        stopStream();
+    } else {
+        startStream();
+    }
+});
+
+document.getElementById('pauseStream').addEventListener('click', function() {
+    isPaused = !isPaused;
+    if (isPaused) {
+        this.textContent = 'Resume';
+        this.classList.remove('btn-secondary');
+        this.classList.add('btn-info');
+    } else {
+        this.textContent = 'Pause';
+        this.classList.remove('btn-info');
+        this.classList.add('btn-secondary');
+    }
+});
+
+document.getElementById('clearLogs').addEventListener('click', function() {
+    document.getElementById('logOutput').textContent = '';
+});
+
+function startStream() {
+    // First, load recent logs
+    fetch(`/logs/view?type=${currentLogType}&lines=100`)
+        .then(response => response.json())
+        .then(data => {
+            const logOutput = document.getElementById('logOutput');
+            logOutput.textContent = data.lines.join('\n');
+            logOutput.scrollTop = logOutput.scrollHeight;
+        });
+    
+    // Then start streaming new logs
+    eventSource = new EventSource(`/logs/stream?type=${currentLogType}`);
+    
+    eventSource.onmessage = function(event) {
+        if (isPaused) return; // Don't update if paused
+        
+        const logOutput = document.getElementById('logOutput');
+        const line = event.data.endsWith('\n') ? event.data : event.data + '\n';
+        logOutput.textContent += line;
+        logOutput.scrollTop = logOutput.scrollHeight;
+    };
+    
+    eventSource.onerror = function(event) {
+        console.error('EventSource error:', event);
+        stopStream();
+    };
+    
+    isStreaming = true;
+    isPaused = false;
+    document.getElementById('toggleStream').textContent = 'Stop Live Stream';
+    document.getElementById('toggleStream').classList.remove('btn-primary');
+    document.getElementById('toggleStream').classList.add('btn-danger');
+    document.getElementById('pauseStream').disabled = false;
+    document.getElementById('pauseStream').textContent = 'Pause';
+    document.getElementById('pauseStream').classList.remove('btn-info');
+    document.getElementById('pauseStream').classList.add('btn-secondary');
+    document.getElementById('logSelector').disabled = true;
+}
+
+function stopStream() {
+    if (eventSource) {
+        eventSource.close();
+        eventSource = null;
+    }
+    
+    isStreaming = false;
+    isPaused = false;
+    document.getElementById('toggleStream').textContent = 'Start Live Stream';
+    document.getElementById('toggleStream').classList.remove('btn-danger');
+    document.getElementById('toggleStream').classList.add('btn-primary');
+    document.getElementById('pauseStream').disabled = true;
+    document.getElementById('pauseStream').textContent = 'Pause';
+    document.getElementById('pauseStream').classList.remove('btn-info');
+    document.getElementById('pauseStream').classList.add('btn-secondary');
+    document.getElementById('logSelector').disabled = false;
+}
+
+// Auto-scroll to bottom on page load
+window.addEventListener('load', function() {
+    const logOutput = document.getElementById('logOutput');
+    logOutput.scrollTop = logOutput.scrollHeight;
+});
+</script>
+
+<style>
+/* Dark theme improvements for logs page */
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+</style>
+
+{% endblock %}

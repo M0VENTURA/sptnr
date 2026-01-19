@@ -1,0 +1,620 @@
+#!/usr/bin/env python3
+"""
+Shared popularity helpers for Spotify/Last.fm/ListenBrainz lookups and weights.
+Functions are used by both the main scanner (start.py) and popularity.py.
+"""
+
+import os
+import yaml
+import math
+import logging
+import json
+import time
+from typing import Any, Tuple
+from datetime import datetime
+from collections import defaultdict
+
+from api_clients.spotify import SpotifyClient
+from api_clients.lastfm import LastFmClient
+from api_clients.audiodb_and_listenbrainz import ListenBrainzClient, score_by_age as _score_by_age
+from api_clients import timeout_safe_session
+
+CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+
+_DEFAULT_WEIGHTS = {
+    "spotify": 0.4,
+    "lastfm": 0.3,
+    "listenbrainz": 0.2,
+    "age": 0.1,
+}
+
+_DEFAULT_FEATURES = {
+    "scan_worker_threads": 4,
+}
+
+_spotify_client: SpotifyClient | None = None
+_lastfm_client: LastFmClient | None = None
+_listenbrainz_client: ListenBrainzClient | None = None
+
+_spotify_enabled = True
+_listenbrainz_enabled = True
+_clients_configured = False
+
+
+def _load_config() -> dict:
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    if not os.path.exists(config_path):
+        return {}
+    try:
+        with open(config_path, "r") as f:
+            return yaml.safe_load(f) or {}
+    except Exception:
+        return {}
+
+
+def _resolve_weights(cfg: dict) -> Tuple[float, float, float, float]:
+    weights = cfg.get("weights") if isinstance(cfg, dict) else None
+    weights = weights or {}
+    return (
+        float(weights.get("spotify", _DEFAULT_WEIGHTS["spotify"])),
+        float(weights.get("lastfm", _DEFAULT_WEIGHTS["lastfm"])),
+        float(weights.get("listenbrainz", _DEFAULT_WEIGHTS["listenbrainz"])),
+        float(weights.get("age", _DEFAULT_WEIGHTS["age"])),
+    )
+
+
+SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
+
+
+def _worker_threads(cfg: dict) -> int:
+    features = cfg.get("features") if isinstance(cfg, dict) else None
+    features = features or {}
+    try:
+        return int(features.get("scan_worker_threads", _DEFAULT_FEATURES["scan_worker_threads"]))
+    except Exception:
+        return _DEFAULT_FEATURES["scan_worker_threads"]
+
+
+def configure_popularity_helpers(
+    *,
+    spotify_client: SpotifyClient | None = None,
+    lastfm_client: LastFmClient | None = None,
+    listenbrainz_client: ListenBrainzClient | None = None,
+    config: dict | None = None,
+) -> None:
+    """Configure shared clients and refresh weights based on provided config."""
+    global _spotify_client, _lastfm_client, _listenbrainz_client
+    global _spotify_enabled, _listenbrainz_enabled, _clients_configured
+    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT
+
+    cfg = config if config is not None else _load_config()
+
+    # Refresh weights from config
+    SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
+
+    api_cfg = cfg.get("api_integrations") if isinstance(cfg, dict) else None
+    api_cfg = api_cfg or {}
+
+    spotify_cfg = api_cfg.get("spotify") or {}
+    _spotify_enabled = bool(spotify_cfg.get("enabled", True))
+    if spotify_client is not None:
+        _spotify_client = spotify_client
+    elif _spotify_enabled:
+        _spotify_client = SpotifyClient(
+            spotify_cfg.get("client_id", ""),
+            spotify_cfg.get("client_secret", ""),
+            http_session=timeout_safe_session,
+            worker_threads=_worker_threads(cfg),
+        )
+    else:
+        _spotify_client = None
+
+    lastfm_cfg = api_cfg.get("lastfm") or {}
+    if lastfm_client is not None:
+        _lastfm_client = lastfm_client
+    else:
+        _lastfm_client = LastFmClient(lastfm_cfg.get("api_key", ""), http_session=timeout_safe_session)
+
+    listenbrainz_cfg = api_cfg.get("listenbrainz") or {}
+    _listenbrainz_enabled = bool(listenbrainz_cfg.get("enabled", True))
+    if listenbrainz_client is not None:
+        _listenbrainz_client = listenbrainz_client
+    else:
+        _listenbrainz_client = ListenBrainzClient(enabled=_listenbrainz_enabled)
+
+    _clients_configured = True
+
+
+def _ensure_clients_from_config() -> None:
+    if not _clients_configured:
+        configure_popularity_helpers()
+
+
+def get_spotify_artist_id(artist_name: str) -> str | None:
+    """
+    Get Spotify artist ID with database caching.
+    First checks the database for a cached ID, then queries Spotify API if needed.
+    
+    Args:
+        artist_name: Artist name to lookup
+        
+    Returns:
+        Spotify artist ID or None
+    """
+    _ensure_clients_from_config()
+    if not _spotify_enabled or _spotify_client is None:
+        return None
+    
+    # First, try to get from database cache
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT spotify_artist_id FROM tracks WHERE artist = ? AND spotify_artist_id IS NOT NULL LIMIT 1",
+            (artist_name,)
+        )
+        row = cursor.fetchone()
+        conn.close()
+        
+        if row and row[0]:
+            logging.info(f"✓ Using cached Spotify artist ID for '{artist_name}': {row[0]}")
+            return row[0]
+    except Exception as e:
+        logging.debug(f"Failed to lookup cached Spotify artist ID for '{artist_name}': {e}")
+    
+    # If not in database, query Spotify API
+    logging.info(f"Querying Spotify API for artist ID: '{artist_name}'")
+    return _spotify_client.get_artist_id(artist_name)
+
+
+def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
+    _ensure_clients_from_config()
+    if not _spotify_enabled or _spotify_client is None:
+        return set()
+    return _spotify_client.get_artist_singles(artist_id) or set()
+
+
+def search_spotify_track(title: str, artist: str, album: str | None = None):
+    _ensure_clients_from_config()
+    if not _spotify_enabled or _spotify_client is None:
+        return []
+    return _spotify_client.search_track(title, artist, album)
+
+
+def get_lastfm_track_info(artist: str, title: str) -> dict:
+    _ensure_clients_from_config()
+    if _lastfm_client is None:
+        return {"track_play": 0}
+    return _lastfm_client.get_track_info(artist, title)
+
+
+def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int = 0) -> float:
+    """
+    Calculate a normalized Last.fm popularity score (0-100) from playcount.
+    
+    Uses logarithmic normalization to avoid capping at 100 for songs with 10,000+ plays.
+    
+    Algorithm:
+    1. If artist_max_playcount is provided, normalize relative to artist (0-100 scale)
+    2. Otherwise, use global logarithmic scale:
+       - log10(10000) = 4.0 → 50 points
+       - log10(100000) = 5.0 → 62.5 points  
+       - log10(1000000) = 6.0 → 75 points
+       - log10(10000000) = 7.0 → 87.5 points
+       
+    Args:
+        playcount: Last.fm playcount for the track
+        artist_max_playcount: Optional maximum playcount for the artist (for artist-relative scoring)
+        
+    Returns:
+        Popularity score (0-100)
+    """
+    if playcount <= 0:
+        return 0.0
+    
+    # Artist-relative scoring (preferred when available)
+    if artist_max_playcount > 0:
+        # Linear scale relative to artist's most popular track
+        # Cap at 100 if track exceeds artist max (shouldn't happen in practice)
+        return min(100.0, (playcount / artist_max_playcount) * 100.0)
+    
+    # Global logarithmic scaling
+    # Use log base 10, scaled to 0-100 range
+    # Formula: score = 12.5 * log10(playcount)
+    # This gives:
+    #   100 plays    → 25 points
+    #   1,000 plays  → 37.5 points
+    #   10,000 plays → 50 points
+    #   100,000 plays → 62.5 points
+    #   1,000,000 plays → 75 points
+    #   10,000,000 plays → 87.5 points
+    score = 12.5 * math.log10(playcount)
+    
+    # Cap at 100
+    return min(100.0, max(0.0, score))
+
+
+def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
+    _ensure_clients_from_config()
+    if not _listenbrainz_enabled or _listenbrainz_client is None:
+        return 0
+    return _listenbrainz_client.get_listen_count(mbid, artist, title)
+
+
+def score_by_age(playcount: Any, release_str: str):
+    return _score_by_age(playcount, release_str)
+
+
+
+# --- Shared DB/API/Helper Functions (moved from start.py) ---
+from db_utils import get_db_connection
+
+# Cache for NavidromeClient instance
+_nav_client_cache = None
+
+def _get_nav_client():
+    """Get or create NavidromeClient instance with caching."""
+    global _nav_client_cache
+    
+    # Return cached client if available
+    if _nav_client_cache is not None:
+        return _nav_client_cache
+    
+    try:
+        from start import nav_client
+        if nav_client is not None:
+            _nav_client_cache = nav_client
+            return nav_client
+    except (ImportError, AttributeError):
+        pass
+    
+    # Fallback: create a new client from config
+    import yaml
+    import os
+    from api_clients.navidrome import NavidromeClient
+    
+    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+    try:
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f)
+        
+        # Try multi-user config first
+        nav_users = config.get('navidrome_users')
+        if nav_users and len(nav_users) > 0:
+            # Use first user's config
+            user_config = nav_users[0]
+            base_url = user_config.get('base_url')
+            username = user_config.get('user')
+            password = user_config.get('pass')
+        else:
+            # Fall back to single-user config
+            nav_config = config.get('navidrome', {})
+            base_url = nav_config.get('base_url')
+            username = nav_config.get('user')
+            password = nav_config.get('pass')
+        
+        if base_url and username and password:
+            _nav_client_cache = NavidromeClient(base_url, username, password)
+            return _nav_client_cache
+    except Exception as e:
+        import logging
+        logging.error(f"Failed to create NavidromeClient: {e}")
+    
+    return None
+
+def fetch_artist_albums(artist_id):
+    """Fetch albums for an artist (wrapper using NavidromeClient)."""
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
+    return nav_client.fetch_artist_albums(artist_id)
+
+def fetch_album_tracks(album_id):
+    """
+    Fetch all tracks for an album using Subsonic API (wrapper using NavidromeClient).
+    :param album_id: Album ID in Navidrome
+    :return: List of track objects
+    """
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
+    return nav_client.fetch_album_tracks(album_id)
+
+def save_to_db(track_data):
+    """
+    Save or update a track in the database.
+    
+    This function implements duplicate prevention by checking if a track with the same
+    (artist, album, title, duration) already exists. If it does, it updates the existing
+    track instead of creating a duplicate with a different ID.
+    
+    Priority for choosing which track to keep:
+    1. Track with beets_mbid (beets has verified it)
+    2. Track with mbid (has MusicBrainz ID)  
+    3. Track with file_path (has file location)
+    4. Most recently scanned track
+    """
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    
+    # Convert any list values to comma-separated strings for SQLite compatibility
+    sanitized_data = {}
+    for key, value in track_data.items():
+        if isinstance(value, list):
+            # Convert list to comma-separated string
+            sanitized_data[key] = ', '.join(str(v) for v in value) if value else ''
+        else:
+            sanitized_data[key] = value
+    
+    # Check for existing track by content (artist, album, title, duration)
+    # This prevents duplicate albums when Navidrome IDs change
+    track_id = sanitized_data.get('id')
+    artist = sanitized_data.get('artist')
+    album = sanitized_data.get('album')
+    title = sanitized_data.get('title')
+    duration = sanitized_data.get('duration')
+    file_path = sanitized_data.get('file_path')
+    
+    if artist and album and title:
+        # First try to match by file_path if available (most reliable)
+        if file_path:
+            cursor.execute("""
+                SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                FROM tracks 
+                WHERE file_path = ? AND id != ?
+                LIMIT 1
+            """, (file_path, track_id))
+            existing = cursor.fetchone()
+        else:
+            existing = None
+        
+        # If no match by file_path, try content matching
+        if not existing:
+            # Look for existing track with same content
+            if duration:
+                # Match by artist, album, title, and duration (within 2 seconds tolerance)
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND ABS(COALESCE(duration, 0) - ?) <= 2
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, duration, track_id))
+            else:
+                # Match by artist, album, title only
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, track_id))
+            
+            existing = cursor.fetchone()
+        
+        if existing:
+            existing_id = existing['id']
+            existing_beets_mbid = existing['beets_mbid']
+            existing_mbid = existing['mbid']
+            existing_file_path = existing['file_path']
+            
+            # Determine which track to keep based on priority
+            new_beets_mbid = sanitized_data.get('beets_mbid')
+            new_mbid = sanitized_data.get('mbid')
+            new_file_path = sanitized_data.get('file_path')
+            
+            # Calculate scores for existing and new track
+            existing_score = 0
+            new_score = 0
+            
+            if existing_beets_mbid:
+                existing_score += 1000
+            if existing_mbid:
+                existing_score += 500
+            if existing_file_path:
+                existing_score += 200
+                
+            if new_beets_mbid:
+                new_score += 1000
+            if new_mbid:
+                new_score += 500
+            if new_file_path:
+                new_score += 200
+            
+            # If new track has better metadata, use new ID, otherwise use existing ID
+            if new_score > existing_score:
+                # Keep new ID, delete old duplicate
+                logging.debug(f"Duplicate found: Keeping new track ID {track_id}, deleting {existing_id} (artist={artist}, title={title})")
+                cursor.execute("DELETE FROM tracks WHERE id = ?", (existing_id,))
+            else:
+                # Keep existing ID, update it with new data
+                logging.debug(f"Duplicate found: Keeping existing track ID {existing_id}, updating instead of inserting {track_id} (artist={artist}, title={title})")
+                sanitized_data['id'] = existing_id
+    
+    # Perform insert or update
+    columns = ', '.join(sanitized_data.keys())
+    placeholders = ', '.join(['?'] * len(sanitized_data))
+    update_clause = ', '.join([f"{k}=excluded.{k}" for k in sanitized_data.keys()])
+    sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
+    cursor.execute(sql, list(sanitized_data.values()))
+    conn.commit()
+    conn.close()
+
+def build_artist_index(verbose: bool = False):
+    """Build artist index from Navidrome (wrapper using NavidromeClient)."""
+    nav_client = _get_nav_client()
+    if nav_client is None:
+        raise RuntimeError("NavidromeClient not available - check your configuration")
+    artist_map_from_api = nav_client.build_artist_index()
+    max_retries = 3
+    for attempt in range(max_retries):
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            for artist_name, info in artist_map_from_api.items():
+                artist_id = info.get("id")
+                cursor.execute("""
+                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (artist_id, artist_name, 0, 0, None))
+                if verbose:
+                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
+                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
+            conn.commit()
+            conn.close()
+            break
+        except Exception as e:
+            if "locked" in str(e) and attempt < max_retries - 1:
+                logging.debug(f"Database locked during artist index build, retrying ({attempt + 1}/{max_retries})...")
+                time.sleep(1.0 * (attempt + 1))
+                continue
+            else:
+                logging.error(f"Failed to build artist index after {max_retries} attempts: {e}")
+                raise
+    logging.info(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    print(f"✅ Cached {len(artist_map_from_api)} artists in DB")
+    return artist_map_from_api
+
+def load_artist_map():
+    conn = get_db_connection()
+    cursor = conn.cursor()
+    cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
+    rows = cursor.fetchall()
+    conn.close()
+    return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
+
+def get_album_last_scanned_from_db(artist_name: str, album_name: str) -> str | None:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT MAX(last_scanned) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        row = cursor.fetchone()
+        conn.close()
+        return (row[0] if row and row[0] else None)
+    except Exception as e:
+        logging.debug(f"get_album_last_scanned_from_db failed for '{artist_name} / {album_name}': {e}")
+        return None
+
+def get_album_track_count_in_db(artist_name: str, album_name: str) -> int:
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?",
+            (artist_name, album_name),
+        )
+        count = cursor.fetchone()[0] or 0
+        conn.close()
+        return count
+    except Exception as e:
+        logging.debug(f"get_album_track_count_in_db failed for '{artist_name} / {album_name}': {e}")
+        return 0
+
+def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
+    """
+    Update all tracks for an artist with the cached Spotify artist ID.
+    This helps populate the cache for existing tracks.
+    
+    Args:
+        artist_name: Artist name
+        artist_id: Spotify artist ID to cache
+        
+    Returns:
+        Number of tracks updated
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET spotify_artist_id = ? WHERE artist = ? AND spotify_artist_id IS NULL",
+            (artist_id, artist_name)
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logging.debug(f"Updated {updated} tracks with Spotify artist ID for '{artist_name}'")
+        return updated
+    except Exception as e:
+        logging.error(f"Failed to update artist ID for '{artist_name}': {e}")
+        return 0
+
+
+def fetch_comprehensive_metadata(db_track_id: str, spotify_track_id: str, force_refresh: bool = False, db_connection=None) -> bool:
+    """
+    Fetch comprehensive Spotify metadata for a track and store in database.
+    
+    Args:
+        db_track_id: Database track ID (primary key)
+        spotify_track_id: Spotify track ID
+        force_refresh: Force refresh even if recently updated
+        db_connection: Optional database connection to reuse (prevents lock contention)
+        
+    Returns:
+        True if metadata was successfully fetched and stored
+    """
+    _ensure_clients_from_config()
+    if not _spotify_enabled or _spotify_client is None or not spotify_track_id:
+        return False
+    
+    # Use provided connection or create new one
+    conn = db_connection if db_connection is not None else get_db_connection()
+    close_conn = db_connection is None  # Only close if we created it
+    
+    try:
+        from spotify_metadata_fetcher import SpotifyMetadataFetcher
+        
+        fetcher = SpotifyMetadataFetcher(_spotify_client, conn)
+        
+        result = fetcher.fetch_and_store_track_metadata(
+            track_id=spotify_track_id,
+            db_track_id=db_track_id,
+            force_refresh=force_refresh
+        )
+        
+        return result
+    except Exception as e:
+        logging.debug(f"Failed to fetch comprehensive metadata for track {spotify_track_id}: {e}")
+        return False
+    finally:
+        if close_conn:
+            conn.close()
+
+
+def get_spotify_client() -> SpotifyClient | None:
+    """
+    Get the configured Spotify client.
+    
+    Returns:
+        SpotifyClient instance or None if not configured
+    """
+    _ensure_clients_from_config()
+    return _spotify_client if _spotify_enabled else None
+
+
+__all__ = [
+    "configure_popularity_helpers",
+    "get_spotify_artist_id",
+    "get_spotify_artist_single_track_ids",
+    "search_spotify_track",
+    "get_lastfm_track_info",
+    "get_listenbrainz_score",
+    "score_by_age",
+    "SPOTIFY_WEIGHT",
+    "LASTFM_WEIGHT",
+    "LISTENBRAINZ_WEIGHT",
+    "AGE_WEIGHT",
+    "fetch_artist_albums",
+    "fetch_album_tracks",
+    "save_to_db",
+    "build_artist_index",
+    "load_artist_map",
+    "get_album_last_scanned_from_db",
+    "get_album_track_count_in_db",
+    "update_artist_id_for_artist",
+    "fetch_comprehensive_metadata",
+    "get_spotify_client",
+]

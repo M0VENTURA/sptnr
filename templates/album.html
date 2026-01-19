@@ -1,0 +1,1466 @@
+{% extends "base.html" %}
+
+{% block title %}{{ album_name }} - {{ artist_name }} - Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+    <nav aria-label="breadcrumb">
+        <ol class="breadcrumb">
+            <li class="breadcrumb-item"><a href="{{ url_for('dashboard') }}">Dashboard</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artists') }}">Artists</a></li>
+            <li class="breadcrumb-item"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></li>
+            <li class="breadcrumb-item active" aria-current="page">{{ album_name }}</li>
+        </ol>
+    </nav>
+    
+    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
+        <div class="flex-grow-1">
+            <div class="d-flex gap-3">
+                <!-- Album Art -->
+                <div class="d-none d-md-block position-relative">
+                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                         alt="{{ album_name }}" 
+                         class="img-thumbnail" 
+                         style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%232a2a2a%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2214%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
+                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
+                        <i class="bi bi-pencil"></i> Change Art
+                    </button>
+                </div>
+                <div>
+                    <h1 class="h2 mb-2">
+                        <i class="bi bi-album"></i> {{ album_name }}
+                    </h1>
+                    <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+                </div>
+            </div>
+        </div>
+        <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
+            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name }}', '{{ artist_name }}', '{{ album_name }}', null)" title="Add to favourites">
+                <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
+            </button>
+            <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
+                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
+            </button>
+            <button class="btn btn-outline-warning" onclick="updateAlbumWithBeets('{{ artist_name }}', '{{ album_name }}')" title="Update tags and organize files with beets">
+                <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update with Beets</span>
+            </button>
+            <div class="btn-group" role="group">
+                <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
+                    <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
+                </button>
+                <ul class="dropdown-menu dropdown-menu-end">
+                    {% if qbit_config.enabled %}
+                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                        <i class="bi bi-cloud-download"></i> Search qBittorrent
+                    </a></li>
+                    {% endif %}
+                    {% if slskd_config.enabled %}
+                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                        <i class="bi bi-music-note-beamed"></i> Search Soulseek
+                    </a></li>
+                    {% endif %}
+                </ul>
+            </div>
+            <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
+                <button class="btn btn-warning" type="submit" title="Full scan: Navidrome + Popularity + Singles">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album</span>
+                </button>
+            </form>
+        </div>
+    </div>
+    
+    <!-- Album Metadata Cards -->
+    {% if album_data %}
+    <div class="row g-2 g-md-3 mb-4">
+        {% if album_data.spotify_release_date %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-calendar"></i> Release Date
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.spotify_release_date }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if album_data.spotify_album_type %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-collection"></i> Album Type
+                    </div>
+                    <div class="h6 mb-0">
+                        <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-hourglass"></i> Duration
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.total_duration %}
+                            {% set hours = (album_data.total_duration / 3600)|int %}
+                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
+                            {% if hours > 0 %}
+                                {{ hours }}h {{ minutes }}m
+                            {% else %}
+                                {{ minutes }}m
+                            {% endif %}
+                        {% else %}
+                            —
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-star-fill"></i> Avg Rating
+                    </div>
+                    <div class="h6 mb-0">
+                        {% if album_data.avg_stars %}
+                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
+                        {% else %}
+                            <span class="text-muted">—</span>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+        </div>
+        
+        {% if album_data.singles_count and album_data.singles_count > 0 %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-music-note"></i> Detected Singles
+                    </div>
+                    <div class="h6 mb-0">
+                        <span class="badge badge-info">{{ album_data.singles_count }} track{{ 's' if album_data.singles_count != 1 }}</span>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- Additional Album Metadata -->
+    {% if album_data %}
+    <div class="row g-2 g-md-3 mb-4">
+        {% if album_data.total_discs and album_data.total_discs > 1 %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-disc-fill"></i> Total Discs
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.total_discs }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-music-note-list"></i> Track Count
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.track_count or 0 }}</div>
+                </div>
+            </div>
+        </div>
+        
+        {% if album_data.beets_album_mbid %} 
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-database-check"></i> MusicBrainz Release
+                    </div>
+                    <div class="h6 mb-0">
+                        <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="text-decoration-none" style="font-size: 0.75rem;">
+                            {{ album_data.beets_album_mbid[:12] }}...
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 0.65rem;"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if album_data.discogs_album_id %}
+        <div class="col-6 col-md-3">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-disc-fill"></i> Discogs Release
+                    </div>
+                    <div class="h6 mb-0">
+                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="text-decoration-none" style="font-size: 0.75rem;">
+                            {{ album_data.discogs_album_id }}
+                            <i class="bi bi-box-arrow-up-right" style="font-size: 0.65rem;"></i>
+                        </a>
+                    </div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+        
+        {% if album_data.last_scanned %}
+        <div class="col-12 col-md-6">
+            <div class="card h-100">
+                <div class="card-body">
+                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
+                        <i class="bi bi-clock-history"></i> Last Scanned
+                    </div>
+                    <div class="h6 mb-0">{{ album_data.last_scanned }}</div>
+                </div>
+            </div>
+        </div>
+        {% endif %}
+    </div>
+    {% endif %}
+    
+    <!-- Album Release IDs Section -->
+    {% if album_data %}
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-link-45deg"></i> Album/Release IDs
+            </h5>
+            <button class="btn btn-sm btn-primary" onclick="openEditAlbumIdsModal()">
+                <i class="bi bi-pencil"></i> Edit IDs
+            </button>
+        </div>
+        <div class="card-body">
+            <div class="row g-3">
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">Spotify Album ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="spotifyAlbumId" value="{{ album_data.spotify_album_id or '' }}" readonly>
+                        {% if album_data.spotify_album_id %}
+                        <a href="https://open.spotify.com/album/{{ album_data.spotify_album_id }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">MusicBrainz Release ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.beets_album_mbid or '' }}" readonly>
+                        {% if album_data.beets_album_mbid %}
+                        <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+                <div class="col-md-4">
+                    <label class="form-label fw-bold small">Discogs Release ID</label>
+                    <div class="input-group input-group-sm">
+                        <input type="text" class="form-control" id="discogsReleaseId" value="{{ album_data.discogs_album_id or '' }}" readonly>
+                        {% if album_data.discogs_album_id %}
+                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary">
+                            <i class="bi bi-box-arrow-up-right"></i>
+                        </a>
+                        {% endif %}
+                    </div>
+                </div>
+            </div>
+            <div class="mt-3">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle"></i> These IDs are used for API lookups and future scans. Edit them to correct matching issues.
+                </small>
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
+    <!-- Editable Album Metadata Form -->
+    <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
+        <div class="card mb-4">
+            <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="card-title mb-0">
+                    <i class="bi bi-pencil-square"></i> Album Metadata
+                </h5>
+                <div class="d-flex gap-2">
+                    <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
+                        <i class="bi bi-search"></i> Search Metadata
+                    </button>
+                    <button type="submit" class="btn btn-sm btn-success">
+                        <i class="bi bi-check-circle"></i> Save to Database & MP3s
+                    </button>
+                </div>
+            </div>
+            <div class="card-body">
+                <div class="row g-3">
+                    <div class="col-md-6">
+                        <label for="album_title" class="form-label">Album Title</label>
+                        <input type="text" class="form-control" id="album_title" name="album_title" value="{{ album_name }}" required>
+                    </div>
+                    <div class="col-md-6">
+                        <label for="album_artist" class="form-label">Album Artist</label>
+                        <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="release_year" class="form-label">Release Year</label>
+                        <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
+                    </div>
+                    <div class="col-md-4">
+                        <label for="album_type" class="form-label">Album Type</label>
+                        <select class="form-select" id="album_type" name="album_type">
+                            <option value="">Unknown</option>
+                            <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
+                            <option value="single" {% if album_data and album_data.spotify_album_type == 'single' %}selected{% endif %}>Single</option>
+                            <option value="ep" {% if album_data and album_data.spotify_album_type == 'ep' %}selected{% endif %}>EP</option>
+                            <option value="compilation" {% if album_data and album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Compilation</option>
+                        </select>
+                    </div>
+                    <div class="col-md-4">
+                        <label for="album_mbid" class="form-label">MusicBrainz Release ID</label>
+                        <input type="text" class="form-control" id="album_mbid" name="album_mbid" value="{{ album_data.beets_album_mbid if album_data and album_data.beets_album_mbid else '' }}" placeholder="MBID">
+                    </div>
+                    
+                    <!-- Genre Multi-Select -->
+                    <div class="col-12">
+                        <label for="album_genres" class="form-label">Genres</label>
+                        <div id="albumGenresContainer" class="mb-2">
+                            {% if album_genres %}
+                                {% for genre in album_genres %}
+                                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                                    {{ genre }}
+                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre }}')" aria-label="Remove"></button>
+                                </span>
+                                {% endfor %}
+                            {% else %}
+                                <span class="text-muted small">No genres set</span>
+                            {% endif %}
+                        </div>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
+                            <button class="btn btn-outline-success" type="button" onclick="addAlbumGenre()">
+                                <i class="bi bi-plus-circle"></i> Add
+                            </button>
+                        </div>
+                        <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
+                        <div class="form-text">These genres will be applied to all tracks in the album.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </form>
+    
+    <!-- Genre Information -->
+    <div class="card mb-4">
+        <div class="card-header d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-tags"></i> Genre Information
+            </h5>
+            <button class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                <i class="bi bi-cloud-download"></i> Get Online Suggestions
+            </button>
+        </div>
+        <div class="card-body">
+            <!-- Recommended Genres from External Sources -->
+            <div class="mb-4" id="recommendedGenresSection" style="display: none;">
+                <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz/Discogs</h6>
+                <p class="text-muted small mb-2">Click genres to select, then apply to all tracks</p>
+                <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedGenres">
+                    <span class="text-muted small">Loading...</span>
+                </div>
+                <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
+                    <i class="bi bi-check-circle"></i> Apply Selected to All MP3 Files
+                </button>
+            </div>
+            
+            <!-- Genre Track Coverage -->
+            {% if tracks or tracks_by_disc %}
+            <div>
+                <h6 class="mb-3"><i class="bi bi-music-note-list"></i> Genre Coverage Across Tracks</h6>
+                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata</p>
+                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                    <table class="table table-sm mb-0" style="font-size: 0.85rem;">
+                        <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
+                            <tr>
+                                <th style="width: 200px;">Track</th>
+                                <th class="text-center" style="width: 60px;">Fit %</th>
+                                <th>Genres</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% if tracks_by_disc %}
+                                {% for disc_num in tracks_by_disc|dictsort %}
+                                    {% for track in disc_num[1] %}
+                                    <tr>
+                                        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                            <small class="text-muted">{{ disc_num[0] }}.{{ track.track_number or loop.index }}</small>
+                                            {{ track.title }}
+                                        </td>
+                                        <td class="text-center">
+                                            {% if track.genre_fit_percent > 0 %}
+                                            <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
+                                                {{ track.genre_fit_percent }}%
+                                            </span>
+                                            {% else %}
+                                            <span class="text-muted">—</span>
+                                            {% endif %}
+                                        </td>
+                                        <td>
+                                            {% if track.matching_genres %}
+                                                {% for genre in track.matching_genres %}
+                                                <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
+                                                    {{ genre }}
+                                                </span>
+                                                {% endfor %}
+                                            {% else %}
+                                            <span class="text-muted small">No album genres</span>
+                                            {% endif %}
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% endfor %}
+                            {% else %}
+                                {% for track in tracks %}
+                                <tr>
+                                    <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                        <small class="text-muted">{{ loop.index }}</small>
+                                        {{ track.title }}
+                                    </td>
+                                    <td class="text-center">
+                                        {% if track.genre_fit_percent > 0 %}
+                                        <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
+                                            {{ track.genre_fit_percent }}%
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td>
+                                        {% if track.matching_genres %}
+                                            {% for genre in track.matching_genres %}
+                                            <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
+                                                {{ genre }}
+                                            </span>
+                                            {% endfor %}
+                                        {% else %}
+                                        <span class="text-muted small">No album genres</span>
+                                        {% endif %}
+                                    </td>
+                                </tr>
+                                {% endfor %}
+                            {% endif %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    
+    <div class="card">
+        <div class="card-header">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-music-note-list"></i> Tracks
+            </h5>
+        </div>
+        <div class="table-responsive">
+            <table class="table table-hover mb-0">
+                <thead class="d-none d-md-table-header-group">
+                    <tr>
+                        <th style="width: 3rem;" title="Track Number">#</th>
+                        <th>Track Title</th>
+                        <th class="text-center" style="width: 5rem;" title="Track Duration">Duration</th>
+                        <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
+                        <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
+                        <th class="text-center d-none d-lg-table-cell" title="Single Detection Confidence">Confidence</th>
+                        <th class="d-none d-xl-table-cell" style="max-width: 200px;" title="File location on disk (from Beets)">File Location (Beets)</th>
+                        <th class="text-center" style="width: 3rem;">Actions</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% if album_data.total_discs and album_data.total_discs > 1 %}
+                        <!-- Multi-disc album view -->
+                        {% for disc_num in tracks_by_disc|dictsort %}
+                            <tr class="table-secondary">
+                                <td colspan="8" style="padding: 0.75rem 0.5rem;">
+                                    <strong style="font-size: 1.1rem;">
+                                        <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
+                                    </strong>
+                                </td>
+                            </tr>
+                            {% for track in disc_num[1] %}
+                            <tr class="d-flex flex-column d-md-table-row">
+                                <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <strong>{{ track.track_number or loop.index }}</strong>
+                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                            {{ track.title }}
+                                        </a>
+                                    </div>
+                                </td>
+                                <td class="d-none d-md-table-cell text-muted">
+                                    {{ track.track_number or loop.index }}
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell align-items-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
+                                        {{ track.title }}
+                                    </a>
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
+                                    {% if track.duration %}
+                                        {% set mins = (track.duration / 60)|int %}
+                                        {% set secs = (track.duration % 60)|int %}
+                                        {{ mins }}:{{ "%02d"|format(secs) }}
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
+                                    {% if track.stars %}
+                                        <span class="badge badge-success">
+                                            {% for i in range(track.stars) %}★{% endfor %}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-lg-table-cell text-center">
+                                    {% if track.is_single == 1 %}
+                                        <span class="badge bg-info">Single</span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-lg-table-cell text-center">
+                                    {% if track.single_confidence %}
+                                        <span class="badge bg-secondary" style="font-size: 0.75rem;">
+                                            {{ track.single_confidence }}
+                                        </span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.beets_path or track.file_path or 'Not available' }}">
+                                    {% if track.beets_path %}
+                                        <span class="text-muted" style="font-size: 0.75rem;">{{ track.beets_path }}</span>
+                                    {% elif track.file_path %}
+                                        <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
+                                    {% else %}
+                                        <span class="text-muted">—</span>
+                                    {% endif %}
+                                </td>
+                                <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                    <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                        <i class="bi bi-search"></i>
+                                    </button>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit track">
+                                        <i class="bi bi-arrow-right"></i>
+                                    </a>
+                                </td>
+                            </tr>
+                            {% endfor %}
+                        {% endfor %}
+                    {% else %}
+                        <!-- Single-disc album view -->
+                        {% for track in tracks %}
+                        <tr class="d-flex flex-column d-md-table-row">
+                            <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
+                                <div class="d-flex justify-content-between align-items-center">
+                                    <strong>{{ loop.index }}</strong>
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                        {{ track.title }}
+                                    </a>
+                                </div>
+                            </td>
+                            <td class="d-none d-md-table-cell text-muted">
+                                {{ loop.index }}
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell align-items-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
+                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
+                                    {{ track.title }}
+                                </a>
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
+                                {% if track.duration %}
+                                    {% set mins = (track.duration / 60)|int %}
+                                    {% set secs = (track.duration % 60)|int %}
+                                    {{ mins }}:{{ "%02d"|format(secs) }}
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-flex justify-content-between d-md-table-cell text-center">
+                                <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">★</span>
+                                {% if track.stars %}
+                                    <span class="badge badge-success">
+                                        {% for i in range(track.stars) %}★{% endfor %}
+                                    </span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-lg-table-cell text-center">
+                                {% if track.is_single == 1 %}
+                                    <span class="badge bg-info">Single</span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-lg-table-cell text-center">
+                                {% if track.single_confidence %}
+                                    <span class="badge bg-secondary" style="font-size: 0.75rem;">
+                                        {{ track.single_confidence }}
+                                    </span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-none d-xl-table-cell" style="max-width: 200px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;" title="{{ track.beets_path or track.file_path or 'Not available' }}">
+                                {% if track.beets_path %}
+                                    <span class="text-muted" style="font-size: 0.75rem;">{{ track.beets_path }}</span>
+                                {% elif track.file_path %}
+                                    <span class="text-muted" style="font-size: 0.75rem;">{{ track.file_path }}</span>
+                                {% else %}
+                                    <span class="text-muted">—</span>
+                                {% endif %}
+                            </td>
+                            <td class="d-flex justify-content-end gap-1 d-md-table-cell">
+                                <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
+                                    <i class="bi bi-search"></i>
+                                </button>
+                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="btn btn-sm btn-outline-secondary" title="Edit track">
+                                    <i class="bi bi-arrow-right"></i>
+                                </a>
+                            </td>
+                        </tr>
+                        {% endfor %}
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+
+<style>
+/* Dark theme improvements for album page */
+.d-contents {
+    display: contents;
+}
+
+.card {
+    background-color: var(--secondary-bg) !important;
+    border-color: var(--border-color) !important;
+}
+
+.card-header {
+    background-color: var(--primary-bg) !important;
+    border-bottom-color: var(--border-color) !important;
+    color: var(--text-primary) !important;
+}
+
+.card-body {
+    background-color: var(--secondary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-responsive {
+    background-color: var(--secondary-bg) !important;
+}
+
+.table {
+    color: var(--text-primary) !important;
+    background-color: transparent !important;
+}
+
+.table thead {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table thead th {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody {
+    background-color: transparent !important;
+}
+
+.table tbody tr {
+    background-color: transparent !important;
+    border-color: var(--border-color) !important;
+}
+
+.table tbody td {
+    background-color: transparent !important;
+    color: var(--text-primary) !important;
+    border-color: var(--border-color) !important;
+}
+
+.table-hover tbody tr:hover {
+    background-color: var(--primary-bg) !important;
+    color: var(--text-primary) !important;
+}
+
+.table-hover tbody tr:hover td {
+    background-color: var(--primary-bg) !important;
+}
+</style>
+
+<!-- Album Metadata Lookup Modal -->
+<div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">External Metadata Lookup for "{{ album_name }}"</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="d-grid gap-2 d-md-flex mb-4">
+                    <button type="button" class="btn btn-outline-info" onclick="lookupAlbumMusicBrainz()">
+                        <i class="bi bi-search"></i> MusicBrainz
+                    </button>
+                    <button type="button" class="btn btn-outline-warning" onclick="lookupAlbumDiscogs()">
+                        <i class="bi bi-search"></i> Discogs
+                    </button>
+                </div>
+                <div id="albumLookupResults"></div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<script>
+    function openAlbumLookupModal() {
+        const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
+        modal.show();
+    }
+
+    function lookupAlbumMusicBrainz() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching MusicBrainz...';
+        
+        fetch('/api/album/musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error('Response is not JSON');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'musicbrainz');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function lookupAlbumDiscogs() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        
+        const resultsDiv = document.getElementById('albumLookupResults');
+        resultsDiv.innerHTML = '<div class="spinner-border spinner-border-sm" role="status"><span class="visually-hidden">Loading...</span></div> Searching Discogs...';
+        
+        fetch('/api/album/discogs', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            const contentType = response.headers.get('content-type');
+            if (!contentType || !contentType.includes('application/json')) {
+                throw new Error('Response is not JSON');
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.error) {
+                resultsDiv.innerHTML = '<div class="alert alert-danger">Error: ' + data.error + '</div>';
+                return;
+            }
+            displayAlbumResults(data.results, 'discogs');
+        })
+        .catch(error => {
+            resultsDiv.innerHTML = '<div class="alert alert-danger">Network error: ' + error.message + '</div>';
+        });
+    }
+
+    function displayAlbumResults(results, source) {
+        const resultsDiv = document.getElementById('albumLookupResults');
+        
+        if (!results || results.length === 0) {
+            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            return;
+        }
+        
+        let html = '<div class="list-group">';
+        if (source === 'musicbrainz') {
+            results.forEach(result => {
+                const confidencePercent = (result.confidence * 100).toFixed(1);
+                const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
+                const year = (result.first_release_date || '').slice(0, 4);
+                
+                html += `
+                    <div class="list-group-item list-group-item-action" style="cursor: pointer; padding: 1rem;">
+                        <div class="d-flex gap-3">
+                            ${result.cover_art_url ? `
+                                <img src="${result.cover_art_url}" 
+                                     alt="${result.title}" 
+                                     style="width: 80px; height: 80px; object-fit: cover; border-radius: 4px;"
+                                     onerror="this.style.display='none'">
+                            ` : ''}
+                            <div class="flex-grow-1">
+                                <div class="d-flex justify-content-between align-items-start mb-2">
+                                    <div>
+                                        <h6 class="mb-1">${result.title}</h6>
+                                        <small class="text-muted">by ${result.artist}</small>
+                                    </div>
+                                    <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
+                                </div>
+                                <div class="small text-muted mb-2">
+                                    <span class="badge bg-info me-1">${result.primary_type || 'Album'}</span>
+                                    ${year ? `<span class="badge bg-secondary">${year}</span>` : ''}
+                                </div>
+                                <div class="small text-muted mb-2">
+                                    <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
+                                </div>
+                                 <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}')">
+                                    <i class="bi bi-check-circle"></i> Use This Album
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        } else {
+            results.forEach(result => {
+                const genres = (result.genre || []).join(', ');
+                const styles = (result.style || []).join(', ');
+                const confidencePercent = result.confidence ? (result.confidence * 100).toFixed(1) : 0;
+                const confidenceClass = result.confidence > 0.8 ? 'success' : result.confidence > 0.5 ? 'warning' : 'secondary';
+                
+                html += `
+                    <div class="list-group-item">
+                        <div style="padding: 1rem;">
+                            <div class="d-flex justify-content-between align-items-start mb-2">
+                                <div>
+                                    <h6 class="mb-1">${result.title}</h6>
+                                </div>
+                                <span class="badge bg-${confidenceClass}">${confidencePercent}% match</span>
+                            </div>
+                            <p class="text-muted mb-2" style="font-size: 0.85rem;">
+                                <strong>Year:</strong> ${result.year || '—'}<br>
+                                <strong>Format:</strong> ${(result.format || []).join(', ') || '—'}<br>
+                                ${result.discogs_id ? '<strong>Discogs ID:</strong> ' + result.discogs_id + '<br>' : ''}
+                            </p>
+                            ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
+                            ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
+                            <div class="gap-2">
+                                <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}')">
+                                    <i class="bi bi-check-circle"></i> Use This Album
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+        }
+        html += '</div>';
+        
+        resultsDiv.innerHTML = html;
+    }
+
+    function applyAlbumMBID(mbid, title, coverArtUrl) {
+        // Update all tracks in this album with the MBID and cover art
+        fetch('/api/album/apply-mbid', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: "{{ artist_name }}", 
+                album: "{{ album_name }}",
+                mbid: mbid,
+                cover_art_url: coverArtUrl
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Applied MusicBrainz metadata to album!');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
+    function applyAlbumDiscogsID(discogsID) {
+        // Update all tracks in this album with the Discogs ID
+        fetch('/api/album/apply-discogs-id', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: "{{ artist_name }}", 
+                album: "{{ album_name }}",
+                discogs_id: discogsID
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Applied Discogs ID to album!');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
+    function applyAlbumGenres(genres) {
+        alert('Applied Discogs Genres: ' + genres);
+    }
+    function openQbitSearchAlbum(artist, album) {
+        const query = `${artist} ${album}`;
+        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+    }
+
+    function openSlskdSearchAlbum(artist, album) {
+        const query = `${artist} ${album}`;
+        window.location.href = `/downloads?search=${encodeURIComponent(query)}`;
+    }
+
+    function openAlbumArtModal() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        
+        const modalHtml = `
+            <div class="modal fade" id="albumArtModal" tabindex="-1">
+                <div class="modal-dialog modal-lg">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-image"></i> Change Album Art</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="manualAlbumArtUrl" class="form-label">Manual Image URL</label>
+                                <input type="text" class="form-control" id="manualAlbumArtUrl" placeholder="https://example.com/album-art.jpg">
+                            </div>
+                            <div class="d-flex gap-2 mb-4 flex-wrap">
+                                <button class="btn btn-primary" onclick="applyManualAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}')">
+                                    <i class="bi bi-check"></i> Apply URL
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'musicbrainz')">
+                                    <i class="bi bi-search"></i> MusicBrainz
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'discogs')">
+                                    <i class="bi bi-disc"></i> Discogs
+                                </button>
+                                <button class="btn btn-secondary" onclick="searchAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', 'spotify')">
+                                    <i class="bi bi-spotify"></i> Spotify
+                                </button>
+                            </div>
+                            <div id="albumArtResults"></div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('albumArtModal');
+        if (existingModal) existingModal.remove();
+        
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        const modal = new bootstrap.Modal(document.getElementById('albumArtModal'));
+        modal.show();
+    }
+
+    function applyManualAlbumArt(artistName, albumName) {
+        const url = document.getElementById('manualAlbumArtUrl').value;
+        if (!url) {
+            alert('Please enter an image URL');
+            return;
+        }
+        applyAlbumArt(artistName, albumName, url);
+    }
+
+    function searchAlbumArt(artistName, albumName, source) {
+        const resultsDiv = document.getElementById('albumArtResults');
+        resultsDiv.innerHTML = '<div class="text-center"><span class="spinner-border"></span> Searching...</div>';
+
+        fetch(`/api/album/search-art?artist=${encodeURIComponent(artistName)}&album=${encodeURIComponent(albumName)}&source=${source}`)
+            .then(r => r.json())
+            .then(data => {
+                if (data.error || !data.images || data.images.length === 0) {
+                    resultsDiv.innerHTML = '<div class="alert alert-info">No album art found</div>';
+                    return;
+                }
+
+                let html = '<div class="row g-3">';
+                data.images.forEach(img => {
+                    html += `
+                        <div class="col-6 col-md-4">
+                            <div class="card">
+                                <img src="${escapeHtml(img.url)}" class="card-img-top" style="height: 200px; object-fit: cover;" 
+                                     onerror="this.parentElement.parentElement.style.display='none'">
+                                <div class="card-body p-2">
+                                    <small class="text-muted d-block mb-1">${escapeHtml(img.title || '')} - ${escapeHtml(img.artist || '')}</small>
+                                    <button class="btn btn-sm btn-primary w-100" onclick="applyAlbumArt('${escapeHtml(artistName)}', '${escapeHtml(albumName)}', '${escapeHtml(img.url)}')">
+                                        <i class="bi bi-check"></i> Use This
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    `;
+                });
+                html += '</div>';
+                resultsDiv.innerHTML = html;
+            })
+            .catch(error => {
+                resultsDiv.innerHTML = `<div class="alert alert-danger">Error: ${escapeHtml(error.message)}</div>`;
+            });
+    }
+
+    function applyAlbumArt(artistName, albumName, imageUrl) {
+        fetch('/api/album/set-art', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: artistName, 
+                album: albumName,
+                image_url: imageUrl
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Close modal
+                const modal = bootstrap.Modal.getInstance(document.getElementById('albumArtModal'));
+                if (modal) modal.hide();
+                
+                // Reload album art with cache busting
+                const img = document.getElementById('albumArtImage');
+                if (img) {
+                    img.src = img.src.split('?')[0] + '?t=' + Date.now();
+                }
+                
+                alert('✅ Album art updated successfully!');
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update album art'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
+    function escapeHtml(text) {
+        const div = document.createElement('div');
+        div.textContent = text;
+        return div.innerHTML;
+    }
+
+    // Genre recommendation functions
+    let selectedGenres = new Set();
+
+    function fetchGenreRecommendations() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const btn = document.getElementById('fetchGenresBtn');
+        const container = document.getElementById('recommendedGenres');
+        const section = document.getElementById('recommendedGenresSection');
+        
+        // Show the recommendations section
+        section.style.display = 'block';
+        
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+        container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
+        
+        // Fetch from both MusicBrainz and Discogs
+        Promise.all([
+            fetch('/api/album/musicbrainz', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album: albumName, artist: artistName })
+            }).then(r => r.json()).catch(() => ({results: []})),
+            
+            fetch('/api/album/discogs', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album: albumName, artist: artistName })
+            }).then(r => r.json()).catch(() => ({results: []}))
+        ])
+        .then(([mbData, discogsData]) => {
+            const genres = new Set();
+            
+            // Extract genres from MusicBrainz results
+            if (mbData.results && mbData.results.length > 0) {
+                // MusicBrainz doesn't typically include genres in release-group results
+                // So we'll mainly rely on Discogs
+            }
+            
+            // Extract genres from Discogs results
+            if (discogsData.results && discogsData.results.length > 0) {
+                discogsData.results.forEach(result => {
+                    if (result.genre) {
+                        result.genre.forEach(g => genres.add(g));
+                    }
+                    if (result.style) {
+                        result.style.forEach(s => genres.add(s));
+                    }
+                });
+            }
+            
+            if (genres.size === 0) {
+                container.innerHTML = '<span class="text-muted small">No genre recommendations found from external sources</span>';
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+                return;
+            }
+            
+            // Display genres as selectable badges
+            let html = '';
+            Array.from(genres).sort().forEach(genre => {
+                html += `<span class="badge badge-outline-primary genre-badge" 
+                    onclick="toggleGenreSelection('${escapeHtml(genre)}')" 
+                    data-genre="${escapeHtml(genre)}"
+                    style="cursor: pointer; border: 2px solid #0d6efd; background-color: transparent; color: #0d6efd;">
+                    ${escapeHtml(genre)}
+                </span>`;
+            });
+            container.innerHTML = html;
+            
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+            document.getElementById('applyGenresBtn').style.display = 'inline-block';
+        })
+        .catch(error => {
+            container.innerHTML = '<span class="text-danger small">Error: ' + error.message + '</span>';
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
+        });
+    }
+
+    function toggleGenreSelection(genre) {
+        const badge = document.querySelector(`[data-genre="${escapeHtml(genre)}"]`);
+        if (!badge) return;
+        
+        if (selectedGenres.has(genre)) {
+            selectedGenres.delete(genre);
+            badge.style.backgroundColor = 'transparent';
+            badge.style.color = '#0d6efd';
+        } else {
+            selectedGenres.add(genre);
+            badge.style.backgroundColor = '#0d6efd';
+            badge.style.color = '#fff';
+        }
+    }
+
+    function applySelectedGenres() {
+        if (selectedGenres.size === 0) {
+            alert('Please select at least one genre to apply');
+            return;
+        }
+        
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const genresArray = Array.from(selectedGenres);
+        
+        if (!confirm(`Apply genres [${genresArray.join(', ')}] to all MP3 files in this album?`)) {
+            return;
+        }
+        
+        const btn = document.getElementById('applyGenresBtn');
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
+        
+        fetch('/api/album/apply-genres', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: artistName,
+                album: albumName,
+                genres: genresArray
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ ${data.message || 'Genres applied successfully'}`);
+                // Refresh the page to show updated genres
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to apply genres'));
+                btn.disabled = false;
+                btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+            btn.disabled = false;
+            btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
+        });
+    }
+    
+    // Album metadata form population function
+    function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres) {
+        // Close the modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('albumLookupModal'));
+        if (modal) modal.hide();
+        
+        // Populate form fields
+        if (title) {
+            document.getElementById('album_title').value = title;
+        }
+        if (year) {
+            document.getElementById('release_year').value = year;
+        }
+        if (albumType) {
+            document.getElementById('album_type').value = albumType.toLowerCase();
+        }
+        if (mbid) {
+            document.getElementById('album_mbid').value = mbid;
+        }
+        
+        // Handle genres
+        if (genres) {
+            const genreList = genres.split(',').map(g => g.trim()).filter(g => g);
+            genreList.forEach(genre => {
+                if (!currentAlbumGenres.has(genre)) {
+                    currentAlbumGenres.add(genre);
+                }
+            });
+            updateAlbumGenresDisplay();
+        }
+        
+        // Show success message
+        alert('✅ Album metadata populated! Review and click "Save to Database & MP3s" to apply.');
+        
+        // Scroll to the form
+        document.getElementById('albumMetadataForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    
+    // Album genre management
+    let currentAlbumGenres = new Set();
+    
+    // Initialize album genres
+    document.addEventListener('DOMContentLoaded', function() {
+        const albumGenresInput = document.getElementById('album_genres');
+        if (albumGenresInput && albumGenresInput.value) {
+            const genres = albumGenresInput.value.split(',').map(g => g.trim()).filter(g => g);
+            currentAlbumGenres = new Set(genres);
+        }
+        
+        // Add Enter key support
+        const genreInput = document.getElementById('newAlbumGenreInput');
+        if (genreInput) {
+            genreInput.addEventListener('keypress', function(e) {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    addAlbumGenre();
+                }
+            });
+        }
+    });
+    
+    function addAlbumGenre() {
+        const input = document.getElementById('newAlbumGenreInput');
+        const genre = input.value.trim();
+        
+        if (!genre) return;
+        
+        if (currentAlbumGenres.has(genre)) {
+            alert('Genre already added');
+            input.value = '';
+            return;
+        }
+        
+        currentAlbumGenres.add(genre);
+        updateAlbumGenresDisplay();
+        input.value = '';
+        input.focus();
+    }
+    
+    function removeAlbumGenre(genre) {
+        currentAlbumGenres.delete(genre);
+        updateAlbumGenresDisplay();
+    }
+    
+    function updateAlbumGenresDisplay() {
+        const container = document.getElementById('albumGenresContainer');
+        const hiddenInput = document.getElementById('album_genres');
+        
+        if (currentAlbumGenres.size === 0) {
+            container.innerHTML = '<span class="text-muted small">No genres set</span>';
+            hiddenInput.value = '';
+            return;
+        }
+        
+        let html = '';
+        Array.from(currentAlbumGenres).sort().forEach(genre => {
+            html += `
+                <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
+                    ${escapeHtml(genre)}
+                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('${escapeHtml(genre)}')" aria-label="Remove"></button>
+                </span>
+            `;
+        });
+        
+        container.innerHTML = html;
+        hiddenInput.value = Array.from(currentAlbumGenres).join(', ');
+    }
+    
+    function escapeJsString(str) {
+        if (!str) return '';
+        return str.replace(/\\/g, '\\\\')
+                  .replace(/'/g, "\\'")
+                  .replace(/"/g, '\\"')
+                  .replace(/\n/g, '\\n')
+                  .replace(/\r/g, '\\r');
+    }
+
+    function openEditAlbumIdsModal() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const spotifyId = document.getElementById('spotifyAlbumId').value;
+        const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
+        const discogsId = document.getElementById('discogsReleaseId').value;
+        
+        const modalHtml = `
+            <div class="modal fade" id="editAlbumIdsModal" tabindex="-1">
+                <div class="modal-dialog">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Album/Release IDs</h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label for="editSpotifyAlbumId" class="form-label">Spotify Album ID</label>
+                                <input type="text" class="form-control" id="editSpotifyAlbumId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 4aawyAB9vmqN3uQ7FjRGTy">
+                                <div class="form-text">
+                                    <a href="https://open.spotify.com/search/${encodeURIComponent(artistName + ' ' + albumName)}" target="_blank">Search Spotify</a> to find the album ID
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editMusicbrainzReleaseId" class="form-label">MusicBrainz Release ID</label>
+                                <input type="text" class="form-control" id="editMusicbrainzReleaseId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+                                <div class="form-text">
+                                    <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName + ' ' + albumName)}&type=release" target="_blank">Search MusicBrainz</a> to find the release ID
+                                </div>
+                            </div>
+                            <div class="mb-3">
+                                <label for="editDiscogsReleaseId" class="form-label">Discogs Release ID</label>
+                                <input type="text" class="form-control" id="editDiscogsReleaseId" value="${escapeHtml(discogsId)}" placeholder="e.g., 123456">
+                                <div class="form-text">
+                                    <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName + ' ' + albumName)}&type=release" target="_blank">Search Discogs</a> to find the release ID
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="saveAlbumIds()">
+                                <i class="bi bi-save"></i> Save Changes
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        `;
+        
+        // Remove existing modal if any
+        const existingModal = document.getElementById('editAlbumIdsModal');
+        if (existingModal) existingModal.remove();
+        
+        document.body.insertAdjacentHTML('beforeend', modalHtml);
+        const modal = new bootstrap.Modal(document.getElementById('editAlbumIdsModal'));
+        modal.show();
+    }
+
+    function saveAlbumIds() {
+        const artistName = '{{ artist_name|safe }}';
+        const albumName = '{{ album_name|safe }}';
+        const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
+        const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
+        const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
+        
+        fetch('/api/album/update-ids', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist: artistName,
+                album: albumName,
+                spotify_album_id: spotifyId,
+                musicbrainz_release_id: musicbrainzId,
+                discogs_release_id: discogsId
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Update the readonly fields
+                document.getElementById('spotifyAlbumId').value = spotifyId;
+                document.getElementById('musicbrainzReleaseId').value = musicbrainzId;
+                document.getElementById('discogsReleaseId').value = discogsId;
+                
+                bootstrap.Modal.getInstance(document.getElementById('editAlbumIdsModal'))?.hide();
+                alert('✅ Album IDs updated successfully!');
+                
+                // Reload page to update links
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
+            }
+        })
+        .catch(err => alert('❌ Network error: ' + err.message));
+    }
+</script>
+{% endblock %}

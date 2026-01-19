@@ -1,0 +1,439 @@
+#!/usr/bin/env python3
+"""
+Beets integration module for music library tagging and organization.
+Provides wrapper around beets CLI for import and configuration operations.
+"""
+
+import os
+import json
+import subprocess
+import logging
+from pathlib import Path
+
+# Import centralized logging
+from logging_config import setup_logging, log_unified, log_info, log_debug
+
+# Set up logging for beets service
+setup_logging("beets")
+
+# Keep standard logger for backward compatibility
+logger = logging.getLogger(__name__)
+logger.setLevel(logging.INFO)
+
+# Import auto-importer
+try:
+    from beets_auto_import import BeetsAutoImporter
+except ImportError:
+    BeetsAutoImporter = None
+    logger.warning("beets_auto_import module not available")
+
+
+class BeetsClient:
+    """Wrapper for beets music tagger CLI."""
+    
+    def __init__(self, config_path: str = os.environ.get("CONFIG_PATH", "/config"), enabled: bool = True):
+        """
+        Initialize Beets client.
+        
+        Args:
+            config_path: Path to beets config directory
+            enabled: Whether beets is enabled
+        """
+        self.enabled = enabled
+        self.config_path = Path(config_path)
+        self.config_file = self.config_path / "beetsconfig.yaml"
+        self.beets_dir = self.config_path / "beets"
+        self.library_db = self.beets_dir / "musiclibrary.db"
+        
+        # Ensure beets directory exists
+        if self.enabled:
+            self.beets_dir.mkdir(parents=True, exist_ok=True)
+    
+    def is_installed(self) -> bool:
+        """Check if beets is installed and available."""
+        try:
+            result = subprocess.run(
+                ["beet", "--version"],
+                capture_output=True,
+                timeout=5
+            )
+            return result.returncode == 0
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            return False
+    
+    def get_status(self) -> dict:
+        """
+        Get current beets status and configuration.
+        
+        Returns:
+            Dict with status info
+        """
+        if not self.enabled:
+            return {"enabled": False, "installed": False}
+        
+        installed = self.is_installed()
+        config_exists = self.config_file.exists()
+        
+        return {
+            "enabled": True,
+            "installed": installed,
+            "config_exists": config_exists,
+            "library_db_exists": self.library_db.exists(),
+            "config_path": str(self.config_file),
+            "library_path": str(self.library_db)
+        }
+    
+    def import_music(self, source_path: str, move: bool = True, autotag: bool = True) -> dict:
+        """
+        Import music files using beets.
+        
+        Args:
+            source_path: Path to music files to import
+            move: Whether to move files (vs. copy)
+            autotag: Whether to auto-tag files
+            
+        Returns:
+            Dict with import results
+        """
+        if not self.enabled or not self.is_installed():
+            return {"success": False, "error": "Beets not available"}
+        
+        try:
+            # Build beets import command
+            cmd = ["beet", "import"]
+            
+            if move:
+                cmd.append("-m")
+            else:
+                cmd.append("-c")
+            
+            if not autotag:
+                cmd.append("-s")  # Skip automatic tagging
+            
+            # Set library database
+            cmd.extend(["--library", str(self.library_db)])
+            
+            # Add source path
+            cmd.append(source_path)
+            
+            logger.info(f"Running beets import: {' '.join(cmd)}")
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=300  # 5 minute timeout for imports
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Beets import completed successfully from {source_path}")
+                return {
+                    "success": True,
+                    "output": result.stdout,
+                    "message": "Import completed"
+                }
+            else:
+                error_msg = result.stderr or result.stdout or "Unknown error"
+                logger.error(f"Beets import failed: {error_msg}")
+                return {
+                    "success": False,
+                    "error": error_msg[:500]  # Truncate error
+                }
+                
+        except subprocess.TimeoutExpired:
+            logger.error("Beets import timed out")
+            return {"success": False, "error": "Import timed out (>5 minutes)"}
+        except Exception as e:
+            logger.error(f"Beets import failed: {e}")
+            return {"success": False, "error": str(e)[:500]}
+    
+    def get_library_stats(self) -> dict:
+        """
+        Get statistics about the beets library.
+        
+        Returns:
+            Dict with library stats
+        """
+        if not self.enabled or not self.is_installed():
+            return {"error": "Beets not available"}
+        
+        try:
+            # Use beets list command to get stats
+            cmd = ["beet", "list", "--library", str(self.library_db), "-f", "count"]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                # Parse output to get counts
+                output = result.stdout.strip()
+                # beet list returns one item per line
+                track_count = len(output.split('\n')) if output else 0
+                
+                return {
+                    "success": True,
+                    "track_count": track_count,
+                    "library_path": str(self.library_db)
+                }
+            else:
+                return {
+                    "success": False,
+                    "error": result.stderr[:200]
+                }
+                
+        except Exception as e:
+            logger.error(f"Failed to get library stats: {e}")
+            return {"success": False, "error": str(e)[:200]}
+    
+    def create_default_config(self) -> bool:
+        """
+        Create a default beets configuration file.
+        
+        Returns:
+            True if successful
+        """
+        if not self.config_path.exists():
+            self.config_path.mkdir(parents=True, exist_ok=True)
+        
+        if not self.beets_dir.exists():
+            self.beets_dir.mkdir(parents=True, exist_ok=True)
+        
+        default_config = """
+directory: /music
+library: /config/beets/musiclibrary.db
+
+import:
+  copy: no
+  write: yes
+  autotag: yes
+  timid: no
+  resume: yes
+  quiet_fallback: skip
+  detail: yes
+  log: /config/beets_import.log
+
+match:
+  strong_rec_thresh: 0.04
+  medium_rec_thresh: 0.25
+
+musicbrainz:
+  enabled: yes
+
+plugins:
+  - duplicates
+  - missing
+  - info
+"""
+        
+        try:
+            with open(self.config_file, 'w') as f:
+                f.write(default_config)
+            logger.info(f"Created default beets config at {self.config_file}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create beets config: {e}")
+            return False
+    
+    def auto_import_library(self, artist_path: str = None, skip_existing: bool = False) -> dict:
+        """
+        Run auto-import on entire library or specific artist.
+        
+        Args:
+            artist_path: Optional path to specific artist folder
+            skip_existing: If True, skip artists already in beets database
+            
+        Returns:
+            Dict with import results
+        """
+        if not BeetsAutoImporter:
+            return {"success": False, "error": "Auto-importer not available"}
+        
+        try:
+            importer = BeetsAutoImporter(config_path=str(self.config_path))
+            success = importer.import_and_capture(artist_path=artist_path, skip_existing=skip_existing)
+            
+            return {
+                "success": success,
+                "message": "Auto-import completed" if success else "Auto-import failed",
+                "skip_existing_enabled": skip_existing
+            }
+        except Exception as e:
+            logger.error(f"Auto-import failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def sync_beets_metadata(self) -> dict:
+        """
+        Sync metadata from beets database to sptnr database.
+        
+        Returns:
+            Dict with sync results
+        """
+        if not BeetsAutoImporter:
+            return {"success": False, "error": "Auto-importer not available"}
+        
+        try:
+            importer = BeetsAutoImporter(config_path=str(self.config_path))
+            importer.sync_beets_to_sptnr()
+            
+            return {
+                "success": True,
+                "message": "Beets metadata synced to sptnr database"
+            }
+        except Exception as e:
+            logger.error(f"Metadata sync failed: {e}")
+            return {"success": False, "error": str(e)}
+    
+    def get_beets_recommendations(self, track_id: str = None) -> dict:
+        """
+        Get beets/MusicBrainz recommendations for a track.
+        
+        Args:
+            track_id: Sptnr track ID
+            
+        Returns:
+            Dict with beets metadata
+        """
+        try:
+            sptnr_db = Path("/database/sptnr.db")
+            if not sptnr_db.exists():
+                return {"success": False, "error": "Sptnr database not found"}
+            
+            conn = sqlite3.connect(sptnr_db)
+            conn.row_factory = sqlite3.Row
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                SELECT 
+                    beets_mbid,
+                    beets_album_mbid,
+                    beets_artist_mbid,
+                    beets_similarity,
+                    beets_album_artist,
+                    beets_year,
+                    beets_import_date,
+                    beets_path
+                FROM tracks
+                WHERE id = ?
+            """, (track_id,))
+            
+            row = cursor.fetchone()
+            conn.close()
+            
+            if row:
+                return {
+                    "success": True,
+                    "mbid": row['beets_mbid'],
+                    "album_mbid": row['beets_album_mbid'],
+                    "artist_mbid": row['beets_artist_mbid'],
+                    "similarity": row['beets_similarity'],
+                    "album_artist": row['beets_album_artist'],
+                    "year": row['beets_year'],
+                    "import_date": row['beets_import_date'],
+                    "path": row['beets_path']
+                }
+            else:
+                return {"success": False, "error": "No beets data for this track"}
+                
+        except Exception as e:
+            logger.error(f"Failed to get beets recommendations: {e}")
+            return {"success": False, "error": str(e)}
+
+
+# Backward-compatible module functions
+_beets_client = None
+
+def _get_beets_client(config_path: str = "/config", enabled: bool = True):
+    """Get or create singleton beets client."""
+    global _beets_client
+    if _beets_client is None:
+        _beets_client = BeetsClient(config_path, enabled=enabled)
+    return _beets_client
+
+def get_beets_status(config_path: str = "/config", enabled: bool = True) -> dict:
+    """Backward-compatible wrapper."""
+    client = _get_beets_client(config_path, enabled)
+    return client.get_status()
+
+def beets_import(source_path: str, move: bool = True, config_path: str = "/config", enabled: bool = True) -> dict:
+    """Backward-compatible wrapper."""
+    client = _get_beets_client(config_path, enabled)
+    return client.import_music(source_path, move=move)
+
+def get_beets_stats(config_path: str = "/config", enabled: bool = True) -> dict:
+    """Backward-compatible wrapper."""
+    client = _get_beets_client(config_path, enabled)
+    return client.get_library_stats()
+
+
+def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str = None) -> bool:
+    """
+    Update track metadata in MP3 file using beets modify command.
+    
+    Args:
+        track_id: Track ID in the database
+        metadata: Dict of metadata fields to update (e.g., {'title': 'New Title', 'genre': 'Rock, Jazz'})
+        db_path: Path to the database
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        # Get the track file path from the database
+        if not db_path:
+            db_path = os.environ.get("DB_PATH", "/config/sptnr.db")
+        
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT beets_path, file_path, artist, album, title FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            logger.error(f"Track {track_id} not found in database")
+            return False
+        
+        file_path = row['beets_path'] if row['beets_path'] else row['file_path']
+        
+        if not file_path or not os.path.exists(file_path):
+            logger.error(f"File not found for track {track_id}: {file_path}")
+            return False
+        
+        # Build beets modify command
+        # Use the file path to identify the track
+        cmd = ["beet", "modify", "-y", f"path:{file_path}"]
+        
+        # Add each metadata field to update
+        for key, value in metadata.items():
+            if value is not None:
+                # Escape values with spaces or special characters
+                if ' ' in str(value) or ',' in str(value):
+                    cmd.append(f"{key}='{value}'")
+                else:
+                    cmd.append(f"{key}={value}")
+        
+        logger.info(f"Running beets modify: {' '.join(cmd)}")
+        
+        # Run the command
+        result = subprocess.run(
+            cmd,
+            capture_output=True,
+            text=True,
+            timeout=30
+        )
+        
+        if result.returncode != 0:
+            logger.error(f"Beets modify failed: {result.stderr}")
+            return False
+        
+        logger.info(f"Successfully updated MP3 metadata for track {track_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating track metadata with beets: {e}")
+        return False

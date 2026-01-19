@@ -1,0 +1,299 @@
+{% extends "base.html" %}
+{% block title %}Setup Wizard · Popularr{% endblock %}
+{% block content %}
+<div class="py-5" style="background: radial-gradient(circle at 20% 20%, #101820 0, #0d1117 35%, #0b0f14 75%); min-height: calc(100vh - 4rem);">
+  <div class="container">
+    <div class="row g-4 align-items-stretch">
+      <div class="col-lg-4">
+        <div class="card h-100 shadow-sm border-0 bg-dark text-white">
+          <div class="card-body d-flex flex-column">
+            <div class="d-flex align-items-center mb-3">
+              <div class="me-3 text-primary fs-3"><i class="bi bi-magic"></i></div>
+              <div>
+                <h1 class="h4 mb-1">First-Run Setup</h1>
+                <p class="mb-0 text-secondary">Connect to Navidrome and drop in API keys.</p>
+              </div>
+            </div>
+            <ol class="ps-3 small text-secondary mb-0">
+              <li class="mb-2">Add Navidrome URL and credentials (required).</li>
+              <li class="mb-2">Paste API keys to unlock Spotify, Discogs, and Last.fm (optional).</li>
+              <li>Save and start your first scan from the dashboard.</li>
+            </ol>
+            <div class="mt-auto pt-3 small text-secondary">
+              Need to start over later? Re-open this wizard anytime from Config.
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="col-lg-8">
+        <div class="card shadow-sm border-0">
+          <div class="card-header bg-primary text-white d-flex align-items-center">
+            <i class="bi bi-plug me-2"></i>
+            <div>
+              <div class="fw-semibold">Connection & API Keys</div>
+              <small class="text-light">We only need Navidrome to start. APIs are optional but recommended.</small>
+            </div>
+          </div>
+          <form method="post" action="{{ url_for('setup') }}" id="setupForm">
+            <div class="card-body">
+              <div class="row g-3">
+                {% set features_json = config.features|tojson|safe if config and config.features else '{"dry_run": false, "sync": true, "force": false, "verbose": false, "perpetual": true, "batchrate": false, "artist": [], "album_skip_days": 7, "album_skip_min_tracks": 1, "clamp_min": 0.75, "clamp_max": 1.25, "cap_top4_pct": 0.25, "title_sim_threshold": 0.92, "short_release_counts_as_match": false, "secondary_single_lookup_enabled": true, "secondary_lookup_metric": "score", "secondary_lookup_delta": 0.05, "secondary_required_strong_sources": 2, "median_gate_strategy": "hard", "use_lastfm_single": true, "refresh_artist_index_on_start": false, "discogs_min_interval_sec": 0.35, "include_user_ratings_on_scan": true, "scan_worker_threads": 4, "spotify_prefetch_timeout": 30}' %}
+                {% set weights_json = config.weights|tojson|safe if config and config.weights else '{"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1}' %}
+                <!-- Removed invalid JS/TS/JSX block. If you need to show config structure, use a <pre> or <code> block, or render as Jinja2/HTML. -->
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Username</label>
+                              <input type="text" class="form-control form-control-sm" name="nav_user[]" value="{{ nav_user }}" required>
+                            </div>
+                            <div class="col-md-6">
+                              <label class="form-label small mb-1">Password</label>
+                              <input type="password" class="form-control form-control-sm" name="nav_pass[]" value="{{ nav_pass }}" required>
+                            </div>
+                          </div>
+                        </div>
+                      </div>
+                    {% endif %}
+                  </div>
+                  <div class="form-text mt-2">Add multiple users to set ratings across different Navidrome accounts.</div>
+                </div>
+
+                <div class="col-12 mt-2">
+                  <div class="d-flex align-items-center text-muted small mb-1">
+                    <i class="bi bi-lightning-charge me-2"></i>
+                    <span>Optional integrations (recommended for best scoring)</span>
+                  </div>
+                </div>
+
+                <div class="col-md-6">
+                  <label for="spotify_client_id" class="form-label">Spotify Client ID</label>
+                  <input type="text" class="form-control" id="spotify_client_id" name="spotify_client_id" value="{{ spotify_client_id }}" placeholder="xx123...">
+                </div>
+                <div class="col-md-6">
+                  <label for="spotify_client_secret" class="form-label">Spotify Client Secret</label>
+                  <input type="password" class="form-control" id="spotify_client_secret" name="spotify_client_secret" value="{{ spotify_client_secret }}" placeholder="xx123...">
+                </div>
+
+                <div class="col-md-6">
+                  <label for="discogs_token" class="form-label">Discogs Token</label>
+                  <input type="text" class="form-control" id="discogs_token" name="discogs_token" value="{{ discogs_token }}" placeholder="Discogs personal token">
+                </div>
+                <div class="col-md-6">
+                  <label for="lastfm_api_key" class="form-label">Last.fm API Key</label>
+                  <input type="text" class="form-control" id="lastfm_api_key" name="lastfm_api_key" value="{{ lastfm_api_key }}" placeholder="abcd1234">
+                </div>
+              </div>
+            </div>
+            <div class="card-footer d-flex flex-column gap-2">
+              <div id="featuresWeightsSection"></div>
+              <div class="d-flex justify-content-end gap-2">
+                <a href="{{ url_for('dashboard') }}" class="btn btn-outline-secondary" id="skipBtn">Skip for now</a>
+                <button type="submit" class="btn btn-primary" id="saveContinueBtn">Save & Continue</button>
+              </div>
+              <div id="setupWarning" class="alert alert-danger mt-3" style="display:none;"></div>
+            </div>
+            <script>
+            // --- Features & Weights Editing ---
+            function renderFeaturesWeights(features, weights) {
+              let html = '';
+              html += '<div class="mb-3"><h5><i class="bi bi-sliders"></i> Features & Weights</h5>';
+              html += '<small class="text-muted">Advanced options for scoring and detection</small>';
+              html += '<div class="row g-3 mt-2">';
+              html += '<div class="col-12"><h6>Features</h6></div>';
+              for (const [key, value] of Object.entries(features)) {
+                html += '<div class="col-md-4">';
+                html += `<label class="form-label">${key}</label>`;
+                if (typeof value === 'boolean') {
+                  html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
+                } else if (typeof value === 'number') {
+                  html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+                } else if (Array.isArray(value)) {
+                  html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value.join(', ')}">`;
+                } else {
+                  html += `<input type="text" class="form-control feature-field" name="feature_${key}" value="${value}">`;
+                }
+                html += '</div>';
+              }
+              html += '<div class="col-12 mt-3"><h6>Weights</h6></div>';
+              for (const [key, value] of Object.entries(weights)) {
+                html += '<div class="col-md-4">';
+                html += `<label class="form-label">${key}</label>`;
+                html += `<input type="number" step="any" class="form-control weight-field" name="weight_${key}" value="${value}">`;
+                html += '</div>';
+              }
+              html += '</div>';
+              html += '</div>';
+              return html;
+            }
+
+            // Insert features/weights section on page load
+            document.addEventListener('DOMContentLoaded', function() {
+              // Use config from backend if available, else defaults
+              var features;
+              var weights;
+              {% if config and config.features %}
+                features = {{ config.features|tojson|safe }};
+              {% else %}
+                features = {"dry_run": false, "sync": true, "force": false, "verbose": false, "perpetual": true, "batchrate": false, "artist": [], "album_skip_days": 7, "album_skip_min_tracks": 1, "clamp_min": 0.75, "clamp_max": 1.25, "cap_top4_pct": 0.25, "title_sim_threshold": 0.92, "short_release_counts_as_match": false, "secondary_single_lookup_enabled": true, "secondary_lookup_metric": "score", "secondary_lookup_delta": 0.05, "secondary_required_strong_sources": 2, "median_gate_strategy": "hard", "use_lastfm_single": true, "refresh_artist_index_on_start": false, "discogs_min_interval_sec": 0.35, "include_user_ratings_on_scan": true, "scan_worker_threads": 4, "spotify_prefetch_timeout": 30};
+              {% endif %}
+              {% if config and config.weights %}
+                weights = {{ config.weights|tojson|safe }};
+              {% else %}
+                weights = {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1};
+              {% endif %}
+              document.getElementById('featuresWeightsSection').innerHTML = renderFeaturesWeights(features, weights);
+            });
+
+            // On submit, merge features/weights into form data
+            document.getElementById('setupForm').addEventListener('submit', function(e) {
+              // Gather features
+              const features = {};
+              document.querySelectorAll('.feature-field').forEach(input => {
+                let key = input.name.replace('feature_', '');
+                let val = input.value;
+                if (input.tagName === 'SELECT') {
+                  val = (val === 'true');
+                } else if (val && val.includes(',') && !isNaN(input.value) === false) {
+                  val = val.split(',').map(s => s.trim()).filter(Boolean);
+                } else if (!isNaN(val) && val !== '') {
+                  val = Number(val);
+                }
+                features[key] = val;
+              });
+              // Gather weights
+              const weights = {};
+              document.querySelectorAll('.weight-field').forEach(input => {
+                let key = input.name.replace('weight_', '');
+                let val = input.value;
+                if (!isNaN(val) && val !== '') {
+                  val = Number(val);
+                }
+                weights[key] = val;
+              });
+              // Add hidden fields to form
+              let fInput = document.getElementById('featuresHidden');
+              let wInput = document.getElementById('weightsHidden');
+              if (!fInput) {
+                fInput = document.createElement('input');
+                fInput.type = 'hidden';
+                fInput.name = 'features_json';
+                fInput.id = 'featuresHidden';
+                this.appendChild(fInput);
+              }
+              if (!wInput) {
+                wInput = document.createElement('input');
+                wInput.type = 'hidden';
+                wInput.name = 'weights_json';
+                wInput.id = 'weightsHidden';
+                this.appendChild(wInput);
+              }
+              fInput.value = JSON.stringify(features);
+              wInput.value = JSON.stringify(weights);
+            });
+
+            // Disable Save & Continue if required fields are missing
+            function validateSetupFields() {
+              let valid = true;
+              let msg = [];
+              // Check Navidrome user fields
+              const navUrls = document.getElementsByName('nav_base_url[]');
+              const navUsers = document.getElementsByName('nav_user[]');
+              const navPasses = document.getElementsByName('nav_pass[]');
+              if (!navUrls[0].value.trim()) { valid = false; msg.push('Navidrome URL is required.'); }
+              if (!navUsers[0].value.trim() || navUsers[0].value === 'admin') { valid = false; msg.push('Navidrome username is required and cannot be "admin".'); }
+              if (!navPasses[0].value.trim() || navPasses[0].value === 'password') { valid = false; msg.push('Navidrome password is required and cannot be "password".'); }
+              // Show/hide warning
+              const warn = document.getElementById('setupWarning');
+              if (!valid) {
+                warn.style.display = '';
+                warn.innerHTML = msg.join('<br>');
+              } else {
+                warn.style.display = 'none';
+              }
+              document.getElementById('saveContinueBtn').disabled = !valid;
+              document.getElementById('skipBtn').style.display = valid ? '' : 'none';
+              return valid;
+            }
+            document.getElementById('setupForm').addEventListener('input', validateSetupFields);
+            window.addEventListener('DOMContentLoaded', validateSetupFields);
+            </script>
+            </div>
+          </form>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Store initial user count as data attribute for JavaScript to read -->
+<div id="configData" data-initial-users="{{ nav_users|length if nav_users else 1 }}" style="display:none;"></div>
+
+<script>
+// Read initial user count from data attribute to avoid Jinja in JS
+const configData = document.getElementById('configData');
+let userIndex = parseInt(configData.getAttribute('data-initial-users')) || 1;
+
+function addNavUser() {
+  const container = document.getElementById('navUsersContainer');
+  const newEntry = document.createElement('div');
+  newEntry.className = 'card mb-2 nav-user-entry';
+  newEntry.setAttribute('data-index', userIndex);
+  newEntry.innerHTML = `
+    <div class="card-body p-3">
+      <div class="d-flex justify-content-between align-items-start mb-2">
+        <h6 class="mb-0">User ${userIndex + 1}</h6>
+        <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeNavUser(this)">
+          <i class="bi bi-trash"></i>
+        </button>
+      </div>
+      <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label small mb-1">Navidrome URL</label>
+          <input type="text" class="form-control form-control-sm" name="nav_base_url[]" placeholder="http://localhost:4533" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-1">Username</label>
+          <input type="text" class="form-control form-control-sm" name="nav_user[]" required>
+        </div>
+        <div class="col-md-6">
+          <label class="form-label small mb-1">Password</label>
+          <input type="password" class="form-control form-control-sm" name="nav_pass[]" required>
+        </div>
+      </div>
+    </div>
+  `;
+  container.appendChild(newEntry);
+  userIndex++;
+  updateUserNumbers();
+}
+
+function removeNavUser(button) {
+  const entry = button.closest('.nav-user-entry');
+  entry.remove();
+  updateUserNumbers();
+}
+
+function updateUserNumbers() {
+  const entries = document.querySelectorAll('.nav-user-entry');
+  entries.forEach((entry, idx) => {
+    const header = entry.querySelector('h6');
+    if (header) {
+      header.textContent = `User ${idx + 1}`;
+    }
+    // Show remove button only if not first user
+    const removeBtn = entry.querySelector('.btn-outline-danger');
+    if (removeBtn) {
+      if (idx === 0) {
+        removeBtn.style.display = 'none';
+      } else {
+        removeBtn.style.display = 'inline-block';
+      }
+    }
+  });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', function() {
+  updateUserNumbers();
+});
+</script>
+{% endblock %}
