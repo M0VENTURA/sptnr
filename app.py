@@ -7510,6 +7510,1075 @@ def get_spotify_playlist_tracks(playlist_id):
         raise
 
 
+
+
+@app.route("/api/track/discogs", methods=["POST"])
+def api_track_discogs_lookup():
+    """Lookup track on Discogs for better metadata and genres"""
+    try:
+        from api_clients.discogs import DiscogsClient
+        import requests
+        
+        data = request.get_json()
+        title = data.get("title", "")
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not title or not artist:
+            return jsonify({"error": "Missing title or artist"}), 400
+        
+        # Get Discogs token from config
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        # Check both api_integrations.discogs and root discogs for backwards compatibility
+        discogs_config = cfg.get("api_integrations", {}).get("discogs", {}) or cfg.get("discogs", {})
+        token = discogs_config.get("token", "")
+        
+        if not token:
+            return jsonify({"error": "Discogs token not configured. Please add your Discogs token in config.yaml under api_integrations.discogs.token"}), 400
+        
+        # Search Discogs API directly
+        headers = {
+            "Authorization": f"Discogs token={token}",
+            "User-Agent": "Sptnr/1.0"
+        }
+        query = f"{artist} {album or title}"
+        
+        response = requests.get(
+            "https://api.discogs.com/database/search",
+            params={"q": query, "type": "release", "per_page": 5},
+            headers=headers,
+            timeout=10
+        )
+        
+        if not response.ok:
+            return jsonify({"error": f"Discogs API error: {response.status_code}"}), 500
+        
+        results_data = response.json().get("results", [])
+        
+        if not results_data:
+            return jsonify({"results": [], "message": "No Discogs matches found"}), 200
+        
+        # Format results
+        formatted_results = []
+        for result in results_data[:5]:
+            # Check if format includes "Single" to detect singles
+            formats = result.get("format", [])
+            is_single_release = "Single" in formats if formats else False
+            
+            formatted_results.append({
+                "title": result.get("title", "Unknown"),
+                "year": result.get("year", ""),
+                "genre": result.get("genre", []),
+                "style": result.get("style", []),
+                "format": formats,
+                "is_single": is_single_release,
+                "url": result.get("resource_url", ""),
+                "source": "discogs",
+                "discogs_id": result.get("id", "")
+            })
+        
+        return jsonify({"results": formatted_results}), 200
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"Discogs lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+        logger.error(f"Discogs lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/musicbrainz", methods=["POST"])
+def api_album_musicbrainz_lookup():
+    """Lookup album on MusicBrainz for multiple matches (Picard-style) with retry logic"""
+    import time
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": "Invalid JSON in request body"}), 400
+        album = data.get("album", "")
+        artist = data.get("artist", "")
+        
+        if not album or not artist:
+            return jsonify({"error": "Missing album or artist"}), 400
+        
+        # Search MusicBrainz for release groups with retry
+        query = f'release:"{album}" AND artist:"{artist}"'
+        headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+        
+        max_retries = 3
+        retry_delay = 1.0
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(
+                    "https://musicbrainz.org/ws/2/release-group",
+                    params={"query": query, "fmt": "json", "limit": 10},
+                    headers=headers,
+                    timeout=5
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                release_groups = data.get("release-groups", []) or []
+                break  # Success, exit retry loop
+            except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                last_error = e
+                if attempt < max_retries - 1:
+                    logger.warning(f"MusicBrainz album lookup attempt {attempt + 1} failed: {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"MusicBrainz album lookup failed after {max_retries} retries: {e}")
+                    return jsonify({
+                        "error": f"MusicBrainz connection failed after {max_retries} retries. Try Discogs instead.",
+                        "results": []
+                    }), 503
+            except requests.exceptions.RequestException as e:
+                logger.error(f"MusicBrainz request error: {e}")
+                return jsonify({"error": str(e), "results": []}), 500
+        else:
+            # Fell through without break - should not happen
+            release_groups = []
+        
+        if not release_groups:
+            return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
+        
+        # Format results with similarity scores
+        import difflib
+        results = []
+        for rg in release_groups:
+            rg_id = rg.get("id", "")
+            rg_title = rg.get("title", "")
+            primary_type = rg.get("primary-type", "Album")
+            first_release = rg.get("first-release-date", "")
+            
+            # Get artist credit
+            artist_credit = rg.get("artist-credit", [])
+            rg_artist = artist_credit[0].get("name", "") if artist_credit else ""
+            
+            # Calculate similarity scores
+            title_similarity = difflib.SequenceMatcher(None, album.lower(), rg_title.lower()).ratio()
+            artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rg_artist.lower()).ratio()
+            overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+            
+            # Get cover art URL
+            cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250" if rg_id else ""
+            
+            results.append({
+                "mbid": rg_id,
+                "title": rg_title,
+                "artist": rg_artist,
+                "primary_type": primary_type,
+                "first_release_date": first_release,
+                "cover_art_url": cover_art_url,
+                "confidence": round(overall_confidence, 3),
+                "title_similarity": round(title_similarity, 3),
+                "artist_similarity": round(artist_similarity, 3),
+                "source": "musicbrainz"
+            })
+        
+        # Sort by confidence
+        results.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return jsonify({"results": results[:10]}), 200
+            
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"MusicBrainz album lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/discogs", methods=["POST"])
+def api_album_discogs_lookup():
+    """Lookup album on Discogs for better metadata and genres"""
+    try:
+        from popularity import _discogs_search, _get_discogs_session
+        import difflib
+        
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": "Invalid JSON in request body"}), 400
+        album = data.get("album", "")
+        artist = data.get("artist", "")
+        
+        if not album or not artist:
+            return jsonify({"error": "Missing album or artist"}), 400
+        
+        # Get Discogs config for token
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
+        discogs_token = discogs_config.get("token", "")
+        
+        # Search Discogs with multiple query strategies
+        session = _get_discogs_session()
+        headers = {"User-Agent": "Sptnr/1.0"}
+        if discogs_token:
+            headers["Authorization"] = f"Discogs token={discogs_token}"
+        
+        # Try different query formats to improve match rate
+        queries = [
+            f"{artist} {album}",  # Full query
+            f'artist:"{artist}" release:"{album}"',  # Structured query
+            f'{artist} "{album}"',  # Quoted album
+        ]
+        
+        results = []
+        for query in queries:
+            logger = logging.getLogger('sptnr')
+            logger.debug(f"Discogs search attempt: {query}")
+            results = _discogs_search(session, headers, query, kind="release", per_page=10)
+            if results:
+                logger.debug(f"Discogs search found {len(results)} results")
+                break
+            logger.debug(f"Discogs search with query '{query}' returned no results")
+        
+        if not results:
+            return jsonify({"results": [], "message": "No Discogs album matches found"}), 200
+        
+        # Format results with similarity scoring
+        formatted_results = []
+        for result in results[:10]:
+            result_title = result.get("title", "Unknown")
+            # Calculate similarity to improve ordering
+            title_sim = difflib.SequenceMatcher(None, album.lower(), result_title.lower()).ratio()
+            artist_part = result_title.split("-")[0] if "-" in result_title else result_title
+            artist_sim = difflib.SequenceMatcher(None, artist.lower(), artist_part.lower()).ratio()
+            overall_conf = (title_sim * 0.7 + artist_sim * 0.3)
+            
+            formatted_results.append({
+                "title": result_title,
+                "year": result.get("year", ""),
+                "genre": result.get("genre", []),
+                "style": result.get("style", []),
+                "format": result.get("format", []),
+                "url": result.get("resource_url", ""),
+                "discogs_id": result.get("id", ""),
+                "confidence": round(overall_conf, 3),
+                "source": "discogs"
+            })
+        
+        # Sort by confidence
+        formatted_results.sort(key=lambda x: x["confidence"], reverse=True)
+        
+        return jsonify({"results": formatted_results}), 200
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"Discogs lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/apply-mbid", methods=["POST"])
+def api_album_apply_mbid():
+    """Apply MusicBrainz ID and cover art to all tracks in an album"""
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        mbid = data.get("mbid", "")
+        cover_art_url = data.get("cover_art_url", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Missing artist or album"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update all tracks in this album with MBID and cover art
+        updates = []
+        if mbid:
+            updates.append("mbid = ?")
+            updates.append("beets_album_mbid = ?")  # Also store as beets album MBID for display
+        if cover_art_url:
+            updates.append("cover_art_url = ?")
+        
+        if not updates:
+            return jsonify({"error": "No data to update"}), 400
+        
+        query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
+        params = []
+        if mbid:
+            params.append(mbid)
+            params.append(mbid)  # Same ID for both fields
+        if cover_art_url:
+            params.append(cover_art_url)
+        params.extend([artist, album])
+        
+        cursor.execute(query, params)
+        rows_updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Applied MBID {mbid} to {rows_updated} tracks in {artist} - {album}")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Updated {rows_updated} tracks with MBID and cover art",
+            "rows_updated": rows_updated
+        }), 200
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"Apply MBID error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/apply-discogs-id", methods=["POST"])
+def api_album_apply_discogs_id():
+    """Apply Discogs ID to all tracks in an album"""
+    import time
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        discogs_id = data.get("discogs_id", "")
+        is_single = data.get("is_single", False)  # Check if Discogs marked this as Single
+        
+        if not artist or not album or not discogs_id:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Retry logic for database lock
+        max_retries = 3
+        retry_delay = 0.5
+        rows_updated = 0
+        last_error = None
+        
+        for attempt in range(max_retries):
+            try:
+                conn = get_db()
+                conn.isolation_level = None  # Autocommit mode
+                cursor = conn.cursor()
+                
+                # Update all tracks in this album with Discogs ID and is_single flag if detected
+                if is_single:
+                    # If Discogs detected this as a Single, mark tracks as singles with high confidence
+                    cursor.execute(
+                        "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END WHERE artist = ? AND album = ?",
+                        (discogs_id, artist, album)
+                    )
+                else:
+                    # Just update the Discogs ID
+                    cursor.execute(
+                        "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
+                        (discogs_id, artist, album)
+                    )
+                
+                rows_updated = cursor.rowcount
+                conn.commit()
+                conn.close()
+                
+                if is_single:
+                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} and marked as single for {artist} - {album}")
+                else:
+                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
+                
+                return jsonify({
+                    "success": True,
+                    "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single" if is_single else ""),
+                    "rows_updated": rows_updated
+                }), 200
+            except sqlite3.OperationalError as e:
+                last_error = e
+                if "database is locked" in str(e):
+                    if attempt < max_retries - 1:
+                        logger.warning(f"Database locked on apply-discogs-id, retry {attempt + 1}/{max_retries}")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff
+                    else:
+                        logger.error(f"Database locked after {max_retries} retries: {e}")
+                else:
+                    raise
+            except Exception as inner_e:
+                last_error = inner_e
+                raise
+        
+        # If we get here, all retries failed
+        logger.error(f"Apply Discogs ID failed after {max_retries} retries: {last_error}")
+        return jsonify({"error": f"Database locked. Please try again."}), 503
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"Apply Discogs ID error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/apply-genres", methods=["POST"])
+def api_album_apply_genres():
+    """Apply selected genres to all MP3 files in an album"""
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "").strip()
+        album = data.get("album", "").strip()
+        genres = data.get("genres", [])
+        
+        if not artist or not album or not genres:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Get all tracks in the album from database
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, beets_path, file_path
+            FROM tracks
+            WHERE artist = ? AND album = ?
+        """, (artist, album))
+        tracks = cursor.fetchall()
+        
+        if not tracks:
+            conn.close()
+            return jsonify({"error": "No tracks found in album"}), 404
+        
+        # Update database with new genres
+        genres_str = ','.join(genres)
+        cursor.execute("""
+            UPDATE tracks
+            SET genres = ?
+            WHERE artist = ? AND album = ?
+        """, (genres_str, artist, album))
+        conn.commit()
+        conn.close()
+        
+        # Write genres to MP3 files using mutagen
+        updated_count = 0
+        failed_files = []
+        
+        try:
+            from mutagen.id3 import ID3, TCON
+            from mutagen.mp3 import MP3
+            
+            for track in tracks:
+                # Prefer beets_path, fallback to file_path
+                file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                
+                if not file_path or not os.path.exists(file_path):
+                    failed_files.append(track['title'])
+                    continue
+                
+                try:
+                    # Load MP3 file
+                    audio = MP3(file_path, ID3=ID3)
+                    
+                    # Add ID3 tag if it doesn't exist
+                    if audio.tags is None:
+                        audio.add_tags()
+                    
+                    # Set genre tag (TCON frame in ID3v2)
+                    audio.tags['TCON'] = TCON(encoding=3, text=genres)
+                    
+                    # Save changes
+                    audio.save()
+                    updated_count += 1
+                    
+                except Exception as file_error:
+                    logger.error(f"Failed to update {file_path}: {file_error}")
+                    failed_files.append(track['title'])
+            
+        except ImportError:
+            return jsonify({
+                "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
+            }), 500
+        
+        message = f"Updated {updated_count} MP3 file(s) with genres: {', '.join(genres)}"
+        if failed_files:
+            message += f". Failed to update {len(failed_files)} file(s): {', '.join(failed_files[:5])}"
+        
+        logger.info(f"Applied genres {genres} to album '{album}' by {artist}: {updated_count} files updated")
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "updated_count": updated_count,
+            "failed_count": len(failed_files)
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Apply genres error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/artist/apply-genres", methods=["POST"])
+def api_artist_apply_genres():
+    """Apply selected genres to all MP3 files for all tracks by an artist"""
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "").strip()
+        genres = data.get("genres", [])
+        
+        if not artist or not genres:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        # Get all tracks by the artist from database
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, album, beets_path, file_path
+            FROM tracks
+            WHERE artist = ?
+        """, (artist,))
+        tracks = cursor.fetchall()
+        
+        if not tracks:
+            conn.close()
+            return jsonify({"error": "No tracks found for artist"}), 404
+        
+        # Update database with new genres for all artist tracks
+        genres_str = ','.join(genres)
+        cursor.execute("""
+            UPDATE tracks
+            SET genres = ?
+            WHERE artist = ?
+        """, (genres_str, artist))
+        conn.commit()
+        conn.close()
+        
+        # Write genres to MP3 files using mutagen
+        updated_count = 0
+        failed_files = []
+        
+        try:
+            from mutagen.id3 import ID3, TCON
+            from mutagen.mp3 import MP3
+            
+            for track in tracks:
+                # Prefer beets_path, fallback to file_path
+                file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                
+                if not file_path or not os.path.exists(file_path):
+                    failed_files.append(f"{track['album']} - {track['title']}")
+                    continue
+                
+                try:
+                    # Load MP3 file
+                    audio = MP3(file_path, ID3=ID3)
+                    
+                    # Add ID3 tag if it doesn't exist
+                    if audio.tags is None:
+                        audio.add_tags()
+                    
+                    # Set genre tag (TCON frame in ID3v2)
+                    audio.tags['TCON'] = TCON(encoding=3, text=genres)
+                    
+                    # Save changes
+                    audio.save()
+                    updated_count += 1
+                    
+                except Exception as file_error:
+                    logger.error(f"Failed to update {file_path}: {file_error}")
+                    failed_files.append(f"{track['album']} - {track['title']}")
+            
+        except ImportError:
+            return jsonify({
+                "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
+            }), 500
+        
+        message = f"Updated {updated_count} MP3 file(s) across all albums by {artist} with genres: {', '.join(genres)}"
+        if failed_files:
+            message += f". Failed to update {len(failed_files)} file(s)"
+        
+        logger.info(f"Applied genres {genres} to all tracks by artist '{artist}': {updated_count} files updated")
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "updated_count": updated_count,
+            "failed_count": len(failed_files),
+            "total_tracks": len(tracks)
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Apply artist genres error: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/track/musicbrainz", methods=["POST"])
+def api_track_musicbrainz_lookup():
+    """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
+    try:
+        data = request.get_json()
+        title = data.get("title", "")
+        artist = data.get("artist", "")
+        
+        if not title or not artist:
+            return jsonify({"error": "Missing title or artist"}), 400
+        
+        # Search MusicBrainz for recordings with retry
+        query = f'recording:"{title}" AND artist:"{artist}"'
+        headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
+        
+        max_retries = 2
+        for attempt in range(max_retries):
+            try:
+                resp = requests.get(
+                    "https://musicbrainz.org/ws/2/recording",
+                    params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
+                    headers=headers,
+                    timeout=5
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                recordings = data.get("recordings", []) or []
+                
+                if not recordings:
+                    return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
+                
+                # Format results with similarity scores
+                import difflib
+                results = []
+                for rec in recordings:
+                    rec_id = rec.get("id", "")
+                    rec_title = rec.get("title", "")
+                    rec_length = rec.get("length", 0)  # in milliseconds
+                    
+                    # Get artist credit
+                    artist_credit = rec.get("artist-credit", [])
+                    rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
+                    
+                    # Get releases (albums this appears on)
+                    releases = rec.get("releases", []) or []
+                    release_list = []
+                    for rel in releases[:5]:
+                        release_list.append({
+                            "id": rel.get("id", ""),
+                            "title": rel.get("title", "")
+                        })
+                    
+                    # Calculate similarity scores
+                    title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
+                    artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
+                    overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
+                    
+                    results.append({
+                        "mbid": rec_id,
+                        "title": rec_title,
+                        "artist": rec_artist,
+                        "length": rec_length,
+                        "releases": release_list,
+                        "confidence": round(overall_confidence, 3),
+                        "title_similarity": round(title_similarity, 3),
+                        "artist_similarity": round(artist_similarity, 3),
+                        "source": "musicbrainz"
+                    })
+                
+                # Sort by confidence
+                results.sort(key=lambda x: x["confidence"], reverse=True)
+                
+                return jsonify({"results": results[:10]}), 200
+                
+            except requests.exceptions.Timeout:
+                logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {title} by {artist}")
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (2 ** attempt))  # Exponential backoff
+            except requests.exceptions.ConnectionError as e:
+                logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}): {type(e).__name__}")
+                if attempt < max_retries - 1:
+                    time.sleep(1 * (2 ** attempt))
+            except Exception as e:
+                logging.debug(f"MusicBrainz lookup error: {e}")
+                if attempt == max_retries - 1:
+                    return jsonify({"error": f"MusicBrainz lookup failed: {str(e)}"}), 500
+                time.sleep(1)
+        
+        return jsonify({"error": "MusicBrainz lookup failed after retries"}), 500
+            
+    except Exception as e:
+        logging.error(f"MusicBrainz track lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ==========================================================================
+# PLAYLIST MANAGER ROUTES
+# ==========================================================================
+
+@app.route("/playlist-manager")
+def playlist_manager():
+    """Playlist manager page with downloader and custom creator"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    navidrome_config = cfg.get("navidrome", {})
+    navidrome_users = cfg.get("navidrome_users", [])
+    
+    # If navidrome_users not configured, use single user
+    if not navidrome_users and navidrome_config.get("user"):
+        navidrome_users = [{
+            "base_url": navidrome_config.get("base_url"),
+            "user": navidrome_config.get("user")
+        }]
+    
+    return render_template('playlist_manager.html', navidrome_users=navidrome_users)
+
+@app.route("/api/playlist/list")
+def api_playlist_list():
+    """List all playlists in Navidrome, including type and metadata"""
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        base_url = navidrome_config.get("base_url", "http://localhost:4533")
+        user = navidrome_config.get("user", "admin")
+        password = navidrome_config.get("pass", "")
+        import requests as req
+
+        # Authenticate
+        try:
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={
+                    "u": user,
+                    "p": password,
+                    "c": "sptnr",
+                    "f": "json"
+                },
+                timeout=10
+            )
+            auth_data = auth_response.json()
+            if auth_response.status_code != 200 or not auth_data.get("subsonic-response", {}).get("token"):
+                return jsonify({"error": "Failed to authenticate with Navidrome"}), 200
+            token = auth_data["subsonic-response"]["token"]
+        except Exception as e:
+            logging.error(f"Navidrome authentication error: {e}")
+            return jsonify({"error": f"Navidrome authentication error: {str(e)}"}), 200
+
+        # Get playlists (regular and smart)
+        try:
+            playlists_response = req.get(
+                f"{base_url}/rest/getPlaylists.view",
+                params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            playlists_data = playlists_response.json()
+            playlists = []
+            for playlist in playlists_data.get("subsonic-response", {}).get("playlists", {}).get("playlist", []):
+                playlist_type = "smart" if playlist.get("isSmart") or playlist.get("criteria") else "regular"
+                playlists.append({
+                    "id": playlist.get("id"),
+                    "name": playlist.get("name"),
+                    "type": playlist_type,
+                    "songCount": playlist.get("songCount"),
+                    "owner": playlist.get("owner"),
+                    "public": playlist.get("public"),
+                    "created": playlist.get("created"),
+                    "changed": playlist.get("changed"),
+                    "comment": playlist.get("comment"),
+                    "path": playlist.get("id")
+                })
+        except Exception as e:
+            logging.error(f"Navidrome playlist fetch error: {e}")
+            playlists = []
+
+        # Optionally: scan for .nsp files in Playlists dir for local smart playlists
+        import os, glob
+        music_folder = os.environ.get("MUSIC_FOLDER", "/music")
+        playlists_dir = os.path.join(music_folder, "Playlists")
+        nsp_files = glob.glob(os.path.join(playlists_dir, "*.nsp"))
+        for nsp_path in nsp_files:
+            try:
+                with open(nsp_path, "r", encoding="utf-8") as f:
+                    nsp_data = json.load(f)
+                playlists.append({
+                    "id": os.path.basename(nsp_path),
+                    "name": nsp_data.get("name", os.path.basename(nsp_path)),
+                    "type": "smart-local",
+                    "songCount": len(nsp_data.get("songs", [])),
+                    "owner": nsp_data.get("owner", user),
+                    "public": nsp_data.get("public", False),
+                    "created": nsp_data.get("created"),
+                    "changed": nsp_data.get("changed"),
+                    "comment": nsp_data.get("description", ""),
+                    "path": nsp_path
+                })
+            except Exception as e:
+                logging.warning(f"Failed to load smart playlist file {nsp_path}: {e}")
+
+        return jsonify({"playlists": playlists}), 200
+    except Exception as e:
+        logging.error(f"Error listing playlists: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 200
+
+@app.route("/api/playlist/load", methods=["POST"])
+def api_playlist_load():
+    """Load playlist tracks"""
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        playlist_id = data.get("playlist_path")
+        if not playlist_id:
+            return jsonify({"error": "Missing playlist_path"}), 200
+
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        base_url = navidrome_config.get("base_url", "http://localhost:4533")
+        user = navidrome_config.get("user", "admin")
+        password = navidrome_config.get("pass", "")
+        import requests as req
+
+        # Authenticate
+        try:
+            auth_response = req.post(
+                f"{base_url}/rest/authenticate.view",
+                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+                timeout=10
+            )
+            token = auth_response.json()["subsonic-response"]["token"]
+        except Exception as e:
+            logging.error(f"Navidrome authentication error: {e}")
+            return jsonify({"error": f"Navidrome authentication error: {str(e)}"}), 200
+
+        # Get playlist tracks
+        try:
+            playlist_response = req.get(
+                f"{base_url}/rest/getPlaylist.view",
+                params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json", "id": playlist_id},
+                timeout=10
+            )
+            playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
+            tracks = playlist_data.get("entry", [])
+            if not isinstance(tracks, list):
+                tracks = [tracks] if tracks else []
+        except Exception as e:
+            logging.error(f"Navidrome playlist fetch error: {e}")
+            tracks = []
+
+        songs = []
+        matched_files = []
+        for track in tracks:
+            song = {
+                "id": track.get("id"),
+                "title": track.get("title", "Unknown"),
+                "artist": track.get("artist", "Unknown"),
+                "album": track.get("album", "Unknown"),
+                "detected": True
+            }
+            songs.append(song)
+            matched_files.append({
+                "id": track.get("id"),
+                "title": song["title"],
+                "artist": song["artist"],
+                "filename": track.get("path", "")
+            })
+
+        return jsonify({
+            "playlist_path": playlist_id,
+            "songs": songs,
+            "matched_files": matched_files,
+            "total": len(songs),
+            "matched": len(matched_files)
+        }), 200
+    except Exception as e:
+        logging.error(f"Error loading playlist: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 200
+
+@app.route("/api/playlist/search-songs", methods=["POST"])
+def api_playlist_search_songs():
+    """Search for songs in library"""
+    try:
+        data = request.get_json() or {}
+        raw_query = (data.get("query") or "").strip()
+        artist = (data.get("artist") or "").strip()
+        title = (data.get("title") or "").strip()
+        album = (data.get("album") or "").strip()
+
+        # Build a combined query string so Navidrome search remains happy
+        search_terms = [t for t in [title, artist, album, raw_query] if t]
+        query = " ".join(search_terms).strip()
+        
+        if not query or len(query) < 2:
+            return jsonify({"error": "Query too short"}), 400
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        nav_users = cfg.get("navidrome_users") or []
+        if not nav_users:
+            nav = cfg.get("navidrome", {}) or {}
+            if nav.get("base_url"):
+                nav_users = [nav]
+
+        base_url = None
+        user = None
+        password = None
+        if nav_users:
+            nd = nav_users[0]
+            base_url = nd.get("base_url") or nd.get("url") or "http://localhost:4533"
+            user = nd.get("user") or nd.get("username") or "admin"
+            password = nd.get("pass") or nd.get("password") or ""
+        else:
+            base_url = "http://localhost:4533"
+            user = "admin"
+            password = ""
+
+        import requests as req
+
+        # Build token auth if password available
+        params = {
+            "u": user,
+            "c": "sptnr",
+            "f": "json",
+            "v": "1.16.0",
+            "query": query,
+            "songCount": 50,
+        }
+
+        if password:
+            salt = secrets.token_hex(8)
+            token = hashlib.md5((password + salt).encode()).hexdigest()
+            params.update({"t": token, "s": salt})
+        else:
+            params["p"] = ""  # empty password to satisfy API
+
+        results = []
+
+        try:
+            search_response = req.get(
+                f"{base_url.rstrip('/')}/rest/search3.view",
+                params=params,
+                timeout=10,
+            )
+
+            response_data = search_response.json()
+            if response_data.get("subsonic-response", {}).get("status") == "ok":
+                search_data = response_data.get("subsonic-response", {}).get("searchResult3", {})
+                songs = search_data.get("song", [])
+                if not isinstance(songs, list):
+                    songs = [songs] if songs else []
+                for song in songs[:50]:
+                    results.append({
+                        "id": song.get("id"),
+                        "title": song.get("title", "Unknown"),
+                        "artist": song.get("artist", "Unknown"),
+                        "album": song.get("album", "Unknown"),
+                        "duration": song.get("duration", 0)
+                    })
+        except Exception as nav_err:
+            logging.debug(f"Navidrome search failed, will fallback to local DB: {nav_err}")
+
+        # Fallback: search local sptnr DB if Navidrome returned nothing
+        if not results:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+
+                where_clauses = []
+                params = []
+
+                if title:
+                    where_clauses.append("LOWER(title) LIKE ?")
+                    params.append(f"%{title.lower()}%")
+                if artist:
+                    where_clauses.append("LOWER(artist) LIKE ?")
+                    params.append(f"%{artist.lower()}%")
+                if album:
+                    where_clauses.append("LOWER(album) LIKE ?")
+                    params.append(f"%{album.lower()}%")
+
+                if not where_clauses:
+                    pattern = f"%{query.lower()}%"
+                    where_clauses.append("(LOWER(title) LIKE ? OR LOWER(artist) LIKE ? OR LOWER(album) LIKE ?)")
+                    params.extend([pattern, pattern, pattern])
+
+                where_sql = " AND ".join(where_clauses)
+
+                cursor.execute(
+                    f"""
+                    SELECT id, title, artist, album, duration
+                    FROM tracks
+                    WHERE {where_sql}
+                    ORDER BY stars DESC NULLS LAST, title COLLATE NOCASE
+                    LIMIT 50
+                    """,
+                    tuple(params),
+                )
+                for row in cursor.fetchall() or []:
+                    results.append({
+                        "id": row[0],
+                        "title": row[1],
+                        "artist": row[2],
+                        "album": row[3],
+                        "duration": row[4] or 0,
+                    })
+                conn.close()
+            except Exception as db_err:
+                logging.error(f"Local DB search failed: {db_err}")
+
+        return jsonify({"songs": results}), 200
+    except Exception as e:
+        logging.error(f"Error searching songs: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/playlist/create-custom", methods=["POST"])
+def api_playlist_create_custom():
+    """Create a custom playlist in Navidrome"""
+    try:
+        data = request.get_json()
+        name = data.get("name", "").strip()
+        description = data.get("description", "").strip()
+        user_name = data.get("user", "admin")
+        is_public = data.get("is_public", False)
+        songs = data.get("songs", [])
+        
+        if not name:
+            return jsonify({"error": "Playlist name is required"}), 400
+        
+        if not songs:
+            return jsonify({"error": "Add at least one song"}), 400
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        base_url = navidrome_config.get("base_url", "http://localhost:4533")
+        user = navidrome_config.get("user", "admin")
+        password = navidrome_config.get("pass", "")
+        
+        import requests as req
+        
+        # Authenticate
+        auth_response = req.post(
+            f"{base_url}/rest/authenticate.view",
+            params={"u": user, "p": password, "c": "sptnr", "f": "json"},
+            timeout=10
+        )
+        token = auth_response.json()["subsonic-response"]["token"]
+        
+        # Create playlist
+        create_response = req.post(
+            f"{base_url}/rest/createPlaylist.view",
+            params={
+                "u": user,
+                "t": token,
+                "s": "salt",
+                "c": "sptnr",
+                "f": "json",
+                "name": name,
+                "comment": description,
+                "public": "true" if is_public else "false"
+            },
+            timeout=10
+        )
+        
+        create_data = create_response.json()
+        playlist_id = create_data.get("subsonic-response", {}).get("playlist", {}).get("id")
+        
+        if not playlist_id:
+            return jsonify({"error": "Failed to create playlist"}), 500
+        
+        # Add songs to playlist
+        for song in songs:
+            req.post(
+                f"{base_url}/rest/updatePlaylist.view",
+                params={
+                    "u": user,
+                    "t": token,
+                    "s": "salt",
+                    "c": "sptnr",
+                    "f": "json",
+                    "playlistId": playlist_id,
+                    "songIdToAdd": song.get("id")
+                },
+                timeout=10
+            )
+        
+        logging.info(f"Created playlist '{name}' with {len(songs)} songs")
+        response = jsonify({
+            "success": True,
+            "playlist_id": playlist_id,
+            "message": f"Playlist created with {len(songs)} songs"
+        })
+        response.status_code = 201
+        return response
+    except Exception as e:
+        logging.error(f"Error creating custom playlist: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Check if background scanner should auto-start on app launch
     try:
@@ -7562,1072 +8631,6 @@ if __name__ == "__main__":
     # Start Flask application
     app.run(debug=False, host="0.0.0.0", port=5000)
 
-    # API endpoints for metadata lookups
-    @app.route("/api/track/discogs", methods=["POST"])
-    def api_track_discogs_lookup():
-        """Lookup track on Discogs for better metadata and genres"""
-        try:
-            from api_clients.discogs import DiscogsClient
-            import requests
-            
-            data = request.get_json()
-            title = data.get("title", "")
-            artist = data.get("artist", "")
-            album = data.get("album", "")
-            
-            if not title or not artist:
-                return jsonify({"error": "Missing title or artist"}), 400
-            
-            # Get Discogs token from config
-            cfg, _ = _read_yaml(CONFIG_PATH)
-            # Check both api_integrations.discogs and root discogs for backwards compatibility
-            discogs_config = cfg.get("api_integrations", {}).get("discogs", {}) or cfg.get("discogs", {})
-            token = discogs_config.get("token", "")
-            
-            if not token:
-                return jsonify({"error": "Discogs token not configured. Please add your Discogs token in config.yaml under api_integrations.discogs.token"}), 400
-            
-            # Search Discogs API directly
-            headers = {
-                "Authorization": f"Discogs token={token}",
-                "User-Agent": "Sptnr/1.0"
-            }
-            query = f"{artist} {album or title}"
-            
-            response = requests.get(
-                "https://api.discogs.com/database/search",
-                params={"q": query, "type": "release", "per_page": 5},
-                headers=headers,
-                timeout=10
-            )
-            
-            if not response.ok:
-                return jsonify({"error": f"Discogs API error: {response.status_code}"}), 500
-            
-            results_data = response.json().get("results", [])
-            
-            if not results_data:
-                return jsonify({"results": [], "message": "No Discogs matches found"}), 200
-            
-            # Format results
-            formatted_results = []
-            for result in results_data[:5]:
-                # Check if format includes "Single" to detect singles
-                formats = result.get("format", [])
-                is_single_release = "Single" in formats if formats else False
-                
-                formatted_results.append({
-                    "title": result.get("title", "Unknown"),
-                    "year": result.get("year", ""),
-                    "genre": result.get("genre", []),
-                    "style": result.get("style", []),
-                    "format": formats,
-                    "is_single": is_single_release,
-                    "url": result.get("resource_url", ""),
-                    "source": "discogs",
-                    "discogs_id": result.get("id", "")
-                })
-            
-            return jsonify({"results": formatted_results}), 200
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"Discogs lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-            logger.error(f"Discogs lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/album/musicbrainz", methods=["POST"])
-    def api_album_musicbrainz_lookup():
-        """Lookup album on MusicBrainz for multiple matches (Picard-style) with retry logic"""
-        import time
-        logger = logging.getLogger('sptnr')
-        try:
-            data = request.get_json(force=True, silent=True)
-            if not data:
-                return jsonify({"error": "Invalid JSON in request body"}), 400
-            album = data.get("album", "")
-            artist = data.get("artist", "")
-            
-            if not album or not artist:
-                return jsonify({"error": "Missing album or artist"}), 400
-            
-            # Search MusicBrainz for release groups with retry
-            query = f'release:"{album}" AND artist:"{artist}"'
-            headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
-            
-            max_retries = 3
-            retry_delay = 1.0
-            last_error = None
-            
-            for attempt in range(max_retries):
-                try:
-                    resp = requests.get(
-                        "https://musicbrainz.org/ws/2/release-group",
-                        params={"query": query, "fmt": "json", "limit": 10},
-                        headers=headers,
-                        timeout=5
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    release_groups = data.get("release-groups", []) or []
-                    break  # Success, exit retry loop
-                except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                    last_error = e
-                    if attempt < max_retries - 1:
-                        logger.warning(f"MusicBrainz album lookup attempt {attempt + 1} failed: {e}, retrying...")
-                        time.sleep(retry_delay)
-                        retry_delay *= 2  # Exponential backoff
-                    else:
-                        logger.error(f"MusicBrainz album lookup failed after {max_retries} retries: {e}")
-                        return jsonify({
-                            "error": f"MusicBrainz connection failed after {max_retries} retries. Try Discogs instead.",
-                            "results": []
-                        }), 503
-                except requests.exceptions.RequestException as e:
-                    logger.error(f"MusicBrainz request error: {e}")
-                    return jsonify({"error": str(e), "results": []}), 500
-            else:
-                # Fell through without break - should not happen
-                release_groups = []
-            
-            if not release_groups:
-                return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
-            
-            # Format results with similarity scores
-            import difflib
-            results = []
-            for rg in release_groups:
-                rg_id = rg.get("id", "")
-                rg_title = rg.get("title", "")
-                primary_type = rg.get("primary-type", "Album")
-                first_release = rg.get("first-release-date", "")
-                
-                # Get artist credit
-                artist_credit = rg.get("artist-credit", [])
-                rg_artist = artist_credit[0].get("name", "") if artist_credit else ""
-                
-                # Calculate similarity scores
-                title_similarity = difflib.SequenceMatcher(None, album.lower(), rg_title.lower()).ratio()
-                artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rg_artist.lower()).ratio()
-                overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
-                
-                # Get cover art URL
-                cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250" if rg_id else ""
-                
-                results.append({
-                    "mbid": rg_id,
-                    "title": rg_title,
-                    "artist": rg_artist,
-                    "primary_type": primary_type,
-                    "first_release_date": first_release,
-                    "cover_art_url": cover_art_url,
-                    "confidence": round(overall_confidence, 3),
-                    "title_similarity": round(title_similarity, 3),
-                    "artist_similarity": round(artist_similarity, 3),
-                    "source": "musicbrainz"
-                })
-            
-            # Sort by confidence
-            results.sort(key=lambda x: x["confidence"], reverse=True)
-            
-            return jsonify({"results": results[:10]}), 200
-                
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"MusicBrainz album lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/album/discogs", methods=["POST"])
-    def api_album_discogs_lookup():
-        """Lookup album on Discogs for better metadata and genres"""
-        try:
-            from popularity import _discogs_search, _get_discogs_session
-            import difflib
-            
-            data = request.get_json(force=True, silent=True)
-            if not data:
-                return jsonify({"error": "Invalid JSON in request body"}), 400
-            album = data.get("album", "")
-            artist = data.get("artist", "")
-            
-            if not album or not artist:
-                return jsonify({"error": "Missing album or artist"}), 400
-            
-            # Get Discogs config for token
-            config_data, _ = _read_yaml(CONFIG_PATH)
-            discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
-            discogs_token = discogs_config.get("token", "")
-            
-            # Search Discogs with multiple query strategies
-            session = _get_discogs_session()
-            headers = {"User-Agent": "Sptnr/1.0"}
-            if discogs_token:
-                headers["Authorization"] = f"Discogs token={discogs_token}"
-            
-            # Try different query formats to improve match rate
-            queries = [
-                f"{artist} {album}",  # Full query
-                f'artist:"{artist}" release:"{album}"',  # Structured query
-                f'{artist} "{album}"',  # Quoted album
-            ]
-            
-            results = []
-            for query in queries:
-                logger = logging.getLogger('sptnr')
-                logger.debug(f"Discogs search attempt: {query}")
-                results = _discogs_search(session, headers, query, kind="release", per_page=10)
-                if results:
-                    logger.debug(f"Discogs search found {len(results)} results")
-                    break
-                logger.debug(f"Discogs search with query '{query}' returned no results")
-            
-            if not results:
-                return jsonify({"results": [], "message": "No Discogs album matches found"}), 200
-            
-            # Format results with similarity scoring
-            formatted_results = []
-            for result in results[:10]:
-                result_title = result.get("title", "Unknown")
-                # Calculate similarity to improve ordering
-                title_sim = difflib.SequenceMatcher(None, album.lower(), result_title.lower()).ratio()
-                artist_part = result_title.split("-")[0] if "-" in result_title else result_title
-                artist_sim = difflib.SequenceMatcher(None, artist.lower(), artist_part.lower()).ratio()
-                overall_conf = (title_sim * 0.7 + artist_sim * 0.3)
-                
-                formatted_results.append({
-                    "title": result_title,
-                    "year": result.get("year", ""),
-                    "genre": result.get("genre", []),
-                    "style": result.get("style", []),
-                    "format": result.get("format", []),
-                    "url": result.get("resource_url", ""),
-                    "discogs_id": result.get("id", ""),
-                    "confidence": round(overall_conf, 3),
-                    "source": "discogs"
-                })
-            
-            # Sort by confidence
-            formatted_results.sort(key=lambda x: x["confidence"], reverse=True)
-            
-            return jsonify({"results": formatted_results}), 200
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"Discogs lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/album/apply-mbid", methods=["POST"])
-    def api_album_apply_mbid():
-        """Apply MusicBrainz ID and cover art to all tracks in an album"""
-        try:
-            data = request.get_json()
-            artist = data.get("artist", "")
-            album = data.get("album", "")
-            mbid = data.get("mbid", "")
-            cover_art_url = data.get("cover_art_url", "")
-            
-            if not artist or not album:
-                return jsonify({"error": "Missing artist or album"}), 400
-            
-            conn = get_db()
-            cursor = conn.cursor()
-            
-            # Update all tracks in this album with MBID and cover art
-            updates = []
-            if mbid:
-                updates.append("mbid = ?")
-                updates.append("beets_album_mbid = ?")  # Also store as beets album MBID for display
-            if cover_art_url:
-                updates.append("cover_art_url = ?")
-            
-            if not updates:
-                return jsonify({"error": "No data to update"}), 400
-            
-            query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
-            params = []
-            if mbid:
-                params.append(mbid)
-                params.append(mbid)  # Same ID for both fields
-            if cover_art_url:
-                params.append(cover_art_url)
-            params.extend([artist, album])
-            
-            cursor.execute(query, params)
-            rows_updated = cursor.rowcount
-            conn.commit()
-            conn.close()
-            
-            logging.info(f"Applied MBID {mbid} to {rows_updated} tracks in {artist} - {album}")
-            
-            return jsonify({
-                "success": True,
-                "message": f"Updated {rows_updated} tracks with MBID and cover art",
-                "rows_updated": rows_updated
-            }), 200
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"Apply MBID error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/album/apply-discogs-id", methods=["POST"])
-    def api_album_apply_discogs_id():
-        """Apply Discogs ID to all tracks in an album"""
-        import time
-        logger = logging.getLogger('sptnr')
-        try:
-            data = request.get_json()
-            artist = data.get("artist", "")
-            album = data.get("album", "")
-            discogs_id = data.get("discogs_id", "")
-            is_single = data.get("is_single", False)  # Check if Discogs marked this as Single
-            
-            if not artist or not album or not discogs_id:
-                return jsonify({"error": "Missing required fields"}), 400
-            
-            # Retry logic for database lock
-            max_retries = 3
-            retry_delay = 0.5
-            rows_updated = 0
-            last_error = None
-            
-            for attempt in range(max_retries):
-                try:
-                    conn = get_db()
-                    conn.isolation_level = None  # Autocommit mode
-                    cursor = conn.cursor()
-                    
-                    # Update all tracks in this album with Discogs ID and is_single flag if detected
-                    if is_single:
-                        # If Discogs detected this as a Single, mark tracks as singles with high confidence
-                        cursor.execute(
-                            "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END WHERE artist = ? AND album = ?",
-                            (discogs_id, artist, album)
-                        )
-                    else:
-                        # Just update the Discogs ID
-                        cursor.execute(
-                            "UPDATE tracks SET discogs_album_id = ? WHERE artist = ? AND album = ?",
-                            (discogs_id, artist, album)
-                        )
-                    
-                    rows_updated = cursor.rowcount
-                    conn.commit()
-                    conn.close()
-                    
-                    if is_single:
-                        logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} and marked as single for {artist} - {album}")
-                    else:
-                        logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
-                    
-                    return jsonify({
-                        "success": True,
-                        "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single" if is_single else ""),
-                        "rows_updated": rows_updated
-                    }), 200
-                except sqlite3.OperationalError as e:
-                    last_error = e
-                    if "database is locked" in str(e):
-                        if attempt < max_retries - 1:
-                            logger.warning(f"Database locked on apply-discogs-id, retry {attempt + 1}/{max_retries}")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                        else:
-                            logger.error(f"Database locked after {max_retries} retries: {e}")
-                    else:
-                        raise
-                except Exception as inner_e:
-                    last_error = inner_e
-                    raise
-            
-            # If we get here, all retries failed
-            logger.error(f"Apply Discogs ID failed after {max_retries} retries: {last_error}")
-            return jsonify({"error": f"Database locked. Please try again."}), 503
-        except Exception as e:
-            logger = logging.getLogger('sptnr')
-            logger.error(f"Apply Discogs ID error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/album/apply-genres", methods=["POST"])
-    def api_album_apply_genres():
-        """Apply selected genres to all MP3 files in an album"""
-        logger = logging.getLogger('sptnr')
-        try:
-            data = request.get_json()
-            artist = data.get("artist", "").strip()
-            album = data.get("album", "").strip()
-            genres = data.get("genres", [])
-            
-            if not artist or not album or not genres:
-                return jsonify({"error": "Missing required fields"}), 400
-            
-            # Get all tracks in the album from database
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, title, beets_path, file_path
-                FROM tracks
-                WHERE artist = ? AND album = ?
-            """, (artist, album))
-            tracks = cursor.fetchall()
-            
-            if not tracks:
-                conn.close()
-                return jsonify({"error": "No tracks found in album"}), 404
-            
-            # Update database with new genres
-            genres_str = ','.join(genres)
-            cursor.execute("""
-                UPDATE tracks
-                SET genres = ?
-                WHERE artist = ? AND album = ?
-            """, (genres_str, artist, album))
-            conn.commit()
-            conn.close()
-            
-            # Write genres to MP3 files using mutagen
-            updated_count = 0
-            failed_files = []
-            
-            try:
-                from mutagen.id3 import ID3, TCON
-                from mutagen.mp3 import MP3
-                
-                for track in tracks:
-                    # Prefer beets_path, fallback to file_path
-                    file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
-                    
-                    if not file_path or not os.path.exists(file_path):
-                        failed_files.append(track['title'])
-                        continue
-                    
-                    try:
-                        # Load MP3 file
-                        audio = MP3(file_path, ID3=ID3)
-                        
-                        # Add ID3 tag if it doesn't exist
-                        if audio.tags is None:
-                            audio.add_tags()
-                        
-                        # Set genre tag (TCON frame in ID3v2)
-                        audio.tags['TCON'] = TCON(encoding=3, text=genres)
-                        
-                        # Save changes
-                        audio.save()
-                        updated_count += 1
-                        
-                    except Exception as file_error:
-                        logger.error(f"Failed to update {file_path}: {file_error}")
-                        failed_files.append(track['title'])
-                
-            except ImportError:
-                return jsonify({
-                    "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
-                }), 500
-            
-            message = f"Updated {updated_count} MP3 file(s) with genres: {', '.join(genres)}"
-            if failed_files:
-                message += f". Failed to update {len(failed_files)} file(s): {', '.join(failed_files[:5])}"
-            
-            logger.info(f"Applied genres {genres} to album '{album}' by {artist}: {updated_count} files updated")
-            
-            return jsonify({
-                "success": True,
-                "message": message,
-                "updated_count": updated_count,
-                "failed_count": len(failed_files)
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Apply genres error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/artist/apply-genres", methods=["POST"])
-    def api_artist_apply_genres():
-        """Apply selected genres to all MP3 files for all tracks by an artist"""
-        logger = logging.getLogger('sptnr')
-        try:
-            data = request.get_json()
-            artist = data.get("artist", "").strip()
-            genres = data.get("genres", [])
-            
-            if not artist or not genres:
-                return jsonify({"error": "Missing required fields"}), 400
-            
-            # Get all tracks by the artist from database
-            conn = get_db()
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT id, title, album, beets_path, file_path
-                FROM tracks
-                WHERE artist = ?
-            """, (artist,))
-            tracks = cursor.fetchall()
-            
-            if not tracks:
-                conn.close()
-                return jsonify({"error": "No tracks found for artist"}), 404
-            
-            # Update database with new genres for all artist tracks
-            genres_str = ','.join(genres)
-            cursor.execute("""
-                UPDATE tracks
-                SET genres = ?
-                WHERE artist = ?
-            """, (genres_str, artist))
-            conn.commit()
-            conn.close()
-            
-            # Write genres to MP3 files using mutagen
-            updated_count = 0
-            failed_files = []
-            
-            try:
-                from mutagen.id3 import ID3, TCON
-                from mutagen.mp3 import MP3
-                
-                for track in tracks:
-                    # Prefer beets_path, fallback to file_path
-                    file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
-                    
-                    if not file_path or not os.path.exists(file_path):
-                        failed_files.append(f"{track['album']} - {track['title']}")
-                        continue
-                    
-                    try:
-                        # Load MP3 file
-                        audio = MP3(file_path, ID3=ID3)
-                        
-                        # Add ID3 tag if it doesn't exist
-                        if audio.tags is None:
-                            audio.add_tags()
-                        
-                        # Set genre tag (TCON frame in ID3v2)
-                        audio.tags['TCON'] = TCON(encoding=3, text=genres)
-                        
-                        # Save changes
-                        audio.save()
-                        updated_count += 1
-                        
-                    except Exception as file_error:
-                        logger.error(f"Failed to update {file_path}: {file_error}")
-                        failed_files.append(f"{track['album']} - {track['title']}")
-                
-            except ImportError:
-                return jsonify({
-                    "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
-                }), 500
-            
-            message = f"Updated {updated_count} MP3 file(s) across all albums by {artist} with genres: {', '.join(genres)}"
-            if failed_files:
-                message += f". Failed to update {len(failed_files)} file(s)"
-            
-            logger.info(f"Applied genres {genres} to all tracks by artist '{artist}': {updated_count} files updated")
-            
-            return jsonify({
-                "success": True,
-                "message": message,
-                "updated_count": updated_count,
-                "failed_count": len(failed_files),
-                "total_tracks": len(tracks)
-            }), 200
-            
-        except Exception as e:
-            logger.error(f"Apply artist genres error: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/track/musicbrainz", methods=["POST"])
-    def api_track_musicbrainz_lookup():
-        """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
-        try:
-            data = request.get_json()
-            title = data.get("title", "")
-            artist = data.get("artist", "")
-            
-            if not title or not artist:
-                return jsonify({"error": "Missing title or artist"}), 400
-            
-            # Search MusicBrainz for recordings with retry
-            query = f'recording:"{title}" AND artist:"{artist}"'
-            headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
-            
-            max_retries = 2
-            for attempt in range(max_retries):
-                try:
-                    resp = requests.get(
-                        "https://musicbrainz.org/ws/2/recording",
-                        params={"query": query, "fmt": "json", "limit": 10, "inc": "releases+artist-credits"},
-                        headers=headers,
-                        timeout=5
-                    )
-                    resp.raise_for_status()
-                    data = resp.json()
-                    recordings = data.get("recordings", []) or []
-                    
-                    if not recordings:
-                        return jsonify({"results": [], "message": "No MusicBrainz track matches found"}), 200
-                    
-                    # Format results with similarity scores
-                    import difflib
-                    results = []
-                    for rec in recordings:
-                        rec_id = rec.get("id", "")
-                        rec_title = rec.get("title", "")
-                        rec_length = rec.get("length", 0)  # in milliseconds
-                        
-                        # Get artist credit
-                        artist_credit = rec.get("artist-credit", [])
-                        rec_artist = artist_credit[0].get("name", "") if artist_credit else ""
-                        
-                        # Get releases (albums this appears on)
-                        releases = rec.get("releases", []) or []
-                        release_list = []
-                        for rel in releases[:5]:
-                            release_list.append({
-                                "id": rel.get("id", ""),
-                                "title": rel.get("title", "")
-                            })
-                        
-                        # Calculate similarity scores
-                        title_similarity = difflib.SequenceMatcher(None, title.lower(), rec_title.lower()).ratio()
-                        artist_similarity = difflib.SequenceMatcher(None, artist.lower(), rec_artist.lower()).ratio()
-                        overall_confidence = (title_similarity * 0.7 + artist_similarity * 0.3)
-                        
-                        results.append({
-                            "mbid": rec_id,
-                            "title": rec_title,
-                            "artist": rec_artist,
-                            "length": rec_length,
-                            "releases": release_list,
-                            "confidence": round(overall_confidence, 3),
-                            "title_similarity": round(title_similarity, 3),
-                            "artist_similarity": round(artist_similarity, 3),
-                            "source": "musicbrainz"
-                        })
-                    
-                    # Sort by confidence
-                    results.sort(key=lambda x: x["confidence"], reverse=True)
-                    
-                    return jsonify({"results": results[:10]}), 200
-                    
-                except requests.exceptions.Timeout:
-                    logging.debug(f"MusicBrainz timeout (attempt {attempt+1}/{max_retries}) for {title} by {artist}")
-                    if attempt < max_retries - 1:
-                        time.sleep(1 * (2 ** attempt))  # Exponential backoff
-                except requests.exceptions.ConnectionError as e:
-                    logging.debug(f"MusicBrainz connection error (attempt {attempt+1}/{max_retries}): {type(e).__name__}")
-                    if attempt < max_retries - 1:
-                        time.sleep(1 * (2 ** attempt))
-                except Exception as e:
-                    logging.debug(f"MusicBrainz lookup error: {e}")
-                    if attempt == max_retries - 1:
-                        return jsonify({"error": f"MusicBrainz lookup failed: {str(e)}"}), 500
-                    time.sleep(1)
-            
-            return jsonify({"error": "MusicBrainz lookup failed after retries"}), 500
-                
-        except Exception as e:
-            logging.error(f"MusicBrainz track lookup error: {e}")
-            return jsonify({"error": str(e)}), 500
-
-    # ==========================================================================
-    # PLAYLIST MANAGER ROUTES
-    # ==========================================================================
-
-    @app.route("/playlist-manager")
-    def playlist_manager():
-        """Playlist manager page with downloader and custom creator"""
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        navidrome_config = cfg.get("navidrome", {})
-        navidrome_users = cfg.get("navidrome_users", [])
-        
-        # If navidrome_users not configured, use single user
-        if not navidrome_users and navidrome_config.get("user"):
-            navidrome_users = [{
-                "base_url": navidrome_config.get("base_url"),
-                "user": navidrome_config.get("user")
-            }]
-        
-        return render_template('playlist_manager.html', navidrome_users=navidrome_users)
-
-    @app.route("/api/playlist/list")
-    def api_playlist_list():
-        """List all playlists in Navidrome, including type and metadata"""
-        try:
-            cfg, _ = _read_yaml(CONFIG_PATH)
-            navidrome_config = cfg.get("navidrome", {})
-            base_url = navidrome_config.get("base_url", "http://localhost:4533")
-            user = navidrome_config.get("user", "admin")
-            password = navidrome_config.get("pass", "")
-            import requests as req
-
-            # Authenticate
-            try:
-                auth_response = req.post(
-                    f"{base_url}/rest/authenticate.view",
-                    params={
-                        "u": user,
-                        "p": password,
-                        "c": "sptnr",
-                        "f": "json"
-                    },
-                    timeout=10
-                )
-                auth_data = auth_response.json()
-                if auth_response.status_code != 200 or not auth_data.get("subsonic-response", {}).get("token"):
-                    return jsonify({"error": "Failed to authenticate with Navidrome"}), 200
-                token = auth_data["subsonic-response"]["token"]
-            except Exception as e:
-                logging.error(f"Navidrome authentication error: {e}")
-                return jsonify({"error": f"Navidrome authentication error: {str(e)}"}), 200
-
-            # Get playlists (regular and smart)
-            try:
-                playlists_response = req.get(
-                    f"{base_url}/rest/getPlaylists.view",
-                    params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json"},
-                    timeout=10
-                )
-                playlists_data = playlists_response.json()
-                playlists = []
-                for playlist in playlists_data.get("subsonic-response", {}).get("playlists", {}).get("playlist", []):
-                    playlist_type = "smart" if playlist.get("isSmart") or playlist.get("criteria") else "regular"
-                    playlists.append({
-                        "id": playlist.get("id"),
-                        "name": playlist.get("name"),
-                        "type": playlist_type,
-                        "songCount": playlist.get("songCount"),
-                        "owner": playlist.get("owner"),
-                        "public": playlist.get("public"),
-                        "created": playlist.get("created"),
-                        "changed": playlist.get("changed"),
-                        "comment": playlist.get("comment"),
-                        "path": playlist.get("id")
-                    })
-            except Exception as e:
-                logging.error(f"Navidrome playlist fetch error: {e}")
-                playlists = []
-
-            # Optionally: scan for .nsp files in Playlists dir for local smart playlists
-            import os, glob
-            music_folder = os.environ.get("MUSIC_FOLDER", "/music")
-            playlists_dir = os.path.join(music_folder, "Playlists")
-            nsp_files = glob.glob(os.path.join(playlists_dir, "*.nsp"))
-            for nsp_path in nsp_files:
-                try:
-                    with open(nsp_path, "r", encoding="utf-8") as f:
-                        nsp_data = json.load(f)
-                    playlists.append({
-                        "id": os.path.basename(nsp_path),
-                        "name": nsp_data.get("name", os.path.basename(nsp_path)),
-                        "type": "smart-local",
-                        "songCount": len(nsp_data.get("songs", [])),
-                        "owner": nsp_data.get("owner", user),
-                        "public": nsp_data.get("public", False),
-                        "created": nsp_data.get("created"),
-                        "changed": nsp_data.get("changed"),
-                        "comment": nsp_data.get("description", ""),
-                        "path": nsp_path
-                    })
-                except Exception as e:
-                    logging.warning(f"Failed to load smart playlist file {nsp_path}: {e}")
-
-            return jsonify({"playlists": playlists}), 200
-        except Exception as e:
-            logging.error(f"Error listing playlists: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 200
-
-    @app.route("/api/playlist/load", methods=["POST"])
-    def api_playlist_load():
-        """Load playlist tracks"""
-        try:
-            data = request.get_json(force=True, silent=True) or {}
-            playlist_id = data.get("playlist_path")
-            if not playlist_id:
-                return jsonify({"error": "Missing playlist_path"}), 200
-
-            cfg, _ = _read_yaml(CONFIG_PATH)
-            navidrome_config = cfg.get("navidrome", {})
-            base_url = navidrome_config.get("base_url", "http://localhost:4533")
-            user = navidrome_config.get("user", "admin")
-            password = navidrome_config.get("pass", "")
-            import requests as req
-
-            # Authenticate
-            try:
-                auth_response = req.post(
-                    f"{base_url}/rest/authenticate.view",
-                    params={"u": user, "p": password, "c": "sptnr", "f": "json"},
-                    timeout=10
-                )
-                token = auth_response.json()["subsonic-response"]["token"]
-            except Exception as e:
-                logging.error(f"Navidrome authentication error: {e}")
-                return jsonify({"error": f"Navidrome authentication error: {str(e)}"}), 200
-
-            # Get playlist tracks
-            try:
-                playlist_response = req.get(
-                    f"{base_url}/rest/getPlaylist.view",
-                    params={"u": user, "t": token, "s": "salt", "c": "sptnr", "f": "json", "id": playlist_id},
-                    timeout=10
-                )
-                playlist_data = playlist_response.json().get("subsonic-response", {}).get("playlist", {})
-                tracks = playlist_data.get("entry", [])
-                if not isinstance(tracks, list):
-                    tracks = [tracks] if tracks else []
-            except Exception as e:
-                logging.error(f"Navidrome playlist fetch error: {e}")
-                tracks = []
-
-            songs = []
-            matched_files = []
-            for track in tracks:
-                song = {
-                    "id": track.get("id"),
-                    "title": track.get("title", "Unknown"),
-                    "artist": track.get("artist", "Unknown"),
-                    "album": track.get("album", "Unknown"),
-                    "detected": True
-                }
-                songs.append(song)
-                matched_files.append({
-                    "id": track.get("id"),
-                    "title": song["title"],
-                    "artist": song["artist"],
-                    "filename": track.get("path", "")
-                })
-
-            return jsonify({
-                "playlist_path": playlist_id,
-                "songs": songs,
-                "matched_files": matched_files,
-                "total": len(songs),
-                "matched": len(matched_files)
-            }), 200
-        except Exception as e:
-            logging.error(f"Error loading playlist: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 200
-
-    @app.route("/api/playlist/search-songs", methods=["POST"])
-    def api_playlist_search_songs():
-        """Search for songs in library"""
-        try:
-            data = request.get_json() or {}
-            raw_query = (data.get("query") or "").strip()
-            artist = (data.get("artist") or "").strip()
-            title = (data.get("title") or "").strip()
-            album = (data.get("album") or "").strip()
-
-            # Build a combined query string so Navidrome search remains happy
-            search_terms = [t for t in [title, artist, album, raw_query] if t]
-            query = " ".join(search_terms).strip()
-            
-            if not query or len(query) < 2:
-                return jsonify({"error": "Query too short"}), 400
-            
-            cfg, _ = _read_yaml(CONFIG_PATH)
-            nav_users = cfg.get("navidrome_users") or []
-            if not nav_users:
-                nav = cfg.get("navidrome", {}) or {}
-                if nav.get("base_url"):
-                    nav_users = [nav]
-
-            base_url = None
-            user = None
-            password = None
-            if nav_users:
-                nd = nav_users[0]
-                base_url = nd.get("base_url") or nd.get("url") or "http://localhost:4533"
-                user = nd.get("user") or nd.get("username") or "admin"
-                password = nd.get("pass") or nd.get("password") or ""
-            else:
-                base_url = "http://localhost:4533"
-                user = "admin"
-                password = ""
-
-            import requests as req
-
-            # Build token auth if password available
-            params = {
-                "u": user,
-                "c": "sptnr",
-                "f": "json",
-                "v": "1.16.0",
-                "query": query,
-                "songCount": 50,
-            }
-
-            if password:
-                salt = secrets.token_hex(8)
-                token = hashlib.md5((password + salt).encode()).hexdigest()
-                params.update({"t": token, "s": salt})
-            else:
-                params["p"] = ""  # empty password to satisfy API
-
-            results = []
-
-            try:
-                search_response = req.get(
-                    f"{base_url.rstrip('/')}/rest/search3.view",
-                    params=params,
-                    timeout=10,
-                )
-
-                response_data = search_response.json()
-                if response_data.get("subsonic-response", {}).get("status") == "ok":
-                    search_data = response_data.get("subsonic-response", {}).get("searchResult3", {})
-                    songs = search_data.get("song", [])
-                    if not isinstance(songs, list):
-                        songs = [songs] if songs else []
-                    for song in songs[:50]:
-                        results.append({
-                            "id": song.get("id"),
-                            "title": song.get("title", "Unknown"),
-                            "artist": song.get("artist", "Unknown"),
-                            "album": song.get("album", "Unknown"),
-                            "duration": song.get("duration", 0)
-                        })
-            except Exception as nav_err:
-                logging.debug(f"Navidrome search failed, will fallback to local DB: {nav_err}")
-
-            # Fallback: search local sptnr DB if Navidrome returned nothing
-            if not results:
-                try:
-                    conn = get_db()
-                    cursor = conn.cursor()
-
-                    where_clauses = []
-                    params = []
-
-                    if title:
-                        where_clauses.append("LOWER(title) LIKE ?")
-                        params.append(f"%{title.lower()}%")
-                    if artist:
-                        where_clauses.append("LOWER(artist) LIKE ?")
-                        params.append(f"%{artist.lower()}%")
-                    if album:
-                        where_clauses.append("LOWER(album) LIKE ?")
-                        params.append(f"%{album.lower()}%")
-
-                    if not where_clauses:
-                        pattern = f"%{query.lower()}%"
-                        where_clauses.append("(LOWER(title) LIKE ? OR LOWER(artist) LIKE ? OR LOWER(album) LIKE ?)")
-                        params.extend([pattern, pattern, pattern])
-
-                    where_sql = " AND ".join(where_clauses)
-
-                    cursor.execute(
-                        f"""
-                        SELECT id, title, artist, album, duration
-                        FROM tracks
-                        WHERE {where_sql}
-                        ORDER BY stars DESC NULLS LAST, title COLLATE NOCASE
-                        LIMIT 50
-                        """,
-                        tuple(params),
-                    )
-                    for row in cursor.fetchall() or []:
-                        results.append({
-                            "id": row[0],
-                            "title": row[1],
-                            "artist": row[2],
-                            "album": row[3],
-                            "duration": row[4] or 0,
-                        })
-                    conn.close()
-                except Exception as db_err:
-                    logging.error(f"Local DB search failed: {db_err}")
-
-            return jsonify({"songs": results}), 200
-        except Exception as e:
-            logging.error(f"Error searching songs: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
-
-    @app.route("/api/playlist/create-custom", methods=["POST"])
-    def api_playlist_create_custom():
-        """Create a custom playlist in Navidrome"""
-        try:
-            data = request.get_json()
-            name = data.get("name", "").strip()
-            description = data.get("description", "").strip()
-            user_name = data.get("user", "admin")
-            is_public = data.get("is_public", False)
-            songs = data.get("songs", [])
-            
-            if not name:
-                return jsonify({"error": "Playlist name is required"}), 400
-            
-            if not songs:
-                return jsonify({"error": "Add at least one song"}), 400
-            
-            cfg, _ = _read_yaml(CONFIG_PATH)
-            navidrome_config = cfg.get("navidrome", {})
-            base_url = navidrome_config.get("base_url", "http://localhost:4533")
-            user = navidrome_config.get("user", "admin")
-            password = navidrome_config.get("pass", "")
-            
-            import requests as req
-            
-            # Authenticate
-            auth_response = req.post(
-                f"{base_url}/rest/authenticate.view",
-                params={"u": user, "p": password, "c": "sptnr", "f": "json"},
-                timeout=10
-            )
-            token = auth_response.json()["subsonic-response"]["token"]
-            
-            # Create playlist
-            create_response = req.post(
-                f"{base_url}/rest/createPlaylist.view",
-                params={
-                    "u": user,
-                    "t": token,
-                    "s": "salt",
-                    "c": "sptnr",
-                    "f": "json",
-                    "name": name,
-                    "comment": description,
-                    "public": "true" if is_public else "false"
-                },
-                timeout=10
-            )
-            
-            create_data = create_response.json()
-            playlist_id = create_data.get("subsonic-response", {}).get("playlist", {}).get("id")
-            
-            if not playlist_id:
-                return jsonify({"error": "Failed to create playlist"}), 500
-            
-            # Add songs to playlist
-            for song in songs:
-                req.post(
-                    f"{base_url}/rest/updatePlaylist.view",
-                    params={
-                        "u": user,
-                        "t": token,
-                        "s": "salt",
-                        "c": "sptnr",
-                        "f": "json",
-                        "playlistId": playlist_id,
-                        "songIdToAdd": song.get("id")
-                    },
-                    timeout=10
-                )
-            
-            logging.info(f"Created playlist '{name}' with {len(songs)} songs")
-            response = jsonify({
-                "success": True,
-                "playlist_id": playlist_id,
-                "message": f"Playlist created with {len(songs)} songs"
-            })
-            response.status_code = 201
-            return response
-        except Exception as e:
-            logging.error(f"Error creating custom playlist: {e}", exc_info=True)
-            return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/database/cleanup-duplicates", methods=["POST"])
