@@ -2460,8 +2460,11 @@ def api_album_search_art():
                 for album in results:
                     artwork_url = album.get("artworkUrl100", "")
                     if artwork_url:
-                        # Replace 100x100 with higher resolution
-                        artwork_url = artwork_url.replace("100x100", "600x600")
+                        # Replace 100x100 with higher resolution (handle both 100x100bb and 100x100 formats)
+                        if "100x100bb" in artwork_url:
+                            artwork_url = artwork_url.replace("100x100bb", "600x600bb")
+                        else:
+                            artwork_url = artwork_url.replace("100x100", "600x600")
                         
                         images.append({
                             "url": artwork_url,
