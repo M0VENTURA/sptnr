@@ -7842,7 +7842,6 @@ def api_album_spotify_genres():
                 genre_value = row[0] if row else None
                 if genre_value:
                     # Parse JSON array
-                    import json
                     genre_list = json.loads(genre_value)
                     if isinstance(genre_list, list):
                         genres.update(genre_list)
