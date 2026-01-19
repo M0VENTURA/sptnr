@@ -312,6 +312,29 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         return False
 
 
+def row_get(row, key, default=None):
+    """
+    Get a value from a sqlite3.Row object with a default fallback.
+    
+    sqlite3.Row objects don't have a .get() method like dictionaries,
+    so this helper provides similar functionality.
+    
+    Args:
+        row: sqlite3.Row object
+        key: Column name to retrieve
+        default: Default value if key doesn't exist or value is None
+        
+    Returns:
+        Value from row or default
+    """
+    try:
+        value = row[key]
+        # Return default if value is None (NULL in database)
+        return value if value is not None else default
+    except (KeyError, IndexError):
+        return default
+
+
 def get_cache_duration_hours(track_year: int = None) -> int:
     """
     Determine cache duration based on track age.
@@ -345,14 +368,14 @@ def get_cache_duration_hours(track_year: int = None) -> int:
         return 24  # Default on error
 
 
-def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
+def should_use_cached_score(track: sqlite3.Row, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
     
     Uses age-based cache duration - older albums are cached longer.
     
     Args:
-        track: Track dictionary with cached values
+        track: Track row (sqlite3.Row) with cached values
         cache_field: Name of the field containing cached score
         last_lookup_field: Name of the field containing last lookup timestamp
         
@@ -360,8 +383,8 @@ def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: st
         True if cached value should be used, False if API lookup needed
     """
     try:
-        cached_value = track.get(cache_field)
-        last_lookup = track.get(last_lookup_field)
+        cached_value = row_get(track, cache_field)
+        last_lookup = row_get(track, last_lookup_field)
         
         # No cached data available
         if not cached_value or cached_value <= 0:
@@ -376,7 +399,7 @@ def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: st
             age = datetime.now() - last_lookup_time
             
             # Determine cache duration based on track year
-            cache_duration_hours = get_cache_duration_hours(track.get('year'))
+            cache_duration_hours = get_cache_duration_hours(row_get(track, 'year'))
             
             if age < timedelta(hours=cache_duration_hours):
                 log_debug(f"Using cached {cache_field} (age: {age.total_seconds() / 3600:.1f}h, limit: {cache_duration_hours}h)")
@@ -1283,8 +1306,7 @@ def detect_single_for_track(
     # Second check: MusicBrainz single detection
     if HAVE_MUSICBRAINZ:
         try:
-            if verbose:
-                log_unified(f"   Checking MusicBrainz for single: {title}")
+            log_info(f"   Checking MusicBrainz for single: {title}")
             # Use timeout-safe client to prevent retries from exceeding timeout
             mb_client = _get_timeout_safe_musicbrainz_client()
             if mb_client:
@@ -1296,27 +1318,21 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("musicbrainz")
-                    if verbose:
-                        log_unified(f"   ✓ MusicBrainz confirms single: {title}")
+                    log_info(f"   ✓ MusicBrainz confirms single: {title}")
                 else:
-                    if verbose:
-                        log_verbose(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                    log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
         except TimeoutError as e:
-            if verbose:
-                log_unified(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
+            log_info(f"   ⏱ MusicBrainz single check timed out for {title}: {e}")
         except Exception as e:
-            if verbose:
-                log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+            log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
     else:
-        if verbose:
-            log_verbose(f"   ⓘ MusicBrainz client not available")
+        log_info(f"   ⓘ MusicBrainz client not available")
     
     # Third check: Discogs single detection
     if HAVE_DISCOGS and discogs_token:
         try:
-            # Always log Discogs API calls (not dependent on verbose)
-            log_unified(f"   Checking Discogs for single: {title}")
-            log_info(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+            log_info(f"   Checking Discogs for single: {title}")
+            log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1327,32 +1343,30 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs")
-                    log_unified(f"   ✓ Discogs confirms single: {title}")
-                    log_info(f"   Discogs result: Single confirmed for '{title}'")
+                    log_info(f"   ✓ Discogs confirms single: {title}")
+                    log_debug(f"   Discogs result: Single confirmed for '{title}'")
                 else:
-                    # Always log negative results too (not just in verbose mode)
-                    log_unified(f"   ⓘ Discogs does not confirm single: {title}")
-                    log_info(f"   Discogs result: No single found for '{title}'")
+                    log_info(f"   ⓘ Discogs does not confirm single: {title}")
+                    log_debug(f"   Discogs result: No single found for '{title}'")
         except TimeoutError as e:
-            log_unified(f"   ⏱ Discogs single check timed out for {title}: {e}")
-            log_info(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
+            log_info(f"   ⏱ Discogs single check timed out for {title}: {e}")
+            log_debug(f"   Discogs API: Timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
-            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS:
-            log_unified(f"   ⓘ Discogs client not available")
-            log_info(f"   Discogs: Client not available (module import failed)")
+            log_info(f"   ⓘ Discogs client not available")
+            log_debug(f"   Discogs: Client not available (module import failed)")
         elif not discogs_token:
-            log_unified(f"   ⓘ Discogs token not configured")
-            log_info(f"   Discogs: Token not configured in config.yaml")
+            log_info(f"   ⓘ Discogs token not configured")
+            log_debug(f"   Discogs: Token not configured in config.yaml")
     
     # Fourth check: Discogs video detection
     if HAVE_DISCOGS_VIDEO and discogs_token:
         try:
-            # Always log Discogs video checks (not dependent on verbose)
-            log_unified(f"   Checking Discogs for music video: {title}")
-            log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+            log_info(f"   Checking Discogs for music video: {title}")
+            log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
             # Use timeout-safe client to prevent retries from exceeding timeout
             discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             if discogs_client:
@@ -1363,26 +1377,23 @@ def detect_single_for_track(
                 )
                 if result:
                     single_sources.append("discogs_video")
-                    log_unified(f"   ✓ Discogs confirms music video: {title}")
-                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
+                    log_info(f"   ✓ Discogs confirms music video: {title}")
+                    log_debug(f"   Discogs result: Music video confirmed for '{title}'")
                 else:
-                    # Always log negative results too
-                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
-                    log_info(f"   Discogs result: No music video found for '{title}'")
+                    log_info(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_debug(f"   Discogs result: No music video found for '{title}'")
         except TimeoutError as e:
-            log_unified(f"   ⏱ Discogs video check timed out for {title}: {e}")
-            log_info(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
+            log_info(f"   ⏱ Discogs video check timed out for {title}: {e}")
+            log_debug(f"   Discogs API: Video search timeout after {API_CALL_TIMEOUT}s for '{title}'")
         except Exception as e:
-            log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
+            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         if not HAVE_DISCOGS_VIDEO:
-            if verbose:
-                log_verbose(f"   ⓘ Discogs video client not available")
+            log_info(f"   ⓘ Discogs video client not available")
             log_debug(f"   Discogs: Video client not available")
         elif not discogs_token:
-            if verbose:
-                log_verbose(f"   ⓘ Discogs token not configured for video detection")
+            log_info(f"   ⓘ Discogs token not configured for video detection")
             log_debug(f"   Discogs: Token not configured for video detection")
     
     # Calculate confidence based on sources per problem statement
@@ -1700,7 +1711,7 @@ def popularity_scan(
                     use_full_cache = False
                     if not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'popularity_score', 'last_spotify_lookup'):
-                            cached_popularity = track.get('popularity_score', 0)
+                            cached_popularity = row_get(track, 'popularity_score', 0)
                             if cached_popularity > 0:
                                 # Use fully cached score - skip all API lookups
                                 use_full_cache = True
@@ -1745,7 +1756,7 @@ def popularity_scan(
                     # Check if we can use cached Spotify popularity score
                     if not skip_spotify_lookup and not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'spotify_popularity', 'last_spotify_lookup'):
-                            spotify_score = track.get('spotify_popularity', 0)
+                            spotify_score = row_get(track, 'spotify_popularity', 0)
                             skip_spotify_lookup = True
                             log_info(f'Using cached Spotify popularity for: {title} (score: {spotify_score})')
                             log_debug(f'Cached Spotify data reused for track {track_id}')
@@ -1883,7 +1894,7 @@ def popularity_scan(
                     # Check if we can use cached Last.fm playcount
                     if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
-                            cached_playcount = track.get('lastfm_track_playcount', 0)
+                            cached_playcount = row_get(track, 'lastfm_track_playcount', 0)
                             if cached_playcount > 0:
                                 lastfm_score = calculate_lastfm_popularity_score(cached_playcount)
                                 skip_lastfm_lookup = True
@@ -1937,7 +1948,7 @@ def popularity_scan(
 
                     # Try to get ListenBrainz score if mbid is available
                     listenbrainz_score = 0
-                    track_mbid = track.get("mbid")
+                    track_mbid = row_get(track, "mbid")
                     if track_mbid and not skip_spotify_lookup:  # Use same filter
                         try:
                             log_info(f'Getting ListenBrainz score for: {title}')
@@ -1968,7 +1979,7 @@ def popularity_scan(
 
                     # Calculate age score if year is available
                     age_score = 0
-                    track_year = track.get("year")
+                    track_year = row_get(track, "year")
                     if track_year:
                         try:
                             log_debug(f'Calculating age score for year: {track_year}')
@@ -2121,6 +2132,26 @@ def popularity_scan(
                     log_info(f"Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
                     log_debug(f"Artist statistics - track_count: {artist_stats['track_count']}, avg: {artist_stats['avg_popularity']}, median: {artist_median}, stddev: {artist_stats.get('stddev_popularity', 0)}")
                 
+                # Capture user-set singles before running automated detection
+                # User-marked singles (is_single=1 with no/empty sources) should be preserved
+                user_set_singles = set()
+                for track in album_tracks:
+                    track_id = track["id"]
+                    is_single = track["is_single"] if track["is_single"] else 0
+                    single_sources_json = track["single_sources"] if track["single_sources"] else "[]"
+                    
+                    # Track is user-set if is_single=1 but has no automated sources
+                    try:
+                        sources = json.loads(single_sources_json) if single_sources_json else []
+                        if is_single == 1 and (not sources or len(sources) == 0):
+                            user_set_singles.add(track_id)
+                            log_info(f"Preserving user-set single: {track['title']}")
+                            log_debug(f"User-set single detected - track_id: {track_id}, title: {track['title']}")
+                    except (json.JSONDecodeError, TypeError):
+                        if is_single == 1:
+                            user_set_singles.add(track_id)
+                            log_info(f"Preserving user-set single (malformed sources): {track['title']}")
+                
                 # Batch updates for singles detection
                 singles_updates = []
                 
@@ -2175,6 +2206,14 @@ def popularity_scan(
                     
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
+                    # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
+                    if track_id in user_set_singles and not is_single:
+                        is_single = True
+                        single_confidence = "user"  # Mark as user-set
+                        # Keep sources empty to indicate user-set
+                        log_info(f"Preserving user-set single flag for: {title}")
+                        log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
+                    
                     # Queue single detection results for batch update
                     if is_single or single_sources:
                         singles_updates.append((
@@ -2185,8 +2224,11 @@ def popularity_scan(
                         ))
                         if is_single:
                             singles_detected += 1
-                            source_str = ", ".join(single_sources)
-                            log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                            if single_sources:
+                                source_str = ", ".join(single_sources)
+                                log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                            else:
+                                log_info(f"Single detected: {title} (user-set)")
                             log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {single_sources}")
                 
                 # Batch update all singles detection results for this album in one commit
@@ -2304,6 +2346,8 @@ def popularity_scan(
                     
                     # Batch updates for better performance
                     updates = []
+                    # Track which medium-confidence tracks should be upgraded to is_single=1
+                    single_upgrades = []
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
@@ -2350,8 +2394,13 @@ def popularity_scan(
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
                             # Apply new 5-star rule
+                            # User-set singles always get 5 stars
+                            if single_confidence == "user":
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (user-set single)")
+                                log_debug(f"User-set single - track_id: {track_id}")
                             # High confidence always gets 5 stars
-                            if single_confidence == "high":
+                            elif single_confidence == "high":
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (high-confidence single)")
                                 log_debug(f"High confidence single detected - track_id: {track_id}")
@@ -2362,7 +2411,12 @@ def popularity_scan(
                                 medium_conf_count = len(single_sources) if single_sources else 0
                                 if medium_conf_count >= 2:
                                     stars = 5
-                                    log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
+                                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                                    if not is_single:
+                                        single_upgrades.append(track_id)
+                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                    else:
+                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
                             
                             # NEW: Artist-level popularity context
@@ -2396,6 +2450,16 @@ def popularity_scan(
                         """UPDATE tracks SET stars = ? WHERE id = ?""",
                         updates
                     )
+                    
+                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                    if single_upgrades:
+                        cursor.executemany(
+                            """UPDATE tracks SET is_single = 1 WHERE id = ?""",
+                            ((track_id,) for track_id in single_upgrades)
+                        )
+                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources)")
+                        log_debug(f"Upgraded tracks: {single_upgrades}")
+                    
                     conn.commit()
                     log_debug(f"Batch committed {len(updates)} star ratings for album '{album}'")
                     
@@ -2410,6 +2474,67 @@ def popularity_scan(
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
                     log_debug(f'Star distribution details: {star_distribution}')
+                    
+                    # Generate unified log summary for singles and star ratings
+                    # Re-fetch tracks with their final star ratings and single detection results
+                    cursor.execute(
+                        """SELECT id, title, stars, is_single, single_confidence, single_sources 
+                        FROM tracks 
+                        WHERE artist = ? AND album = ? 
+                        ORDER BY is_single DESC, stars DESC, popularity_score DESC""",
+                        (artist, album)
+                    )
+                    final_tracks = cursor.fetchall()
+                    
+                    # Separate singles from non-singles
+                    singles = []
+                    non_singles = []
+                    for track_row in final_tracks:
+                        track_title = track_row["title"]
+                        track_stars = track_row["stars"] if track_row["stars"] else 0
+                        track_is_single = track_row["is_single"] if track_row["is_single"] else 0
+                        track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
+                        
+                        # Parse single sources
+                        try:
+                            if track_sources_json and isinstance(track_sources_json, str):
+                                track_sources = json.loads(track_sources_json)
+                            else:
+                                track_sources = []
+                        except json.JSONDecodeError:
+                            track_sources = []
+                        
+                        # Format sources for display using mapping for consistent naming
+                        SOURCE_DISPLAY_NAMES = {
+                            "musicbrainz": "MusicBrainz",
+                            "discogs": "Discogs",
+                            "discogs_video": "Discogs Video",
+                            "spotify": "Spotify"
+                        }
+                        formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
+                        sources_str = ", ".join(formatted_sources) if formatted_sources else ""
+                        
+                        # Create star rating string (max 5 stars)
+                        stars_str = "★" * min(track_stars, 5)
+                        
+                        if track_is_single:
+                            singles.append((track_title, stars_str, sources_str))
+                        else:
+                            non_singles.append((track_title, stars_str))
+                    
+                    # Log singles detected header
+                    if singles:
+                        log_unified(f"Single Detection Scan - Singles Detected in {artist} - {album}")
+                        for title, stars, sources in singles:
+                            source_info = f" ({sources})" if sources else ""
+                            # Use dynamic width based on max possible stars (5)
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{source_info}")
+                    
+                    # Log popularity ratings for remaining songs
+                    if non_singles:
+                        log_unified(f"Single Detection Scan - Popularity Rating for Remaining Songs")
+                        for title, stars in non_singles:
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
                 
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
