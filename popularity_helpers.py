@@ -321,7 +321,19 @@ def fetch_album_tracks(album_id):
     return nav_client.fetch_album_tracks(album_id)
 
 def save_to_db(track_data):
-    """Save or update a track in the database."""
+    """
+    Save or update a track in the database.
+    
+    This function implements duplicate prevention by checking if a track with the same
+    (artist, album, title, duration) already exists. If it does, it updates the existing
+    track instead of creating a duplicate with a different ID.
+    
+    Priority for choosing which track to keep:
+    1. Track with beets_mbid (beets has verified it)
+    2. Track with mbid (has MusicBrainz ID)  
+    3. Track with file_path (has file location)
+    4. Most recently scanned track
+    """
     conn = get_db_connection()
     cursor = conn.cursor()
     
@@ -334,6 +346,93 @@ def save_to_db(track_data):
         else:
             sanitized_data[key] = value
     
+    # Check for existing track by content (artist, album, title, duration)
+    # This prevents duplicate albums when Navidrome IDs change
+    track_id = sanitized_data.get('id')
+    artist = sanitized_data.get('artist')
+    album = sanitized_data.get('album')
+    title = sanitized_data.get('title')
+    duration = sanitized_data.get('duration')
+    file_path = sanitized_data.get('file_path')
+    
+    if artist and album and title:
+        # First try to match by file_path if available (most reliable)
+        if file_path:
+            cursor.execute("""
+                SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                FROM tracks 
+                WHERE file_path = ? AND id != ?
+                LIMIT 1
+            """, (file_path, track_id))
+            existing = cursor.fetchone()
+        else:
+            existing = None
+        
+        # If no match by file_path, try content matching
+        if not existing:
+            # Look for existing track with same content
+            if duration:
+                # Match by artist, album, title, and duration (within 2 seconds tolerance)
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND ABS(COALESCE(duration, 0) - ?) <= 2
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, duration, track_id))
+            else:
+                # Match by artist, album, title only
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, track_id))
+            
+            existing = cursor.fetchone()
+        
+        if existing:
+            existing_id = existing['id']
+            existing_beets_mbid = existing['beets_mbid']
+            existing_mbid = existing['mbid']
+            existing_file_path = existing['file_path']
+            
+            # Determine which track to keep based on priority
+            new_beets_mbid = sanitized_data.get('beets_mbid')
+            new_mbid = sanitized_data.get('mbid')
+            new_file_path = sanitized_data.get('file_path')
+            
+            # Calculate scores for existing and new track
+            existing_score = 0
+            new_score = 0
+            
+            if existing_beets_mbid:
+                existing_score += 1000
+            if existing_mbid:
+                existing_score += 500
+            if existing_file_path:
+                existing_score += 200
+                
+            if new_beets_mbid:
+                new_score += 1000
+            if new_mbid:
+                new_score += 500
+            if new_file_path:
+                new_score += 200
+            
+            # If new track has better metadata, use new ID, otherwise use existing ID
+            if new_score > existing_score:
+                # Keep new ID, delete old duplicate
+                logging.debug(f"Duplicate found: Keeping new track ID {track_id}, deleting {existing_id} (artist={artist}, title={title})")
+                cursor.execute("DELETE FROM tracks WHERE id = ?", (existing_id,))
+            else:
+                # Keep existing ID, update it with new data
+                logging.debug(f"Duplicate found: Keeping existing track ID {existing_id}, updating instead of inserting {track_id} (artist={artist}, title={title})")
+                sanitized_data['id'] = existing_id
+    
+    # Perform insert or update
     columns = ', '.join(sanitized_data.keys())
     placeholders = ', '.join(['?'] * len(sanitized_data))
     update_clause = ', '.join([f"{k}=excluded.{k}" for k in sanitized_data.keys()])

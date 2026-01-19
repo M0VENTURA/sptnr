@@ -26,9 +26,9 @@ DEBUG_LOG_PATH = os.path.join(LOG_DIR, "debug.log")
 # Ensure log directory exists
 os.makedirs(LOG_DIR, exist_ok=True)
 
-# Log rotation settings (keep 7 days of 10MB files each)
-MAX_BYTES = 10 * 1024 * 1024  # 10MB
-BACKUP_COUNT = 7
+# Log rotation settings (keep 7 days of logs)
+# Using time-based rotation: one file per day, keep 7 days
+BACKUP_COUNT = 7  # Keep 7 daily log files (7 days of history)
 
 # Logger names
 UNIFIED_LOGGER = "unified"
@@ -90,9 +90,10 @@ def setup_logging(service_name="sptnr"):
     unified_logger.propagate = False
     
     if not unified_logger.handlers:
-        unified_handler = logging.handlers.RotatingFileHandler(
+        unified_handler = logging.handlers.TimedRotatingFileHandler(
             UNIFIED_LOG_PATH,
-            maxBytes=MAX_BYTES,
+            when='midnight',
+            interval=1,
             backupCount=BACKUP_COUNT
         )
         unified_handler.setFormatter(standard_formatter)
@@ -105,9 +106,10 @@ def setup_logging(service_name="sptnr"):
     info_logger.propagate = False
     
     if not info_logger.handlers:
-        info_handler = logging.handlers.RotatingFileHandler(
+        info_handler = logging.handlers.TimedRotatingFileHandler(
             INFO_LOG_PATH,
-            maxBytes=MAX_BYTES,
+            when='midnight',
+            interval=1,
             backupCount=BACKUP_COUNT
         )
         info_handler.setFormatter(prefix_formatter)
@@ -119,9 +121,10 @@ def setup_logging(service_name="sptnr"):
     debug_logger.propagate = False
     
     if not debug_logger.handlers:
-        debug_handler = logging.handlers.RotatingFileHandler(
+        debug_handler = logging.handlers.TimedRotatingFileHandler(
             DEBUG_LOG_PATH,
-            maxBytes=MAX_BYTES,
+            when='midnight',
+            interval=1,
             backupCount=BACKUP_COUNT
         )
         debug_handler.setFormatter(prefix_formatter)
@@ -181,16 +184,17 @@ def log_info(msg, level=logging.INFO):
     info_logger.log(level, msg)
 
 
-def log_debug(msg, level=logging.DEBUG):
+def log_debug(msg, level=logging.DEBUG, exc_info=False):
     """
     Log to debug.log - detailed debugging information.
     
     Args:
         msg: Message to log
         level: Log level (default DEBUG)
+        exc_info: Include exception information (default False)
     """
     _, _, debug_logger = get_loggers()
-    debug_logger.log(level, msg)
+    debug_logger.log(level, msg, exc_info=exc_info)
 
 
 def log_all(msg, level=logging.INFO):

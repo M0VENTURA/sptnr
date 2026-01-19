@@ -7511,21 +7511,21 @@ def get_spotify_playlist_tracks(playlist_id):
 
 
 if __name__ == "__main__":
-    # Auto-start scanner if configured for batchrate and perpetual mode
+    # Check if background scanner should auto-start on app launch
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
         features = cfg.get('features', {})
         
-        print(f"Checking auto-start configuration...")
-        print(f"  perpetual: {features.get('perpetual')}")
-        
+        # Only show auto-start status if perpetual mode is enabled
         if features.get('perpetual'):
+            print("Background scanner auto-start: ENABLED")
+            print("Starting Navidrome sync and popularity scan in background...")
+            
             # Start the beets auto-import and scanner in background thread
             def start_scanner():
                 import time as time_module
                 time_module.sleep(2)  # Give Flask time to start
                 try:
-                    print("Auto-starting beets import and scanner with perpetual mode...")
                     logger = logging.getLogger('sptnr')
                     logger.info("Auto-starting beets import and scanner with perpetual mode...")
                     
@@ -7537,28 +7537,31 @@ if __name__ == "__main__":
                     importer.import_and_capture(skip_existing=True)
                     
                     # Then run the standard scanner
-                    print("Step 2: Running Navidrome sync and rating scan...")
-                    logger.info("Step 2: Running Navidrome sync and rating scan...")
+                    print("Step 2: Running Navidrome sync and popularity scan...")
+                    logger.info("Step 2: Running Navidrome sync and popularity scan...")
                     from start import run_scan
                     run_scan(scan_type='full')
                 except Exception as e:
                     import traceback
-                    print(f"Error starting auto-import/scanner: {e}")
+                    print(f"Error in background scanner: {e}")
                     print(traceback.format_exc())
                     logger = logging.getLogger('sptnr')
-                    logger.error(f"Error starting auto-import/scanner: {e}")
+                    logger.error(f"Error in background scanner: {e}")
                     logger.error(traceback.format_exc())
             
             scanner_thread = threading.Thread(target=start_scanner, daemon=True)
             scanner_thread.start()
-            print("Scanner thread started in background")
         else:
-            print("Auto-start not enabled (perpetual must be true)")
+            # Perpetual mode disabled - scans will be triggered manually
+            print("Background scanner auto-start: DISABLED (trigger scans manually via web UI)")
     except Exception as e:
         import traceback
-        print(f"Error in auto-start configuration: {e}")
+        print(f"Error checking auto-start configuration: {e}")
         print(traceback.format_exc())
     
+    # Start Flask application
+    app.run(debug=False, host="0.0.0.0", port=5000)
+
     # API endpoints for metadata lookups
     @app.route("/api/track/discogs", methods=["POST"])
     def api_track_discogs_lookup():
@@ -8626,4 +8629,28 @@ if __name__ == "__main__":
             logging.error(f"Error creating custom playlist: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
-    app.run(debug=False, host="0.0.0.0", port=5000)
+
+@app.route("/api/database/cleanup-duplicates", methods=["POST"])
+def api_cleanup_duplicates():
+    """API endpoint to clean up duplicate albums in the database"""
+    try:
+        data = request.get_json() or {}
+        dry_run = data.get("dry_run", True)
+        
+        # Import the cleanup function
+        from fix_duplicate_albums import fix_duplicates
+        
+        # Run the cleanup
+        stats = fix_duplicates(dry_run=dry_run)
+        
+        return jsonify({
+            "success": True,
+            "dry_run": dry_run,
+            "stats": stats,
+            "message": f"{'Would delete' if dry_run else 'Deleted'} {stats['tracks_deleted']} duplicate tracks from {stats['albums_affected']} albums"
+        })
+    
+    except Exception as e:
+        logging.error(f"Duplicate cleanup error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+

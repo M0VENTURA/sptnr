@@ -2,12 +2,23 @@
 """Quick test to verify beets config creation."""
 
 import sys
+import os
 from pathlib import Path
 import tempfile
 import shutil
 
+# Create a temporary directory and set up environment
+tmpdir = tempfile.mkdtemp()
+os.environ['LOG_PATH'] = os.path.join(tmpdir, 'test.log')
+os.environ['DB_PATH'] = os.path.join(tmpdir, 'test.db')
+
 # Add current dir to path
 sys.path.insert(0, str(Path(__file__).parent))
+
+# Import and patch BEETS_DB_PATH before importing BeetsAutoImporter
+import beets_auto_import
+beets_db_path = os.path.join(tmpdir, 'beets', 'musiclibrary.db')
+beets_auto_import.BEETS_DB_PATH = beets_db_path
 
 from beets_auto_import import BeetsAutoImporter
 

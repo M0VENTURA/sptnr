@@ -444,6 +444,28 @@
           </div>
         </div>
       </div>
+      
+      <!-- Database Cleanup Section -->
+      <hr class="my-4">
+      <h5 class="mb-3"><i class="bi bi-trash"></i> Clean Up Duplicate Albums</h5>
+      <div class="row g-3">
+        <div class="col-12">
+          <p class="text-muted">
+            Remove duplicate albums that may have been created when Navidrome rescanned the library with different track IDs.
+            This tool identifies tracks with the same artist, album, and title, keeping only the track with the best metadata.
+          </p>
+          <div class="d-flex gap-2">
+            <button type="button" class="btn btn-outline-primary" id="cleanupDryRunBtn" onclick="cleanupDuplicates(true)">
+              <i class="bi bi-eye"></i> Preview Cleanup
+            </button>
+            <button type="button" class="btn btn-danger" id="cleanupApplyBtn" onclick="cleanupDuplicates(false)">
+              <i class="bi bi-trash"></i> Apply Cleanup
+            </button>
+          </div>
+          <div id="cleanupMsg" class="mt-2"></div>
+        </div>
+      </div>
+      
       <!-- Postgres Migration Section -->
       <hr class="my-4">
       <h5 class="mb-3"><i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL</h5>
@@ -1224,6 +1246,63 @@ document.addEventListener('DOMContentLoaded', function() {
 }
 </style>
 <script>
+function cleanupDuplicates(dryRun) {
+  const previewBtn = document.getElementById('cleanupDryRunBtn');
+  const applyBtn = document.getElementById('cleanupApplyBtn');
+  const msg = document.getElementById('cleanupMsg');
+  
+  // Disable both buttons
+  previewBtn.disabled = true;
+  applyBtn.disabled = true;
+  
+  if (dryRun) {
+    previewBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Analyzing...';
+  } else {
+    applyBtn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Cleaning...';
+  }
+  
+  msg.innerHTML = '';
+  
+  fetch('/api/database/cleanup-duplicates', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ dry_run: dryRun })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.success) {
+      const stats = data.stats;
+      let html = '<div class="alert alert-' + (dryRun ? 'info' : 'success') + '">';
+      html += '<strong>' + (dryRun ? 'Preview Results:' : 'Cleanup Complete!') + '</strong><br>';
+      html += data.message + '<br>';
+      html += '<ul class="mb-0 mt-2">';
+      html += '<li>Duplicate sets found: ' + stats.duplicate_sets + '</li>';
+      html += '<li>Tracks to keep: ' + stats.tracks_kept + '</li>';
+      html += '<li>Tracks ' + (dryRun ? 'to delete' : 'deleted') + ': ' + stats.tracks_deleted + '</li>';
+      html += '<li>Albums affected: ' + stats.albums_affected + '</li>';
+      html += '</ul>';
+      html += '</div>';
+      msg.innerHTML = html;
+      
+      if (dryRun && stats.tracks_deleted > 0) {
+        msg.innerHTML += '<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> To apply these changes, click "Apply Cleanup"</div>';
+      }
+    } else {
+      msg.innerHTML = '<div class="alert alert-danger">Error: ' + (data.error || 'Unknown error') + '</div>';
+    }
+  })
+  .catch(error => {
+    msg.innerHTML = '<div class="alert alert-danger">Error: ' + error.message + '</div>';
+  })
+  .finally(() => {
+    // Re-enable buttons and reset text
+    previewBtn.disabled = false;
+    applyBtn.disabled = false;
+    previewBtn.innerHTML = '<i class="bi bi-eye"></i> Preview Cleanup';
+    applyBtn.innerHTML = '<i class="bi bi-trash"></i> Apply Cleanup';
+  });
+}
+
 function migrateToPostgres() {
   const btn = document.getElementById('migratePostgresBtn');
   btn.disabled = true;
