@@ -76,7 +76,8 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
 def normalize_title(title: str) -> str:
     """
     Normalize track title for strict matching.
-    Removes special characters, extra whitespace, and converts to lowercase.
+    Removes special characters, extra whitespace, converts to lowercase,
+    and strips leading articles (a, an, the).
     
     Args:
         title: Track title to normalize
@@ -96,6 +97,9 @@ def normalize_title(title: str) -> str:
     
     # Normalize whitespace
     normalized = ' '.join(normalized.split())
+    
+    # Strip leading articles (a, an, the)
+    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized.strip())
     
     return normalized.strip()
 
@@ -274,7 +278,7 @@ def extract_version_tag(title: str) -> str | None:
 def normalize_title_for_matching(title: str) -> str:
     """
     Normalize title for matching by removing trailing suffixes like "- Single" or "- EP".
-    Also removes punctuation and extra whitespace.
+    Also removes punctuation, extra whitespace, and strips leading articles (a, an, the).
     
     Args:
         title: Track or album title
@@ -296,6 +300,9 @@ def normalize_title_for_matching(title: str) -> str:
     
     # Collapse whitespace
     normalized = ' '.join(normalized.split())
+    
+    # Strip leading articles (a, an, the)
+    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized.strip())
     
     return normalized.strip()
 

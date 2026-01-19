@@ -37,6 +37,7 @@ def normalize_title_strict(title: str) -> str:
     - remove punctuation
     - remove bracketed suffixes
     - collapse whitespace
+    - strip leading articles (a, an, the)
     """
     # Remove bracketed/parenthesized content
     normalized = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
@@ -49,6 +50,8 @@ def normalize_title_strict(title: str) -> str:
     normalized = re.sub(r'[^\w\s]', '', normalized)
     # Lowercase
     normalized = normalized.lower().strip()
+    # Strip leading articles (a, an, the)
+    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized)
     # Collapse whitespace
     normalized = re.sub(r'\s+', ' ', normalized)
     return normalized
