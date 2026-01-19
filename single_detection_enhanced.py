@@ -732,17 +732,17 @@ def detect_single_enhanced(
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
-            # Always log Discogs checks to unified and info logs (not dependent on verbose)
-            log_unified(f"   Checking Discogs for single: {title}")
-            log_info(f"   Discogs API: Searching for single '{title}' by '{artist}'")
+            # Log Discogs checks to info log only (not unified)
+            log_info(f"   Checking Discogs for single: {title}")
+            log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
-                log_unified(f"   ✓ Discogs confirms single: {title}")
-                log_info(f"   Discogs result: Single confirmed for '{title}'")
+                log_info(f"   ✓ Discogs confirms single: {title}")
+                log_debug(f"   Discogs result: Single confirmed for '{title}'")
                 
                 # Per problem statement: Discogs = HIGH confidence, skip other checks
                 result['single_status'] = 'high'
@@ -768,21 +768,20 @@ def detect_single_enhanced(
                 
                 return result
             else:
-                # Always log negative results too (not just in verbose mode)
-                log_unified(f"   ⓘ Discogs does not confirm single: {title}")
-                log_info(f"   Discogs result: No single found for '{title}'")
+                log_info(f"   ⓘ Discogs does not confirm single: {title}")
+                log_debug(f"   Discogs result: No single found for '{title}'")
         except Exception as e:
-            log_unified(f"   ⚠ Discogs single check failed for {title}: {e}")
-            log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
+            log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not discogs_client:
-                log_unified(f"   ⓘ Discogs client not available")
-                log_info(f"   Discogs: Client not available (module import failed)")
+                log_info(f"   ⓘ Discogs client not available")
+                log_debug(f"   Discogs: Client not available (module import failed)")
             elif not getattr(discogs_client, 'enabled', True):
-                log_unified(f"   ⓘ Discogs client is disabled")
-                log_info(f"   Discogs: Client is disabled in configuration")
+                log_info(f"   ⓘ Discogs client is disabled")
+                log_debug(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
@@ -820,78 +819,76 @@ def detect_single_enhanced(
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
-            # Always log MusicBrainz checks to unified and info logs (not dependent on verbose)
-            log_unified(f"   Checking MusicBrainz for single: {title}")
-            log_info(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
+            # Log MusicBrainz checks to info log only (not unified)
+            log_info(f"   Checking MusicBrainz for single: {title}")
+            log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
             musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
             if musicbrainz_confirmed:
                 result['single_sources'].append('musicbrainz')
                 result['single_sources_used'].append('musicbrainz')
-                log_unified(f"   ✓ MusicBrainz confirms single: {title}")
-                log_info(f"   MusicBrainz result: Single confirmed for '{title}'")
+                log_info(f"   ✓ MusicBrainz confirms single: {title}")
+                log_debug(f"   MusicBrainz result: Single confirmed for '{title}'")
             else:
-                # Always log negative results too (not just in verbose mode)
-                log_unified(f"   ⓘ MusicBrainz does not confirm single: {title}")
-                log_info(f"   MusicBrainz result: No single found for '{title}'")
+                log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                log_debug(f"   MusicBrainz result: No single found for '{title}'")
         except Exception as e:
             # Log SSL and connection errors more gracefully
             error_type = type(e).__name__
             if 'SSL' in error_type or 'ssl' in str(e).lower():
-                log_unified(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
-                log_info(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+                log_debug(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
             elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
-                log_unified(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
-                log_info(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
+                log_info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+                log_debug(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
             else:
-                log_unified(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
-                log_info(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                log_debug(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not musicbrainz_client:
-                log_unified(f"   ⓘ MusicBrainz client not available")
-                log_info(f"   MusicBrainz: Client not available (module import failed)")
+                log_info(f"   ⓘ MusicBrainz client not available")
+                log_debug(f"   MusicBrainz: Client not available (module import failed)")
             elif not getattr(musicbrainz_client, 'enabled', True):
-                log_unified(f"   ⓘ MusicBrainz client is disabled")
-                log_info(f"   MusicBrainz: Client is disabled in configuration")
+                log_info(f"   ⓘ MusicBrainz client is disabled")
+                log_debug(f"   MusicBrainz: Client is disabled in configuration")
     
     # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE)
     discogs_video_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         if hasattr(discogs_client, 'has_official_video'):
             try:
-                # Always log Discogs video checks to unified and info logs
-                log_unified(f"   Checking Discogs for music video: {title}")
-                log_info(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                # Log Discogs video checks to info log only (not unified)
+                log_info(f"   Checking Discogs for music video: {title}")
+                log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
                 
                 # Check for official music video
                 discogs_video_confirmed = discogs_client.has_official_video(title, artist)
                 if discogs_video_confirmed:
                     result['single_sources'].append('discogs_video')
                     result['single_sources_used'].append('discogs_video')
-                    log_unified(f"   ✓ Discogs confirms music video: {title}")
-                    log_info(f"   Discogs result: Music video confirmed for '{title}'")
+                    log_info(f"   ✓ Discogs confirms music video: {title}")
+                    log_debug(f"   Discogs result: Music video confirmed for '{title}'")
                 else:
-                    # Always log negative results too (not just in verbose mode)
-                    log_unified(f"   ⓘ Discogs does not confirm music video: {title}")
-                    log_info(f"   Discogs result: No music video found for '{title}'")
+                    log_info(f"   ⓘ Discogs does not confirm music video: {title}")
+                    log_debug(f"   Discogs result: No music video found for '{title}'")
             except Exception as e:
-                log_unified(f"   ⚠ Discogs video check failed for {title}: {e}")
-                log_info(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
+                log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
         elif verbose:
-            log_unified(f"   ⓘ Discogs video method not available")
-            log_info(f"   Discogs: has_official_video method not available")
+            log_info(f"   ⓘ Discogs video method not available")
+            log_debug(f"   Discogs: has_official_video method not available")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not discogs_client:
-                log_unified(f"   ⓘ Discogs video client not available")
-                log_info(f"   Discogs: Video client not available")
+                log_info(f"   ⓘ Discogs video client not available")
+                log_debug(f"   Discogs: Video client not available")
             elif not getattr(discogs_client, 'enabled', True):
-                log_unified(f"   ⓘ Discogs client is disabled")
-                log_info(f"   Discogs: Client is disabled in configuration")
+                log_info(f"   ⓘ Discogs client is disabled")
+                log_debug(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
