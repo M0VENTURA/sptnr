@@ -8,6 +8,7 @@ import os
 import json
 import subprocess
 import logging
+import sqlite3
 from pathlib import Path
 
 # Import centralized logging
@@ -400,13 +401,34 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
         
         file_path = row['beets_path'] if row['beets_path'] else row['file_path']
         
-        if not file_path or not os.path.exists(file_path):
-            logger.error(f"File not found for track {track_id}: {file_path}")
+        if not file_path:
+            logger.error(f"No file path found for track {track_id}")
+            return False
+        
+        # Construct the full file path using MUSIC_ROOT if the path is relative
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+        if not os.path.isabs(file_path):
+            full_file_path = os.path.join(music_root, file_path)
+        else:
+            # If path starts with /music/, try both with and without MUSIC_ROOT
+            if file_path.startswith("/music/"):
+                # First try as-is
+                if os.path.exists(file_path):
+                    full_file_path = file_path
+                else:
+                    # Try removing /music/ prefix and prepending MUSIC_ROOT
+                    rel_path = file_path[len("/music/"):]
+                    full_file_path = os.path.join(music_root, rel_path)
+            else:
+                full_file_path = file_path
+        
+        if not os.path.exists(full_file_path):
+            logger.error(f"File not found for track {track_id}: {full_file_path} (original: {file_path})")
             return False
         
         # Build beets modify command
-        # Use the file path to identify the track
-        cmd = ["beet", "modify", "-y", f"path:{file_path}"]
+        # Use the full file path to identify the track
+        cmd = ["beet", "modify", "-y", f"path:{full_file_path}"]
         
         # Add each metadata field to update
         for key, value in metadata.items():
