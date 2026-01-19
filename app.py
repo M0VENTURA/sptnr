@@ -8073,6 +8073,7 @@ def api_album_apply_discogs_id():
 def api_album_apply_genres():
     """Apply selected genres to all MP3 files in an album"""
     logger = logging.getLogger('sptnr')
+    conn = None
     try:
         data = request.get_json()
         artist = data.get("artist", "").strip()
@@ -8093,22 +8094,12 @@ def api_album_apply_genres():
         tracks = cursor.fetchall()
         
         if not tracks:
-            conn.close()
             return jsonify({"error": "No tracks found in album"}), 404
         
-        # Update database with new genres
-        genres_str = ','.join(genres)
-        cursor.execute("""
-            UPDATE tracks
-            SET genres = ?
-            WHERE artist = ? AND album = ?
-        """, (genres_str, artist, album))
-        conn.commit()
-        conn.close()
-        
-        # Write genres to MP3 files using mutagen
+        # Write genres to MP3 files using mutagen and update database per-track
         updated_count = 0
         failed_files = []
+        genres_str = ','.join(genres)
         
         try:
             from mutagen.id3 import ID3, TCON
@@ -8116,7 +8107,7 @@ def api_album_apply_genres():
             
             for track in tracks:
                 # Prefer beets_path, fallback to file_path
-                file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                file_path = track.get('beets_path') or track.get('file_path')
                 
                 if not file_path or not os.path.exists(file_path):
                     failed_files.append(track['title'])
@@ -8135,11 +8126,21 @@ def api_album_apply_genres():
                     
                     # Save changes
                     audio.save()
+                    
+                    # Update database only after successful MP3 update
+                    cursor.execute("""
+                        UPDATE tracks
+                        SET genres = ?
+                        WHERE id = ?
+                    """, (genres_str, track['id']))
+                    
                     updated_count += 1
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
                     failed_files.append(track['title'])
+            
+            conn.commit()
             
         except ImportError:
             return jsonify({
@@ -8164,11 +8165,15 @@ def api_album_apply_genres():
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route("/api/artist/apply-genres", methods=["POST"])
 def api_artist_apply_genres():
     """Apply selected genres to all MP3 files for all tracks by an artist"""
     logger = logging.getLogger('sptnr')
+    conn = None
     try:
         data = request.get_json()
         artist = data.get("artist", "").strip()
@@ -8188,22 +8193,12 @@ def api_artist_apply_genres():
         tracks = cursor.fetchall()
         
         if not tracks:
-            conn.close()
             return jsonify({"error": "No tracks found for artist"}), 404
         
-        # Update database with new genres for all artist tracks
-        genres_str = ','.join(genres)
-        cursor.execute("""
-            UPDATE tracks
-            SET genres = ?
-            WHERE artist = ?
-        """, (genres_str, artist))
-        conn.commit()
-        conn.close()
-        
-        # Write genres to MP3 files using mutagen
+        # Write genres to MP3 files using mutagen and update database per-track
         updated_count = 0
         failed_files = []
+        genres_str = ','.join(genres)
         
         try:
             from mutagen.id3 import ID3, TCON
@@ -8211,7 +8206,7 @@ def api_artist_apply_genres():
             
             for track in tracks:
                 # Prefer beets_path, fallback to file_path
-                file_path = track['beets_path'] if track.get('beets_path') else track.get('file_path')
+                file_path = track.get('beets_path') or track.get('file_path')
                 
                 if not file_path or not os.path.exists(file_path):
                     failed_files.append(f"{track['album']} - {track['title']}")
@@ -8230,11 +8225,21 @@ def api_artist_apply_genres():
                     
                     # Save changes
                     audio.save()
+                    
+                    # Update database only after successful MP3 update
+                    cursor.execute("""
+                        UPDATE tracks
+                        SET genres = ?
+                        WHERE id = ?
+                    """, (genres_str, track['id']))
+                    
                     updated_count += 1
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
                     failed_files.append(f"{track['album']} - {track['title']}")
+            
+            conn.commit()
             
         except ImportError:
             return jsonify({
@@ -8256,10 +8261,13 @@ def api_artist_apply_genres():
         }), 200
         
     except Exception as e:
-        logger.error(f"Apply artist genres error: {e}")
+        logger.error(f"Apply genres error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
