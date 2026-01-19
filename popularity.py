@@ -2451,12 +2451,18 @@ def popularity_scan(
                         except json.JSONDecodeError:
                             track_sources = []
                         
-                        # Format sources for display (capitalize first letter)
-                        formatted_sources = [s.capitalize() if s != "discogs_video" else "Discogs Video" 
-                                           for s in track_sources]
+                        # Format sources for display using mapping for consistent naming
+                        SOURCE_DISPLAY_NAMES = {
+                            "musicbrainz": "MusicBrainz",
+                            "discogs": "Discogs",
+                            "discogs_video": "Discogs Video",
+                            "spotify": "Spotify"
+                        }
+                        formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
                         sources_str = ", ".join(formatted_sources) if formatted_sources else ""
                         
-                        stars_str = "*" * track_stars
+                        # Create star rating string (max 5 stars)
+                        stars_str = "★" * min(track_stars, 5)
                         
                         if track_is_single:
                             singles.append((track_title, stars_str, sources_str))
@@ -2468,13 +2474,14 @@ def popularity_scan(
                         log_unified(f"Single Detection Scan - Singles Detected in {artist} - {album}")
                         for title, stars, sources in singles:
                             source_info = f" ({sources})" if sources else ""
-                            log_unified(f"Single Detection Scan - {stars:5s} {artist} - {title}{source_info}")
+                            # Use dynamic width based on max possible stars (5)
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{source_info}")
                     
                     # Log popularity ratings for remaining songs
                     if non_singles:
                         log_unified(f"Single Detection Scan - Popularity Rating for Remaining Songs")
                         for title, stars in non_singles:
-                            log_unified(f"Single Detection Scan - {stars:5s} {artist} - {title}")
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
                 
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
