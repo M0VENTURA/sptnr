@@ -312,6 +312,85 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         return False
 
 
+def get_cache_duration_hours(track_year: int = None) -> int:
+    """
+    Determine cache duration based on track age.
+    
+    Older albums change less frequently, so we can cache longer:
+    - Albums > 3 years old: 7 days (168 hours)
+    - Albums 1-3 years old: 3 days (72 hours)
+    - Recent albums < 1 year: 24 hours
+    - No year data: 24 hours (conservative)
+    
+    Args:
+        track_year: Year the track was released
+        
+    Returns:
+        Cache duration in hours
+    """
+    if not track_year:
+        return 24  # Default: 24 hours
+    
+    try:
+        current_year = datetime.now().year
+        age_years = current_year - int(track_year)
+        
+        if age_years >= 3:
+            return 168  # 7 days for albums over 3 years old
+        elif age_years >= 1:
+            return 72   # 3 days for albums 1-3 years old
+        else:
+            return 24   # 24 hours for recent albums
+    except (ValueError, TypeError):
+        return 24  # Default on error
+
+
+def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
+    """
+    Check if a cached API score should be reused instead of fetching from API.
+    
+    Uses age-based cache duration - older albums are cached longer.
+    
+    Args:
+        track: Track dictionary with cached values
+        cache_field: Name of the field containing cached score
+        last_lookup_field: Name of the field containing last lookup timestamp
+        
+    Returns:
+        True if cached value should be used, False if API lookup needed
+    """
+    try:
+        cached_value = track.get(cache_field)
+        last_lookup = track.get(last_lookup_field)
+        
+        # No cached data available
+        if not cached_value or cached_value <= 0:
+            return False
+        
+        if not last_lookup:
+            return False
+        
+        # Parse timestamp and check age
+        try:
+            last_lookup_time = datetime.fromisoformat(last_lookup)
+            age = datetime.now() - last_lookup_time
+            
+            # Determine cache duration based on track year
+            cache_duration_hours = get_cache_duration_hours(track.get('year'))
+            
+            if age < timedelta(hours=cache_duration_hours):
+                log_debug(f"Using cached {cache_field} (age: {age.total_seconds() / 3600:.1f}h, limit: {cache_duration_hours}h)")
+                return True
+        except (ValueError, TypeError) as e:
+            log_debug(f"Invalid timestamp in {last_lookup_field}: {last_lookup} ({e})")
+            return False
+        
+        return False
+    except Exception as e:
+        log_debug(f"Error checking cache for {cache_field}: {e}")
+        return False
+
+
 def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection) -> dict:
     """
     Calculate artist-level popularity statistics from all albums.
@@ -1435,7 +1514,8 @@ def popularity_scan(
             sql_params.append(album_filter)
         
         sql = f"""
-            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year
+            SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
+                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -1615,6 +1695,42 @@ def popularity_scan(
                     log_info(f'Processing track: "{title}" (Track ID: {track_id})')
                     log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {artist}')
 
+                    # Check if we can use the complete cached popularity_score
+                    # This avoids all API calls if the final score is still valid
+                    use_full_cache = False
+                    if not (FORCE_RESCAN or force):
+                        if should_use_cached_score(track, 'popularity_score', 'last_spotify_lookup'):
+                            cached_popularity = track.get('popularity_score', 0)
+                            if cached_popularity > 0:
+                                # Use fully cached score - skip all API lookups
+                                use_full_cache = True
+                                log_info(f'Using complete cached popularity score for: {title} (score: {cached_popularity:.1f})')
+                                log_debug(f'Full score cache hit - skipping all API calls for track {track_id}')
+                                
+                                # Add to batch update with cached score
+                                track_updates.append((cached_popularity, track_id))
+                                scanned_count += 1
+                                album_scanned += 1
+                                tracks_processed += 1
+                                
+                                # Check milestones
+                                if tracks_processed == milestone_25 and 25 not in milestones_logged:
+                                    log_unified(f"Popularity Scan - 25% completed - {tracks_processed}/{total_tracks} songs")
+                                    log_debug(f"Progress milestone - 25% completed for album {album}")
+                                    milestones_logged.add(25)
+                                elif tracks_processed == milestone_50 and 50 not in milestones_logged:
+                                    log_unified(f"Popularity Scan - 50% completed - {tracks_processed}/{total_tracks} songs")
+                                    log_debug(f"Progress milestone - 50% completed for album {album}")
+                                    milestones_logged.add(50)
+                                elif tracks_processed == milestone_75 and 75 not in milestones_logged:
+                                    log_unified(f"Popularity Scan - 75% completed - {tracks_processed}/{total_tracks} songs")
+                                    log_debug(f"Progress milestone - 75% completed for album {album}")
+                                    milestones_logged.add(75)
+                                
+                                continue  # Skip to next track
+                    
+                    # If not using full cache, proceed with individual API lookups
+
                     # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
                     # This prevents the scan from hanging on albums with many bonus/live tracks
                     skip_spotify_lookup = any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS)
@@ -1622,16 +1738,18 @@ def popularity_scan(
                         log_info(f'Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
                         log_debug(f'Track "{title}" matched keyword filter for exclusion')
                     
-                    # Check if we should skip Spotify lookup based on 24-hour cache
-                    if not skip_spotify_lookup and not (FORCE_RESCAN or force):
-                        if should_skip_spotify_lookup(track_id, conn):
-                            skip_spotify_lookup = True
-                            log_info(f'Using cached Spotify data for: {title} (updated within 24 hours)')
-                            log_debug(f'Track {track_id} has recent Spotify data in cache')
-
-                    # Try to get popularity from Spotify (using cached artist ID)
+                    # Try to get popularity from Spotify (using cached data or API)
                     spotify_score = 0
                     spotify_search_results = None
+                    
+                    # Check if we can use cached Spotify popularity score
+                    if not skip_spotify_lookup and not (FORCE_RESCAN or force):
+                        if should_use_cached_score(track, 'spotify_popularity', 'last_spotify_lookup'):
+                            spotify_score = track.get('spotify_popularity', 0)
+                            skip_spotify_lookup = True
+                            log_info(f'Using cached Spotify popularity for: {title} (score: {spotify_score})')
+                            log_debug(f'Cached Spotify data reused for track {track_id}')
+                    
                     try:
                         if spotify_artist_id and not skip_spotify_lookup:
                             # Check rate limit before making API call
@@ -1758,9 +1876,21 @@ def popularity_scan(
                         import traceback
                         log_debug(f"Exception traceback: {traceback.format_exc()}")
 
-                    # Try to get popularity from Last.fm
+                    # Try to get popularity from Last.fm (using cached data or API)
                     lastfm_score = 0
-                    if not skip_spotify_lookup:  # Use same filter for Last.fm as Spotify
+                    skip_lastfm_lookup = skip_spotify_lookup  # Use same filter for Last.fm as Spotify
+                    
+                    # Check if we can use cached Last.fm playcount
+                    if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
+                        if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
+                            cached_playcount = track.get('lastfm_track_playcount', 0)
+                            if cached_playcount > 0:
+                                lastfm_score = calculate_lastfm_popularity_score(cached_playcount)
+                                skip_lastfm_lookup = True
+                                log_info(f'Using cached Last.fm playcount for: {title} (count: {cached_playcount}, score: {lastfm_score:.1f})')
+                                log_debug(f'Cached Last.fm data reused for track {track_id}')
+                    
+                    if not skip_lastfm_lookup:  # Fetch from API if not cached
                         try:
                             # Check rate limit before making API call
                             rate_limiter = get_rate_limiter()
@@ -1804,8 +1934,6 @@ def popularity_scan(
                         except Exception as e:
                             log_info(f"Last.fm lookup failed for {artist} - {title}: {e}")
                             log_debug(f"Last.fm error details: {type(e).__name__}: {str(e)}")
-                    else:
-                        log_info(f'Skipping Last.fm lookup for: {title} (keyword filter)')
 
                     # Try to get ListenBrainz score if mbid is available
                     listenbrainz_score = 0
