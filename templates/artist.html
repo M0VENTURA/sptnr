@@ -1375,7 +1375,7 @@ function openEditArtistIdsModal() {
             </div>
             <div class="mb-3">
               <label for="editDiscogsArtistId" class="form-label">Discogs Artist ID</label>
-              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml(document.getElementById('discogsArtistId')?.value || '')}" placeholder="e.g., 123456">
+              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml((function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })())}" placeholder="e.g., 123456">
               <div class="form-text">
                 <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search Discogs</a> to find the artist ID
               </div>

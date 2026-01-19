@@ -2009,18 +2009,21 @@ def api_artist_image():
     
     # Try to fetch from external sources as fallback
     try:
-        # Try to get artist MBID from database
+        # Try to get artist MBID from database (check all MBID fields)
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT beets_artist_mbid FROM tracks 
-            WHERE artist = ? AND beets_artist_mbid IS NOT NULL 
+            SELECT 
+                COALESCE(musicbrainz_artist_id, lastfm_artist_mbid, beets_artist_mbid) as artist_mbid
+            FROM tracks 
+            WHERE artist = ? 
+            AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL OR beets_artist_mbid IS NOT NULL)
             LIMIT 1
         """, (artist_name,))
         result = cursor.fetchone()
         conn.close()
         
-        artist_mbid = result['beets_artist_mbid'] if result else None
+        artist_mbid = result['artist_mbid'] if result else None
         
         # If no MBID in database, search for it
         if not artist_mbid:
