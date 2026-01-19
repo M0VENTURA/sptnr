@@ -6658,7 +6658,38 @@ def downloads_manager():
 @app.route("/smart-playlists")
 def smart_playlists():
     """Smart Playlist creation UI page"""
-    return render_template("smart_playlists.html")
+    # Get top 20 most used genres across the database
+    top_genres = []
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Query to get all genres and count songs
+        # Genres are stored as comma-separated values in the 'genres' field
+        cursor.execute("""
+            SELECT genres FROM tracks 
+            WHERE genres IS NOT NULL AND genres != ''
+        """)
+        
+        # Count genre occurrences
+        genre_counts = {}
+        for row in cursor.fetchall():
+            genres_str = row[0]
+            if genres_str:
+                # Split by comma and trim whitespace
+                genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
+                for genre in genres_list:
+                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
+        
+        # Sort by count (descending) and get top 20
+        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
+        
+        conn.close()
+    except Exception as e:
+        logging.error(f"Error fetching top genres: {e}")
+    
+    return render_template("smart_playlists.html", top_genres=top_genres)
 
 
 @app.route("/downloads-monitor")
