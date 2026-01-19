@@ -2419,7 +2419,7 @@ def popularity_scan(
                     if single_upgrades:
                         cursor.executemany(
                             """UPDATE tracks SET is_single = 1 WHERE id = ?""",
-                            [(track_id,) for track_id in single_upgrades]
+                            ((track_id,) for track_id in single_upgrades)
                         )
                         log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources)")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
