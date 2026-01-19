@@ -2306,7 +2306,7 @@ def api_album_update_ids():
 
 @app.route("/api/album/search-art")
 def api_album_search_art():
-    """Search for album art on MusicBrainz, Discogs, or Spotify"""
+    """Search for album art on MusicBrainz, Discogs, Spotify, or Apple Music"""
     artist_name = request.args.get("artist", "").strip()
     album_name = request.args.get("album", "").strip()
     source = request.args.get("source", "musicbrainz").strip()
@@ -2446,6 +2446,38 @@ def api_album_search_art():
                         continue
             else:
                 logger.warning("Spotify client not initialized")
+        
+        elif source == "applemusic":
+            # Search Apple Music/iTunes for album
+            from api_clients.applemusic import AppleMusicClient
+            
+            apple_music = AppleMusicClient()
+            
+            try:
+                logger.debug(f"Searching Apple Music for album: {artist_name} - {album_name}")
+                results = apple_music.search_album(album_name, artist_name, limit=15)
+                
+                for album in results:
+                    artwork_url = album.get("artworkUrl100", "")
+                    if artwork_url:
+                        # Replace 100x100 with higher resolution
+                        # iTunes URLs use /100x100bb. or /100x100. patterns before file extension
+                        if "/100x100bb." in artwork_url:
+                            artwork_url = artwork_url.replace("/100x100bb.", "/600x600bb.")
+                        elif "/100x100." in artwork_url:
+                            artwork_url = artwork_url.replace("/100x100.", "/600x600.")
+                        
+                        images.append({
+                            "url": artwork_url,
+                            "source": "Apple Music",
+                            "title": album.get("collectionName", ""),
+                            "artist": album.get("artistName", "")
+                        })
+                
+                if images:
+                    logger.debug(f"Found {len(images)} images on Apple Music")
+            except Exception as e:
+                logger.debug(f"Apple Music search failed: {e}")
         
         logger.info(f"Album art search for '{artist_name} - {album_name}' via {source}: {len(images)} images found")
         return jsonify({"images": images})
