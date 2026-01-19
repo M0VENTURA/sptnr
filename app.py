@@ -7807,6 +7807,53 @@ def api_album_discogs_lookup():
         logger.error(f"Discogs lookup error: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/album/spotify-genres", methods=["POST"])
+def api_album_spotify_genres():
+    """Get Spotify genres for an album from database"""
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json(force=True, silent=True)
+        if not data:
+            return jsonify({"error": "Invalid JSON in request body"}), 400
+        album = data.get("album", "")
+        artist = data.get("artist", "")
+        
+        if not album or not artist:
+            return jsonify({"error": "Missing album or artist"}), 400
+        
+        # Get Spotify artist genres from tracks in this album
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT spotify_artist_genres
+            FROM tracks
+            WHERE artist = ? AND album = ? 
+            AND spotify_artist_genres IS NOT NULL 
+            AND spotify_artist_genres != ''
+        """, (artist, album))
+        
+        genre_rows = cursor.fetchall()
+        conn.close()
+        
+        # Aggregate unique genres
+        genres = set()
+        for row in genre_rows:
+            try:
+                genre_value = row[0] if row else None
+                if genre_value:
+                    # Parse JSON array
+                    genre_list = json.loads(genre_value)
+                    if isinstance(genre_list, list):
+                        genres.update(genre_list)
+            except (json.JSONDecodeError, IndexError, TypeError) as e:
+                logger.debug(f"Error parsing Spotify genres: {e}")
+                continue
+        
+        return jsonify({"genres": sorted(list(genres))}), 200
+    except Exception as e:
+        logger.error(f"Spotify genres lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/album/apply-mbid", methods=["POST"])
 def api_album_apply_mbid():
     """Apply MusicBrainz ID and cover art to all tracks in an album"""

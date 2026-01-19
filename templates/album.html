@@ -406,7 +406,7 @@
         <div class="card-body">
             <!-- Recommended Genres from External Sources -->
             <div class="mb-4" id="recommendedGenresSection" style="display: none;">
-                <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from MusicBrainz/Discogs</h6>
+                <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from Spotify, MusicBrainz, and Discogs</h6>
                 <p class="text-muted small mb-2">Click genres to select, then apply to all tracks</p>
                 <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedGenres">
                     <span class="text-muted small">Loading...</span>
@@ -1151,8 +1151,14 @@
         btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
         container.innerHTML = '<span class="text-muted small">Loading recommendations...</span>';
         
-        // Fetch from both MusicBrainz and Discogs
+        // Fetch from Spotify, MusicBrainz and Discogs
         Promise.all([
+            fetch('/api/album/spotify-genres', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ album: albumName, artist: artistName })
+            }).then(r => r.json()).catch(() => ({genres: []})),
+            
             fetch('/api/album/musicbrainz', {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
@@ -1165,13 +1171,18 @@
                 body: JSON.stringify({ album: albumName, artist: artistName })
             }).then(r => r.json()).catch(() => ({results: []}))
         ])
-        .then(([mbData, discogsData]) => {
+        .then(([spotifyData, mbData, discogsData]) => {
             const genres = new Set();
+            
+            // Extract genres from Spotify
+            if (spotifyData.genres && spotifyData.genres.length > 0) {
+                spotifyData.genres.forEach(g => genres.add(g));
+            }
             
             // Extract genres from MusicBrainz results
             if (mbData.results && mbData.results.length > 0) {
                 // MusicBrainz doesn't typically include genres in release-group results
-                // So we'll mainly rely on Discogs
+                // So we'll mainly rely on Spotify and Discogs
             }
             
             // Extract genres from Discogs results
