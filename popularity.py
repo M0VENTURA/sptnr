@@ -1718,8 +1718,13 @@ def popularity_scan(
                                 log_info(f'Using complete cached popularity score for: {title} (score: {cached_popularity:.1f})')
                                 log_debug(f'Full score cache hit - skipping all API calls for track {track_id}')
                                 
-                                # Add to batch update with cached score
-                                track_updates.append((cached_popularity, track_id))
+                                # Get cached component scores
+                                cached_spotify_score = row_get(track, 'spotify_score', 0)
+                                cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
+                                cached_listenbrainz_score = row_get(track, 'listenbrainz_score', 0)
+                                
+                                # Add to batch update with cached scores
+                                track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_listenbrainz_score, track_id))
                                 scanned_count += 1
                                 album_scanned += 1
                                 tracks_processed += 1
@@ -2019,7 +2024,7 @@ def popularity_scan(
                     if scores and weights:
                         total_weight = sum(weights)
                         popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                        track_updates.append((popularity_score, track_id))
+                        track_updates.append((popularity_score, spotify_score, lastfm_score, listenbrainz_score, track_id))
                         scanned_count += 1
                         album_scanned += 1
                         log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -2047,7 +2052,7 @@ def popularity_scan(
                 # Batch update all popularity scores for this album in one commit
                 if track_updates:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, listenbrainz_score = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
