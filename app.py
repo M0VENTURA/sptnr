@@ -8626,4 +8626,29 @@ if __name__ == "__main__":
             logging.error(f"Error creating custom playlist: {e}", exc_info=True)
             return jsonify({"error": str(e)}), 500
 
+
+@app.route("/api/database/cleanup-duplicates", methods=["POST"])
+def api_cleanup_duplicates():
+    """API endpoint to clean up duplicate albums in the database"""
+    try:
+        data = request.get_json() or {}
+        dry_run = data.get("dry_run", True)
+        
+        # Import the cleanup function
+        from fix_duplicate_albums import fix_duplicates
+        
+        # Run the cleanup
+        stats = fix_duplicates(dry_run=dry_run)
+        
+        return jsonify({
+            "success": True,
+            "dry_run": dry_run,
+            "stats": stats,
+            "message": f"{'Would delete' if dry_run else 'Deleted'} {stats['tracks_deleted']} duplicate tracks from {stats['albums_affected']} albums"
+        })
+    
+    except Exception as e:
+        logging.error(f"Duplicate cleanup error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
     app.run(debug=False, host="0.0.0.0", port=5000)

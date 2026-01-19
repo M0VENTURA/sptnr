@@ -268,6 +268,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 navidrome_genre = t.get("genre", "")
                 navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
                 
+                # Get file path from Navidrome track data
+                # Navidrome provides 'path' field which is the file path relative to music folder
+                navidrome_path = t.get("path", "")
+                
                 # Get current single detection state to preserve user edits during Navidrome sync
                 current_single = get_current_single_detection(track_id)
                 log_debug(f"Track {track_id} - Current single detection: is_single={current_single['is_single']}, confidence={current_single['single_confidence']}")
@@ -296,7 +300,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
                     "lastfm_track_playcount": 0,
-                    "file_path": None,  # Leave file_path unset for Navidrome; beets import owns the canonical path
+                    "file_path": navidrome_path if navidrome_path else None,  # Store Navidrome path for better matching
                     "last_scanned": _now_local_iso(),
                     "spotify_album_type": "",
                     "spotify_total_tracks": 0,

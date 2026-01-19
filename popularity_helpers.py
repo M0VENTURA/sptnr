@@ -353,30 +353,45 @@ def save_to_db(track_data):
     album = sanitized_data.get('album')
     title = sanitized_data.get('title')
     duration = sanitized_data.get('duration')
+    file_path = sanitized_data.get('file_path')
     
     if artist and album and title:
-        # Look for existing track with same content
-        if duration:
-            # Match by artist, album, title, and duration (within 2 seconds tolerance)
+        # First try to match by file_path if available (most reliable)
+        if file_path:
             cursor.execute("""
                 SELECT id, beets_mbid, mbid, file_path, last_scanned 
                 FROM tracks 
-                WHERE artist = ? AND album = ? AND title = ? 
-                  AND ABS(COALESCE(duration, 0) - ?) <= 2
-                  AND id != ?
+                WHERE file_path = ? AND id != ?
                 LIMIT 1
-            """, (artist, album, title, duration, track_id))
+            """, (file_path, track_id))
+            existing = cursor.fetchone()
         else:
-            # Match by artist, album, title only
-            cursor.execute("""
-                SELECT id, beets_mbid, mbid, file_path, last_scanned 
-                FROM tracks 
-                WHERE artist = ? AND album = ? AND title = ? 
-                  AND id != ?
-                LIMIT 1
-            """, (artist, album, title, track_id))
+            existing = None
         
-        existing = cursor.fetchone()
+        # If no match by file_path, try content matching
+        if not existing:
+            # Look for existing track with same content
+            if duration:
+                # Match by artist, album, title, and duration (within 2 seconds tolerance)
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND ABS(COALESCE(duration, 0) - ?) <= 2
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, duration, track_id))
+            else:
+                # Match by artist, album, title only
+                cursor.execute("""
+                    SELECT id, beets_mbid, mbid, file_path, last_scanned 
+                    FROM tracks 
+                    WHERE artist = ? AND album = ? AND title = ? 
+                      AND id != ?
+                    LIMIT 1
+                """, (artist, album, title, track_id))
+            
+            existing = cursor.fetchone()
         
         if existing:
             existing_id = existing['id']
