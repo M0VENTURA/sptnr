@@ -285,22 +285,22 @@
             </div>
             <div class="row g-3 mt-2">
                 <div class="col-md-4">
-                    <label class="form-label fw-bold small">Spotify Artist ID</label>
+                    <label class="form-label fw-bold small">Spotify Album ID</label>
                     <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="spotifyArtistId" value="{{ album_data.spotify_artist_id or '' }}" readonly>
-                        {% if album_data.spotify_artist_id %}
-                        <a href="https://open.spotify.com/artist/{{ album_data.spotify_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+                        <input type="text" class="form-control" id="spotifyAlbumId" value="{{ album_data.spotify_album_id or '' }}" readonly>
+                        {% if album_data.spotify_album_id %}
+                        <a href="https://open.spotify.com/album/{{ album_data.spotify_album_id }}" target="_blank" class="btn btn-outline-secondary">
                             <i class="bi bi-box-arrow-up-right"></i>
                         </a>
                         {% endif %}
                     </div>
                 </div>
                 <div class="col-md-4">
-                    <label class="form-label fw-bold small">Discogs Artist ID</label>
+                    <label class="form-label fw-bold small">Discogs Album ID</label>
                     <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="discogsArtistId" value="{{ album_data.discogs_artist_id or '' }}" readonly>
-                        {% if album_data.discogs_artist_id %}
-                        <a href="https://www.discogs.com/artist/{{ album_data.discogs_artist_id }}" target="_blank" class="btn btn-outline-secondary">
+                        <input type="text" class="form-control" id="discogsAlbumId" value="{{ album_data.discogs_album_id or '' }}" readonly>
+                        {% if album_data.discogs_album_id %}
+                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary">
                             <i class="bi bi-box-arrow-up-right"></i>
                         </a>
                         {% endif %}
