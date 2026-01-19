@@ -256,11 +256,12 @@ def api_artist_search_images():
                 for artist in results:
                     artwork_url = artist.get("artworkUrl100", "")
                     if artwork_url:
-                        # Replace 100x100 with higher resolution (handle both 100x100bb and 100x100 formats)
-                        if "100x100bb" in artwork_url:
-                            artwork_url = artwork_url.replace("100x100bb", "500x500bb")
-                        else:
-                            artwork_url = artwork_url.replace("100x100", "500x500")
+                        # Replace 100x100 with higher resolution
+                        # iTunes URLs use /100x100bb. or /100x100. patterns before file extension
+                        if "/100x100bb." in artwork_url:
+                            artwork_url = artwork_url.replace("/100x100bb.", "/500x500bb.")
+                        elif "/100x100." in artwork_url:
+                            artwork_url = artwork_url.replace("/100x100.", "/500x500.")
                         images.append({
                             "url": artwork_url,
                             "source": "Apple Music",
