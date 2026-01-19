@@ -1029,7 +1029,9 @@ def detect_single_for_track(
     Args:
         title: Track title
         artist: Artist name
-        album_track_count: Number of tracks on the album (for context-based confidence)
+        album_track_count: Number of tracks on the album (currently unused; previously used for 
+            context-based confidence downgrading. Kept for backward compatibility with existing 
+            callers. May be removed in a future version.)
         spotify_results_cache: Optional dict mapping title to Spotify search results
         verbose: Enable verbose logging
         discogs_token: Optional Discogs API token (will load from config if not provided)
@@ -1318,12 +1320,6 @@ def detect_single_for_track(
         single_confidence = "medium"
     else:
         single_confidence = "low"
-    
-    # Album context rule: downgrade medium → low if album has >3 tracks
-    if single_confidence == "medium" and album_track_count > 3:
-        single_confidence = "low"
-        if verbose:
-            log_verbose(f"   ⓘ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
     
     # is_single = True only for high confidence singles (5* singles)
     is_single = single_confidence == "high"
