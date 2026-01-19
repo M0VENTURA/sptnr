@@ -8073,6 +8073,7 @@ def api_album_apply_discogs_id():
 def api_album_apply_genres():
     """Apply selected genres to all MP3 files in an album"""
     logger = logging.getLogger('sptnr')
+    conn = None
     try:
         data = request.get_json()
         artist = data.get("artist", "").strip()
@@ -8093,7 +8094,6 @@ def api_album_apply_genres():
         tracks = cursor.fetchall()
         
         if not tracks:
-            conn.close()
             return jsonify({"error": "No tracks found in album"}), 404
         
         # Write genres to MP3 files using mutagen and update database per-track
@@ -8141,10 +8141,8 @@ def api_album_apply_genres():
                     failed_files.append(track['title'])
             
             conn.commit()
-            conn.close()
             
         except ImportError:
-            conn.close()
             return jsonify({
                 "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
             }), 500
@@ -8167,11 +8165,15 @@ def api_album_apply_genres():
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route("/api/artist/apply-genres", methods=["POST"])
 def api_artist_apply_genres():
     """Apply selected genres to all MP3 files for all tracks by an artist"""
     logger = logging.getLogger('sptnr')
+    conn = None
     try:
         data = request.get_json()
         artist = data.get("artist", "").strip()
@@ -8191,7 +8193,6 @@ def api_artist_apply_genres():
         tracks = cursor.fetchall()
         
         if not tracks:
-            conn.close()
             return jsonify({"error": "No tracks found for artist"}), 404
         
         # Write genres to MP3 files using mutagen and update database per-track
@@ -8239,10 +8240,8 @@ def api_artist_apply_genres():
                     failed_files.append(f"{track['album']} - {track['title']}")
             
             conn.commit()
-            conn.close()
             
         except ImportError:
-            conn.close()
             return jsonify({
                 "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
             }), 500
@@ -8262,10 +8261,13 @@ def api_artist_apply_genres():
         }), 200
         
     except Exception as e:
-        logger.error(f"Apply artist genres error: {e}")
+        logger.error(f"Apply genres error: {e}")
         import traceback
         logger.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
+    finally:
+        if conn:
+            conn.close()
 
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
