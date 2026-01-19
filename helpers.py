@@ -99,9 +99,9 @@ def normalize_title(title: str) -> str:
     normalized = ' '.join(normalized.split())
     
     # Strip leading articles (a, an, the)
-    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized.strip())
+    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized)
     
-    return normalized.strip()
+    return normalized
 
 
 # Alternate version keywords for strict filtering
@@ -302,9 +302,9 @@ def normalize_title_for_matching(title: str) -> str:
     normalized = ' '.join(normalized.split())
     
     # Strip leading articles (a, an, the)
-    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized.strip())
+    normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized)
     
-    return normalized.strip()
+    return normalized
 
 
 def find_matching_spotify_single(
