@@ -312,6 +312,31 @@ def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
         return False
 
 
+def row_get(row, key, default=None):
+    """
+    Get a value from a sqlite3.Row object with a default fallback.
+    
+    sqlite3.Row objects don't have a .get() method like dictionaries,
+    so this helper provides similar functionality.
+    
+    Args:
+        row: sqlite3.Row object
+        key: Column name to retrieve
+        default: Default value if key doesn't exist or value is None
+        
+    Returns:
+        Value from row or default
+    """
+    try:
+        if key in row.keys():
+            value = row[key]
+            # Return default if value is None (NULL in database)
+            return value if value is not None else default
+        return default
+    except (KeyError, IndexError):
+        return default
+
+
 def get_cache_duration_hours(track_year: int = None) -> int:
     """
     Determine cache duration based on track age.
@@ -345,14 +370,14 @@ def get_cache_duration_hours(track_year: int = None) -> int:
         return 24  # Default on error
 
 
-def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
+def should_use_cached_score(track, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
     
     Uses age-based cache duration - older albums are cached longer.
     
     Args:
-        track: Track dictionary with cached values
+        track: Track row (sqlite3.Row) with cached values
         cache_field: Name of the field containing cached score
         last_lookup_field: Name of the field containing last lookup timestamp
         
@@ -360,8 +385,8 @@ def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: st
         True if cached value should be used, False if API lookup needed
     """
     try:
-        cached_value = track.get(cache_field)
-        last_lookup = track.get(last_lookup_field)
+        cached_value = row_get(track, cache_field)
+        last_lookup = row_get(track, last_lookup_field)
         
         # No cached data available
         if not cached_value or cached_value <= 0:
@@ -376,7 +401,7 @@ def should_use_cached_score(track: dict, cache_field: str, last_lookup_field: st
             age = datetime.now() - last_lookup_time
             
             # Determine cache duration based on track year
-            cache_duration_hours = get_cache_duration_hours(track.get('year'))
+            cache_duration_hours = get_cache_duration_hours(row_get(track, 'year'))
             
             if age < timedelta(hours=cache_duration_hours):
                 log_debug(f"Using cached {cache_field} (age: {age.total_seconds() / 3600:.1f}h, limit: {cache_duration_hours}h)")
@@ -1700,7 +1725,7 @@ def popularity_scan(
                     use_full_cache = False
                     if not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'popularity_score', 'last_spotify_lookup'):
-                            cached_popularity = track.get('popularity_score', 0)
+                            cached_popularity = row_get(track, 'popularity_score', 0)
                             if cached_popularity > 0:
                                 # Use fully cached score - skip all API lookups
                                 use_full_cache = True
@@ -1745,7 +1770,7 @@ def popularity_scan(
                     # Check if we can use cached Spotify popularity score
                     if not skip_spotify_lookup and not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'spotify_popularity', 'last_spotify_lookup'):
-                            spotify_score = track.get('spotify_popularity', 0)
+                            spotify_score = row_get(track, 'spotify_popularity', 0)
                             skip_spotify_lookup = True
                             log_info(f'Using cached Spotify popularity for: {title} (score: {spotify_score})')
                             log_debug(f'Cached Spotify data reused for track {track_id}')
@@ -1883,7 +1908,7 @@ def popularity_scan(
                     # Check if we can use cached Last.fm playcount
                     if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
                         if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
-                            cached_playcount = track.get('lastfm_track_playcount', 0)
+                            cached_playcount = row_get(track, 'lastfm_track_playcount', 0)
                             if cached_playcount > 0:
                                 lastfm_score = calculate_lastfm_popularity_score(cached_playcount)
                                 skip_lastfm_lookup = True
@@ -1937,7 +1962,7 @@ def popularity_scan(
 
                     # Try to get ListenBrainz score if mbid is available
                     listenbrainz_score = 0
-                    track_mbid = track.get("mbid")
+                    track_mbid = row_get(track, "mbid")
                     if track_mbid and not skip_spotify_lookup:  # Use same filter
                         try:
                             log_info(f'Getting ListenBrainz score for: {title}')
@@ -1968,7 +1993,7 @@ def popularity_scan(
 
                     # Calculate age score if year is available
                     age_score = 0
-                    track_year = track.get("year")
+                    track_year = row_get(track, "year")
                     if track_year:
                         try:
                             log_debug(f'Calculating age score for year: {track_year}')
