@@ -328,11 +328,9 @@ def row_get(row, key, default=None):
         Value from row or default
     """
     try:
-        if key in row.keys():
-            value = row[key]
-            # Return default if value is None (NULL in database)
-            return value if value is not None else default
-        return default
+        value = row[key]
+        # Return default if value is None (NULL in database)
+        return value if value is not None else default
     except (KeyError, IndexError):
         return default
 
@@ -370,7 +368,7 @@ def get_cache_duration_hours(track_year: int = None) -> int:
         return 24  # Default on error
 
 
-def should_use_cached_score(track, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
+def should_use_cached_score(track: sqlite3.Row, cache_field: str, last_lookup_field: str = 'last_spotify_lookup') -> bool:
     """
     Check if a cached API score should be reused instead of fetching from API.
     
