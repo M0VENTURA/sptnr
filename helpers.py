@@ -31,17 +31,14 @@ def clean_discogs_biography(text: str) -> str:
     
     # Remove "aka" when followed by nothing (when both sides were artist IDs)
     # e.g., "[a123] aka [a456]" becomes "aka" which should be removed
-    cleaned = re.sub(r'\baka\s*(?=\(|\s*\(|,|\.|\s+\()', '', cleaned)
+    # Simplified lookahead pattern
+    cleaned = re.sub(r'\baka\s*(?=\s*\(|,|\.)', '', cleaned)
     
     # Remove leading "aka " at the start of content after removing IDs
     cleaned = re.sub(r'^\s*aka\s+', '', cleaned)
     
     # Clean up multiple spaces
     cleaned = re.sub(r'\s+', ' ', cleaned)
-    
-    # Clean up sequences like "Members: (since..." where a name was removed
-    # This handles cases where we have "(since 2000)" with no name before it
-    cleaned = re.sub(r':\s+\(', ': (', cleaned)
     
     return cleaned.strip()
 
