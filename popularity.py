@@ -2019,7 +2019,7 @@ def popularity_scan(
                     if scores and weights:
                         total_weight = sum(weights)
                         popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                        track_updates.append((popularity_score, track_id))
+                        track_updates.append((popularity_score, spotify_score, lastfm_score, listenbrainz_score, track_id))
                         scanned_count += 1
                         album_scanned += 1
                         log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -2047,7 +2047,7 @@ def popularity_scan(
                 # Batch update all popularity scores for this album in one commit
                 if track_updates:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, listenbrainz_score = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
