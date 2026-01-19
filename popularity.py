@@ -211,8 +211,8 @@ def detect_alternate_takes(tracks: list) -> dict:
     
     for track in tracks:
         track_id = track['id']
-        title = track['title'] if track['title'] else ''
-        track_number = track['track_number'] if track['track_number'] else 999
+        title = row_get(track, 'title', '')
+        track_number = row_get(track, 'track_number', 999)
         
         # Check if this track has parentheses at the end
         if re.match(r'^.*\([^)]*\)$', title):
@@ -1810,11 +1810,11 @@ def popularity_scan(
                                     # Get track metadata for strict matching
                                     track_duration_ms = None
                                     track_isrc = None
-                                    if track["duration"]:
+                                    track_duration = row_get(track, "duration", None)
+                                    if track_duration:
                                         # Duration is stored in seconds, convert to milliseconds
-                                        track_duration_ms = int(track["duration"] * 1000)
-                                    if track["isrc"]:
-                                        track_isrc = track["isrc"]
+                                        track_duration_ms = int(track_duration * 1000)
+                                    track_isrc = row_get(track, "isrc", None)
                                     
                                     log_debug(f'Strict matching - duration_ms: {track_duration_ms}, isrc: {track_isrc}')
                                     best_match = select_best_spotify_match_strict(
@@ -2137,20 +2137,20 @@ def popularity_scan(
                 user_set_singles = set()
                 for track in album_tracks:
                     track_id = track["id"]
-                    is_single = track["is_single"] if track["is_single"] else 0
-                    single_sources_json = track["single_sources"] if track["single_sources"] else "[]"
+                    is_single = row_get(track, "is_single", 0)
+                    single_sources_json = row_get(track, "single_sources", "[]")
                     
                     # Track is user-set if is_single=1 but has no automated sources
                     try:
                         sources = json.loads(single_sources_json) if single_sources_json else []
                         if is_single == 1 and (not sources or len(sources) == 0):
                             user_set_singles.add(track_id)
-                            log_info(f"Preserving user-set single: {track['title']}")
-                            log_debug(f"User-set single detected - track_id: {track_id}, title: {track['title']}")
+                            log_info(f"Preserving user-set single: {row_get(track, 'title', 'Unknown')}")
+                            log_debug(f"User-set single detected - track_id: {track_id}, title: {row_get(track, 'title', 'Unknown')}")
                     except (json.JSONDecodeError, TypeError):
                         if is_single == 1:
                             user_set_singles.add(track_id)
-                            log_info(f"Preserving user-set single (malformed sources): {track['title']}")
+                            log_info(f"Preserving user-set single (malformed sources): {row_get(track, 'title', 'Unknown')}")
                 
                 # Batch updates for singles detection
                 singles_updates = []
@@ -2165,9 +2165,9 @@ def popularity_scan(
                     log_debug(f"Processing single detection for track: {title} (ID: {track_id})")
                     
                     # Get additional fields for advanced detection
-                    track_isrc = track["isrc"] if track["isrc"] else None
-                    track_duration = track["duration"] if track["duration"] else None
-                    track_album_type = track["spotify_album_type"] if track["spotify_album_type"] else None
+                    track_isrc = row_get(track, "isrc", None)
+                    track_duration = row_get(track, "duration", None)
+                    track_album_type = row_get(track, "spotify_album_type", None)
                     
                     # Get the popularity score for this track (may have been calculated earlier)
                     track_popularity = 0.0
