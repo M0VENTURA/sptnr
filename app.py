@@ -1248,7 +1248,8 @@ def artist_detail(name):
                     MAX(beets_artist_mbid) as beets_artist_mbid,
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id
+                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                    MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -1266,7 +1267,8 @@ def artist_detail(name):
                     NULL as beets_artist_mbid,
                     NULL as spotify_artist_id,
                     NULL as lastfm_artist_mbid,
-                    NULL as musicbrainz_artist_id
+                    NULL as musicbrainz_artist_id,
+                    NULL as discogs_artist_id
                 FROM tracks
                 WHERE artist = ?
             """, (name,))
@@ -1812,6 +1814,7 @@ def api_artist_bio():
         artist_mbid = row['beets_artist_mbid'] if row else None
         bio = ""
         source = "Unknown"
+        mbid_newly_found = False
         
         # Try MusicBrainz first with shorter timeout
         if not artist_mbid:
@@ -1827,6 +1830,7 @@ def api_artist_bio():
                 artists = data.get("artists", [])
                 if artists:
                     artist_mbid = artists[0].get("id")
+                    mbid_newly_found = True
             except Exception as e:
                 logging.debug(f"MusicBrainz artist search failed: {e}")
                 artist_mbid = None
@@ -1861,6 +1865,24 @@ def api_artist_bio():
                         source = "Discogs"
             except Exception as e:
                 logging.debug(f"Discogs bio fetch failed: {e}")
+        
+        # Save the MusicBrainz artist ID to the database if we found it
+        if artist_mbid and mbid_newly_found:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                # Update both lastfm_artist_mbid and musicbrainz_artist_id fields
+                # for backwards compatibility and consistency
+                cursor.execute("""
+                    UPDATE tracks 
+                    SET lastfm_artist_mbid = ?, musicbrainz_artist_id = ?
+                    WHERE artist = ?
+                """, (artist_mbid, artist_mbid, artist_name))
+                conn.commit()
+                conn.close()
+                logging.info(f"Saved MusicBrainz artist ID {artist_mbid} for {artist_name}")
+            except Exception as e:
+                logging.error(f"Failed to save MusicBrainz artist ID: {e}")
         
         return jsonify({
             "bio": bio,
@@ -1951,7 +1973,7 @@ def api_create_essential_playlist():
 
 @app.route("/api/artist/image")
 def api_artist_image():
-    """Get artist image - from database or placeholder"""
+    """Get artist image - from database, external sources, or placeholder"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
@@ -1984,6 +2006,62 @@ def api_artist_image():
         
     except Exception as e:
         logging.error(f"Error fetching artist image: {e}")
+    
+    # Try to fetch from external sources as fallback
+    try:
+        # Try to get artist MBID from database (check all MBID fields)
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT 
+                COALESCE(musicbrainz_artist_id, lastfm_artist_mbid, beets_artist_mbid) as artist_mbid
+            FROM tracks 
+            WHERE artist = ? 
+            AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL OR beets_artist_mbid IS NOT NULL)
+            LIMIT 1
+        """, (artist_name,))
+        result = cursor.fetchone()
+        conn.close()
+        
+        artist_mbid = result['artist_mbid'] if result else None
+        
+        # If no MBID in database, search for it
+        if not artist_mbid:
+            search_url = "https://musicbrainz.org/ws/2/artist"
+            params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
+            headers = {"User-Agent": "sptnr-web/1.0"}
+            resp = requests.get(search_url, params=params, headers=headers, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                artists = data.get("artists", [])
+                if artists:
+                    artist_mbid = artists[0].get("id")
+        
+        # Try to get a release by this artist and use its cover art
+        if artist_mbid:
+            # Search for releases by this artist
+            search_url = "https://musicbrainz.org/ws/2/release-group"
+            params = {
+                "artist": artist_mbid,
+                "fmt": "json",
+                "limit": 1,
+                "type": "album"
+            }
+            headers = {"User-Agent": "sptnr-web/1.0"}
+            resp = requests.get(search_url, params=params, headers=headers, timeout=3)
+            if resp.status_code == 200:
+                data = resp.json()
+                release_groups = data.get("release-groups", [])
+                if release_groups:
+                    rg_id = release_groups[0].get("id")
+                    if rg_id:
+                        # Try to fetch cover art for this release group
+                        caa_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250"
+                        art_resp = requests.get(caa_url, timeout=3)
+                        if art_resp.status_code == 200:
+                            return send_file(io.BytesIO(art_resp.content), mimetype='image/jpeg')
+    except Exception as e:
+        logging.debug(f"External artist image fetch failed: {e}")
     
     # Return placeholder
     svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
@@ -2110,13 +2188,14 @@ def api_artist_set_image():
 
 @app.route("/api/artist/update-ids", methods=["POST"])
 def api_artist_update_ids():
-    """Update artist IDs (Spotify, Last.fm, MusicBrainz) for an artist"""
+    """Update artist IDs (Spotify, Last.fm, MusicBrainz, Discogs) for an artist"""
     try:
         data = request.get_json()
         artist_name = data.get("artist")
         spotify_id = data.get("spotify_artist_id", "").strip()
         lastfm_mbid = data.get("lastfm_artist_mbid", "").strip()
         musicbrainz_id = data.get("musicbrainz_artist_id", "").strip()
+        discogs_id = data.get("discogs_artist_id", "").strip()
         
         if not artist_name:
             return jsonify({"error": "Missing artist name"}), 400
@@ -2141,6 +2220,10 @@ def api_artist_update_ids():
             updates.append("musicbrainz_artist_id = ?")
             params.append(musicbrainz_id)
         
+        if discogs_id:
+            updates.append("discogs_artist_id = ?")
+            params.append(discogs_id)
+        
         if updates:
             params.append(artist_name)
             query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ?"
@@ -2155,7 +2238,8 @@ def api_artist_update_ids():
             "updated": {
                 "spotify_artist_id": spotify_id if spotify_id else None,
                 "lastfm_artist_mbid": lastfm_mbid if lastfm_mbid else None,
-                "musicbrainz_artist_id": musicbrainz_id if musicbrainz_id else None
+                "musicbrainz_artist_id": musicbrainz_id if musicbrainz_id else None,
+                "discogs_artist_id": discogs_id if discogs_id else None
             }
         })
     except Exception as e:
