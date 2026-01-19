@@ -2654,7 +2654,9 @@ def album_detail(artist, album):
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     MAX(beets_album_mbid) as beets_album_mbid,
                     MAX(discogs_album_id) as discogs_album_id,
-                    MAX(spotify_album_id) as spotify_album_id
+                    MAX(spotify_album_id) as spotify_album_id,
+                    MAX(spotify_artist_id) as spotify_artist_id,
+                    MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
@@ -2672,7 +2674,9 @@ def album_detail(artist, album):
                     MAX(COALESCE(disc_number, 1)) as total_discs,
                     NULL as beets_album_mbid,
                     NULL as discogs_album_id,
-                    NULL as spotify_album_id
+                    NULL as spotify_album_id,
+                    NULL as spotify_artist_id,
+                    NULL as discogs_artist_id
                 FROM tracks
                 WHERE artist = ? AND album = ?
             """, (artist, album))
