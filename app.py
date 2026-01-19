@@ -74,45 +74,6 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     except:
         pass
     return sorted(list(genres))
-
-
-def clean_discogs_biography(text: str) -> str:
-    """
-    Clean up Discogs biography text by removing artist ID references.
-    
-    Discogs biographies often contain artist IDs in square brackets like [a755006]
-    which should be removed for cleaner display.
-    
-    Args:
-        text: Raw biography text from Discogs
-        
-    Returns:
-        Cleaned biography text
-    """
-    if not text:
-        return text
-    
-    # Remove artist ID references like [a755006], [a2891826], etc.
-    # Pattern: [a followed by digits]
-    cleaned = re.sub(r'\[a\d+\]', '', text)
-    
-    # Remove "aka" when followed by nothing (when both sides were artist IDs)
-    # e.g., "[a123] aka [a456]" becomes "aka" which should be removed
-    cleaned = re.sub(r'\baka\s*(?=\(|\s*\(|,|\.|\s+\()', '', cleaned)
-    
-    # Remove leading "aka " at the start of content after removing IDs
-    cleaned = re.sub(r'^\s*aka\s+', '', cleaned)
-    
-    # Clean up multiple spaces
-    cleaned = re.sub(r'\s+', ' ', cleaned)
-    
-    # Clean up sequences like "Members: (since..." where a name was removed
-    # This handles cases where we have "(since 2000)" with no name before it
-    cleaned = re.sub(r':\s+\(', ': (', cleaned)
-    
-    return cleaned.strip()
-
-
 from check_db import update_schema
 from popularity_helpers import save_to_db
 
@@ -135,7 +96,7 @@ import re
 from api_clients.slskd import SlskdClient
 from metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
-from helpers import create_retry_session
+from helpers import create_retry_session, clean_discogs_biography
 import difflib
 import unicodedata
 import requests

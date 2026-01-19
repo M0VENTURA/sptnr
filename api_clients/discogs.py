@@ -6,6 +6,7 @@ import json
 import re
 from typing import Optional, Dict, List, Tuple
 from . import session
+from helpers import clean_discogs_biography
 
 # Import centralized logging for visible operational messages
 # Use try-except to handle cases where logging_config is not available (e.g., in tests)
@@ -605,42 +606,6 @@ class DiscogsClient:
             logger.error(f"Discogs lookup failed for '{title}': {e}")
             return []
     
-    def _clean_biography_text(self, text: str) -> str:
-        """
-        Clean up Discogs biography text by removing artist ID references.
-        
-        Discogs biographies often contain artist IDs in square brackets like [a755006]
-        which should be removed for cleaner display.
-        
-        Args:
-            text: Raw biography text from Discogs
-            
-        Returns:
-            Cleaned biography text
-        """
-        if not text:
-            return text
-        
-        # Remove artist ID references like [a755006], [a2891826], etc.
-        # Pattern: [a followed by digits]
-        cleaned = re.sub(r'\[a\d+\]', '', text)
-        
-        # Remove "aka" when followed by nothing (when both sides were artist IDs)
-        # e.g., "[a123] aka [a456]" becomes "aka" which should be removed
-        cleaned = re.sub(r'\baka\s*(?=\(|\s*\(|,|\.|\s+\()', '', cleaned)
-        
-        # Remove leading "aka " at the start of content after removing IDs
-        cleaned = re.sub(r'^\s*aka\s+', '', cleaned)
-        
-        # Clean up multiple spaces
-        cleaned = re.sub(r'\s+', ' ', cleaned)
-        
-        # Clean up sequences like "Members: (since..." where a name was removed
-        # This handles cases where we have "(since 2000)" with no name before it
-        cleaned = re.sub(r':\s+\(', ': (', cleaned)
-        
-        return cleaned.strip()
-    
     def get_artist_biography(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> dict:
         """
         Fetch artist biography/profile from Discogs API.
@@ -692,7 +657,7 @@ class DiscogsClient:
             
             # Extract and clean biography profile
             raw_profile = artist_data.get("profile", "")
-            cleaned_profile = self._clean_biography_text(raw_profile)
+            cleaned_profile = clean_discogs_biography(raw_profile)
             
             # Extract relevant biography info
             bio_info = {
