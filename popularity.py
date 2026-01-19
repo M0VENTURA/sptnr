@@ -2132,6 +2132,26 @@ def popularity_scan(
                     log_info(f"Artist-level stats: avg={artist_stats['avg_popularity']:.1f}, median={artist_median:.1f}")
                     log_debug(f"Artist statistics - track_count: {artist_stats['track_count']}, avg: {artist_stats['avg_popularity']}, median: {artist_median}, stddev: {artist_stats.get('stddev_popularity', 0)}")
                 
+                # Capture user-set singles before running automated detection
+                # User-marked singles (is_single=1 with no/empty sources) should be preserved
+                user_set_singles = set()
+                for track in album_tracks:
+                    track_id = track["id"]
+                    is_single = track["is_single"] if track["is_single"] else 0
+                    single_sources_json = track["single_sources"] if track["single_sources"] else "[]"
+                    
+                    # Track is user-set if is_single=1 but has no automated sources
+                    try:
+                        sources = json.loads(single_sources_json) if single_sources_json else []
+                        if is_single == 1 and (not sources or len(sources) == 0):
+                            user_set_singles.add(track_id)
+                            log_info(f"Preserving user-set single: {track['title']}")
+                            log_debug(f"User-set single detected - track_id: {track_id}, title: {track['title']}")
+                    except (json.JSONDecodeError, TypeError):
+                        if is_single == 1:
+                            user_set_singles.add(track_id)
+                            log_info(f"Preserving user-set single (malformed sources): {track['title']}")
+                
                 # Batch updates for singles detection
                 singles_updates = []
                 
@@ -2186,6 +2206,14 @@ def popularity_scan(
                     
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
+                    # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
+                    if track_id in user_set_singles and not is_single:
+                        is_single = True
+                        single_confidence = "user"  # Mark as user-set
+                        # Keep sources empty to indicate user-set
+                        log_info(f"Preserving user-set single flag for: {title}")
+                        log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
+                    
                     # Queue single detection results for batch update
                     if is_single or single_sources:
                         singles_updates.append((
@@ -2196,8 +2224,11 @@ def popularity_scan(
                         ))
                         if is_single:
                             singles_detected += 1
-                            source_str = ", ".join(single_sources)
-                            log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                            if single_sources:
+                                source_str = ", ".join(single_sources)
+                                log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
+                            else:
+                                log_info(f"Single detected: {title} (user-set)")
                             log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {single_sources}")
                 
                 # Batch update all singles detection results for this album in one commit
@@ -2363,8 +2394,13 @@ def popularity_scan(
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
                             # Apply new 5-star rule
+                            # User-set singles always get 5 stars
+                            if single_confidence == "user":
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (user-set single)")
+                                log_debug(f"User-set single - track_id: {track_id}")
                             # High confidence always gets 5 stars
-                            if single_confidence == "high":
+                            elif single_confidence == "high":
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (high-confidence single)")
                                 log_debug(f"High confidence single detected - track_id: {track_id}")
