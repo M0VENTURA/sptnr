@@ -407,20 +407,28 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
         
         # Construct the full file path using MUSIC_ROOT if the path is relative
         music_root = os.environ.get("MUSIC_ROOT", "/music")
+        
+        # Normalize music_root to not have trailing slash for consistency
+        music_root = music_root.rstrip('/')
+        
         if not os.path.isabs(file_path):
+            # Relative path - prepend MUSIC_ROOT
             full_file_path = os.path.join(music_root, file_path)
         else:
-            # If path starts with /music/, try both with and without MUSIC_ROOT
-            if file_path.startswith("/music/"):
-                # First try as-is
-                if os.path.exists(file_path):
-                    full_file_path = file_path
-                else:
-                    # Try removing /music/ prefix and prepending MUSIC_ROOT
-                    rel_path = file_path[len("/music/"):]
-                    full_file_path = os.path.join(music_root, rel_path)
-            else:
+            # Absolute path - check if it exists as-is first
+            if os.path.exists(file_path):
                 full_file_path = file_path
+            else:
+                # Try to detect if path has a prefix that should be replaced with MUSIC_ROOT
+                # Common pattern: database has "/music/Artist/Album/track.mp3" but MUSIC_ROOT is "/mnt/music"
+                # We need to strip the database prefix and use MUSIC_ROOT
+                potential_prefix = "/music"
+                if file_path.startswith(potential_prefix + "/"):
+                    rel_path = file_path[len(potential_prefix) + 1:]  # +1 for the slash
+                    full_file_path = os.path.join(music_root, rel_path)
+                else:
+                    # No known prefix, use as-is
+                    full_file_path = file_path
         
         if not os.path.exists(full_file_path):
             logger.error(f"File not found for track {track_id}: {full_file_path} (original: {file_path})")
