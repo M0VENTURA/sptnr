@@ -198,7 +198,7 @@ def api_artist_image():
 
 @app.route("/api/artist/search-images")
 def api_artist_search_images():
-    """Search for artist images on MusicBrainz or Discogs"""
+    """Search for artist images on MusicBrainz, Discogs, or Apple Music"""
     artist_name = request.args.get("name", "").strip()
     source = request.args.get("source", "musicbrainz").strip()
     
@@ -243,6 +243,31 @@ def api_artist_search_images():
             for result in results[:5]:
                 if result.get("thumb"):
                     images.append({"url": result["thumb"], "source": "Discogs"})
+        
+        elif source == "applemusic":
+            from api_clients.applemusic import AppleMusicClient
+            
+            apple_music = AppleMusicClient()
+            
+            try:
+                logging.debug(f"Searching Apple Music for artist: {artist_name}")
+                results = apple_music.search_artist(artist_name, limit=5)
+                
+                for artist in results:
+                    artwork_url = artist.get("artworkUrl100", "")
+                    if artwork_url:
+                        # Replace 100x100 with higher resolution
+                        artwork_url = artwork_url.replace("100x100bb", "500x500bb")
+                        images.append({
+                            "url": artwork_url,
+                            "source": "Apple Music",
+                            "name": artist.get("artistName", "")
+                        })
+                
+                if images:
+                    logging.debug(f"Found {len(images)} images on Apple Music")
+            except Exception as e:
+                logging.debug(f"Apple Music artist search failed: {e}")
         
         return jsonify({"images": images})
         
