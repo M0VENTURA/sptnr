@@ -12,6 +12,14 @@ from . import session
 
 logger = logging.getLogger(__name__)
 
+# Import rate limiter
+try:
+    from api_rate_limiter import get_rate_limiter
+    _rate_limiter = get_rate_limiter()
+except ImportError:
+    logger.warning("Rate limiter not available for MusicBrainz")
+    _rate_limiter = None
+
 # Version keywords to detect in track titles (immutable tuple for performance)
 VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
                     'remaster', 'remastered', 'demo', 'instrumental', 'orchestral')
@@ -148,8 +156,13 @@ class MusicBrainzClient:
         retry_delay = 1.0
         for attempt in range(max_retries):
             try:
-                # Add rate limiting delay before each request to avoid server issues
-                time.sleep(1.0)
+                # Use rate limiter to enforce proper delays between requests
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    # Fallback to simple delay if rate limiter not available
+                    time.sleep(1.0)
                 
                 # Search using base title to find all versions
                 query = f'{base_title} AND artist:{artist} AND primarytype:Single'
@@ -229,14 +242,18 @@ class MusicBrainzClient:
         if not self.enabled:
             return []
         
-        import time
         max_retries = 3
         retry_delay = 1.0
         
         for attempt in range(max_retries):
             try:
-                # Add rate limiting delay before each request to avoid server issues
-                time.sleep(1.0)
+                # Use rate limiter to enforce proper delays between requests
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    # Fallback to simple delay if rate limiter not available
+                    time.sleep(1.0)
                 
                 # Step 1: search recording with richer includes
                 query = f'{title} AND artist:{artist}'
@@ -319,8 +336,13 @@ class MusicBrainzClient:
             return tuple(cached)
         
         try:
-            # Add rate limiting delay before each request to avoid server issues
-            time.sleep(1.0)
+            # Use rate limiter to enforce proper delays between requests
+            if _rate_limiter:
+                _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                _rate_limiter.record_musicbrainz_request()
+            else:
+                # Fallback to simple delay if rate limiter not available
+                time.sleep(1.0)
             
             # 1) Find recordings (with releases included for second hop)
             query = f'{title} AND artist:{artist}'
@@ -357,8 +379,13 @@ class MusicBrainzClient:
                     if rel_id:
                         rel_params = {"fmt": "json", "inc": "release-groups"}
                         try:
-                            # Add rate limiting delay before each release lookup
-                            time.sleep(1.0)
+                            # Use rate limiter for second lookup
+                            if _rate_limiter:
+                                _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                                _rate_limiter.record_musicbrainz_request()
+                            else:
+                                # Fallback to simple delay if rate limiter not available
+                                time.sleep(1.0)
                             rr = self.session.get(f"{self.base_url}release/{rel_id}", params=rel_params, headers=self.headers, timeout=(5, 10))  # (connect_timeout, read_timeout)
                             if rr.ok:
                                 rel_json = rr.json()

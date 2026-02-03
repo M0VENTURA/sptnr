@@ -16,10 +16,13 @@ logger = logging.getLogger(__name__)
 # API Limits (based on research):
 # Spotify: ~250 requests per 30 seconds (client credentials) = ~720,000/day theoretical max
 # Last.fm: ~1 request per second, unknown daily limit
+# MusicBrainz: 1 request per second (official limit), no daily limit but stricter enforcement
 SPOTIFY_RATE_LIMIT_PER_30S = 250
 SPOTIFY_DAILY_LIMIT = 500000  # Conservative estimate
 LASTFM_RATE_LIMIT_PER_SECOND = 1
 LASTFM_DAILY_LIMIT = 50000  # Conservative estimate based on community reports
+MUSICBRAINZ_RATE_LIMIT_PER_SECOND = 1  # Official MusicBrainz rate limit
+MUSICBRAINZ_MIN_INTERVAL = 1.0  # Minimum 1 second between requests
 
 class APIRateLimiter:
     """Track API usage and enforce rate limits"""
@@ -42,6 +45,7 @@ class APIRateLimiter:
                             # New day - reset counters
                             state['spotify_daily_count'] = 0
                             state['lastfm_daily_count'] = 0
+                            state['musicbrainz_daily_count'] = 0
                             state['last_reset'] = datetime.now().isoformat()
                     return state
             except Exception as e:
@@ -51,8 +55,10 @@ class APIRateLimiter:
         return {
             'spotify_daily_count': 0,
             'lastfm_daily_count': 0,
+            'musicbrainz_daily_count': 0,
             'spotify_recent_requests': [],  # List of timestamps in last 30s
             'lastfm_last_request': 0,  # Timestamp of last request
+            'musicbrainz_last_request': 0,  # Timestamp of last MusicBrainz request
             'last_reset': datetime.now().isoformat()
         }
     
@@ -132,6 +138,62 @@ class APIRateLimiter:
         self.state['lastfm_last_request'] = now
         self._save_state()
     
+    def check_musicbrainz_limit(self, operation: str = "request") -> tuple[bool, str]:
+        """
+        Check if MusicBrainz API call can be made without hitting limits.
+        MusicBrainz enforces strict 1 request per second limit with IP blocking.
+        
+        Returns:
+            (can_proceed, reason) - True if OK to proceed, False with reason if at limit
+        """
+        now = time.time()
+        
+        # Check per-second limit (stricter enforcement than Last.fm)
+        last_request = self.state.get('musicbrainz_last_request', 0)
+        time_since_last = now - last_request
+        if time_since_last < MUSICBRAINZ_MIN_INTERVAL:
+            wait_time = MUSICBRAINZ_MIN_INTERVAL - time_since_last
+            return False, f"MusicBrainz rate limit: must wait {wait_time:.1f}s between requests"
+        
+        return True, ""
+    
+    def record_musicbrainz_request(self):
+        """Record a MusicBrainz API request"""
+        now = time.time()
+        self.state['musicbrainz_daily_count'] = self.state.get('musicbrainz_daily_count', 0) + 1
+        self.state['musicbrainz_last_request'] = now
+        self._save_state()
+    
+    def wait_if_needed_musicbrainz(self, max_wait_seconds: float = 2.0) -> bool:
+        """
+        Wait if necessary to respect MusicBrainz rate limits.
+        
+        Args:
+            max_wait_seconds: Maximum time to wait (default 2s)
+            
+        Returns:
+            True if can proceed, False if would need to wait longer than max_wait_seconds
+        """
+        can_proceed, reason = self.check_musicbrainz_limit()
+        if can_proceed:
+            return True
+        
+        # Extract wait time from reason message
+        if "must wait" in reason:
+            try:
+                wait_time = float(reason.split("wait ")[1].split("s")[0])
+                if wait_time <= max_wait_seconds:
+                    time.sleep(wait_time + 0.1)  # Add small buffer
+                    return True
+                else:
+                    logger.warning(f"MusicBrainz rate limit exceeded: would need to wait {wait_time:.1f}s (max {max_wait_seconds}s)")
+                    return False
+            except (ValueError, IndexError) as e:
+                # Could not parse wait time from message
+                pass
+        
+        return False
+    
     def get_stats(self) -> dict:
         """Get current usage statistics"""
         now = time.time()
@@ -146,6 +208,7 @@ class APIRateLimiter:
             'lastfm_daily_count': self.state['lastfm_daily_count'],
             'lastfm_daily_limit': LASTFM_DAILY_LIMIT,
             'lastfm_daily_percent': (self.state['lastfm_daily_count'] / LASTFM_DAILY_LIMIT * 100),
+            'musicbrainz_daily_count': self.state.get('musicbrainz_daily_count', 0),
             'last_reset': self.state.get('last_reset', '')
         }
     
