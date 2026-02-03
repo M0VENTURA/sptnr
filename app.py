@@ -6463,7 +6463,8 @@ def _album_art_placeholder_svg(size: int = 300) -> Response:
     except (ValueError, TypeError):
         size = 300  # Default fallback
     
-    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}">
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" role="img" aria-label="No Album Art Available">
+        <title>No Album Art Available</title>
         <rect fill="#2a2a2a" width="{size}" height="{size}"/>
         <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Album Art</text>
     </svg>'''
