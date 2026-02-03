@@ -1164,19 +1164,20 @@ def dashboard():
 
 @app.route("/artists")
 def artists():
-    """List all artists"""
+    """List all album artists (not track artists)"""
     conn = get_db()
     cursor = conn.cursor()
     
+    # Use album_artist column (falls back to artist if album_artist is NULL)
     cursor.execute("""
         SELECT 
-            artist,
+            COALESCE(album_artist, artist) as artist,
             COUNT(DISTINCT album) as album_count,
             COUNT(*) as track_count,
             COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
-        GROUP BY artist
+        GROUP BY COALESCE(album_artist, artist)
         
         UNION ALL
         
@@ -1187,7 +1188,7 @@ def artists():
             0 as single_count,
             last_updated
         FROM artist_stats
-        WHERE artist_name NOT IN (SELECT DISTINCT artist FROM tracks)
+        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks)
         
         ORDER BY artist COLLATE NOCASE
     """)
