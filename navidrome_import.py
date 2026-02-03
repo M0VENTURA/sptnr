@@ -280,7 +280,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "id": track_id,
                     "title": t.get("title", ""),
                     "album": album_name,
-                    "artist": artist_name,
+                    "artist": t.get("artist", artist_name),
                     "score": 0.0,
                     "spotify_score": 0,
                     "lastfm_score": 0,
