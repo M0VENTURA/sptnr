@@ -1218,7 +1218,7 @@ def artist_detail(name):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get albums for this artist
+        # Get albums for this artist with type information
         cursor.execute("""
             SELECT 
                 album,
@@ -1226,7 +1226,8 @@ def artist_detail(name):
                 AVG(stars) as avg_stars,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
-                MIN(year) as album_year
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type
             FROM tracks
             WHERE artist = ?
             GROUP BY album
@@ -1275,11 +1276,61 @@ def artist_detail(name):
         
         artist_stats = cursor.fetchone()
         
+        # Get missing releases from database cache
+        cursor.execute("""
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+            FROM missing_releases
+            WHERE artist = ?
+            ORDER BY first_release_date DESC
+        """, (name,))
+        missing_releases_data = cursor.fetchall()
+        
         conn.close()
         
         # Convert Row to dict for template access
         if artist_stats:
             artist_stats = dict(artist_stats)
+        
+        # Categorize discovered albums by type
+        albums_by_category = {
+            "album": [],
+            "ep": [],
+            "single": [],
+            "unknown": []
+        }
+        
+        for album in albums_data:
+            album_dict = dict(album)
+            album_type = (album_dict.get("album_type") or "").lower()
+            track_count = album_dict.get("track_count", 0)
+            
+            # Categorize based on spotify_album_type and track count
+            if album_type == "album" or (not album_type and track_count > 6):
+                albums_by_category["album"].append(album_dict)
+            elif album_type == "ep" or (not album_type and 3 <= track_count <= 6):
+                albums_by_category["ep"].append(album_dict)
+            elif album_type == "single" or (not album_type and track_count < 3):
+                albums_by_category["single"].append(album_dict)
+            else:
+                albums_by_category["unknown"].append(album_dict)
+        
+        # Categorize missing releases
+        missing_by_category = {
+            "album": [],
+            "ep": [],
+            "single": []
+        }
+        
+        for release in missing_releases_data:
+            release_dict = dict(release)
+            category = (release_dict.get("category") or "Album").lower()
+            
+            if category == "ep":
+                missing_by_category["ep"].append(release_dict)
+            elif category == "single":
+                missing_by_category["single"].append(release_dict)
+            else:
+                missing_by_category["album"].append(release_dict)
         
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
@@ -1291,7 +1342,9 @@ def artist_detail(name):
         
         return render_template("artist.html", 
                              artist_name=name,
-                             albums=albums_data,
+                             albums=albums_data,  # Keep for compatibility
+                             albums_by_category=albums_by_category,
+                             missing_by_category=missing_by_category,
                              stats=artist_stats,
                              genres=genres,
                              qbit_config=qbit_config,

@@ -300,100 +300,51 @@
     </div>
   </div>
 
-  <!-- Unified Albums and Releases Section (Discovered + Missing) -->
-  <div class="card mb-4" id="albumsSection">
+  <!-- Import Macro -->
+  {% from "_album_category_section.html" import render_album_row %}
+
+  <!-- Albums Section -->
+  {% set total_discovered = (albums_by_category.album|length) + (albums_by_category.ep|length) + (albums_by_category.single|length) + (albums_by_category.unknown|length) %}
+  {% set total_missing = (missing_by_category.album|length) + (missing_by_category.ep|length) + (missing_by_category.single|length) %}
+  
+  <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
-        <i class="bi bi-collection-play"></i> Albums & Releases
+        <i class="bi bi-vinyl-fill"></i> Albums
+        <span class="badge bg-primary">{{ albums_by_category.album|length }}</span>
+        {% if missing_by_category.album|length > 0 %}
+          <span class="badge bg-warning text-dark">{{ missing_by_category.album|length }} missing</span>
+        {% endif %}
       </h5>
-      <div class="d-flex gap-2 align-items-center">
-        <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
-          <i class="bi bi-flag"></i> Check for Missing
-        </button>
-        <span id="albumsStatus" class="text-muted small">Showing discovered albums</span>
-      </div>
+      <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+        <i class="bi bi-flag"></i> Check for Missing
+      </button>
     </div>
     <div class="table-responsive">
-      <table class="table table-hover mb-0" id="albumsTable">
+      <table class="table table-hover mb-0">
         <thead class="d-none d-md-table-header-group">
           <tr>
-            <th style="width: 120px;">Album Art</th>
-            <th>Album Title</th>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
             <th class="text-center" style="width: 80px;">Year</th>
-            <th class="text-center" style="width: 80px;">Status</th>
+            <th class="text-center" style="width: 100px;">Status</th>
             <th class="text-center" style="width: 80px;">Tracks</th>
             <th class="text-center" style="width: 100px;">Avg ★</th>
-            <th class="text-center" style="width: 80px;">Singles</th>
-            <th class="text-center" style="width: 150px;">Last Scanned</th>
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody id="albumsTableBody">
-          {% if albums and albums|length > 0 %}
-            {% for album in albums %}
-              <tr class="d-flex flex-column d-md-table-row album-row" data-year="{{ album.album_year or 9999 }}" data-status="discovered">
-                <td class="text-center d-none d-md-table-cell" style="width: 120px; padding: 0.5rem;">
-                  <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
-                       alt="{{ album.album }}" 
-                       class="img-thumbnail"
-                       style="width: 100px; height: 100px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                       onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%232a2a2a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2212%22%3ENo Art%3C/text%3E%3C/svg%3E';">
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Album</span>
-                  <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
-                    {{ album.album }}
-                  </a>
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell text-center">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
-                  {{ album.album_year or '—' }}
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell text-center">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
-                  <span class="badge bg-success">Available</span>
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell text-center">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
-                  {{ album.track_count }}
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell text-center">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
-                  {% if album.avg_stars %}
-                    <span class="badge badge-success">{{ album.avg_stars|round(2) }}★</span>
-                  {% else %}
-                    <span class="text-muted">—</span>
-                  {% endif %}
-                </td>
-                <td class="d-flex justify-content-between d-md-table-cell text-center">
-                  <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Singles</span>
-                  {% if album.singles_count > 0 %}
-                    <span class="badge bg-info">{{ album.singles_count }}</span>
-                  {% else %}
-                    <span class="text-muted">—</span>
-                  {% endif %}
-                </td>
-                <td class="d-none d-md-table-cell text-center text-muted" style="font-size: 0.85rem;">
-                  {% if album.last_updated %}
-                    {{ album.last_updated }}
-                  {% else %}
-                    <span>Never</span>
-                  {% endif %}
-                </td>
-                <td class="d-flex justify-content-end gap-1 d-md-table-cell">
-                  <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')">
-                    <i class="bi bi-search"></i>
-                  </button>
-                  <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
-                    <i class="bi bi-arrow-right"></i>
-                  </a>
-                </td>
-              </tr>
+        <tbody>
+          {% if albums_by_category.album|length > 0 or missing_by_category.album|length > 0 %}
+            {% for album in albums_by_category.album %}
+              {{ render_album_row(album, artist_name, False) }}
+            {% endfor %}
+            {% for album in missing_by_category.album %}
+              {{ render_album_row(album, artist_name, True) }}
             {% endfor %}
           {% else %}
             <tr>
-              <td colspan="9" class="text-center text-muted">
-                <i class="bi bi-info-circle"></i> No albums found for <strong>{{ artist_name }}</strong>. Click "Check for Missing" to find releases.
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No albums found
               </td>
             </tr>
           {% endif %}
@@ -402,8 +353,93 @@
     </div>
   </div>
 
-  <!-- Hidden: Old Missing Releases Section - now merged into albums table above -->
-  <div style="display: none;" id="oldMissingReleasesSection"></div>
+  <!-- EPs Section -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-disc"></i> EPs
+        <span class="badge bg-primary">{{ albums_by_category.ep|length }}</span>
+        {% if missing_by_category.ep|length > 0 %}
+          <span class="badge bg-warning text-dark">{{ missing_by_category.ep|length }} missing</span>
+        {% endif %}
+      </h5>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if albums_by_category.ep|length > 0 or missing_by_category.ep|length > 0 %}
+            {% for album in albums_by_category.ep %}
+              {{ render_album_row(album, artist_name, False) }}
+            {% endfor %}
+            {% for album in missing_by_category.ep %}
+              {{ render_album_row(album, artist_name, True) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No EPs found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Singles Section -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-music-note-beamed"></i> Singles
+        <span class="badge bg-primary">{{ albums_by_category.single|length }}</span>
+        {% if missing_by_category.single|length > 0 %}
+          <span class="badge bg-warning text-dark">{{ missing_by_category.single|length }} missing</span>
+        {% endif %}
+      </h5>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if albums_by_category.single|length > 0 or missing_by_category.single|length > 0 %}
+            {% for album in albums_by_category.single %}
+              {{ render_album_row(album, artist_name, False) }}
+            {% endfor %}
+            {% for album in missing_by_category.single %}
+              {{ render_album_row(album, artist_name, True) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No singles found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
 
 </div>
 
@@ -1011,6 +1047,48 @@ function checkMissingReleases(artistName) {
       if (statusEl) statusEl.textContent = 'Error: ' + err.message;
     });
 }
+
+// Import a missing release into the database
+function importRelease(artist, releaseId, title) {
+  if (!confirm(`Import "${title}" by ${artist}?\n\nThis will fetch the full tracklist from MusicBrainz and add it to your library.`)) {
+    return;
+  }
+  
+  const btn = event.target.closest('button');
+  const originalHtml = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  fetch('/api/artist/import-release', {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json'
+    },
+    body: JSON.stringify({
+      artist: artist,
+      release_id: releaseId,
+      title: title
+    })
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.error) {
+      alert(`Error importing release: ${data.error}`);
+      btn.disabled = false;
+      btn.innerHTML = originalHtml;
+    } else {
+      alert(`Success! Imported ${data.tracks_imported} tracks from "${title}"`);
+      // Reload the page to show the newly imported album
+      window.location.reload();
+    }
+  })
+  .catch(err => {
+    alert(`Network error: ${err.message}`);
+    btn.disabled = false;
+    btn.innerHTML = originalHtml;
+  });
+}
+
 
 function sortAlbumsByYear() {
   const tableBody = document.getElementById('albumsTableBody');
