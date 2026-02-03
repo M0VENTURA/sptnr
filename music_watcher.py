@@ -14,6 +14,7 @@ from datetime import datetime
 import hashlib
 import shutil
 import subprocess
+import traceback
 import requests
 
 logging.basicConfig(
@@ -132,10 +133,13 @@ def trigger_navidrome_sync():
     
     try:
         # Navidrome Subsonic API startScan endpoint
+        # Use MD5-hashed password for better security
+        password_hash = hashlib.md5(NAVIDROME_PASS.encode()).hexdigest()
+        
         url = f"{NAVIDROME_BASE_URL}/rest/startScan"
         params = {
             "u": NAVIDROME_USER,
-            "p": NAVIDROME_PASS,
+            "p": f"enc:{password_hash}",  # Use enc: prefix for hashed password
             "v": "1.16.1",
             "c": "sptnr",
             "f": "json"
@@ -213,7 +217,6 @@ def watcher_service():
             break
         except Exception as e:
             logger.error(f"Error in watcher loop: {e}")
-            import traceback
             logger.debug(traceback.format_exc())
             time.sleep(SCAN_INTERVAL)
 

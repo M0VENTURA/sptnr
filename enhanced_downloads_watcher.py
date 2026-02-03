@@ -19,6 +19,8 @@ import subprocess
 from pathlib import Path
 from datetime import datetime
 from typing import List, Set
+import traceback
+import hashlib
 import requests
 
 # Import centralized logging if available
@@ -26,10 +28,8 @@ try:
     from logging_config import setup_logging, log_info, log_debug
     setup_logging("downloads_watcher")
     
-    def log_info_wrapper(msg, *args, **kwargs):
-        log_info_wrapper(msg)
-    def log_debug_wrapper(msg, *args, **kwargs):
-        log_debug_wrapper(msg)
+    log_info_wrapper = log_info
+    log_debug_wrapper = log_debug
 except (ImportError, PermissionError, OSError):
     # Fallback logging if centralized logging not available
     log_dir = os.environ.get("LOG_DIR", "/config")
@@ -43,10 +43,8 @@ except (ImportError, PermissionError, OSError):
         ]
     )
     
-    def log_info_wrapper(msg, *args, **kwargs):
-        logging.info(msg)
-    def log_debug_wrapper(msg, *args, **kwargs):
-        logging.debug(msg)
+    log_info_wrapper = logging.info
+    log_debug_wrapper = logging.debug
 
 logger = logging.getLogger(__name__)
 
@@ -173,10 +171,13 @@ class DownloadsWatcher:
         """
         try:
             # Navidrome Subsonic API startScan endpoint
+            # Use MD5-hashed password for better security
+            password_hash = hashlib.md5(NAVIDROME_PASS.encode()).hexdigest()
+            
             url = f"{NAVIDROME_BASE_URL}/rest/startScan"
             params = {
                 "u": NAVIDROME_USER,
-                "p": NAVIDROME_PASS,
+                "p": f"enc:{password_hash}",  # Use enc: prefix for hashed password
                 "v": "1.16.1",
                 "c": "sptnr",
                 "f": "json"
@@ -267,7 +268,6 @@ class DownloadsWatcher:
                 break
             except Exception as e:
                 log_info_wrapper(f"❌ Error in watcher loop: {e}")
-                import traceback
                 log_debug_wrapper(traceback.format_exc())
                 time.sleep(self.scan_interval)
 
