@@ -114,7 +114,12 @@
                         
                         <!-- Genres - Multi-select with add/remove -->
                         <div class="mb-3">
-                            <label for="genres" class="form-label">Genres</label>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <label for="genres" class="form-label mb-0">Genres</label>
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()">
+                                    <i class="bi bi-cloud-download"></i> Get Recommendations
+                                </button>
+                            </div>
                             <div id="genresContainer" class="mb-2">
                                 {% if track.genres %}
                                     {% for genre in track.genres.split(',') %}
@@ -127,12 +132,35 @@
                                     <span class="text-muted small">No genres set</span>
                                 {% endif %}
                             </div>
+                            <!-- Genre recommendations container -->
+                            <div id="genreRecommendations" class="mb-2" style="display: none;">
+                                <small class="text-muted">Recommended genres (click to add):</small>
+                                <div id="genreRecommendationsList"></div>
+                            </div>
                             <div class="input-group">
-                                <input type="text" class="form-control" id="newGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
+                                <input type="text" class="form-control" id="newGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="genreDatalist">
                                 <button class="btn btn-outline-success" type="button" onclick="addGenre()">
                                     <i class="bi bi-plus-circle"></i> Add
                                 </button>
                             </div>
+                            <!-- Datalist for genre autocomplete -->
+                            <datalist id="genreDatalist">
+                                <option value="Rock">
+                                <option value="Pop">
+                                <option value="Jazz">
+                                <option value="Classical">
+                                <option value="Hip-Hop">
+                                <option value="Electronic">
+                                <option value="Blues">
+                                <option value="Country">
+                                <option value="R&B">
+                                <option value="Soul">
+                                <option value="Funk">
+                                <option value="Metal">
+                                <option value="Punk">
+                                <option value="Alternative">
+                                <option value="Indie">
+                            </datalist>
                             <input type="hidden" id="genres" name="genres" value="{{ track.genres or '' }}">
                             <div class="form-text">Press Enter or click Add to add a genre. Click × to remove.</div>
                         </div>
@@ -1006,5 +1034,80 @@ function escapeHtml(text) {
     div.textContent = text;
     return div.innerHTML;
 }
+
+function fetchGenreRecommendations() {
+    const trackId = '{{ track.id }}';
+    const artist = '{{ track.artist }}';
+    const album = '{{ track.album }}';
+    const title = '{{ track.title }}';
+    
+    const btn = event.target;
+    const originalHtml = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
+    
+    // Fetch genre recommendations from Spotify, Last.fm, MusicBrainz, etc.
+    fetch(`/api/track/genre-recommendations?track_id=${encodeURIComponent(trackId)}`)
+        .then(r => r.json())
+        .then(data => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            
+            if (data.error) {
+                alert(`Error: ${data.error}`);
+                return;
+            }
+            
+            const recommendations = data.recommendations || [];
+            if (recommendations.length === 0) {
+                alert('No genre recommendations found for this track.');
+                return;
+            }
+            
+            // Display recommendations
+            const recContainer = document.getElementById('genreRecommendations');
+            const recList = document.getElementById('genreRecommendationsList');
+            
+            let html = '';
+            recommendations.forEach(genre => {
+                // Skip if already added
+                if (!currentGenres.has(genre)) {
+                    html += `
+                        <button type="button" class="btn btn-sm btn-outline-success me-1 mb-1" 
+                                onclick="addRecommendedGenre('${escapeHtml(genre)}')">
+                            <i class="bi bi-plus"></i> ${escapeHtml(genre)}
+                        </button>
+                    `;
+                }
+            });
+            
+            if (html) {
+                recList.innerHTML = html;
+                recContainer.style.display = 'block';
+            } else {
+                alert('All recommended genres are already added.');
+            }
+        })
+        .catch(err => {
+            btn.disabled = false;
+            btn.innerHTML = originalHtml;
+            alert(`Network error: ${err.message}`);
+        });
+}
+
+function addRecommendedGenre(genre) {
+    currentGenres.add(genre);
+    updateGenresDisplay();
+    
+    // Remove the button from recommendations
+    event.target.remove();
+    
+    // Hide recommendations if all are added
+    const recList = document.getElementById('genreRecommendationsList');
+    if (!recList.innerHTML.trim()) {
+        document.getElementById('genreRecommendations').style.display = 'none';
+    }
+}
+
 </script>
 {% endblock %}
