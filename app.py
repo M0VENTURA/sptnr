@@ -1367,8 +1367,9 @@ def artist_detail(name):
                     if date_str:
                         year = date_str[:4] if len(date_str) >= 4 else ''
                         try:
-                            return int(year) if year.isdigit() else 0
-                        except (ValueError, AttributeError):
+                            # Ensure year is a string before checking if it's a digit
+                            return int(year) if (isinstance(year, str) and year.isdigit()) else 0
+                        except (ValueError, AttributeError, TypeError):
                             return 0
                     return 0
                 else:
