@@ -3691,29 +3691,21 @@ def scan_mp3():
     global scan_process_mp3
     
     with scan_lock:
-        # Clean up stale progress file if it exists
+        # Clean up stale progress file and dead process reference if they exist
         db_dir = os.path.dirname(DB_PATH)
         mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
-        _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
+        validated = _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
         
-        # Check if scan is already running
-        if scan_process_mp3 is not None:
-            if isinstance(scan_process_mp3, dict):
-                thread = scan_process_mp3.get('thread')
-                if thread and thread.is_alive():
-                    flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
-                    logging.warning("Attempted to start beets import while one is already running")
-                    return redirect(url_for("dashboard"))
-                else:
-                    # Clean up dead thread reference
-                    scan_process_mp3 = None
-            elif hasattr(scan_process_mp3, 'is_alive') and scan_process_mp3.is_alive():
-                flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
-                logging.warning("Attempted to start beets import while one is already running")
-                return redirect(url_for("dashboard"))
-            else:
-                # Clean up dead thread reference
+        # If validation detected a dead process, clean up the reference
+        if validated and not validated.get("is_running", True) and scan_process_mp3 is not None:
+            if not _is_process_alive(scan_process_mp3):
                 scan_process_mp3 = None
+        
+        # Check if scan is actually running
+        if scan_process_mp3 is not None and _is_process_alive(scan_process_mp3):
+            flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
+            logging.warning("Attempted to start beets import while one is already running")
+            return redirect(url_for("dashboard"))
         
         try:
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
@@ -4023,16 +4015,28 @@ def scan_clear_stuck():
                     logging.error(f"Error clearing progress file {filename}: {e}")
         
         # Also clean up global process references if they're dead
-        if scan_process_mp3 and not _is_process_alive(scan_process_mp3):
-            scan_process_mp3 = None
-        if scan_process_navidrome and not _is_process_alive(scan_process_navidrome):
-            scan_process_navidrome = None
-        if scan_process_popularity and not _is_process_alive(scan_process_popularity):
-            scan_process_popularity = None
-        if scan_process_singles and not _is_process_alive(scan_process_singles):
-            scan_process_singles = None
-        if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
-            scan_process_missing_releases = None
+        # Use a list to avoid repetition
+        process_cleanup = [
+            ('scan_process_mp3', scan_process_mp3),
+            ('scan_process_navidrome', scan_process_navidrome),
+            ('scan_process_popularity', scan_process_popularity),
+            ('scan_process_singles', scan_process_singles),
+            ('scan_process_missing_releases', scan_process_missing_releases),
+        ]
+        
+        for var_name, proc_ref in process_cleanup:
+            if proc_ref and not _is_process_alive(proc_ref):
+                # Set the global variable to None
+                if var_name == 'scan_process_mp3':
+                    scan_process_mp3 = None
+                elif var_name == 'scan_process_navidrome':
+                    scan_process_navidrome = None
+                elif var_name == 'scan_process_popularity':
+                    scan_process_popularity = None
+                elif var_name == 'scan_process_singles':
+                    scan_process_singles = None
+                elif var_name == 'scan_process_missing_releases':
+                    scan_process_missing_releases = None
         
         if cleared_count > 0:
             flash(f"✅ Cleared {cleared_count} stuck scan(s)", "success")
