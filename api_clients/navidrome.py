@@ -270,6 +270,62 @@ class NavidromeClient:
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
         }
+    
+    def start_scan(self) -> bool:
+        """
+        Trigger a library scan in Navidrome.
+        
+        Returns:
+            True if scan was triggered successfully
+        """
+        url = f"{self.base_url}/rest/startScan"
+        params = self._build_params()
+        try:
+            res = self.session.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            
+            result = res.json()
+            if result.get("subsonic-response", {}).get("status") == "ok":
+                logger.info("✅ Navidrome library scan triggered")
+                
+                # Get scan status if available
+                scan_status = result.get("subsonic-response", {}).get("scanStatus", {})
+                if scan_status:
+                    logger.info(f"Scan status: {scan_status}")
+                
+                return True
+            else:
+                error = result.get("subsonic-response", {}).get("error", {})
+                logger.error(f"❌ Failed to start Navidrome scan: {error}")
+                return False
+        except Exception as e:
+            logger.error(f"❌ Failed to start Navidrome scan: {e}")
+            return False
+    
+    def get_scan_status(self) -> dict:
+        """
+        Get the current library scan status from Navidrome.
+        
+        Returns:
+            Dict with scan status information
+        """
+        url = f"{self.base_url}/rest/getScanStatus"
+        params = self._build_params()
+        try:
+            res = self.session.get(url, params=params, timeout=10)
+            res.raise_for_status()
+            
+            result = res.json()
+            scan_status = result.get("subsonic-response", {}).get("scanStatus", {})
+            
+            return {
+                "success": True,
+                "scanning": scan_status.get("scanning", False),
+                "count": scan_status.get("count", 0)
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to get scan status: {e}")
+            return {"success": False, "error": str(e)}
 
 
 # Module-level convenience functions for backward compatibility
@@ -296,3 +352,13 @@ def build_artist_index(base_url: str, username: str, password: str) -> dict:
     """Build artist index (backward compatibility)."""
     client = _get_client(base_url, username, password)
     return client.build_artist_index()
+
+def start_navidrome_scan(base_url: str, username: str, password: str) -> bool:
+    """Trigger Navidrome library scan (backward compatibility)."""
+    client = _get_client(base_url, username, password)
+    return client.start_scan()
+
+def get_navidrome_scan_status(base_url: str, username: str, password: str) -> dict:
+    """Get Navidrome scan status (backward compatibility)."""
+    client = _get_client(base_url, username, password)
+    return client.get_scan_status()
