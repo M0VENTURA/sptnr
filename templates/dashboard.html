@@ -87,131 +87,94 @@
             </h5>
         </div>
         <div class="card-body">
-            <p class="text-muted small mb-4">Run individual scan operations for more control over the process.</p>
-            <div class="d-grid gap-4">
-                <!-- Navidrome Scan -->
-                <div class="scan-card-large">
-                    <div class="d-flex align-items-center justify-content-between mb-3">
-                        <div>
-                            <h6 class="mb-1">
+            <p class="text-muted small mb-3">Run individual scan operations for more control over the process.</p>
+            
+            <!-- Unified Progress Bar -->
+            <div id="unified-progress-container" class="mb-4">
+                <div class="d-flex justify-content-between mb-2">
+                    <small class="text-muted"><strong>Current Scan:</strong> <span id="current-scan-name">Idle</span></small>
+                    <small class="text-muted"><span id="unified-progress-percent">0%</span></small>
+                </div>
+                <div class="progress" style="height: 24px; margin-bottom: 0.5rem;">
+                    <div id="unified-progress-bar" class="progress-bar progress-bar-striped bg-secondary" 
+                         role="progressbar" style="width: 0%;" 
+                         aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                    </div>
+                </div>
+                <small class="text-muted d-block"><span id="unified-progress-details">Ready to start a scan</span></small>
+            </div>
+            
+            <!-- Scan Control Buttons -->
+            <div class="row g-2">
+                <!-- Navidrome Sync Button -->
+                <div class="col-12 col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">
                                 <i class="bi bi-cloud"></i> Navidrome Sync
                             </h6>
-                            <small class="text-muted" style="display: block;">Synchronize music library from Navidrome server</small>
-                        </div>
-                        <span class="scan-badge" data-scan-type="navidrome_scan" style="display: none;">
-                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
-                        </span>
-                    </div>
-                    
-                    <div class="scan-progress-container" data-scan-type="navidrome_scan" style="margin-bottom: 1rem;">
-                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
-                                 role="progressbar" style="width: 0%;" 
-                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                            <p class="small text-muted mb-3">Synchronize music library from Navidrome server</p>
+                            <div class="d-flex gap-2">
+                                <form method="POST" action="{{ url_for('scan_navidrome') }}" class="flex-grow-1">
+                                    <button type="submit" class="btn btn-primary btn-sm w-100 scan-start-btn" data-scan-type="navidrome">
+                                        <i class="bi bi-play-fill"></i> Start
+                                    </button>
+                                </form>
+                                <form method="POST" action="{{ url_for('scan_stop_navidrome') }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
+                                        <i class="bi bi-stop-fill"></i>
+                                    </button>
+                                </form>
                             </div>
                         </div>
-                        <div class="d-flex justify-content-between mb-1">
-                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
-                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
-                        </div>
-                        <!-- Unified log area will be shown below all scan cards -->
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <form method="POST" action="{{ url_for('scan_navidrome') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-primary btn-sm w-100 px-2 py-1">
-                                <i class="bi bi-play-fill"></i> Start
-                            </button>
-                        </form>
-                        <form method="POST" action="{{ url_for('scan_stop_navidrome') }}">
-                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
-                                <i class="bi bi-stop-fill"></i> Stop
-                            </button>
-                        </form>
                     </div>
                 </div>
-
-                <!-- Popularity & Singles Scan -->
-                <div class="scan-card-large">
-                    <div class="d-flex align-items-center justify-content-between mb-3">
-                        <div>
-                            <h6 class="mb-1">
-                                <i class="bi bi-graph-up"></i> Popularity & Singles Detection
+                
+                <!-- Popularity & Singles Button -->
+                <div class="col-12 col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">
+                                <i class="bi bi-graph-up"></i> Popularity & Singles
                             </h6>
-                            <small class="text-muted" style="display: block;">Calculate popularity ratings and identify singles</small>
-                        </div>
-                        <span class="scan-badge" data-scan-type="popularity_scan" style="display: none;">
-                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
-                        </span>
-                    </div>
-                    
-                    <div class="scan-progress-container" data-scan-type="popularity_scan" style="margin-bottom: 1rem;">
-                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-primary" 
-                                 role="progressbar" style="width: 0%;" 
-                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                            <p class="small text-muted mb-3">Calculate popularity ratings and identify singles</p>
+                            <div class="d-flex gap-2">
+                                <form method="POST" action="{{ url_for('scan_popularity_route') }}" class="flex-grow-1">
+                                    <button type="submit" class="btn btn-success btn-sm w-100 scan-start-btn" data-scan-type="popularity">
+                                        <i class="bi bi-play-fill"></i> Start
+                                    </button>
+                                </form>
+                                <form method="POST" action="{{ url_for('scan_stop_popularity') }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
+                                        <i class="bi bi-stop-fill"></i>
+                                    </button>
+                                </form>
                             </div>
                         </div>
-                        <div class="d-flex justify-content-between mb-1">
-                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
-                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
-                        </div>
-                        <!-- Unified log area will be shown below all scan cards -->
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <form method="POST" action="{{ url_for('scan_popularity_route') }}" class="flex-grow-1">
-                            <button id="popularity-start-btn" type="submit" class="btn btn-primary btn-sm w-100 px-2 py-1">
-                                <i class="bi bi-play-fill"></i> Start
-                            </button>
-                        </form>
-                        <form method="POST" action="{{ url_for('scan_stop_popularity') }}">
-                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
-                                <i class="bi bi-stop-fill"></i> Stop
-                            </button>
-                        </form>
                     </div>
                 </div>
-
-                <!-- Beets Auto-Import (File Paths & Metadata) -->
-                <div class="scan-card-large">
-                    <div class="d-flex align-items-center justify-content-between mb-3">
-                        <div>
-                            <h6 class="mb-1">
+                
+                <!-- Beets Auto-Import Button -->
+                <div class="col-12 col-md-4">
+                    <div class="card h-100">
+                        <div class="card-body p-3">
+                            <h6 class="mb-2">
                                 <i class="bi bi-disc"></i> Beets Auto-Import
                             </h6>
-                            <small class="text-muted" style="display: block;">Scan /music folder with beets, capture file paths and MusicBrainz metadata</small>
-                        </div>
-                        <span class="scan-badge" data-scan-type="mp3_scan" style="display: none;">
-                            <span class="badge bg-success"><i class="bi bi-play-fill"></i> Running</span>
-                        </span>
-                    </div>
-                    
-                    <div class="scan-progress-container" data-scan-type="mp3_scan" style="margin-bottom: 1rem;">
-                        <div class="progress" style="height: 20px; margin-bottom: 0.5rem;">
-                            <div class="progress-bar progress-bar-striped progress-bar-animated bg-info" 
-                                 role="progressbar" style="width: 0%;" 
-                                 aria-valuenow="0" aria-valuemin="0" aria-valuemax="100">
+                            <p class="small text-muted mb-3">Scan /music folder with beets, capture file paths and metadata</p>
+                            <div class="d-flex gap-2">
+                                <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
+                                    <button type="submit" class="btn btn-info btn-sm w-100 scan-start-btn" data-scan-type="mp3" style="color: #000; font-weight: 600;">
+                                        <i class="bi bi-play-fill"></i> Start
+                                    </button>
+                                </form>
+                                <form method="POST" action="{{ url_for('scan_stop_mp3') }}">
+                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
+                                        <i class="bi bi-stop-fill"></i>
+                                    </button>
+                                </form>
                             </div>
                         </div>
-                        <div class="d-flex justify-content-between mb-1">
-                            <small class="text-muted"><span class="scan-progress-text">Initializing...</span></small>
-                            <small class="text-muted"><span class="scan-progress-percent">0%</span></small>
-                        </div>
-                        <!-- Unified log area will be shown below all scan cards -->
-                    </div>
-                    
-                    <div class="d-flex gap-2">
-                        <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
-                            <button type="submit" class="btn btn-info btn-sm w-100 px-2 py-1" style="color: #000; font-weight: 600;">
-                                <i class="bi bi-play-fill"></i> Start
-                            </button>
-                        </form>
-                        <form method="POST" action="{{ url_for('scan_stop_mp3') }}">
-                            <button type="submit" class="btn btn-outline-danger btn-sm px-2 py-1">
-                                <i class="bi bi-stop-fill"></i> Stop
-                            </button>
-                        </form>
                     </div>
                 </div>
             </div>
@@ -225,7 +188,7 @@
             <button id="pauseLogBtn" type="button" class="btn btn-outline-secondary btn-sm ms-2"><i class="bi bi-pause"></i> Pause</button>
         </div>
         <div class="card-body p-2">
-            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 180px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
+            <pre id="unifiedLog" class="bg-dark text-light p-2 mb-2" style="height: 400px; overflow-y: auto; font-family: monospace; font-size: 12px;"></pre>
             <!-- Log Download Buttons -->
             <div class="d-flex gap-2 justify-content-end mt-2">
                 <a href="/api/download-log/unified" class="btn btn-sm btn-outline-primary" download>
@@ -583,49 +546,43 @@ document.addEventListener('DOMContentLoaded', function() {
     // Track which scans are currently running
     let runningScans = new Set();
     
-    // Poll individual scan progress every 1 second
+    // Poll scan progress and update unified progress bar
     function updateIndividualScanProgress() {
         fetch('/api/scan-progress')
             .then(response => response.json())
             .then(data => {
+                // Get unified progress bar elements
+                const progressBar = document.getElementById('unified-progress-bar');
+                const progressPercent = document.getElementById('unified-progress-percent');
+                const scanName = document.getElementById('current-scan-name');
+                const progressDetails = document.getElementById('unified-progress-details');
+                const startButtons = document.querySelectorAll('.scan-start-btn');
+                
                 // Determine which scan is actually running and get its type
                 let activeScanType = null;
+                let scanDisplayName = 'Idle';
                 
                 if (!data.is_running) {
-                    // Check if scan failed (has error info)
-                    if (data.error || data.exit_code !== undefined) {
-                        // Show error state in the appropriate progress container
-                        const scanType = data.scan_type;
-                        if (scanType) {
-                            const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${scanType}"]`);
-                            if (progressContainer) {
-                                const progressText = progressContainer.querySelector('.scan-progress-text');
-                                if (progressText) {
-                                    const errorMsg = data.error || `Failed with exit code ${data.exit_code}`;
-                                    progressText.innerHTML = `<span class="text-danger">❌ Error: ${errorMsg}</span>`;
-                                }
-                            }
-                        }
-                        runningScans.clear();
-                        return;
+                    // No scan running - reset to idle state
+                    if (progressBar) {
+                        progressBar.style.width = '0%';
+                        progressBar.setAttribute('aria-valuenow', 0);
+                        progressBar.classList.remove('progress-bar-animated', 'progress-bar-striped', 'bg-primary', 'bg-success', 'bg-info');
+                        progressBar.classList.add('bg-secondary');
                     }
-
-                    // Show idle state
-                    document.querySelectorAll('.scan-progress-container').forEach(container => {
-                        const progressBar = container.querySelector('.progress-bar');
-                        const progressText = container.querySelector('.scan-progress-text');
-                        const progressPercent = container.querySelector('.scan-progress-percent');
-                        if (progressBar) {
-                            progressBar.style.width = '0%';
-                            progressBar.setAttribute('aria-valuenow', 0);
+                    if (progressPercent) progressPercent.textContent = '0%';
+                    if (scanName) scanName.textContent = 'Idle';
+                    if (progressDetails) {
+                        if (data.error || data.exit_code !== undefined) {
+                            const errorMsg = data.error || `Failed with exit code ${data.exit_code}`;
+                            progressDetails.innerHTML = `<span class="text-danger">❌ Error: ${errorMsg}</span>`;
+                        } else {
+                            progressDetails.textContent = 'Ready to start a scan';
                         }
-                        if (progressPercent) {
-                            progressPercent.textContent = '0%';
-                        }
-                        if (progressText) {
-                            progressText.textContent = 'Idle';
-                        }
-                    });
+                    }
+                    
+                    // Enable all start buttons
+                    startButtons.forEach(btn => btn.disabled = false);
                     runningScans.clear();
                     return;
                 }
@@ -633,27 +590,36 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Detect which scan is running based on data fields present
                 if (data.processed_files !== undefined && data.total_files !== undefined) {
                     activeScanType = 'mp3_scan';
+                    scanDisplayName = 'Beets Auto-Import';
                 } else if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
                     activeScanType = 'navidrome_scan';
+                    scanDisplayName = 'Navidrome Sync';
                 } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
                     // Could be popularity, singles, or missing_releases - check scan_type field
                     if (data.scan_type === 'singles_scan') {
                         activeScanType = 'singles_scan';
+                        scanDisplayName = 'Singles Detection';
                     } else if (data.scan_type === 'missing_releases_scan') {
                         activeScanType = 'missing_releases_scan';
+                        scanDisplayName = 'Missing Releases Scan';
                     } else {
                         activeScanType = 'popularity_scan';
+                        scanDisplayName = 'Popularity & Singles';
                     }
                 } else {
                     // Default based on scan_type if present
                     const scanTypeMapping = {
-                        'mp3_scan': 'mp3_scan',
-                        'navidrome_scan': 'navidrome_scan',
-                        'popularity_scan': 'popularity_scan',
-                        'singles_scan': 'singles_scan',
-                        'missing_releases_scan': 'missing_releases_scan'
+                        'mp3_scan': { type: 'mp3_scan', name: 'Beets Auto-Import' },
+                        'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Sync' },
+                        'popularity_scan': { type: 'popularity_scan', name: 'Popularity & Singles' },
+                        'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
+                        'missing_releases_scan': { type: 'missing_releases_scan', name: 'Missing Releases Scan' }
                     };
-                    activeScanType = scanTypeMapping[data.scan_type] || null;
+                    const mapping = scanTypeMapping[data.scan_type];
+                    if (mapping) {
+                        activeScanType = mapping.type;
+                        scanDisplayName = mapping.name;
+                    }
                 }
                 
                 if (!activeScanType) return;
@@ -661,60 +627,60 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Track this scan as running
                 runningScans.add(activeScanType);
                 
-                // Find and update the progress container for this scan type
-                const progressContainer = document.querySelector(`.scan-progress-container[data-scan-type="${activeScanType}"]`);
-                if (!progressContainer) return;
-                
-                const progressBar = progressContainer.querySelector('.progress-bar');
-                const progressText = progressContainer.querySelector('.scan-progress-text');
-                const progressPercent = progressContainer.querySelector('.scan-progress-percent');
-                
-                // Show progress container
-                progressContainer.style.display = 'block';
-                
                 let percent = 0;
-                let text = 'Processing...';
+                let details = 'Processing...';
+                let barColor = 'bg-primary';
                 
                 // Calculate progress based on data fields
                 if (activeScanType === 'mp3_scan' && data.total_files !== undefined) {
                     const processed = data.processed_files || 0;
                     const total = data.total_files || 0;
                     percent = total ? Math.round((processed / total) * 100) : (data.percent_complete || 0);
-                    text = total ? `${processed}/${total} files` : 'Importing files';
+                    details = total ? `${processed}/${total} files` : 'Importing files';
                     if (data.current_item) {
-                        text += ` · ${data.current_item}`;
+                        details += ` · ${data.current_item}`;
                     }
+                    barColor = 'bg-info';
                 } else if (activeScanType === 'navidrome_scan' && (data.scanned_albums !== undefined || data.processed_artists !== undefined)) {
                     const processedAlbums = data.scanned_albums || data.processed_artists || 0;
                     const totalAlbums = data.total_albums || data.total_artists || 0;
                     percent = totalAlbums ? Math.round((processedAlbums / totalAlbums) * 100) : (data.percent_complete || 0);
-                    text = totalAlbums ? `${processedAlbums}/${totalAlbums} ${data.scanned_albums !== undefined ? 'albums' : 'artists'}` : 'Syncing library';
+                    details = totalAlbums ? `${processedAlbums}/${totalAlbums} ${data.scanned_albums !== undefined ? 'albums' : 'artists'}` : 'Syncing library';
                     if (data.current_artist) {
-                        text += ` · ${data.current_artist}`;
+                        details += ` · ${data.current_artist}`;
                     }
+                    barColor = 'bg-primary';
                 } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan') && data.total_artists !== undefined) {
                     const processedArtists = data.processed_artists || 0;
                     const totalArtists = data.total_artists || 0;
                     percent = totalArtists ? Math.round((processedArtists / totalArtists) * 100) : (data.percent_complete || 0);
-                    text = totalArtists ? `${processedArtists}/${totalArtists} artists` : 'Processing artists';
+                    details = totalArtists ? `${processedArtists}/${totalArtists} artists` : 'Processing artists';
+                    if (data.current_artist) {
+                        details += ` · ${data.current_artist}`;
+                    }
+                    barColor = 'bg-success';
                 } else if (activeScanType === 'missing_releases_scan' && data.total_artists !== undefined) {
                     const processedArtists = data.processed_artists || 0;
                     const totalArtists = data.total_artists || 0;
                     const totalMissing = data.total_missing_found || 0;
                     percent = totalArtists ? Math.round((processedArtists / totalArtists) * 100) : (data.percent_complete || 0);
-                    text = totalArtists ? `${processedArtists}/${totalArtists} artists` : 'Scanning artists';
+                    details = totalArtists ? `${processedArtists}/${totalArtists} artists` : 'Scanning artists';
                     if (data.current_artist) {
-                        text += ` · ${data.current_artist}`;
+                        details += ` · ${data.current_artist}`;
                     }
                     if (totalMissing > 0) {
-                        text += ` (${totalMissing} missing found)`;
+                        details += ` (${totalMissing} missing found)`;
                     }
+                    barColor = 'bg-warning';
                 }
                 
-                // Update progress bar (always update to ensure visual consistency)
+                // Update unified progress bar
                 if (progressBar) {
                     progressBar.style.width = percent + '%';
                     progressBar.setAttribute('aria-valuenow', percent);
+                    // Update color and animation
+                    progressBar.classList.remove('bg-secondary', 'bg-primary', 'bg-success', 'bg-info', 'bg-warning');
+                    progressBar.classList.add(barColor, 'progress-bar-animated', 'progress-bar-striped');
                 }
                 
                 // Update percentage
@@ -722,10 +688,18 @@ document.addEventListener('DOMContentLoaded', function() {
                     progressPercent.textContent = percent + '%';
                 }
                 
-                // Update text
-                if (progressText) {
-                    progressText.textContent = text;
+                // Update scan name
+                if (scanName) {
+                    scanName.textContent = scanDisplayName;
                 }
+                
+                // Update details
+                if (progressDetails) {
+                    progressDetails.textContent = details;
+                }
+                
+                // Disable all start buttons while scan is running
+                startButtons.forEach(btn => btn.disabled = true);
             })
             .catch(error => console.error('Error fetching scan progress:', error));
     }
@@ -742,7 +716,7 @@ document.addEventListener('DOMContentLoaded', function() {
 
     function updateUnifiedLog() {
         if (logPaused) return;
-        fetch('/api/unified-log?lines=40')
+        fetch('/api/unified-log?lines=1000')
             .then(response => response.json())
             .then(data => {
                 const logEl = document.getElementById('unifiedLog');

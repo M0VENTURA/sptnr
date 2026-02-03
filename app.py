@@ -137,7 +137,7 @@ app = Flask(__name__)
 # --- Unified Log API ---
 @app.route("/api/unified-log")
 def api_unified_log():
-    lines = int(request.args.get("lines", 40))
+    lines = int(request.args.get("lines", 1000))
     verbose = request.args.get("verbose", "0") == "1"
     unified_log_path = "/config/unified_scan.log"
     log_lines = []
@@ -152,11 +152,30 @@ def api_unified_log():
         log_verbose(f"[api_unified_log] Exception reading file: {e}")
         return jsonify({"error": str(e), "lines": []}), 500
     try:
-        # Filter out HTTP request/response logs unless verbose is enabled
+        # Filter out HTTP request/response logs and other verbose logs unless verbose is enabled
         if not verbose:
             import re
             http_log_pattern = re.compile(r'"(GET|POST|PUT|DELETE|PATCH) /api/.* HTTP/1\\.[01]" (200|201|204|400|401|403|404|500|502|503)')
-            log_lines = [line for line in log_lines if not http_log_pattern.search(line)]
+            # Patterns for verbose/unimportant log lines to skip
+            skip_patterns = [
+                r'\[api_unified_log\]',  # API logging itself
+                r'Checking match for',  # Verbose matching logs
+                r'Found \d+ existing track',  # Verbose track counting
+                r'Album already scanned',  # Already handled by skipping in recent scans
+                r'Skipping artist.*already.*scanned',  # Verbose skip messages
+            ]
+            skip_regex = re.compile('|'.join(skip_patterns), re.IGNORECASE)
+            
+            filtered_lines = []
+            for line in log_lines:
+                # Skip HTTP logs
+                if http_log_pattern.search(line):
+                    continue
+                # Skip other verbose patterns
+                if skip_regex.search(line):
+                    continue
+                filtered_lines.append(line)
+            log_lines = filtered_lines
         # Only return the last N lines
         log_lines = log_lines[-lines:]
         log_verbose(f"[api_unified_log] Returning {len(log_lines)} log lines")
