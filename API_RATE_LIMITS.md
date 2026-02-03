@@ -2,7 +2,7 @@
 
 ## Overview
 
-SPTNR uses external APIs (Spotify and Last.fm) for fetching track metadata and popularity data. These APIs have rate limits to prevent abuse and ensure fair usage. This document explains the limits and how SPTNR manages them.
+SPTNR uses external APIs (Spotify, Last.fm, and MusicBrainz) for fetching track metadata and popularity data. These APIs have rate limits to prevent abuse and ensure fair usage. This document explains the limits and how SPTNR manages them.
 
 ## Spotify Web API
 
@@ -77,6 +77,39 @@ At 1 request/second, a full scan of 10,000 tracks takes ~2.8 hours.
 - Using `--artist` filter to scan specific artists
 - Spreading scans across multiple days
 
+## MusicBrainz API
+
+### Rate Limits
+
+- **Per-Second Limit**: 1 request per second (strictly enforced)
+- **Daily Limit**: No official limit, but stricter enforcement with IP blocking for violations
+- **Official Documentation**: [MusicBrainz API Rate Limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
+
+### SPTNR Implementation
+
+SPTNR now includes integrated MusicBrainz rate limiting that:
+- Enforces strict 1-second delay between all MusicBrainz requests
+- Tracks daily API usage
+- Prevents IP blocking by respecting rate limits
+- Logs warnings if rate limits are approached
+- Shares rate limiting state across all MusicBrainz operations (single detection, genre lookups, MBID lookups)
+
+**Important**: MusicBrainz enforces their rate limits much more strictly than other APIs and will block your IP if you exceed 1 request per second. Always respect their limits.
+
+### Reducing MusicBrainz API Calls
+
+1. **Caching**: MBID lookups are cached to avoid repeated requests
+2. **Integrated Rate Limiter**: All MusicBrainz requests now go through the centralized rate limiter
+3. **Retry Strategy**: Failed requests use exponential backoff to avoid hammering the API
+
+### Typical Usage
+
+For a library of 10,000 tracks:
+- **Single Detection**: ~5,000-10,000 lookups (only for tracks where single detection is needed)
+- **Genre Lookups**: Variable based on enabled features
+
+At 1 request/second, operations are automatically throttled to respect MusicBrainz limits.
+
 ## Monitoring API Usage
 
 ### View Current Usage
@@ -87,7 +120,8 @@ The rate limiter stores usage statistics in `/database/api_rate_limiter_state.js
 {
   "spotify_daily_count": 12453,
   "lastfm_daily_count": 8721,
-  "last_reset": "2026-01-18T00:00:00"
+  "musicbrainz_daily_count": 542,
+  "last_reset": "2026-02-03T00:00:00"
 }
 ```
 
@@ -101,6 +135,7 @@ stats = limiter.get_stats()
 
 print(f"Spotify: {stats['spotify_daily_count']}/{stats['spotify_daily_limit']} ({stats['spotify_daily_percent']:.1f}%)")
 print(f"Last.fm: {stats['lastfm_daily_count']}/{stats['lastfm_daily_limit']} ({stats['lastfm_daily_percent']:.1f}%)")
+print(f"MusicBrainz: {stats['musicbrainz_daily_count']} requests today")
 ```
 
 ## Best Practices
@@ -255,6 +290,19 @@ python popularity.py --artist "Pink Floyd" --album "The Dark Side of the Moon" -
 
 **Solution**:
 - Update to latest version with logarithmic scoring
+- Force rescan: `python popularity.py --force --verbose`
+
+### Issue: "MusicBrainz rate limit exceeded" or IP blocked
+
+**Cause**: Too many MusicBrainz requests in a short time.
+
+**Solution**:
+- SPTNR now enforces strict 1 request/second rate limiting
+- Update to latest version with integrated MusicBrainz rate limiting
+- If already blocked, wait 24 hours before making more requests
+- The rate limiter automatically handles delays to prevent blocking
+
+
 - Force rescan: `python popularity.py --force --verbose`
 
 ## API Keys
