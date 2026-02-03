@@ -19,15 +19,24 @@ import traceback
 import requests
 import sys
 
+# Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler("/config/music_watcher.log"),
         logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
+
+# Try to add file handler if /config directory exists
+try:
+    if os.path.exists("/config"):
+        file_handler = logging.FileHandler("/config/music_watcher.log")
+        file_handler.setFormatter(logging.Formatter('%(asctime)s - %(levelname)s - %(message)s'))
+        logger.addHandler(file_handler)
+except Exception as e:
+    logger.warning(f"Could not create log file: {e}")
 
 DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads/Music")
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
