@@ -223,6 +223,7 @@ def get_recent_album_scans(limit: int = 10):
         cursor.execute("""
             SELECT artist, album, scan_type, scan_timestamp, tracks_processed, status, source
             FROM scan_history
+            WHERE status != 'skipped'
             ORDER BY scan_timestamp DESC
             LIMIT ?
         """, (limit,))
