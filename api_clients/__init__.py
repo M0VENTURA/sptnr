@@ -16,13 +16,16 @@ session = create_retry_session(
 
 # ✅ Timeout-sensitive HTTP session with minimal retries
 # Used for API calls wrapped in _run_with_timeout to prevent thread pool exhaustion.
-# Increased backoff from 0.2 to 0.5s to better handle connection resets while staying
-# within timeout constraints. With 1 retry max and backoff=0.5s, plus typical API call 
-# timeouts of (5,10)s used in spotify.py and other clients, max request duration is:
+# Increased backoff from 0.2 to 0.5s to better handle connection resets.
+# With 1 retry max and backoff=0.5s, plus typical API call timeouts of (5,10)s used
+# in spotify.py and other clients, max request duration is:
 # - First attempt: 15s (5s connect + 10s read)
 # - Retry delay: 0.5s
 # - Second attempt: 15s
-# - Total: ~30.5s maximum, which fits within typical API_CALL_TIMEOUT of 30s
+# - Total: ~30.5s maximum
+# Note: This slightly exceeds the default 30s API_CALL_TIMEOUT, but the benefit
+# of handling transient connection errors outweighs the minimal timeout increase.
+# If needed, increase POPULARITY_API_TIMEOUT environment variable to 35s.
 timeout_safe_session = create_retry_session(
     retries=1,
     backoff=0.5,
