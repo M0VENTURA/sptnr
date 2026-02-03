@@ -6446,6 +6446,31 @@ def api_metadata():
     return jsonify(metadata)
 
 
+def _album_art_placeholder_svg(size: int = 300) -> Response:
+    """
+    Generate an SVG placeholder for album art.
+    
+    Args:
+        size: Width and height of the SVG in pixels (10-1000)
+        
+    Returns:
+        Flask Response with SVG content
+    """
+    # Validate and sanitize size to prevent injection attacks
+    try:
+        size = int(size)
+        size = max(10, min(1000, size))  # Clamp between 10 and 1000
+    except (ValueError, TypeError):
+        size = 300  # Default fallback
+    
+    svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}" role="img" aria-label="No Album Art Available">
+        <title>No Album Art Available</title>
+        <rect fill="#2a2a2a" width="{size}" height="{size}"/>
+        <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Album Art</text>
+    </svg>'''
+    return Response(svg, mimetype='image/svg+xml')
+
+
 def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> bytes | None:
     """
     Fetch album art from MusicBrainz Cover Art Archive.
@@ -6728,11 +6753,12 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 6. No art found
-        return Response(status=404)
+        # 6. No art found - return placeholder SVG instead of 404
+        return _album_art_placeholder_svg()
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
-        return Response(status=404)
+        # Return placeholder SVG instead of 404
+        return _album_art_placeholder_svg()
 
 
 @app.route("/api/downloads/scan")
