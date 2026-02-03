@@ -105,3 +105,42 @@ def get_feature(feature_name: str, default: Any = None) -> Any:
     config = load_config()
     features = config.get("features", {})
     return features.get(feature_name, default)
+
+
+def get_watcher_settings() -> Dict[str, Any]:
+    """
+    Get watcher service settings from config.yaml.
+    
+    Returns:
+        Dict with watcher settings or defaults
+    """
+    config = load_config()
+    watcher = config.get("watcher", {})
+    return {
+        "scan_interval": int(watcher.get("scan_interval", 30)),
+        "navidrome_sync_wait": int(watcher.get("navidrome_sync_wait", 600)),
+        "auto_import_enabled": bool(watcher.get("auto_import_enabled", True)),
+        "auto_popularity_scan": bool(watcher.get("auto_popularity_scan", True)),
+        "downloads_watcher_enabled": bool(watcher.get("downloads_watcher_enabled", True)),
+    }
+
+
+def save_config(config_data: Dict[str, Any]) -> bool:
+    """
+    Save configuration to config.yaml.
+    
+    Args:
+        config_data: Configuration dictionary to save
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        with open(_CONFIG_PATH, "w") as f:
+            yaml.dump(config_data, f, default_flow_style=False, sort_keys=False)
+        # Clear cache to force reload
+        global _CONFIG_CACHE
+        _CONFIG_CACHE = None
+        return True
+    except Exception:
+        return False

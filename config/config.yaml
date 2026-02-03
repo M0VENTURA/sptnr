@@ -30,6 +30,14 @@ slskd:
 downloads:
   folder: "/downloads/Music"  # Path to watch for downloaded music files
 
+# Watcher Service Configuration
+watcher:
+  scan_interval: 30  # How often to check for new files (in seconds)
+  navidrome_sync_wait: 600  # How long to wait for Navidrome scan to complete (in seconds)
+  auto_import_enabled: true  # Automatically import new songs from Navidrome
+  auto_popularity_scan: true  # Automatically run popularity scan on newly imported songs
+  downloads_watcher_enabled: true  # Monitor /downloads folder for new files
+
 # API Integrations - Enable/disable external services and provide credentials
 api_integrations:
   spotify:
