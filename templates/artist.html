@@ -1054,7 +1054,7 @@ function importRelease(artist, releaseId, title) {
     return;
   }
   
-  const btn = event.target.closest('button');
+  const btn = window.event ? window.event.target.closest('button') : document.activeElement.closest('button');
   const originalHtml = btn.innerHTML;
   btn.disabled = true;
   btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';

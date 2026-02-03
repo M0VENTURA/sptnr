@@ -7837,7 +7837,6 @@ def track_genre_recommendations():
             if genre_field:
                 # Handle both comma-separated strings and JSON arrays
                 try:
-                    import json
                     genre_list = json.loads(genre_field)
                     if isinstance(genre_list, list):
                         genres_set.update(g.strip() for g in genre_list if g and g.strip())
@@ -7867,7 +7866,6 @@ def track_genre_recommendations():
                                t["navidrome_genres"]]:
                 if genre_field:
                     try:
-                        import json
                         genre_list = json.loads(genre_field)
                         if isinstance(genre_list, list):
                             for g in genre_list:

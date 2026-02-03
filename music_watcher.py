@@ -232,6 +232,7 @@ def sync_navidrome_to_db():
         logger.info(f"Scanning {len(artists)} artists for new songs...")
         new_tracks_count = 0
         
+        # Note: For large libraries, consider batching or using background tasks
         for artist in artists:
             try:
                 # Get track count before import

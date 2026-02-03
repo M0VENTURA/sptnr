@@ -1041,7 +1041,7 @@ function fetchGenreRecommendations() {
     const album = '{{ track.album }}';
     const title = '{{ track.title }}';
     
-    const btn = event.target;
+    const btn = window.event ? window.event.target : document.activeElement;
     const originalHtml = btn.innerHTML;
     btn.disabled = true;
     btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Loading...';
@@ -1100,7 +1100,8 @@ function addRecommendedGenre(genre) {
     updateGenresDisplay();
     
     // Remove the button from recommendations
-    event.target.remove();
+    const btn = window.event ? window.event.target : document.activeElement;
+    btn.remove();
     
     // Hide recommendations if all are added
     const recList = document.getElementById('genreRecommendationsList');
