@@ -11,6 +11,7 @@ from pathlib import Path
 from mutagen.id3 import ID3
 from mutagen.easyid3 import EasyID3
 from mutagen.mp3 import MP3
+import base64
 
 # Common MP3tag.de mapping fields
 MP3_FIELDS = {
@@ -29,6 +30,33 @@ MP3_FIELDS = {
     'bpm': 'TBPM',
     'language': 'TLAN',
 }
+
+
+def extract_album_art_from_mp3(file_path):
+    """
+    Extract embedded album art from MP3 file.
+    
+    Args:
+        file_path: Path to MP3 file
+        
+    Returns:
+        bytes: Image data or None if no art found
+    """
+    if not file_path or not os.path.exists(file_path):
+        return None
+    
+    try:
+        audio = ID3(file_path)
+        # Look for APIC (Attached Picture) frames
+        for key in audio.keys():
+            if key.startswith('APIC'):
+                apic = audio[key]
+                # Return the image data
+                return apic.data
+    except Exception as e:
+        pass
+    
+    return None
 
 
 def read_mp3_metadata(file_path):

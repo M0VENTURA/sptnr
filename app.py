@@ -6777,7 +6777,35 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 6. No art found - return placeholder SVG instead of 404
+        # 6. Try to extract from MP3 file
+        try:
+            from metadata_reader import extract_album_art_from_mp3
+            
+            # Get a track file path from this album
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT beets_path, file_path FROM tracks 
+                WHERE artist = ? AND album = ? 
+                AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                LIMIT 1
+            """, (artist, album))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                if file_path and os.path.exists(file_path):
+                    art_data = extract_album_art_from_mp3(file_path)
+                    if art_data:
+                        return send_file(
+                            io.BytesIO(art_data),
+                            mimetype='image/jpeg'
+                        )
+        except Exception as e:
+            logging.debug(f"Failed to extract album art from MP3: {e}")
+        
+        # 7. No art found - return placeholder SVG instead of 404
         return _album_art_placeholder_svg()
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
