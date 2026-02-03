@@ -687,6 +687,10 @@ def get_database_library_stats() -> dict:
     """
     Get library statistics from the local database.
     
+    Note: Uses COUNT(DISTINCT album) which should be fast enough for typical
+    library sizes. If performance becomes an issue, consider adding an index
+    on the album column.
+    
     Returns:
         Dict with 'total_albums' and 'total_songs' counts from the database
     """
@@ -756,6 +760,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     
     # Optimization: Check if library totals match before scanning each album
     # Skip individual album checks if force=False and totals match
+    # Note: This is a best-effort optimization that checks if album counts match.
+    # In rare edge cases (e.g., albums deleted and added with same total count),
+    # the database may be slightly out of sync. Use --force to bypass this check.
     if not force:
         log_info("Checking if library is already up-to-date...")
         log_debug("Getting library stats from Navidrome and database")

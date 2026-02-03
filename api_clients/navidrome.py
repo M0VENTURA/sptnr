@@ -332,6 +332,9 @@ class NavidromeClient:
         Get library statistics from Navidrome including total album and song counts.
         
         This aggregates counts from the artist index to provide totals.
+        Note: Song count is fetched from getAlbumList2 with a size limit of 500.
+        For libraries with more than 500 albums, song count may be incomplete,
+        but album count will still be accurate from the artist index.
         
         Returns:
             Dict with 'total_albums' and 'total_songs' counts
@@ -350,7 +353,7 @@ class NavidromeClient:
             # Try to get song count from album list
             # The Subsonic API has getAlbumList2 which can return all albums
             url = f"{self.base_url}/rest/getAlbumList2.view"
-            params = self._build_params(type="alphabeticalByName", size=500)  # Max size
+            params = self._build_params(type="alphabeticalByName", size=500)  # Subsonic API limit
             
             try:
                 res = self.session.get(url, params=params, timeout=30)
