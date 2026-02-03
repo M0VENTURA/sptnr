@@ -6451,11 +6451,18 @@ def _album_art_placeholder_svg(size: int = 300) -> Response:
     Generate an SVG placeholder for album art.
     
     Args:
-        size: Width and height of the SVG in pixels
+        size: Width and height of the SVG in pixels (10-1000)
         
     Returns:
         Flask Response with SVG content
     """
+    # Validate and sanitize size to prevent injection attacks
+    try:
+        size = int(size)
+        size = max(10, min(1000, size))  # Clamp between 10 and 1000
+    except (ValueError, TypeError):
+        size = 300  # Default fallback
+    
     svg = f'''<svg xmlns="http://www.w3.org/2000/svg" width="{size}" height="{size}">
         <rect fill="#2a2a2a" width="{size}" height="{size}"/>
         <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Album Art</text>
