@@ -3972,6 +3972,97 @@ def scan_stop_singles():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/clear-stuck", methods=["POST"])
+def scan_clear_stuck():
+    """Clear all stuck scan progress files"""
+    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    
+    with scan_lock:
+        db_dir = os.path.dirname(DB_PATH)
+        cleared_count = 0
+        
+        # List of all progress files to check
+        progress_files = [
+            ("mp3_scan_progress.json", scan_process_mp3),
+            ("navidrome_scan_progress.json", scan_process_navidrome),
+            ("popularity_scan_progress.json", scan_process_popularity),
+            ("singles_scan_progress.json", scan_process_singles),
+            ("missing_releases_scan_progress.json", scan_process_missing_releases),
+        ]
+        
+        for filename, process_ref in progress_files:
+            filepath = os.path.join(db_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r') as f:
+                        progress = json.load(f)
+                    
+                    # If it says running, check if process is actually alive
+                    if progress.get("is_running", False):
+                        is_alive = False
+                        if process_ref is not None:
+                            if isinstance(process_ref, dict):
+                                thread = process_ref.get('thread')
+                                if thread and hasattr(thread, 'is_alive'):
+                                    is_alive = thread.is_alive()
+                                elif thread and hasattr(thread, 'poll'):
+                                    is_alive = thread.poll() is None
+                            elif hasattr(process_ref, 'is_alive'):
+                                is_alive = process_ref.is_alive()
+                            elif hasattr(process_ref, 'poll'):
+                                is_alive = process_ref.poll() is None
+                        
+                        # If not alive, mark as stopped
+                        if not is_alive:
+                            progress["is_running"] = False
+                            progress["status"] = "cleared"
+                            with open(filepath, 'w') as f:
+                                json.dump(progress, f)
+                            cleared_count += 1
+                            logging.info(f"Cleared stuck progress file: {filename}")
+                except Exception as e:
+                    logging.error(f"Error clearing progress file {filename}: {e}")
+        
+        # Also clean up global process references if they're dead
+        if scan_process_mp3 and not _is_process_alive(scan_process_mp3):
+            scan_process_mp3 = None
+        if scan_process_navidrome and not _is_process_alive(scan_process_navidrome):
+            scan_process_navidrome = None
+        if scan_process_popularity and not _is_process_alive(scan_process_popularity):
+            scan_process_popularity = None
+        if scan_process_singles and not _is_process_alive(scan_process_singles):
+            scan_process_singles = None
+        if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
+            scan_process_missing_releases = None
+        
+        if cleared_count > 0:
+            flash(f"✅ Cleared {cleared_count} stuck scan(s)", "success")
+        else:
+            flash("No stuck scans found", "info")
+    
+    return redirect(url_for("dashboard"))
+
+
+def _is_process_alive(proc):
+    """Helper to check if a process/thread is alive"""
+    if proc is None:
+        return False
+    if isinstance(proc, dict):
+        thread = proc.get('thread')
+        if thread is None:
+            return False
+        if hasattr(thread, 'is_alive'):
+            return thread.is_alive()
+        if hasattr(thread, 'poll'):
+            return thread.poll() is None
+        return False
+    if hasattr(proc, 'is_alive'):
+        return proc.is_alive()
+    if hasattr(proc, 'poll'):
+        return proc.poll() is None
+    return False
+
+
 @app.route("/scan/status")
 def scan_status():
     """Get scan status (JSON)"""
