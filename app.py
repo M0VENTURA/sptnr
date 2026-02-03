@@ -4014,18 +4014,17 @@ def scan_clear_stuck():
                 except Exception as e:
                     logging.error(f"Error clearing progress file {filename}: {e}")
         
-        # Also clean up global process references if they're dead
-        process_refs = {
-            'scan_process_mp3': scan_process_mp3,
-            'scan_process_navidrome': scan_process_navidrome,
-            'scan_process_popularity': scan_process_popularity,
-            'scan_process_singles': scan_process_singles,
-            'scan_process_missing_releases': scan_process_missing_releases,
-        }
-        
-        for var_name, proc_ref in process_refs.items():
-            if proc_ref and not _is_process_alive(proc_ref):
-                globals()[var_name] = None
+        # Also clean up global process references if they're dead (explicit assignments for security)
+        if scan_process_mp3 and not _is_process_alive(scan_process_mp3):
+            scan_process_mp3 = None
+        if scan_process_navidrome and not _is_process_alive(scan_process_navidrome):
+            scan_process_navidrome = None
+        if scan_process_popularity and not _is_process_alive(scan_process_popularity):
+            scan_process_popularity = None
+        if scan_process_singles and not _is_process_alive(scan_process_singles):
+            scan_process_singles = None
+        if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
+            scan_process_missing_releases = None
         
         if cleared_count > 0:
             flash(f"✅ Cleared {cleared_count} stuck scan(s)", "success")
