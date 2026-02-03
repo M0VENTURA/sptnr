@@ -3107,6 +3107,7 @@ def _run_artist_scan_pipeline(artist_name: str):
         # Track artists appear in tracks.artist but not in artist_stats (which only has album artists)
         if not artist_id:
             log_unified(f"Artist not found as album artist, checking if track artist exists in database...")
+            track_count = 0  # Initialize to avoid NameError if query fails
             conn = get_db()
             try:
                 cursor = conn.cursor()
@@ -3184,6 +3185,7 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
         # If still no artist_id, check if this is a track artist (not an album artist)
         if not artist_id:
             log_unified(f"Artist not found as album artist, checking if track artist exists in database...")
+            track_count = 0  # Initialize to avoid NameError if query fails
             conn = get_db()
             try:
                 cursor = conn.cursor()
