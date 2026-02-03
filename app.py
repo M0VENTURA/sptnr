@@ -593,6 +593,80 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
         logging.debug(f"Failed to write progress file {path}: {e}")
 
 
+def _is_process_alive(proc):
+    """Helper to check if a process/thread is alive"""
+    if proc is None:
+        return False
+    if isinstance(proc, dict):
+        thread = proc.get('thread')
+        if thread is None:
+            return False
+        if hasattr(thread, 'is_alive'):
+            return thread.is_alive()
+        if hasattr(thread, 'poll'):
+            return thread.poll() is None
+        return False
+    if hasattr(proc, 'is_alive'):
+        return proc.is_alive()
+    if hasattr(proc, 'poll'):
+        return proc.poll() is None
+    return False
+
+
+def _validate_and_cleanup_progress_file(progress_file: str, process_ref=None, max_age_hours: int = 2):
+    """
+    Validate a progress file and clean it up if it's stale.
+    
+    Returns the progress data if valid, None if stale/invalid.
+    
+    Args:
+        progress_file: Path to the progress file
+        process_ref: Optional process/thread reference to check if actually running
+        max_age_hours: Maximum age in hours before considering a running scan as stuck
+    """
+    if not os.path.exists(progress_file):
+        return None
+    
+    try:
+        with open(progress_file, 'r') as f:
+            progress = json.load(f)
+        
+        # If scan says it's not running, return as-is
+        if not progress.get("is_running", False):
+            return progress
+        
+        # If we have a process reference, verify it's actually alive using helper
+        if process_ref is not None:
+            is_alive = _is_process_alive(process_ref)
+            
+            # If process is dead but file says running, clean it up
+            if not is_alive:
+                logging.warning(f"Progress file {progress_file} says running but process is dead - cleaning up")
+                progress["is_running"] = False
+                progress["status"] = "error"
+                with open(progress_file, 'w') as f:
+                    json.dump(progress, f)
+                return progress
+        
+        # Check file modification time to detect truly stuck scans
+        file_mtime = os.path.getmtime(progress_file)
+        current_time = time.time()
+        age_hours = (current_time - file_mtime) / 3600
+        
+        if age_hours > max_age_hours:
+            logging.warning(f"Progress file {progress_file} is {age_hours:.1f} hours old - assuming stuck scan, cleaning up")
+            progress["is_running"] = False
+            progress["status"] = "timeout"
+            with open(progress_file, 'w') as f:
+                json.dump(progress, f)
+            return progress
+        
+        return progress
+    except Exception as e:
+        logging.error(f"Error validating progress file {progress_file}: {e}")
+        return None
+
+
 def _monitor_process_for_progress(proc: subprocess.Popen, progress_path: str, scan_type: str):
     """Wait for a subprocess and mark its progress file as complete."""
     try:
@@ -3617,28 +3691,23 @@ def scan_mp3():
     global scan_process_mp3
     
     with scan_lock:
-        # Check if scan is already running
-        if scan_process_mp3 is not None:
-            if isinstance(scan_process_mp3, dict):
-                thread = scan_process_mp3.get('thread')
-                if thread and thread.is_alive():
-                    flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
-                    logging.warning("Attempted to start beets import while one is already running")
-                    return redirect(url_for("dashboard"))
-                else:
-                    # Clean up dead thread reference
-                    scan_process_mp3 = None
-            elif hasattr(scan_process_mp3, 'is_alive') and scan_process_mp3.is_alive():
-                flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
-                logging.warning("Attempted to start beets import while one is already running")
-                return redirect(url_for("dashboard"))
-            else:
-                # Clean up dead thread reference
+        # Clean up stale progress file and dead process reference if they exist
+        db_dir = os.path.dirname(DB_PATH)
+        mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
+        validated = _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
+        
+        # If validation detected a dead process, clean up the reference
+        if validated and not validated.get("is_running", True) and scan_process_mp3 is not None:
+            if not _is_process_alive(scan_process_mp3):
                 scan_process_mp3 = None
         
+        # Check if scan is actually running
+        if scan_process_mp3 is not None and _is_process_alive(scan_process_mp3):
+            flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
+            logging.warning("Attempted to start beets import while one is already running")
+            return redirect(url_for("dashboard"))
+        
         try:
-            db_dir = os.path.dirname(DB_PATH)
-            mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             
             # Run beets import in background thread instead of subprocess
@@ -3901,6 +3970,66 @@ def scan_stop_singles():
                 flash("No single detection scan is currently running", "warning")
         else:
             flash("No single detection scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/clear-stuck", methods=["POST"])
+def scan_clear_stuck():
+    """Clear all stuck scan progress files"""
+    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    
+    with scan_lock:
+        db_dir = os.path.dirname(DB_PATH)
+        cleared_count = 0
+        
+        # List of all progress files to check
+        progress_files = [
+            ("mp3_scan_progress.json", scan_process_mp3),
+            ("navidrome_scan_progress.json", scan_process_navidrome),
+            ("popularity_scan_progress.json", scan_process_popularity),
+            ("singles_scan_progress.json", scan_process_singles),
+            ("missing_releases_scan_progress.json", scan_process_missing_releases),
+        ]
+        
+        for filename, process_ref in progress_files:
+            filepath = os.path.join(db_dir, filename)
+            if os.path.exists(filepath):
+                try:
+                    with open(filepath, 'r') as f:
+                        progress = json.load(f)
+                    
+                    # If it says running, check if process is actually alive using helper
+                    if progress.get("is_running", False):
+                        is_alive = _is_process_alive(process_ref)
+                        
+                        # If not alive, mark as stopped
+                        if not is_alive:
+                            progress["is_running"] = False
+                            progress["status"] = "cleared"
+                            with open(filepath, 'w') as f:
+                                json.dump(progress, f)
+                            cleared_count += 1
+                            logging.info(f"Cleared stuck progress file: {filename}")
+                except Exception as e:
+                    logging.error(f"Error clearing progress file {filename}: {e}")
+        
+        # Also clean up global process references if they're dead (explicit assignments for security)
+        if scan_process_mp3 and not _is_process_alive(scan_process_mp3):
+            scan_process_mp3 = None
+        if scan_process_navidrome and not _is_process_alive(scan_process_navidrome):
+            scan_process_navidrome = None
+        if scan_process_popularity and not _is_process_alive(scan_process_popularity):
+            scan_process_popularity = None
+        if scan_process_singles and not _is_process_alive(scan_process_singles):
+            scan_process_singles = None
+        if scan_process_missing_releases and not _is_process_alive(scan_process_missing_releases):
+            scan_process_missing_releases = None
+        
+        if cleared_count > 0:
+            flash(f"✅ Cleared {cleared_count} stuck scan(s)", "success")
+        else:
+            flash("No stuck scans found", "info")
     
     return redirect(url_for("dashboard"))
 
@@ -4477,6 +4606,8 @@ def api_recent_scans():
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
+    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    
     try:
         from unified_scan import get_scan_progress
         progress = get_scan_progress()
@@ -4485,60 +4616,35 @@ def api_scan_progress():
         if not progress.get("is_running", False):
             db_dir = os.path.dirname(DB_PATH)
             
-            # Check MP3 scan progress
+            # Check MP3 scan progress with validation
             mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
-            if os.path.exists(mp3_progress_file):
-                try:
-                    with open(mp3_progress_file, 'r') as f:
-                        mp3_progress = json.load(f)
-                        if mp3_progress.get("is_running", False):
-                            return jsonify(mp3_progress)
-                except:
-                    pass
+            mp3_progress = _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
+            if mp3_progress and mp3_progress.get("is_running", False):
+                return jsonify(mp3_progress)
             
-            # Check Navidrome scan progress
+            # Check Navidrome scan progress with validation
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")
-            if os.path.exists(nav_progress_file):
-                try:
-                    with open(nav_progress_file, 'r') as f:
-                        nav_progress = json.load(f)
-                        if nav_progress.get("is_running", False):
-                            return jsonify(nav_progress)
-                except:
-                    pass
+            nav_progress = _validate_and_cleanup_progress_file(nav_progress_file, scan_process_navidrome)
+            if nav_progress and nav_progress.get("is_running", False):
+                return jsonify(nav_progress)
             
-            # Check Popularity scan progress
+            # Check Popularity scan progress with validation
             popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
-            if os.path.exists(popularity_progress_file):
-                try:
-                    with open(popularity_progress_file, 'r') as f:
-                        pop_progress = json.load(f)
-                        if pop_progress.get("is_running", False):
-                            return jsonify(pop_progress)
-                except:
-                    pass
+            pop_progress = _validate_and_cleanup_progress_file(popularity_progress_file, scan_process_popularity)
+            if pop_progress and pop_progress.get("is_running", False):
+                return jsonify(pop_progress)
             
-            # Check Singles scan progress
+            # Check Singles scan progress with validation
             singles_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
-            if os.path.exists(singles_progress_file):
-                try:
-                    with open(singles_progress_file, 'r') as f:
-                        singles_progress = json.load(f)
-                        if singles_progress.get("is_running", False):
-                            return jsonify(singles_progress)
-                except:
-                    pass
+            singles_progress = _validate_and_cleanup_progress_file(singles_progress_file, scan_process_singles)
+            if singles_progress and singles_progress.get("is_running", False):
+                return jsonify(singles_progress)
             
-            # Check Missing Releases scan progress
+            # Check Missing Releases scan progress with validation
             missing_releases_progress_file = os.path.join(db_dir, "missing_releases_scan_progress.json")
-            if os.path.exists(missing_releases_progress_file):
-                try:
-                    with open(missing_releases_progress_file, 'r') as f:
-                        missing_releases_progress = json.load(f)
-                        if missing_releases_progress.get("is_running", False):
-                            return jsonify(missing_releases_progress)
-                except:
-                    pass
+            missing_releases_progress = _validate_and_cleanup_progress_file(missing_releases_progress_file, scan_process_missing_releases)
+            if missing_releases_progress and missing_releases_progress.get("is_running", False):
+                return jsonify(missing_releases_progress)
         
         return jsonify(progress)
     except Exception as e:
