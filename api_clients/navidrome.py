@@ -158,7 +158,7 @@ class NavidromeClient:
                     if artist_id and artist_name:
                         artist_map[artist_name] = {
                             "id": artist_id,
-                            "album_count": 0,
+                            "album_count": a.get("albumCount", 0),
                             "track_count": 0,
                             "last_updated": None
                         }
@@ -326,6 +326,52 @@ class NavidromeClient:
         except Exception as e:
             logger.error(f"❌ Failed to get scan status: {e}")
             return {"success": False, "error": str(e)}
+    
+    def get_library_stats(self) -> dict:
+        """
+        Get library statistics from Navidrome including total album and song counts.
+        
+        This aggregates counts from the artist index to provide totals.
+        
+        Returns:
+            Dict with 'total_albums' and 'total_songs' counts
+        """
+        try:
+            # Get artist index which contains albumCount for each artist
+            artist_map = self.build_artist_index()
+            
+            total_albums = sum(info.get("album_count", 0) for info in artist_map.values())
+            
+            # To get total songs, we need to fetch all albums
+            # For efficiency, we'll use the getAlbumList endpoint if available
+            # Otherwise we'll return 0 for songs and rely on album count only
+            total_songs = 0
+            
+            # Try to get song count from album list
+            # The Subsonic API has getAlbumList2 which can return all albums
+            url = f"{self.base_url}/rest/getAlbumList2.view"
+            params = self._build_params(type="alphabeticalByName", size=500)  # Max size
+            
+            try:
+                res = self.session.get(url, params=params, timeout=30)
+                res.raise_for_status()
+                albums = res.json().get("subsonic-response", {}).get("albumList2", {}).get("album", [])
+                
+                # Sum up songCount from all albums
+                total_songs = sum(album.get("songCount", 0) for album in albums)
+                
+                logger.info(f"✅ Library stats: {total_albums} albums, {total_songs} songs")
+            except Exception as e:
+                logger.warning(f"Could not fetch song count from Navidrome: {e}")
+                # Continue with just album count
+            
+            return {
+                "total_albums": total_albums,
+                "total_songs": total_songs
+            }
+        except Exception as e:
+            logger.error(f"❌ Failed to get library stats: {e}")
+            return {"total_albums": 0, "total_songs": 0}
 
 
 # Module-level convenience functions for backward compatibility
@@ -362,3 +408,8 @@ def get_navidrome_scan_status(base_url: str, username: str, password: str) -> di
     """Get Navidrome scan status (backward compatibility)."""
     client = _get_client(base_url, username, password)
     return client.get_scan_status()
+
+def get_navidrome_library_stats(base_url: str, username: str, password: str) -> dict:
+    """Get Navidrome library statistics (backward compatibility)."""
+    client = _get_client(base_url, username, password)
+    return client.get_library_stats()
