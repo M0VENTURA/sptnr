@@ -302,9 +302,6 @@ python popularity.py --artist "Pink Floyd" --album "The Dark Side of the Moon" -
 - If already blocked, wait 24 hours before making more requests
 - The rate limiter automatically handles delays to prevent blocking
 
-
-- Force rescan: `python popularity.py --force --verbose`
-
 ## API Keys
 
 ### Spotify
