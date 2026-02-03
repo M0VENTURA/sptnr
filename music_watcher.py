@@ -133,7 +133,9 @@ def trigger_navidrome_sync():
     
     try:
         # Navidrome Subsonic API startScan endpoint
-        # Use MD5-hashed password for better security
+        # Note: MD5 is used here as required by Subsonic API specification
+        # for the 'enc:' prefix authentication method. This is a limitation
+        # of the Subsonic API, not a security choice.
         password_hash = hashlib.md5(NAVIDROME_PASS.encode()).hexdigest()
         
         url = f"{NAVIDROME_BASE_URL}/rest/startScan"

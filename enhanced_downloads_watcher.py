@@ -33,7 +33,13 @@ try:
 except (ImportError, PermissionError, OSError):
     # Fallback logging if centralized logging not available
     log_dir = os.environ.get("LOG_DIR", "/config")
-    os.makedirs(log_dir, exist_ok=True) if os.access(os.path.dirname(log_dir) if log_dir != "/" else "/", os.W_OK) else None
+    
+    # Try to create log directory if we have permissions
+    try:
+        if log_dir != "/" and os.access(os.path.dirname(log_dir), os.W_OK):
+            os.makedirs(log_dir, exist_ok=True)
+    except (OSError, PermissionError):
+        pass  # Use console-only logging if we can't create log dir
     
     logging.basicConfig(
         level=logging.INFO,
@@ -171,7 +177,9 @@ class DownloadsWatcher:
         """
         try:
             # Navidrome Subsonic API startScan endpoint
-            # Use MD5-hashed password for better security
+            # Note: MD5 is used here as required by Subsonic API specification
+            # for the 'enc:' prefix authentication method. This is a limitation
+            # of the Subsonic API, not a security choice.
             password_hash = hashlib.md5(NAVIDROME_PASS.encode()).hexdigest()
             
             url = f"{NAVIDROME_BASE_URL}/rest/startScan"
