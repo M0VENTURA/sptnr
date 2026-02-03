@@ -27,7 +27,7 @@ from datetime import datetime
 import copy
 from functools import wraps
 from navidrome_import import scan_artist_to_db
-from popularity import popularity_scan
+from popularity import popularity_scan, row_get
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
 # --- Utility: Aggregate genres from tracks in DB ---
@@ -2162,7 +2162,31 @@ def api_artist_image():
                         caa_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250"
                         art_resp = requests.get(caa_url, timeout=3)
                         if art_resp.status_code == 200:
-                            return send_file(io.BytesIO(art_resp.content), mimetype='image/jpeg')
+                            # Save the URL to database for future use
+                            try:
+                                conn = get_db()
+                                cursor = conn.cursor()
+                                # Create artist_images table if it doesn't exist
+                                cursor.execute("""
+                                    CREATE TABLE IF NOT EXISTS artist_images (
+                                        artist_name TEXT PRIMARY KEY,
+                                        image_url TEXT NOT NULL,
+                                        updated_at TEXT NOT NULL
+                                    )
+                                """)
+                                # Save the image URL
+                                cursor.execute("""
+                                    INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
+                                    VALUES (?, ?, ?)
+                                """, (artist_name, caa_url, datetime.now().isoformat()))
+                                conn.commit()
+                                conn.close()
+                                logging.info(f"Saved artist image URL for {artist_name}: {caa_url}")
+                            except Exception as save_error:
+                                logging.error(f"Failed to save artist image URL: {save_error}")
+                            
+                            # Redirect to the URL instead of returning binary data
+                            return redirect(caa_url)
     except Exception as e:
         logging.debug(f"External artist image fetch failed: {e}")
     
@@ -6753,7 +6777,35 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 6. No art found - return placeholder SVG instead of 404
+        # 6. Try to extract from MP3 file
+        try:
+            from metadata_reader import extract_album_art_from_mp3
+            
+            # Get a track file path from this album
+            conn = get_db()
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT beets_path, file_path FROM tracks 
+                WHERE artist = ? AND album = ? 
+                AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                LIMIT 1
+            """, (artist, album))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                if file_path and os.path.exists(file_path):
+                    art_data = extract_album_art_from_mp3(file_path)
+                    if art_data:
+                        return send_file(
+                            io.BytesIO(art_data),
+                            mimetype='image/jpeg'
+                        )
+        except Exception as e:
+            logging.debug(f"Failed to extract album art from MP3: {e}")
+        
+        # 7. No art found - return placeholder SVG instead of 404
         return _album_art_placeholder_svg()
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
@@ -8370,10 +8422,12 @@ def api_album_apply_genres():
             
             for track in tracks:
                 # Prefer beets_path, fallback to file_path
-                file_path = track.get('beets_path') or track.get('file_path')
+                file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
                 
                 if not file_path or not os.path.exists(file_path):
-                    failed_files.append(track['title'])
+                    track_id = row_get(track, 'id', 'unknown')
+                    track_title = row_get(track, 'title', '')
+                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
                     continue
                 
                 try:
@@ -8395,13 +8449,15 @@ def api_album_apply_genres():
                         UPDATE tracks
                         SET genres = ?
                         WHERE id = ?
-                    """, (genres_str, track['id']))
+                    """, (genres_str, row_get(track, 'id')))
                     
                     updated_count += 1
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
-                    failed_files.append(track['title'])
+                    track_id = row_get(track, 'id', 'unknown')
+                    track_title = row_get(track, 'title', '')
+                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
             
             conn.commit()
             
@@ -8469,10 +8525,16 @@ def api_artist_apply_genres():
             
             for track in tracks:
                 # Prefer beets_path, fallback to file_path
-                file_path = track.get('beets_path') or track.get('file_path')
+                file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
                 
                 if not file_path or not os.path.exists(file_path):
-                    failed_files.append(f"{track['album']} - {track['title']}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    album = row_get(track, 'album', '')
+                    title = row_get(track, 'title', '')
+                    if album and title:
+                        failed_files.append(f"{album} - {title}")
+                    else:
+                        failed_files.append(f"Track ID: {track_id}")
                     continue
                 
                 try:
@@ -8494,13 +8556,19 @@ def api_artist_apply_genres():
                         UPDATE tracks
                         SET genres = ?
                         WHERE id = ?
-                    """, (genres_str, track['id']))
+                    """, (genres_str, row_get(track, 'id')))
                     
                     updated_count += 1
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
-                    failed_files.append(f"{track['album']} - {track['title']}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    album = row_get(track, 'album', '')
+                    title = row_get(track, 'title', '')
+                    if album and title:
+                        failed_files.append(f"{album} - {title}")
+                    else:
+                        failed_files.append(f"Track ID: {track_id}")
             
             conn.commit()
             
