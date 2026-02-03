@@ -91,6 +91,8 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
                          allowed_methods: tuple = ("GET", "POST")) -> requests.Session:
     """Create a requests.Session preconfigured with retry/backoff and optional User-Agent.
 
+    Handles HTTP errors, connection errors, and SSL errors with exponential backoff.
+    
     Returns a configured `requests.Session` ready to be used by callers.
     """
     s = requests.Session()
@@ -100,7 +102,8 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
         read=retries,
         backoff_factor=backoff,
         status_forcelist=status_forcelist,
-        allowed_methods=frozenset(allowed_methods)
+        allowed_methods=frozenset(allowed_methods),
+        raise_on_status=False  # Don't raise exceptions on bad status codes
     )
     s.mount("https://", HTTPAdapter(max_retries=retry))
     s.mount("http://", HTTPAdapter(max_retries=retry))
