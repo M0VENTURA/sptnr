@@ -11,8 +11,11 @@ import tempfile
 import logging
 from unittest.mock import Mock, patch, MagicMock
 
-# Set up test environment
-test_db_path = tempfile.mktemp(suffix=".db")
+# Set up test environment - use NamedTemporaryFile for security
+test_db_file = tempfile.NamedTemporaryFile(suffix=".db", delete=False)
+test_db_path = test_db_file.name
+test_db_file.close()  # Close the file so it can be used by sqlite
+
 os.environ["DB_PATH"] = test_db_path
 os.environ["CONFIG_PATH"] = "/tmp/test_config.yaml"
 os.environ["SECRET_KEY"] = "test-secret-key"
