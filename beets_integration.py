@@ -9,6 +9,7 @@ import json
 import subprocess
 import logging
 import sqlite3
+import yaml
 from pathlib import Path
 
 # Import centralized logging
@@ -37,18 +38,105 @@ class BeetsClient:
         Initialize Beets client.
         
         Args:
-            config_path: Path to beets config directory
+            config_path: Path to config directory
             enabled: Whether beets is enabled
         """
         self.enabled = enabled
         self.config_path = Path(config_path)
+        self.main_config_file = self.config_path / "config.yaml"
         self.config_file = self.config_path / "beetsconfig.yaml"
         self.beets_dir = self.config_path / "beets"
         self.library_db = self.beets_dir / "musiclibrary.db"
+        self.beets_config = self._load_beets_config()
         
         # Ensure beets directory exists
         if self.enabled:
             self.beets_dir.mkdir(parents=True, exist_ok=True)
+            # Generate beets config file from main config
+            self._generate_beets_config()
+    
+    def _load_beets_config(self) -> dict:
+        """
+        Load beets configuration from main config.yaml.
+        
+        Returns:
+            Dict with beets configuration
+        """
+        try:
+            if self.main_config_file.exists():
+                with open(self.main_config_file, 'r') as f:
+                    config = yaml.safe_load(f)
+                    return config.get('beets', {})
+            else:
+                logger.warning(f"Main config file not found: {self.main_config_file}")
+                return {}
+        except Exception as e:
+            logger.error(f"Failed to load beets config from {self.main_config_file}: {e}")
+            return {}
+    
+    def _generate_beets_config(self, mode: str = "import_downloads"):
+        """
+        Generate beets configuration file from main config.yaml settings.
+        
+        Args:
+            mode: Either "import_downloads" or "scan_collection" to select config profile
+        """
+        if not self.beets_config:
+            logger.warning("No beets configuration found in config.yaml, using defaults")
+            return
+        
+        # Get the mode-specific configuration
+        mode_config = self.beets_config.get(mode, {})
+        
+        # Build beets config structure
+        beets_yaml_config = {
+            'directory': self.beets_config.get('directory', '/music'),
+            'library': self.beets_config.get('library', '/config/beets/musiclibrary.db'),
+            'import': {
+                'copy': mode_config.get('copy', False),
+                'write': mode_config.get('write', True),
+                'autotag': mode_config.get('autotag', True),
+                'resume': mode_config.get('resume', True),
+                'incremental': mode_config.get('incremental', True),
+                'log': mode_config.get('log', '/config/beets_import.log'),
+            }
+        }
+        
+        # Add optional import settings
+        if 'quiet_fallback' in mode_config:
+            beets_yaml_config['import']['quiet_fallback'] = mode_config['quiet_fallback']
+        if 'timid' in mode_config:
+            beets_yaml_config['import']['timid'] = mode_config['timid']
+        if 'detail' in mode_config:
+            beets_yaml_config['import']['detail'] = mode_config['detail']
+        
+        # Add match configuration
+        if 'match' in self.beets_config:
+            beets_yaml_config['match'] = self.beets_config['match']
+        
+        # Add paths configuration
+        if 'paths' in self.beets_config:
+            beets_yaml_config['paths'] = self.beets_config['paths']
+        
+        # Add MusicBrainz configuration
+        mb_config = self.beets_config.get('musicbrainz', {})
+        beets_yaml_config['musicbrainz'] = {
+            'enabled': mb_config.get('enabled', True),
+        }
+        if 'rate_limit' in mb_config:
+            beets_yaml_config['musicbrainz']['ratelimit'] = mb_config['rate_limit']
+        
+        # Add plugins
+        if 'plugins' in self.beets_config:
+            beets_yaml_config['plugins'] = self.beets_config['plugins']
+        
+        # Write the config file
+        try:
+            with open(self.config_file, 'w') as f:
+                yaml.dump(beets_yaml_config, f, default_flow_style=False, sort_keys=False)
+            logger.debug(f"Generated beets config at {self.config_file} for mode: {mode}")
+        except Exception as e:
+            logger.error(f"Failed to generate beets config: {e}")
     
     def is_installed(self) -> bool:
         """Check if beets is installed and available."""
@@ -84,7 +172,7 @@ class BeetsClient:
             "library_path": str(self.library_db)
         }
     
-    def import_music(self, source_path: str, move: bool = True, autotag: bool = True) -> dict:
+    def import_music(self, source_path: str, move: bool = True, autotag: bool = True, mode: str = "import_downloads") -> dict:
         """
         Import music files using beets.
         
@@ -92,6 +180,7 @@ class BeetsClient:
             source_path: Path to music files to import
             move: Whether to move files (vs. copy)
             autotag: Whether to auto-tag files
+            mode: Config mode to use - "import_downloads" or "scan_collection"
             
         Returns:
             Dict with import results
@@ -100,6 +189,9 @@ class BeetsClient:
             return {"success": False, "error": "Beets not available"}
         
         try:
+            # Regenerate config for the appropriate mode
+            self._generate_beets_config(mode=mode)
+            
             # Build beets import command
             cmd = ["beet", "import"]
             
@@ -111,13 +203,14 @@ class BeetsClient:
             if not autotag:
                 cmd.append("-s")  # Skip automatic tagging
             
-            # Set library database
+            # Set library database and config file
             cmd.extend(["--library", str(self.library_db)])
+            cmd.extend(["--config", str(self.config_file)])
             
             # Add source path
             cmd.append(source_path)
             
-            logger.info(f"Running beets import: {' '.join(cmd)}")
+            logger.info(f"Running beets import with mode '{mode}': {' '.join(cmd)}")
             
             result = subprocess.run(
                 cmd,
