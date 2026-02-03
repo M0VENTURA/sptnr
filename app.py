@@ -1320,6 +1320,7 @@ def artist_detail(name):
         
         for album in albums_data:
             album_dict = dict(album)
+            album_dict['is_missing'] = False  # Mark as discovered
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
             
@@ -1342,6 +1343,7 @@ def artist_detail(name):
         
         for release in missing_releases_data:
             release_dict = dict(release)
+            release_dict['is_missing'] = True  # Mark as missing
             category = (release_dict.get("category") or "Album").lower()
             
             if category == "ep":
@@ -1350,6 +1352,32 @@ def artist_detail(name):
                 missing_by_category["single"].append(release_dict)
             else:
                 missing_by_category["album"].append(release_dict)
+        
+        # Merge discovered and missing albums by category, then sort by release date
+        merged_albums_by_category = {}
+        for category in ["album", "ep", "single", "unknown"]:
+            merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
+            
+            # Sort by release date (newest first)
+            # For discovered albums, use album_year; for missing, use first_release_date
+            def get_sort_key(item):
+                if item.get('is_missing'):
+                    # Missing album - extract year from first_release_date (format: YYYY-MM-DD or YYYY)
+                    date_str = item.get('first_release_date', '')
+                    if date_str:
+                        year = date_str[:4] if len(date_str) >= 4 else ''
+                        try:
+                            # Ensure year is a string before checking if it's a digit
+                            return int(year) if (isinstance(year, str) and year.isdigit()) else 0
+                        except (ValueError, AttributeError, TypeError):
+                            return 0
+                    return 0
+                else:
+                    # Discovered album - use album_year
+                    return item.get('album_year') or 0
+            
+            merged_list.sort(key=get_sort_key, reverse=True)
+            merged_albums_by_category[category] = merged_list
         
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
@@ -1362,8 +1390,8 @@ def artist_detail(name):
         return render_template("artist.html", 
                              artist_name=name,
                              albums=albums_data,  # Keep for compatibility
-                             albums_by_category=albums_by_category,
-                             missing_by_category=missing_by_category,
+                             albums_by_category=merged_albums_by_category,
+                             missing_by_category=missing_by_category,  # Keep for backward compatibility
                              stats=artist_stats,
                              genres=genres,
                              qbit_config=qbit_config,

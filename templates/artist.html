@@ -304,16 +304,20 @@
   {% from "_album_category_section.html" import render_album_row %}
 
   <!-- Albums Section -->
-  {% set total_discovered = (albums_by_category.album|length) + (albums_by_category.ep|length) + (albums_by_category.single|length) + (albums_by_category.unknown|length) %}
-  {% set total_missing = (missing_by_category.album|length) + (missing_by_category.ep|length) + (missing_by_category.single|length) %}
+  {% set total_discovered_albums = albums_by_category.album|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_albums = albums_by_category.album|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
   
   <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-vinyl-fill"></i> Albums
-        <span class="badge bg-primary">{{ albums_by_category.album|length }}</span>
-        {% if missing_by_category.album|length > 0 %}
-          <span class="badge bg-warning text-dark">{{ missing_by_category.album|length }} missing</span>
+        <span class="badge bg-primary">{{ total_discovered_albums }}</span>
+        {% if total_missing_albums > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_albums }} missing</span>
         {% endif %}
       </h5>
       <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
@@ -334,12 +338,9 @@
           </tr>
         </thead>
         <tbody>
-          {% if albums_by_category.album|length > 0 or missing_by_category.album|length > 0 %}
+          {% if albums_by_category.album|length > 0 %}
             {% for album in albums_by_category.album %}
-              {{ render_album_row(album, artist_name, False) }}
-            {% endfor %}
-            {% for album in missing_by_category.album %}
-              {{ render_album_row(album, artist_name, True) }}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
             {% endfor %}
           {% else %}
             <tr>
@@ -358,9 +359,9 @@
     <div class="card-header">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
-        <span class="badge bg-primary">{{ albums_by_category.ep|length }}</span>
-        {% if missing_by_category.ep|length > 0 %}
-          <span class="badge bg-warning text-dark">{{ missing_by_category.ep|length }} missing</span>
+        <span class="badge bg-primary">{{ total_discovered_eps }}</span>
+        {% if total_missing_eps > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_eps }} missing</span>
         {% endif %}
       </h5>
     </div>
@@ -378,12 +379,9 @@
           </tr>
         </thead>
         <tbody>
-          {% if albums_by_category.ep|length > 0 or missing_by_category.ep|length > 0 %}
+          {% if albums_by_category.ep|length > 0 %}
             {% for album in albums_by_category.ep %}
-              {{ render_album_row(album, artist_name, False) }}
-            {% endfor %}
-            {% for album in missing_by_category.ep %}
-              {{ render_album_row(album, artist_name, True) }}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
             {% endfor %}
           {% else %}
             <tr>
@@ -402,9 +400,9 @@
     <div class="card-header">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles
-        <span class="badge bg-primary">{{ albums_by_category.single|length }}</span>
-        {% if missing_by_category.single|length > 0 %}
-          <span class="badge bg-warning text-dark">{{ missing_by_category.single|length }} missing</span>
+        <span class="badge bg-primary">{{ total_discovered_singles }}</span>
+        {% if total_missing_singles > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_singles }} missing</span>
         {% endif %}
       </h5>
     </div>
@@ -422,12 +420,9 @@
           </tr>
         </thead>
         <tbody>
-          {% if albums_by_category.single|length > 0 or missing_by_category.single|length > 0 %}
+          {% if albums_by_category.single|length > 0 %}
             {% for album in albums_by_category.single %}
-              {{ render_album_row(album, artist_name, False) }}
-            {% endfor %}
-            {% for album in missing_by_category.single %}
-              {{ render_album_row(album, artist_name, True) }}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
             {% endfor %}
           {% else %}
             <tr>
