@@ -241,6 +241,55 @@
     </div>
   </div>
 
+  <!-- Watcher Service Settings -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-eye-fill"></i> Watcher Service</h5>
+      <small class="text-muted">Configure automatic monitoring and import settings</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3">
+        <div class="col-12 col-md-6">
+          <label class="form-label">Scan Interval (seconds)</label>
+          <input type="number" class="form-control" id="watcher_scan_interval" placeholder="30" value="{{ config.get('watcher', {}).get('scan_interval', 30) }}" min="10" max="3600">
+          <div class="form-text">How often to check for new files (10-3600 seconds)</div>
+        </div>
+        <div class="col-12 col-md-6">
+          <label class="form-label">Navidrome Sync Wait (seconds)</label>
+          <input type="number" class="form-control" id="watcher_navidrome_sync_wait" placeholder="600" value="{{ config.get('watcher', {}).get('navidrome_sync_wait', 600) }}" min="60" max="3600">
+          <div class="form-text">Time to wait for Navidrome scan to complete (60-3600 seconds)</div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="watcher_auto_import" {% if config.get('watcher', {}).get('auto_import_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="watcher_auto_import">
+              <strong>Auto-Import New Songs</strong>
+              <small class="d-block text-muted">Automatically import new songs from Navidrome when detected</small>
+            </label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="watcher_auto_popularity" {% if config.get('watcher', {}).get('auto_popularity_scan', True) %}checked{% endif %}>
+            <label class="form-check-label" for="watcher_auto_popularity">
+              <strong>Auto Popularity Scan</strong>
+              <small class="d-block text-muted">Automatically run popularity scan on newly imported songs</small>
+            </label>
+          </div>
+        </div>
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="watcher_downloads_enabled" {% if config.get('watcher', {}).get('downloads_watcher_enabled', True) %}checked{% endif %}>
+            <label class="form-check-label" for="watcher_downloads_enabled">
+              <strong>Downloads Watcher</strong>
+              <small class="d-block text-muted">Monitor downloads folder for new files to import with Beets</small>
+            </label>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- API Integrations Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -683,6 +732,13 @@ function buildConfigObject() {
     },
     downloads: {
       folder: getValue('downloads_folder', '')
+    },
+    watcher: {
+      scan_interval: parseInt(getValue('watcher_scan_interval', '30')) || 30,
+      navidrome_sync_wait: parseInt(getValue('watcher_navidrome_sync_wait', '600')) || 600,
+      auto_import_enabled: getChecked('watcher_auto_import', true),
+      auto_popularity_scan: getChecked('watcher_auto_popularity', true),
+      downloads_watcher_enabled: getChecked('watcher_downloads_enabled', true)
     },
     api_integrations: {
       spotify: {

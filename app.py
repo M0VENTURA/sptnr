@@ -1218,7 +1218,7 @@ def artist_detail(name):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get albums for this artist
+        # Get albums for this artist with type information
         cursor.execute("""
             SELECT 
                 album,
@@ -1226,7 +1226,8 @@ def artist_detail(name):
                 AVG(stars) as avg_stars,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
-                MIN(year) as album_year
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type
             FROM tracks
             WHERE artist = ?
             GROUP BY album
@@ -1275,11 +1276,61 @@ def artist_detail(name):
         
         artist_stats = cursor.fetchone()
         
+        # Get missing releases from database cache
+        cursor.execute("""
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+            FROM missing_releases
+            WHERE artist = ?
+            ORDER BY first_release_date DESC
+        """, (name,))
+        missing_releases_data = cursor.fetchall()
+        
         conn.close()
         
         # Convert Row to dict for template access
         if artist_stats:
             artist_stats = dict(artist_stats)
+        
+        # Categorize discovered albums by type
+        albums_by_category = {
+            "album": [],
+            "ep": [],
+            "single": [],
+            "unknown": []
+        }
+        
+        for album in albums_data:
+            album_dict = dict(album)
+            album_type = (album_dict.get("album_type") or "").lower()
+            track_count = album_dict.get("track_count", 0)
+            
+            # Categorize based on spotify_album_type and track count
+            if album_type == "album" or (not album_type and track_count > 6):
+                albums_by_category["album"].append(album_dict)
+            elif album_type == "ep" or (not album_type and 3 <= track_count <= 6):
+                albums_by_category["ep"].append(album_dict)
+            elif album_type == "single" or (not album_type and track_count < 3):
+                albums_by_category["single"].append(album_dict)
+            else:
+                albums_by_category["unknown"].append(album_dict)
+        
+        # Categorize missing releases
+        missing_by_category = {
+            "album": [],
+            "ep": [],
+            "single": []
+        }
+        
+        for release in missing_releases_data:
+            release_dict = dict(release)
+            category = (release_dict.get("category") or "Album").lower()
+            
+            if category == "ep":
+                missing_by_category["ep"].append(release_dict)
+            elif category == "single":
+                missing_by_category["single"].append(release_dict)
+            else:
+                missing_by_category["album"].append(release_dict)
         
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
@@ -1291,7 +1342,9 @@ def artist_detail(name):
         
         return render_template("artist.html", 
                              artist_name=name,
-                             albums=albums_data,
+                             albums=albums_data,  # Keep for compatibility
+                             albums_by_category=albums_by_category,
+                             missing_by_category=missing_by_category,
                              stats=artist_stats,
                              genres=genres,
                              qbit_config=qbit_config,
@@ -7746,6 +7799,108 @@ def api_track_discogs_lookup():
         return jsonify({"error": str(e)}), 500
         logger.error(f"Discogs lookup error: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/track/genre-recommendations", methods=["GET"])
+def track_genre_recommendations():
+    """Get genre recommendations for a track from various sources"""
+    track_id = request.args.get("track_id", "").strip()
+    
+    if not track_id:
+        return jsonify({"error": "Track ID is required"}), 400
+    
+    try:
+        # Get track info
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT artist, album, title, 
+                   spotify_genres, lastfm_tags, discogs_genres, 
+                   musicbrainz_genres, navidrome_genres
+            FROM tracks 
+            WHERE id = ?
+        """, (track_id,))
+        
+        track = cursor.fetchone()
+        conn.close()
+        
+        if not track:
+            return jsonify({"error": "Track not found"}), 404
+        
+        # Collect all genres from various sources
+        genres_set = set()
+        
+        # Parse genres from all available sources
+        for genre_field in [track["spotify_genres"], track["lastfm_tags"], 
+                           track["discogs_genres"], track["musicbrainz_genres"], 
+                           track["navidrome_genres"]]:
+            if genre_field:
+                # Handle both comma-separated strings and JSON arrays
+                try:
+                    genre_list = json.loads(genre_field)
+                    if isinstance(genre_list, list):
+                        genres_set.update(g.strip() for g in genre_list if g and g.strip())
+                except:
+                    # Fallback to comma-separated
+                    genres_set.update(g.strip() for g in genre_field.split(',') if g and g.strip())
+        
+        # Get artist-level genres
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT DISTINCT spotify_genres, lastfm_tags, discogs_genres, 
+                   musicbrainz_genres, navidrome_genres
+            FROM tracks 
+            WHERE artist = ?
+            LIMIT 50
+        """, (track["artist"],))
+        
+        artist_tracks = cursor.fetchall()
+        conn.close()
+        
+        # Aggregate artist genres
+        artist_genres_count = {}
+        for t in artist_tracks:
+            for genre_field in [t["spotify_genres"], t["lastfm_tags"], 
+                               t["discogs_genres"], t["musicbrainz_genres"], 
+                               t["navidrome_genres"]]:
+                if genre_field:
+                    try:
+                        genre_list = json.loads(genre_field)
+                        if isinstance(genre_list, list):
+                            for g in genre_list:
+                                if g and g.strip():
+                                    artist_genres_count[g.strip()] = artist_genres_count.get(g.strip(), 0) + 1
+                    except:
+                        for g in genre_field.split(','):
+                            if g and g.strip():
+                                artist_genres_count[g.strip()] = artist_genres_count.get(g.strip(), 0) + 1
+        
+        # Sort by frequency and add top artist genres
+        sorted_artist_genres = sorted(artist_genres_count.items(), key=lambda x: x[1], reverse=True)
+        genres_set.update(g[0] for g in sorted_artist_genres[:10])
+        
+        # Clean up and format genres
+        recommendations = []
+        for genre in sorted(genres_set):
+            # Skip empty, very short, or malformed genres
+            if genre and len(genre) > 2 and not genre.isdigit():
+                # Capitalize properly
+                formatted = ' '.join(word.capitalize() for word in genre.split())
+                if formatted not in recommendations:
+                    recommendations.append(formatted)
+        
+        return jsonify({
+            "track_id": track_id,
+            "artist": track["artist"],
+            "title": track["title"],
+            "recommendations": recommendations[:20]  # Limit to top 20
+        })
+        
+    except Exception as e:
+        logging.error(f"Error fetching genre recommendations: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
 
 @app.route("/api/album/musicbrainz", methods=["POST"])
 def api_album_musicbrainz_lookup():

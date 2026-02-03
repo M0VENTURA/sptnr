@@ -1,0 +1,71 @@
+{% macro render_album_row(album, artist_name, is_missing=False) %}
+<tr class="d-flex flex-column d-md-table-row album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 9999 }}" data-status="{{ 'missing' if is_missing else 'discovered' }}">
+  <td class="text-center d-none d-md-table-cell" style="width: 100px; padding: 0.5rem;">
+    {% if is_missing %}
+      <img src="{{ album.get('cover_art_url', '') }}" 
+           alt="{{ album.title }}" 
+           class="img-thumbnail"
+           style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+           onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%232a2a2a%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+    {% else %}
+      <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
+           alt="{{ album.album }}" 
+           class="img-thumbnail"
+           style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
+           onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%232a2a2a%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+    {% endif %}
+  </td>
+  <td class="d-flex justify-content-between d-md-table-cell">
+    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Title</span>
+    {% if is_missing %}
+      <span>{{ album.title }}</span>
+    {% else %}
+      <a href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}">
+        {{ album.album }}
+      </a>
+    {% endif %}
+  </td>
+  <td class="d-flex justify-content-between d-md-table-cell text-center">
+    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Year</span>
+    {{ album.get('album_year') or album.get('first_release_date', '')[:4] or '—' }}
+  </td>
+  <td class="d-flex justify-content-between d-md-table-cell text-center">
+    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Status</span>
+    {% if is_missing %}
+      <span class="badge bg-warning text-dark">Missing</span>
+    {% else %}
+      <span class="badge bg-success">Available</span>
+    {% endif %}
+  </td>
+  <td class="d-flex justify-content-between d-md-table-cell text-center">
+    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Tracks</span>
+    {% if not is_missing %}
+      {{ album.track_count }}
+    {% else %}
+      —
+    {% endif %}
+  </td>
+  <td class="d-flex justify-content-between d-md-table-cell text-center">
+    <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Avg ★</span>
+    {% if not is_missing and album.avg_stars %}
+      <span class="badge badge-success">{{ album.avg_stars|round(2) }}★</span>
+    {% else %}
+      <span class="text-muted">—</span>
+    {% endif %}
+  </td>
+  <td class="d-flex justify-content-end gap-1 d-md-table-cell text-center">
+    {% if is_missing %}
+      <button class="btn btn-sm btn-outline-success" onclick="importRelease('{{ artist_name }}', '{{ album.release_id }}', '{{ album.title }}')" title="Import this release">
+        <i class="bi bi-download"></i> Import
+      </button>
+    {% else %}
+      <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')" title="Lookup metadata">
+        <i class="bi bi-search"></i>
+      </button>
+      <a class="btn btn-sm btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" title="View album">
+        <i class="bi bi-arrow-right"></i>
+      </a>
+    {% endif %}
+  </td>
+</tr>
+{% endmacro %}
