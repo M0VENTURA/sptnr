@@ -593,6 +593,26 @@ def _write_progress_file(path: str, scan_type: str, is_running: bool, extra: dic
         logging.debug(f"Failed to write progress file {path}: {e}")
 
 
+def _is_process_alive(proc):
+    """Helper to check if a process/thread is alive"""
+    if proc is None:
+        return False
+    if isinstance(proc, dict):
+        thread = proc.get('thread')
+        if thread is None:
+            return False
+        if hasattr(thread, 'is_alive'):
+            return thread.is_alive()
+        if hasattr(thread, 'poll'):
+            return thread.poll() is None
+        return False
+    if hasattr(proc, 'is_alive'):
+        return proc.is_alive()
+    if hasattr(proc, 'poll'):
+        return proc.poll() is None
+    return False
+
+
 def _validate_and_cleanup_progress_file(progress_file: str, process_ref=None, max_age_hours: int = 2):
     """
     Validate a progress file and clean it up if it's stale.
@@ -615,19 +635,9 @@ def _validate_and_cleanup_progress_file(progress_file: str, process_ref=None, ma
         if not progress.get("is_running", False):
             return progress
         
-        # If we have a process reference, verify it's actually alive
+        # If we have a process reference, verify it's actually alive using helper
         if process_ref is not None:
-            is_alive = False
-            if isinstance(process_ref, dict):
-                thread = process_ref.get('thread')
-                if thread and hasattr(thread, 'is_alive'):
-                    is_alive = thread.is_alive()
-                elif thread and hasattr(thread, 'poll'):
-                    is_alive = thread.poll() is None
-            elif hasattr(process_ref, 'is_alive'):
-                is_alive = process_ref.is_alive()
-            elif hasattr(process_ref, 'poll'):
-                is_alive = process_ref.poll() is None
+            is_alive = _is_process_alive(process_ref)
             
             # If process is dead but file says running, clean it up
             if not is_alive:
@@ -3997,20 +4007,9 @@ def scan_clear_stuck():
                     with open(filepath, 'r') as f:
                         progress = json.load(f)
                     
-                    # If it says running, check if process is actually alive
+                    # If it says running, check if process is actually alive using helper
                     if progress.get("is_running", False):
-                        is_alive = False
-                        if process_ref is not None:
-                            if isinstance(process_ref, dict):
-                                thread = process_ref.get('thread')
-                                if thread and hasattr(thread, 'is_alive'):
-                                    is_alive = thread.is_alive()
-                                elif thread and hasattr(thread, 'poll'):
-                                    is_alive = thread.poll() is None
-                            elif hasattr(process_ref, 'is_alive'):
-                                is_alive = process_ref.is_alive()
-                            elif hasattr(process_ref, 'poll'):
-                                is_alive = process_ref.poll() is None
+                        is_alive = _is_process_alive(process_ref)
                         
                         # If not alive, mark as stopped
                         if not is_alive:
@@ -4041,26 +4040,6 @@ def scan_clear_stuck():
             flash("No stuck scans found", "info")
     
     return redirect(url_for("dashboard"))
-
-
-def _is_process_alive(proc):
-    """Helper to check if a process/thread is alive"""
-    if proc is None:
-        return False
-    if isinstance(proc, dict):
-        thread = proc.get('thread')
-        if thread is None:
-            return False
-        if hasattr(thread, 'is_alive'):
-            return thread.is_alive()
-        if hasattr(thread, 'poll'):
-            return thread.poll() is None
-        return False
-    if hasattr(proc, 'is_alive'):
-        return proc.is_alive()
-    if hasattr(proc, 'poll'):
-        return proc.poll() is None
-    return False
 
 
 @app.route("/scan/status")
