@@ -8425,7 +8425,9 @@ def api_album_apply_genres():
                 file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
                 
                 if not file_path or not os.path.exists(file_path):
-                    failed_files.append(row_get(track, 'title', ''))
+                    track_id = row_get(track, 'id', 'unknown')
+                    track_title = row_get(track, 'title', '')
+                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
                     continue
                 
                 try:
@@ -8453,7 +8455,9 @@ def api_album_apply_genres():
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
-                    failed_files.append(row_get(track, 'title', ''))
+                    track_id = row_get(track, 'id', 'unknown')
+                    track_title = row_get(track, 'title', '')
+                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
             
             conn.commit()
             
@@ -8524,7 +8528,13 @@ def api_artist_apply_genres():
                 file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
                 
                 if not file_path or not os.path.exists(file_path):
-                    failed_files.append(f"{row_get(track, 'album', '')} - {row_get(track, 'title', '')}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    album = row_get(track, 'album', '')
+                    title = row_get(track, 'title', '')
+                    if album and title:
+                        failed_files.append(f"{album} - {title}")
+                    else:
+                        failed_files.append(f"Track ID: {track_id}")
                     continue
                 
                 try:
@@ -8552,7 +8562,13 @@ def api_artist_apply_genres():
                     
                 except Exception as file_error:
                     logger.error(f"Failed to update {file_path}: {file_error}")
-                    failed_files.append(f"{row_get(track, 'album', '')} - {row_get(track, 'title', '')}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    album = row_get(track, 'album', '')
+                    title = row_get(track, 'title', '')
+                    if album and title:
+                        failed_files.append(f"{album} - {title}")
+                    else:
+                        failed_files.append(f"Track ID: {track_id}")
             
             conn.commit()
             
