@@ -3103,17 +3103,37 @@ def _run_artist_scan_pipeline(artist_name: str):
             artist_id = artist_data.get("id") if artist_data else None
             log_unified(f"After index rebuild: artist_id={artist_id}")
 
+        # If still no artist_id, check if this is a track artist (not an album artist)
+        # Track artists appear in tracks.artist but not in artist_stats (which only has album artists)
         if not artist_id:
-            log_unified(f"❌ Scan aborted: no artist_id for {artist_name}")
-            return
+            log_unified(f"Artist not found as album artist, checking if track artist exists in database...")
+            conn = get_db()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
+                track_count = cursor.fetchone()[0]
+                log_unified(f"Found {track_count} tracks for '{artist_name}'")
+            finally:
+                conn.close()
+            
+            if track_count == 0:
+                log_unified(f"❌ Scan aborted: no tracks found for '{artist_name}' - artist does not exist in library")
+                return
+            
+            # Artist exists as track artist only - skip Navidrome import, go straight to popularity scan
+            log_unified(f"Artist '{artist_name}' is a track artist (e.g., from Various Artists albums)")
+            log_unified(f"Skipping Navidrome import (Step 1/2) - artist metadata already imported via album artist")
+            log_unified(f"Step 2/2: Running popularity scan for track artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
+        else:
+            # Normal flow: artist_id found, run both steps
+            # Step 1: Import metadata from Navidrome for this artist
+            log_unified(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
 
-        # Step 1: Import metadata from Navidrome for this artist
-        log_unified(f"Step 1/2: Navidrome import for artist '{artist_name}' (force={force})")
-        scan_artist_to_db(artist_name, artist_id, verbose=True, force=force)
-
-        # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
-        log_unified(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
-        popularity_scan(verbose=True, force=force, artist_filter=artist_name)
+            # Step 2: Run popularity scan for this artist (includes singles detection and star rating)
+            log_unified(f"Step 2/2: Running popularity scan for artist '{artist_name}' (force={force})")
+            popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         
         log_unified(f"✅ Scan complete for artist '{artist_name}'")
     except Exception as e:
@@ -3161,18 +3181,37 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             artist_id = artist_data.get("id") if artist_data else None
             log_unified(f"After index rebuild: artist_id={artist_id}")
 
+        # If still no artist_id, check if this is a track artist (not an album artist)
         if not artist_id:
-            log_unified(f"❌ Scan aborted: no artist_id for {artist_name}")
-            return
+            log_unified(f"Artist not found as album artist, checking if track artist exists in database...")
+            conn = get_db()
+            try:
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
+                track_count = cursor.fetchone()[0]
+                log_unified(f"Found {track_count} tracks for '{album_display}'")
+            finally:
+                conn.close()
+            
+            if track_count == 0:
+                log_unified(f"❌ Scan aborted: no tracks found for '{album_display}' - album does not exist in library")
+                return
+            
+            # Artist/album exists as track artist only - skip Navidrome import, go straight to popularity scan
+            log_unified(f"Album '{album_display}' uses track artist (e.g., from Various Artists compilation)")
+            log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
+            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
+            popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+        else:
+            # Normal flow: artist_id found, run both steps
+            # Step 1: Import metadata from Navidrome for this specific album
+            # Force is always True for single album scans to ensure fresh data
+            log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
+            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
 
-        # Step 1: Import metadata from Navidrome for this specific album
-        # Force is always True for single album scans to ensure fresh data
-        log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
-        scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
-
-        # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
-        log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
-        popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+            # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
+            log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
+            popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
         
         log_unified(f"✅ Scan complete for album '{album_display}'")
     except Exception as e:
