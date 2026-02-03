@@ -6728,11 +6728,20 @@ def api_album_art(artist, album):
                 mimetype='image/jpeg'
             )
         
-        # 6. No art found
-        return Response(status=404)
+        # 6. No art found - return placeholder SVG instead of 404
+        svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+            <rect fill="#2a2a2a" width="300" height="300"/>
+            <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Album Art</text>
+        </svg>'''
+        return Response(svg, mimetype='image/svg+xml')
     except Exception as e:
         logging.error(f"Error fetching album art for {artist} - {album}: {e}")
-        return Response(status=404)
+        # Return placeholder SVG instead of 404
+        svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="300" height="300">
+            <rect fill="#2a2a2a" width="300" height="300"/>
+            <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Album Art</text>
+        </svg>'''
+        return Response(svg, mimetype='image/svg+xml')
 
 
 @app.route("/api/downloads/scan")
