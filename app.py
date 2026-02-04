@@ -9409,19 +9409,18 @@ def api_listenbrainz_create_playlist():
         
         conn.close()
         
-        # Create playlist if we have matches
-        if matched_tracks:
-            # TODO: Use Navidrome API to create playlist with matched_tracks
-            # For now, return the matched tracks
-            pass
+        # Note: Playlist creation is delegated to the frontend using matched_tracks
+        # The frontend will call /api/playlist/create-custom with the matched tracks
+        # This endpoint's purpose is to provide the matched/missing track analysis
         
         return jsonify({
             "success": True,
             "total_recommendations": len(recommendations),
             "matched": len(matched_tracks),
             "missing": len(missing_tracks),
-            "matched_tracks": matched_tracks[:20],  # Limit response size
-            "missing_tracks": missing_tracks[:20]
+            "matched_tracks": matched_tracks[:100],  # Limit response size but allow more tracks
+            "missing_tracks": missing_tracks[:100],
+            "note": "Use /api/playlist/create-custom to create a playlist with matched_tracks"
         })
         
     except Exception as e:

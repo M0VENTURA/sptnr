@@ -218,10 +218,13 @@ class ListenBrainzUserClient:
             
         Returns:
             List of recommended tracks from last week
+            
+        Note:
+            Currently returns current week's data as ListenBrainz API does not 
+            provide a direct endpoint for archived weekly recommendations.
+            This is a placeholder implementation.
         """
-        # Note: This may require fetching from archived recommendations
-        # or using a date parameter. For now, return raw recommendations.
-        logger.warning("get_last_week_jams: Using current week's data as placeholder")
+        logger.warning("get_last_week_jams: Currently using current week's data - archived recommendations not available")
         return self.get_recommendations(username, "raw")
     
     def get_last_week_exploration(self, username: str) -> list:
@@ -233,8 +236,13 @@ class ListenBrainzUserClient:
             
         Returns:
             List of exploration tracks from last week
+            
+        Note:
+            Currently returns current week's data as ListenBrainz API does not
+            provide a direct endpoint for archived weekly exploration.
+            This is a placeholder implementation.
         """
-        logger.warning("get_last_week_exploration: Using current week's data as placeholder")
+        logger.warning("get_last_week_exploration: Currently using current week's data - archived recommendations not available")
         return self.get_weekly_exploration(username)
     
     def get_username_from_token(self) -> str:

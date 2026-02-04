@@ -284,9 +284,10 @@
             <select id="lbRecType" class="form-select">
               <option value="weekly_jams">Weekly Jams (Current Week)</option>
               <option value="weekly_exploration">Weekly Exploration (Discovery)</option>
-              <option value="last_week_jams">Last Week's Jams</option>
-              <option value="last_week_exploration">Last Week's Exploration</option>
+              <option value="last_week_jams">Last Week's Jams (Currently shows current week)*</option>
+              <option value="last_week_exploration">Last Week's Exploration (Currently shows current week)*</option>
             </select>
+            <small class="text-muted">* Historical data not available from ListenBrainz API</small>
           </div>
           <div class="col-md-6 d-flex align-items-end">
             <button class="btn btn-primary w-100" onclick="loadListenBrainzRecommendations()">
@@ -952,6 +953,10 @@ async function createPlaylistFromListenBrainz() {
   if (!playlistName) return;
   
   try {
+    // Get current user from config - use first configured user if available
+    // TODO: Get actual current logged-in user from session
+    const currentUser = document.getElementById('customPlaylistUser')?.value || 'admin';
+    
     // Use existing custom playlist creation
     const response = await fetch('/api/playlist/create-custom', {
       method: 'POST',
@@ -959,7 +964,7 @@ async function createPlaylistFromListenBrainz() {
       body: JSON.stringify({
         name: playlistName,
         description: `ListenBrainz recommendations: ${recType.replace(/_/g, ' ')}`,
-        user: 'admin',  // TODO: Get from current user
+        user: currentUser,
         is_public: false,
         songs: lbRecommendationsData.matched_tracks
       })
