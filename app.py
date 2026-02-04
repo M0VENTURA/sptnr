@@ -7091,6 +7091,96 @@ def api_lastfm_recommendations():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/lastfm/create-playlist", methods=["POST"])
+def api_lastfm_create_playlist():
+    """
+    Create a Navidrome playlist from Last.fm recommendations.
+    Searches for tracks in the local library and matches them.
+    """
+    try:
+        data = request.get_json()
+        rec_type = data.get("type", "tracks")  # tracks, artists, or albums
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+        
+        if not lastfm_config.get("enabled"):
+            return jsonify({"error": "Last.fm not enabled"}), 400
+        
+        api_key = lastfm_config.get("api_key", "")
+        if not api_key:
+            return jsonify({"error": "Last.fm API key not configured"}), 400
+        
+        # Get recommendations
+        from api_clients.lastfm import get_lastfm_recommendations
+        recommendations = get_lastfm_recommendations(api_key)
+        
+        if not recommendations:
+            return jsonify({"error": "No recommendations found"}), 404
+        
+        # Get the appropriate list based on type
+        rec_list = []
+        if rec_type == "tracks":
+            rec_list = recommendations.get("tracks", [])
+        elif rec_type == "artists":
+            rec_list = recommendations.get("artists", [])
+        elif rec_type == "albums":
+            rec_list = recommendations.get("albums", [])
+        
+        if not rec_list:
+            return jsonify({"error": f"No {rec_type} recommendations found"}), 404
+        
+        # Search for matching tracks in database
+        matched_tracks = []
+        missing_tracks = []
+        
+        # Get database connection
+        conn, c = get_db_connection()
+        
+        for rec in rec_list:
+            artist_name = rec.get("artist", "")
+            track_name = rec.get("name", "")
+            
+            if not artist_name or not track_name:
+                continue
+            
+            # Search by artist and title
+            c.execute("""
+                SELECT id, artist, title FROM tracks 
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                LIMIT 1
+            """, (artist_name, track_name))
+            result = c.fetchone()
+            
+            if result:
+                matched_tracks.append({
+                    "id": result[0],
+                    "artist": result[1],
+                    "title": result[2]
+                })
+            else:
+                missing_tracks.append({
+                    "artist": artist_name,
+                    "title": track_name,
+                    "playcount": rec.get("playcount", 0)
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            "total_recommendations": len(rec_list),
+            "matched": len(matched_tracks),
+            "missing": len(missing_tracks),
+            "matched_tracks": matched_tracks,
+            "missing_tracks": missing_tracks,
+            "recommendation_type": rec_type
+        })
+        
+    except Exception as e:
+        logging.error(f"[LASTFM_PLAYLIST] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/downloads-manager")
 def downloads_manager():
     """Downloads manager UI page"""

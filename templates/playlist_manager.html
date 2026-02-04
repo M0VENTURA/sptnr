@@ -306,6 +306,112 @@
     </div>
   </div>
 
+  <!-- Last.fm Recommendations Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-heart"></i> Last.fm Recommendations
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Get popular music recommendations from Last.fm based on global listening trends.
+        </p>
+
+        <!-- Recommendation Type Selection -->
+        <div class="row g-3 mb-4">
+          <div class="col-md-6">
+            <label for="lfmRecType" class="form-label">Recommendation Type</label>
+            <select id="lfmRecType" class="form-select">
+              <option value="tracks">Top Tracks (Global)</option>
+              <option value="artists">Top Artists (Global)</option>
+              <option value="albums">Top Albums (Global)</option>
+            </select>
+            <small class="text-muted">Based on Last.fm's geo.getTop* methods</small>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="loadLastfmRecommendations()">
+              <i class="bi bi-download"></i> Load Recommendations
+            </button>
+          </div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="lfmRecommendationsResults" style="display: none;">
+          <div class="row mb-4">
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-primary bg-opacity-10 border-primary">
+                <div class="card-body">
+                  <h5 class="card-title">Total Recommendations</h5>
+                  <h2 id="lfmTotalCount" class="text-primary">0</h2>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-success bg-opacity-10 border-success">
+                <div class="card-body">
+                  <h5 class="card-title">In Your Library</h5>
+                  <h2 id="lfmMatchedCount" class="text-success">0</h2>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-warning bg-opacity-10 border-warning">
+                <div class="card-body">
+                  <h5 class="card-title">Missing Tracks</h5>
+                  <h2 id="lfmMissingCount" class="text-warning">0</h2>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tracks Lists -->
+          <div class="row g-3">
+            <div class="col-12 col-lg-6">
+              <div class="card h-100">
+                <div class="card-header">
+                  <h6 class="mb-0">Matched Tracks (In Library)</h6>
+                </div>
+                <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                  <div id="lfmMatchedTracks">
+                    <p class="text-center text-muted py-5">Matched tracks will appear here</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-lg-6">
+              <div class="card h-100">
+                <div class="card-header">
+                  <h6 class="mb-0">Missing Tracks</h6>
+                </div>
+                <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                  <div id="lfmMissingTracks">
+                    <p class="text-center text-muted py-5">Missing tracks will appear here</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="mt-4 d-flex gap-2 justify-content-end">
+            <button class="btn btn-success" onclick="createPlaylistFromLastfm()" id="lfmCreatePlaylistBtn">
+              <i class="bi bi-plus-circle"></i> Create Playlist from Matched Tracks
+            </button>
+            <button class="btn btn-outline-primary" onclick="searchLastfmMissingTracksOnSoulseek()" id="lfmSearchMissingBtn">
+              <i class="bi bi-search"></i> Search Missing on Soulseek
+            </button>
+          </div>
+        </div>
+
+        <div id="lfmRecommendationsEmpty" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> Select a recommendation type and click "Load Recommendations" to get started
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ListenBrainz Recommendations Section -->
   <div class="mb-4">
     <div class="card">
@@ -998,6 +1104,134 @@ async function importSpotifyPlaylist(index) {
     console.error('Error importing Spotify playlist:', error);
     alert('❌ Error: ' + error.message);
   }
+}
+
+// =============================================================================
+// LAST.FM RECOMMENDATIONS
+// =============================================================================
+
+let lfmRecommendationsData = null;
+
+async function loadLastfmRecommendations() {
+  const recType = document.getElementById('lfmRecType').value;
+  
+  try {
+    document.getElementById('lfmRecommendationsEmpty').style.display = 'none';
+    document.getElementById('lfmRecommendationsResults').style.display = 'block';
+    
+    // Show loading state
+    document.getElementById('lfmTotalCount').textContent = '...';
+    document.getElementById('lfmMatchedCount').textContent = '...';
+    document.getElementById('lfmMissingCount').textContent = '...';
+    
+    const response = await fetch(`/api/lastfm/create-playlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: recType })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to load recommendations');
+    }
+    
+    const data = await response.json();
+    lfmRecommendationsData = data;
+    
+    // Update counts
+    document.getElementById('lfmTotalCount').textContent = data.total_recommendations || 0;
+    document.getElementById('lfmMatchedCount').textContent = data.matched || 0;
+    document.getElementById('lfmMissingCount').textContent = data.missing || 0;
+    
+    // Display matched tracks
+    const matchedHtml = (data.matched_tracks || []).map(track => `
+      <div class="card mb-2 border-success">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong class="d-block">${escapeHtml(track.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+            </div>
+            <span class="badge bg-success">✓</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('lfmMatchedTracks').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matched tracks found</p>';
+    
+    // Display missing tracks
+    const missingHtml = (data.missing_tracks || []).map(track => `
+      <div class="card mb-2 border-warning">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong class="d-block">${escapeHtml(track.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+              ${track.playcount ? `<br><small class="text-secondary">Playcount: ${track.playcount.toLocaleString()}</small>` : ''}
+            </div>
+            <span class="badge bg-warning">Missing</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('lfmMissingTracks').innerHTML = missingHtml || '<p class="text-muted text-center py-5">All tracks are in your library!</p>';
+    
+  } catch (error) {
+    console.error('Error loading Last.fm recommendations:', error);
+    alert('Error: ' + error.message);
+    document.getElementById('lfmRecommendationsResults').style.display = 'none';
+    document.getElementById('lfmRecommendationsEmpty').style.display = 'block';
+  }
+}
+
+async function createPlaylistFromLastfm() {
+  if (!lfmRecommendationsData || !lfmRecommendationsData.matched_tracks || lfmRecommendationsData.matched_tracks.length === 0) {
+    alert('No matched tracks to create playlist from');
+    return;
+  }
+  
+  const recType = document.getElementById('lfmRecType').value;
+  const playlistName = prompt('Enter playlist name:', `Last.fm ${recType.replace(/_/g, ' ')}`);
+  
+  if (!playlistName) return;
+  
+  try {
+    // Get current user from config - use first configured user if available
+    const currentUser = document.getElementById('customPlaylistUser')?.value || 'admin';
+    
+    // Use existing custom playlist creation
+    const response = await fetch('/api/playlist/create-custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: playlistName,
+        description: `Last.fm recommendations: ${recType.replace(/_/g, ' ')}`,
+        user: currentUser,
+        is_public: false,
+        songs: lfmRecommendationsData.matched_tracks
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create playlist');
+    }
+    
+    alert('✅ Playlist created successfully!');
+  } catch (error) {
+    console.error('Error creating playlist:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function searchLastfmMissingTracksOnSoulseek() {
+  if (!lfmRecommendationsData || !lfmRecommendationsData.missing_tracks) {
+    alert('No missing tracks to search for');
+    return;
+  }
+  
+  alert('Soulseek search functionality coming soon!\n\nMissing ' + lfmRecommendationsData.missing_tracks.length + ' tracks.');
+  // TODO: Implement batch search on Soulseek for missing tracks
 }
 
 // =============================================================================
