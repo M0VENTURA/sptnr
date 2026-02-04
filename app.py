@@ -1406,25 +1406,35 @@ def artist_detail(name):
             "unknown": []
         }
         
+        # Track which albums we've already categorized to avoid duplicates
+        categorized_albums = set()
+        
         for album in albums_data:
             album_dict = dict(album)
             album_dict['is_missing'] = False  # Mark as discovered
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
+            album_name = album_dict.get("album", "")
             
             # Categorize based on spotify_album_type and track count
             if album_type == "compilation":
                 albums_by_category["compilation"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type == "album" or (not album_type and track_count > 6):
                 albums_by_category["album"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type == "ep" or (not album_type and 3 <= track_count <= 6):
                 albums_by_category["ep"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type == "single" or (not album_type and track_count < 3):
                 albums_by_category["single"].append(album_dict)
+                categorized_albums.add(album_name)
             else:
                 albums_by_category["unknown"].append(album_dict)
+                categorized_albums.add(album_name)
         
         # Get compilation albums where this artist is featured (Various Artists, etc.)
+        # Only get albums not already categorized
         cursor.execute("""
             SELECT 
                 album,
@@ -1449,6 +1459,12 @@ def artist_detail(name):
         
         for album in compilation_albums:
             album_dict = dict(album)
+            album_name = album_dict.get("album", "")
+            
+            # Skip if already categorized
+            if album_name in categorized_albums:
+                continue
+            
             album_dict['is_missing'] = False
             album_dict['is_compilation'] = True
             albums_by_category["compilation"].append(album_dict)
@@ -2083,6 +2099,9 @@ def api_apply_country_as_genre():
         updated_count = 0
         errors = []
         
+        # Use consistent genre delimiter
+        GENRE_DELIMITER = '; '
+        
         for track in tracks:
             track_id, file_path, current_genre = track
             
@@ -2093,10 +2112,12 @@ def api_apply_country_as_genre():
                 # Update MP3 file genre tag
                 audio = MP3(file_path, ID3=ID3)
                 
-                # Get existing genres
+                # Get existing genres - split on both '; ' and ';' for backward compatibility
                 existing_genres = []
                 if audio.tags and 'TCON' in audio.tags:
-                    existing_genres = [g.strip() for g in str(audio.tags['TCON']).split(';') if g.strip()]
+                    genre_str = str(audio.tags['TCON'])
+                    # Split on '; ' first, then on ';' for any that weren't split
+                    existing_genres = [g.strip() for part in genre_str.split(';') for g in [part.strip()] if g]
                 
                 # Add country if not already present
                 if country not in existing_genres:
@@ -2108,10 +2129,10 @@ def api_apply_country_as_genre():
                     audio.tags['TCON'] = TCON(encoding=3, text=existing_genres)
                     audio.save()
                     
-                    # Update database
+                    # Update database - use consistent delimiter
                     conn = get_db()
                     cursor = conn.cursor()
-                    new_genre = '; '.join(existing_genres)
+                    new_genre = GENRE_DELIMITER.join(existing_genres)
                     cursor.execute("UPDATE tracks SET genre = ? WHERE id = ?", (new_genre, track_id))
                     conn.commit()
                     conn.close()

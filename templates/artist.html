@@ -1550,7 +1550,9 @@ function fetchArtistCountry() {
 
 function editArtistCountry() {
   const artistName = '{{ artist_name }}';
-  const currentCountry = document.querySelector('#artistCountryDisplay .badge')?.textContent.trim().replace('🌍', '').trim() || '';
+  // Extract country text by removing the icon element
+  const badgeEl = document.querySelector('#artistCountryDisplay .badge');
+  const currentCountry = badgeEl ? badgeEl.textContent.replace(/^\s*$/, '').replace(/<i[^>]*><\/i>/g, '').trim() : '';
   
   const modalHtml = `
     <div class="modal fade" id="editCountryModal" tabindex="-1">
@@ -1634,7 +1636,11 @@ function applyCountryAsGenre() {
     return;
   }
   
-  const country = countryBadge.textContent.trim().replace('🌍', '').trim();
+  // Extract country by getting the last text node (after the icon)
+  const country = Array.from(countryBadge.childNodes)
+    .filter(node => node.nodeType === Node.TEXT_NODE)
+    .map(node => node.textContent.trim())
+    .join('').trim();
   
   if (!confirm(`Apply "${country}" as a genre tag to all tracks by ${artistName}?`)) {
     return;
