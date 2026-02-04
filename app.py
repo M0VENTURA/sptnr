@@ -8867,10 +8867,26 @@ def api_playlist_list():
     """List all playlists in Navidrome, including type and metadata"""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
-        navidrome_config = cfg.get("navidrome", {})
-        base_url = navidrome_config.get("base_url", "http://localhost:4533")
-        user = navidrome_config.get("user", "admin")
-        password = navidrome_config.get("pass", "")
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        nav_cfg = None
+
+        # Multi-user support: find config for current user
+        if navidrome_users and current_user:
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        
+        # Fallback to legacy single-user config
+        if not nav_cfg:
+            nav_cfg = cfg.get("navidrome", {})
+        
+        base_url = nav_cfg.get("base_url", "http://localhost:4533")
+        user = nav_cfg.get("user", "admin")
+        password = nav_cfg.get("pass", "")
+        
+        if not (base_url and user and password):
+            logging.error(f"Navidrome not configured: base_url={base_url}, user={user}, password={'set' if password else 'unset'}")
+            return jsonify({"error": "Navidrome not configured. Please check your config file."}), 400
+        
         import requests as req
 
         # Authenticate
