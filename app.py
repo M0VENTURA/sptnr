@@ -9374,6 +9374,9 @@ def api_listenbrainz_create_playlist():
         matched_tracks = []
         missing_tracks = []
         
+        # Get database connection
+        conn, c = get_db_connection()
+        
         for rec in recommendations:
             # Try to match by MBID first, then by artist/title
             mbid = rec.get("recording_mbid") or rec.get("mbid")
@@ -9403,6 +9406,8 @@ def api_listenbrainz_create_playlist():
                 matched_tracks.append({"id": track_id, "artist": artist_name, "title": track_name})
             else:
                 missing_tracks.append({"artist": artist_name, "title": track_name, "mbid": mbid})
+        
+        conn.close()
         
         # Create playlist if we have matches
         if matched_tracks:
