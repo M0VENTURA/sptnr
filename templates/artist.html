@@ -134,19 +134,29 @@
         <h5 class="card-title mb-0">
           <i class="bi bi-globe"></i> Country/Origin
         </h5>
-        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
-          <i class="bi bi-cloud-download"></i> Get from MusicBrainz
-        </button>
+        <div class="btn-group btn-group-sm">
+          <button class="btn btn-outline-primary" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
+            <i class="bi bi-cloud-download"></i> Get from MusicBrainz
+          </button>
+          <button class="btn btn-outline-secondary" onclick="editArtistCountry()" id="editArtistCountryBtn">
+            <i class="bi bi-pencil"></i> Edit Manually
+          </button>
+        </div>
       </div>
       <div class="card-body">
         <div id="artistCountryDisplay">
           {% if artist_country %}
-            <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
-              <i class="bi bi-geo-alt"></i> {{ artist_country }}
-            </span>
+            <div class="d-flex align-items-center gap-2 mb-2">
+              <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
+                <i class="bi bi-geo-alt"></i> {{ artist_country }}
+              </span>
+            </div>
             <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
+            <button class="btn btn-sm btn-success mt-2" onclick="applyCountryAsGenre()">
+              <i class="bi bi-tag"></i> Apply as Genre to All Tracks
+            </button>
           {% else %}
-            <span class="text-muted small">No country information available. Click "Get from MusicBrainz" to fetch it.</span>
+            <span class="text-muted small">No country information available. Click "Get from MusicBrainz" to fetch it or add manually.</span>
           {% endif %}
         </div>
       </div>
@@ -336,6 +346,8 @@
   {% set total_missing_eps = albums_by_category.ep|selectattr('is_missing', 'equalto', True)|list|length %}
   {% set total_discovered_singles = albums_by_category.single|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_singles = albums_by_category.single|selectattr('is_missing', 'equalto', True)|list|length %}
+  {% set total_discovered_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', False)|list|length %}
+  {% set total_missing_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', True)|list|length %}
   
   <div class="card mb-4">
     <div class="card-header d-flex justify-content-between align-items-center">
@@ -454,6 +466,48 @@
             <tr>
               <td colspan="7" class="text-center text-muted py-4">
                 <i class="bi bi-info-circle"></i> No singles found
+              </td>
+            </tr>
+          {% endif %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+
+  <!-- Compilations Section -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-collection"></i> Compilations
+        <span class="badge bg-primary">{{ total_discovered_compilations }}</span>
+        {% if total_missing_compilations > 0 %}
+          <span class="badge bg-warning text-dark">{{ total_missing_compilations }} missing</span>
+        {% endif %}
+      </h5>
+      <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
+    </div>
+    <div class="table-responsive">
+      <table class="table table-hover mb-0">
+        <thead class="d-none d-md-table-header-group">
+          <tr>
+            <th style="width: 100px;">Art</th>
+            <th>Title</th>
+            <th class="text-center" style="width: 80px;">Year</th>
+            <th class="text-center" style="width: 100px;">Status</th>
+            <th class="text-center" style="width: 80px;">Tracks</th>
+            <th class="text-center" style="width: 100px;">Avg ★</th>
+            <th class="text-center" style="width: 150px;">Actions</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% if albums_by_category.compilation|length > 0 %}
+            {% for album in albums_by_category.compilation %}
+              {{ render_album_row(album, artist_name, album.is_missing) }}
+            {% endfor %}
+          {% else %}
+            <tr>
+              <td colspan="7" class="text-center text-muted py-4">
+                <i class="bi bi-info-circle"></i> No compilations found
               </td>
             </tr>
           {% endif %}
@@ -1492,6 +1546,114 @@ function fetchArtistCountry() {
         </div>
       `;
     });
+}
+
+function editArtistCountry() {
+  const artistName = '{{ artist_name }}';
+  const currentCountry = document.querySelector('#artistCountryDisplay .badge')?.textContent.trim().replace('🌍', '').trim() || '';
+  
+  const modalHtml = `
+    <div class="modal fade" id="editCountryModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist Country/Origin</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="countryInput" class="form-label">Country/Origin</label>
+              <input type="text" class="form-control" id="countryInput" value="${escapeHtml(currentCountry)}" placeholder="e.g., United States, United Kingdom, Japan">
+              <div class="form-text">Enter the artist's country or region of origin</div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveArtistCountry()">
+              <i class="bi bi-save"></i> Save
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('editCountryModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  const modal = new bootstrap.Modal(document.getElementById('editCountryModal'));
+  modal.show();
+}
+
+function saveArtistCountry() {
+  const artistName = '{{ artist_name }}';
+  const country = document.getElementById('countryInput').value.trim();
+  
+  if (!country) {
+    alert('Please enter a country');
+    return;
+  }
+  
+  fetch('/api/artist/country/update', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist_name: artistName, country: country })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        bootstrap.Modal.getInstance(document.getElementById('editCountryModal'))?.hide();
+        
+        // Update the display
+        const container = document.getElementById('artistCountryDisplay');
+        container.innerHTML = `
+          <div class="d-flex align-items-center gap-2 mb-2">
+            <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
+              <i class="bi bi-geo-alt"></i> ${escapeHtml(country)}
+            </span>
+          </div>
+          <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
+          <button class="btn btn-sm btn-success mt-2" onclick="applyCountryAsGenre()">
+            <i class="bi bi-tag"></i> Apply as Genre to All Tracks
+          </button>
+        `;
+        alert('✅ Country updated successfully!');
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update country'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
+}
+
+function applyCountryAsGenre() {
+  const artistName = '{{ artist_name }}';
+  const countryBadge = document.querySelector('#artistCountryDisplay .badge');
+  if (!countryBadge) {
+    alert('No country information available');
+    return;
+  }
+  
+  const country = countryBadge.textContent.trim().replace('🌍', '').trim();
+  
+  if (!confirm(`Apply "${country}" as a genre tag to all tracks by ${artistName}?`)) {
+    return;
+  }
+  
+  fetch('/api/artist/country/apply-as-genre', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist_name: artistName })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        alert(`✅ ${data.message}\n\nUpdated ${data.tracks_updated} track(s)`);
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to apply genre'));
+      }
+    })
+    .catch(err => alert('❌ Network error: ' + err.message));
 }
 
 function openEditArtistIdsModal() {
