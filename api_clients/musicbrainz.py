@@ -449,7 +449,7 @@ class MusicBrainzClient:
                     "query": f'artist:{artist}',
                     "fmt": "json",
                     "limit": 1,
-                    "inc": "area-rels"
+                    "inc": "area"
                 }
                 r = self.session.get(f"{self.base_url}artist/", params=params, headers=self.headers, timeout=(3, 5))
                 r.raise_for_status()

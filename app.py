@@ -7196,7 +7196,7 @@ def api_lastfm_create_playlist():
         missing_tracks = []
         
         # Get database connection
-        conn, c = get_db_connection()
+        conn, cursor = get_db_connection()
         
         for rec in rec_list:
             artist_name = rec.get("artist", "")
@@ -7206,12 +7206,12 @@ def api_lastfm_create_playlist():
                 continue
             
             # Search by artist and title
-            c.execute("""
+            cursor.execute("""
                 SELECT id, artist, title FROM tracks 
                 WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
                 LIMIT 1
             """, (artist_name, track_name))
-            result = c.fetchone()
+            result = cursor.fetchone()
             
             if result:
                 matched_tracks.append({

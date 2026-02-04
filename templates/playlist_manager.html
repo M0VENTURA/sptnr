@@ -1209,7 +1209,7 @@ async function createPlaylistFromLastfm() {
   }
   
   const recType = document.getElementById('lfmRecType').value;
-  const playlistName = prompt('Enter playlist name:', `Last.fm ${recType.replace(/_/g, ' ')}`);
+  const playlistName = prompt('Enter playlist name:', `Last.fm ${recType === 'tracks' ? 'Top Tracks' : recType === 'artists' ? 'Top Artists' : 'Top Albums'}`);
   
   if (!playlistName) return;
   
