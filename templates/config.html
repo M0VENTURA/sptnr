@@ -290,6 +290,62 @@
     </div>
   </div>
 
+  <!-- Beets/Metadata Tagging Section -->
+  <div class="card shadow-sm mb-3">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-music-note"></i> Beets Metadata Tagger</h5>
+          <small class="text-muted">Organize and tag your music library automatically with MusicBrainz</small>
+        </div>
+        <a href="{{ url_for('beets_page') }}" class="btn btn-sm btn-outline-primary">
+          <i class="bi bi-gear-fill"></i> Manage Beets
+        </a>
+      </div>
+    </div>
+    <div class="card-body">
+      <!-- Status Section -->
+      <div class="row mb-3">
+        <div class="col-lg-6">
+          <div class="card">
+            <div class="card-header bg-light">
+              <h6 class="mb-0"><i class="bi bi-info-circle"></i> Status</h6>
+            </div>
+            <div class="card-body">
+              <div id="beetsConfigStatusSpinner" class="spinner-border spinner-border-sm mb-2" role="status" style="display: none;">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+              <div id="beetsConfigStatus">
+                <small class="text-muted">Click "Manage Beets" to view full status and controls</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-6">
+          <div class="card">
+            <div class="card-header bg-light">
+              <h6 class="mb-0"><i class="bi bi-database"></i> Quick Actions</h6>
+            </div>
+            <div class="card-body">
+              <div class="d-grid gap-2">
+                <button type="button" class="btn btn-sm btn-success" onclick="quickStartAutoImport()">
+                  <i class="bi bi-play-fill"></i> Start Auto-Import (Full Library)
+                </button>
+                <button type="button" class="btn btn-sm btn-info" onclick="quickSyncBeetsMetadata()">
+                  <i class="bi bi-arrow-repeat"></i> Sync Metadata to Database
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      <div class="alert alert-info mb-0">
+        <i class="bi bi-info-circle"></i> 
+        <strong>About Beets:</strong> Beets is a music library manager that automatically tags your music files with metadata from MusicBrainz. It can detect album information, fix tags, and organize your music collection. Visit the <a href="{{ url_for('beets_page') }}">Beets Management page</a> for full controls and status.
+      </div>
+    </div>
+  </div>
+
   <!-- API Integrations Section -->
   <div class="card shadow-sm mb-3">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
@@ -1393,5 +1449,79 @@ function migrateToPostgres() {
     btn.innerHTML = '<i class="bi bi-arrow-right-circle"></i> Migrate to PostgreSQL';
   });
 }
+
+// ============================================================================
+// BEETS QUICK ACTIONS (Config Page Integration)
+// ============================================================================
+function loadBeetsConfigStatus() {
+  const statusEl = document.getElementById('beetsConfigStatus');
+  const spinnerEl = document.getElementById('beetsConfigStatusSpinner');
+  
+  if (!statusEl || !spinnerEl) return;
+  
+  spinnerEl.style.display = 'inline-block';
+  
+  fetch('/api/beets/status')
+    .then(r => r.json())
+    .then(data => {
+      const status = data.status || {};
+      let html = `
+        <div class="small">
+          <div><strong>Status:</strong> ${status.enabled ? '<span class="badge bg-success">Enabled</span>' : '<span class="badge bg-secondary">Disabled</span>'}</div>
+          <div><strong>Installed:</strong> ${status.installed ? '<span class="badge bg-success">Yes</span>' : '<span class="badge bg-danger">No</span>'}</div>
+          <div><strong>Config:</strong> ${status.config_exists ? '<span class="badge bg-success">Exists</span>' : '<span class="badge bg-warning">Missing</span>'}</div>
+        </div>
+      `;
+      statusEl.innerHTML = html;
+      spinnerEl.style.display = 'none';
+    })
+    .catch(e => {
+      console.error('Error loading beets status:', e);
+      statusEl.innerHTML = '<small class="text-muted">Unable to load status</small>';
+      spinnerEl.style.display = 'none';
+    });
+}
+
+function quickStartAutoImport() {
+  if (confirm('Start auto-import for entire library?\n\nThis will run \'beet import -A\' and capture MusicBrainz metadata.')) {
+    fetch('/api/beets/auto-import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist_path: null })
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        showToast('Auto-import started! Check the Beets page for progress.', 'success');
+      } else {
+        showToast('Error: ' + (data.error || 'Auto-import failed'), 'danger');
+      }
+    })
+    .catch(e => showToast('Network error: ' + e.message, 'danger'));
+  }
+}
+
+function quickSyncBeetsMetadata() {
+  if (confirm('Sync metadata from beets database to sptnr database?\n\nThis will update tracks with MusicBrainz IDs and recommendations from beets.')) {
+    fetch('/api/beets/sync-metadata', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        showToast('Metadata synced successfully!', 'success');
+      } else {
+        showToast('Error: ' + (data.error || 'Sync failed'), 'danger');
+      }
+    })
+    .catch(e => showToast('Network error: ' + e.message, 'danger'));
+  }
+}
+
+// Load beets status on page load
+document.addEventListener('DOMContentLoaded', function() {
+  loadBeetsConfigStatus();
+});
 </script>
 {% endblock %}
