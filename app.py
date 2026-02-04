@@ -1402,30 +1402,79 @@ def artist_detail(name):
             "album": [],
             "ep": [],
             "single": [],
+            "compilation": [],
             "unknown": []
         }
+        
+        # Track which albums we've already categorized to avoid duplicates
+        categorized_albums = set()
         
         for album in albums_data:
             album_dict = dict(album)
             album_dict['is_missing'] = False  # Mark as discovered
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
+            album_name = album_dict.get("album", "")
             
             # Categorize based on spotify_album_type and track count
-            if album_type == "album" or (not album_type and track_count > 6):
+            if album_type == "compilation":
+                albums_by_category["compilation"].append(album_dict)
+                categorized_albums.add(album_name)
+            elif album_type == "album" or (not album_type and track_count > 6):
                 albums_by_category["album"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type == "ep" or (not album_type and 3 <= track_count <= 6):
                 albums_by_category["ep"].append(album_dict)
+                categorized_albums.add(album_name)
             elif album_type == "single" or (not album_type and track_count < 3):
                 albums_by_category["single"].append(album_dict)
+                categorized_albums.add(album_name)
             else:
                 albums_by_category["unknown"].append(album_dict)
+                categorized_albums.add(album_name)
+        
+        # Get compilation albums where this artist is featured (Various Artists, etc.)
+        # Only get albums not already categorized
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type
+            FROM tracks
+            WHERE artist = ? AND (
+                COALESCE(album_artist, '') IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
+                OR album LIKE '%compilation%'
+                OR album LIKE '%various%'
+                OR album LIKE '%soundtrack%'
+                OR album LIKE '%tribute%'
+            )
+            GROUP BY album
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+        """, (name,))
+        compilation_albums = cursor.fetchall()
+        
+        for album in compilation_albums:
+            album_dict = dict(album)
+            album_name = album_dict.get("album", "")
+            
+            # Skip if already categorized
+            if album_name in categorized_albums:
+                continue
+            
+            album_dict['is_missing'] = False
+            album_dict['is_compilation'] = True
+            albums_by_category["compilation"].append(album_dict)
         
         # Categorize missing releases
         missing_by_category = {
             "album": [],
             "ep": [],
-            "single": []
+            "single": [],
+            "compilation": []
         }
         
         for release in missing_releases_data:
@@ -1437,12 +1486,14 @@ def artist_detail(name):
                 missing_by_category["ep"].append(release_dict)
             elif category == "single":
                 missing_by_category["single"].append(release_dict)
+            elif category == "compilation":
+                missing_by_category["compilation"].append(release_dict)
             else:
                 missing_by_category["album"].append(release_dict)
         
         # Merge discovered and missing albums by category, then sort by release date
         merged_albums_by_category = {}
-        for category in ["album", "ep", "single", "unknown"]:
+        for category in ["album", "ep", "single", "compilation", "unknown"]:
             merged_list = albums_by_category.get(category, []) + missing_by_category.get(category, [])
             
             # Sort by release date (newest first)
@@ -1959,6 +2010,152 @@ def api_fetch_artist_country():
         
     except Exception as e:
         logging.error(f"[ARTIST_COUNTRY] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/country/update", methods=["POST"])
+def api_update_artist_country():
+    """Manually update artist country/origin."""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist_name", "").strip()
+        country = data.get("country", "").strip()
+        
+        if not artist_name or not country:
+            return jsonify({"error": "Artist name and country are required"}), 400
+        
+        # Update artists table
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Ensure artist exists in artists table
+        cursor.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
+        artist_row = cursor.fetchone()
+        
+        if artist_row:
+            # Update existing artist
+            cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (country, artist_name))
+        else:
+            # Insert new artist entry
+            cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+                         (artist_name, artist_name, country))
+        
+        # Also update all tracks by this artist
+        cursor.execute("UPDATE tracks SET artist_country = ? WHERE artist = ?", (country, artist_name))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "country": country,
+            "message": f"Updated country to {country}"
+        })
+        
+    except Exception as e:
+        logging.error(f"[ARTIST_COUNTRY_UPDATE] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/country/apply-as-genre", methods=["POST"])
+def api_apply_country_as_genre():
+    """Apply artist country as genre tag to all tracks."""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist_name", "").strip()
+        
+        if not artist_name:
+            return jsonify({"error": "Artist name required"}), 400
+        
+        # Get artist country
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT country FROM artists WHERE name = ?", (artist_name,))
+        artist_row = cursor.fetchone()
+        
+        if not artist_row or not artist_row[0]:
+            return jsonify({"error": "No country information available for this artist"}), 404
+        
+        country = artist_row[0]
+        
+        # Get all tracks by this artist with file paths
+        cursor.execute("SELECT id, file_path, genre FROM tracks WHERE artist = ?", (artist_name,))
+        tracks = cursor.fetchall()
+        
+        if not tracks:
+            conn.close()
+            return jsonify({"error": "No tracks found for this artist"}), 404
+        
+        conn.close()
+        
+        # Import mutagen for MP3 tag editing
+        try:
+            from mutagen.id3 import ID3, TCON
+            from mutagen.mp3 import MP3
+        except ImportError:
+            return jsonify({"error": "Mutagen library not available"}), 500
+        
+        updated_count = 0
+        errors = []
+        
+        # Use consistent genre delimiter
+        GENRE_DELIMITER = '; '
+        
+        for track in tracks:
+            track_id, file_path, current_genre = track
+            
+            if not file_path or not os.path.exists(file_path):
+                continue
+            
+            try:
+                # Update MP3 file genre tag
+                audio = MP3(file_path, ID3=ID3)
+                
+                # Get existing genres - split on both '; ' and ';' for backward compatibility
+                existing_genres = []
+                if audio.tags and 'TCON' in audio.tags:
+                    genre_str = str(audio.tags['TCON'])
+                    # Split on ';' and strip whitespace from each part
+                    existing_genres = [part.strip() for part in genre_str.split(';') if part.strip()]
+                
+                # Add country if not already present
+                if country not in existing_genres:
+                    existing_genres.append(country)
+                    
+                    # Set the genre tag
+                    if audio.tags is None:
+                        audio.add_tags()
+                    audio.tags['TCON'] = TCON(encoding=3, text=existing_genres)
+                    audio.save()
+                    
+                    # Update database - use consistent delimiter
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    new_genre = GENRE_DELIMITER.join(existing_genres)
+                    cursor.execute("UPDATE tracks SET genre = ? WHERE id = ?", (new_genre, track_id))
+                    conn.commit()
+                    conn.close()
+                    
+                    updated_count += 1
+                    
+            except Exception as e:
+                errors.append(f"{os.path.basename(file_path)}: {str(e)}")
+                logging.error(f"[APPLY_COUNTRY_GENRE] Error updating {file_path}: {e}")
+        
+        message = f"Applied '{country}' as genre to tracks"
+        if errors:
+            message += f" (with {len(errors)} errors)"
+        
+        return jsonify({
+            "success": True,
+            "message": message,
+            "tracks_updated": updated_count,
+            "errors": errors[:5]  # Return first 5 errors
+        })
+        
+    except Exception as e:
+        logging.error(f"[APPLY_COUNTRY_GENRE] Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

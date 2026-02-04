@@ -68,7 +68,7 @@
           {% for user in navidrome_users %}
           <div class="user-card mb-4 p-3 border rounded" data-user-index="{{ loop.index0 }}">
             <div class="d-flex justify-content-between align-items-center mb-3">
-              <h6 class="mb-0">User {{ loop.index }}: {{ user.get('display_name', user.get('username', 'Unknown')) }}</h6>
+              <h6 class="mb-0">{{ user.get('display_name', user.get('username', 'User ' ~ loop.index)) }}</h6>
               {% if loop.length > 1 %}
               <button type="button" class="btn btn-sm btn-outline-danger" onclick="removeUser({{ loop.index0 }})">
                 <i class="bi bi-trash"></i> Remove
