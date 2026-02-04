@@ -28,8 +28,27 @@
   </div>
   {% endif %}
 
+  <!-- Quick Jump Navigation -->
+  <div class="card mb-3 border-primary">
+    <div class="card-body py-2">
+      <div class="d-flex flex-wrap gap-2 align-items-center justify-content-center">
+        <span class="text-muted small me-2"><i class="bi bi-lightning-fill"></i> Quick Jump:</span>
+        <a href="#users" class="btn btn-sm btn-outline-primary">Users</a>
+        <a href="#qbittorrent" class="btn btn-sm btn-outline-primary">qBittorrent</a>
+        <a href="#slskd" class="btn btn-sm btn-outline-primary">slskd</a>
+        <a href="#bookmarks" class="btn btn-sm btn-outline-primary">Bookmarks</a>
+        <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
+        <a href="#watcher" class="btn btn-sm btn-outline-primary">Watcher</a>
+        <a href="#beets" class="btn btn-sm btn-outline-primary">Beets</a>
+        <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Integrations</a>
+        <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
+        <a href="#logging" class="btn btn-sm btn-outline-primary">Logging</a>
+      </div>
+    </div>
+  </div>
+
   <!-- Multi-User Configuration Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="users">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -119,7 +138,7 @@
   </div>
 
   <!-- qBittorrent Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="qbittorrent">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -151,7 +170,7 @@
   </div>
 
   <!-- slskd Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="slskd">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -179,7 +198,7 @@
   </div>
 
   <!-- Bookmarks Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="bookmarks">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -225,7 +244,7 @@
   </div>
 
   <!-- Downloads Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="downloads">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-folder-fill"></i> Downloads</h5>
       <small class="text-muted">Configure download folder for music files (used by qBittorrent and slskd)</small>
@@ -242,7 +261,7 @@
   </div>
 
   <!-- Watcher Service Settings -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="watcher">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-eye-fill"></i> Watcher Service</h5>
       <small class="text-muted">Configure automatic monitoring and import settings</small>
@@ -291,7 +310,7 @@
   </div>
 
   <!-- Beets/Metadata Tagging Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="beets">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <div class="d-flex justify-content-between align-items-center">
         <div>
@@ -347,7 +366,7 @@
   </div>
 
   <!-- API Integrations Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="api-integrations">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-link-45deg"></i> API Integrations</h5>
       <small class="text-muted">External data sources for music metadata</small>
@@ -397,6 +416,11 @@
             <div class="col-12">
               <label class="form-label form-label-sm">API Key</label>
               <input type="text" class="form-control form-control-sm" id="lastfm_api_key" placeholder="your_lastfm_api_key" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('api_key', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">Username (Optional)</label>
+              <input type="text" class="form-control form-control-sm" id="lastfm_username" placeholder="your_lastfm_username" value="{{ config.get('api_integrations', {}).get('lastfm', {}).get('username', '') }}">
+              <small class="text-muted">For personalized recommendations</small>
             </div>
           </div>
         </div>
@@ -530,7 +554,7 @@
   </div>
 
   <!-- Database Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="database">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-database"></i> Database</h5>
     </div>
@@ -607,7 +631,7 @@
   </div>
 
   <!-- Logging Section -->
-  <div class="card shadow-sm mb-3">
+  <div class="card shadow-sm mb-3" id="logging">
     <div class="card-header bg-secondary bg-opacity-10 border-bottom">
       <h5 class="mb-0"><i class="bi bi-file-text"></i> Logging</h5>
     </div>
@@ -805,7 +829,8 @@ function buildConfigObject() {
       },
       lastfm: {
         enabled: getChecked('lastfm_enabled', false),
-        api_key: getValue('lastfm_api_key', '')
+        api_key: getValue('lastfm_api_key', ''),
+        username: getValue('lastfm_username', '')
       },
       listenbrainz: {
         enabled: getChecked('listenbrainz_enabled', false)

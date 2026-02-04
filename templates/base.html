@@ -1025,21 +1025,10 @@
               </a></li>
             </ul>
           </li>
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle" href="#" id="playlistsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+          <li class="nav-item">
+            <a class="nav-link" href="{{ url_for('playlist_manager') }}">
               <i class="bi bi-music-note-list"></i> Playlists
             </a>
-            <ul class="dropdown-menu" aria-labelledby="playlistsDropdown">
-              <li><a class="dropdown-item" href="{{ url_for('smart_playlists') }}">
-                <i class="bi bi-sparkles"></i> Smart Playlists
-              </a></li>
-              <li><a class="dropdown-item" href="{{ url_for('playlist_import') }}">
-                <i class="bi bi-cloud-arrow-down"></i> Import Playlist
-              </a></li>
-              <li><a class="dropdown-item" href="{{ url_for('playlist_manager') }}">
-                <i class="bi bi-music-note-list"></i> Playlist Manager
-              </a></li>
-            </ul>
           </li>
           {% if custom_bookmark_links and custom_bookmark_links|length > 0 %}
           <li class="nav-item dropdown">

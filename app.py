@@ -1168,7 +1168,18 @@ def artists():
     conn = get_db()
     cursor = conn.cursor()
     
+    # Get total counts for all tracks (including those without artist info)
+    cursor.execute("""
+        SELECT 
+            COUNT(DISTINCT album) as album_count,
+            COUNT(*) as track_count,
+            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count
+        FROM tracks
+    """)
+    total_stats = cursor.fetchone()
+    
     # Use album_artist column (falls back to artist if album_artist is NULL)
+    # Filter out NULL/empty artist names
     cursor.execute("""
         SELECT 
             COALESCE(album_artist, artist) as artist,
@@ -1177,6 +1188,7 @@ def artists():
             COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
+        WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
         GROUP BY COALESCE(album_artist, artist)
         
         UNION ALL
@@ -1188,14 +1200,14 @@ def artists():
             0 as single_count,
             last_updated
         FROM artist_stats
-        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks)
+        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
         
         ORDER BY artist COLLATE NOCASE
     """)
     artists_data = cursor.fetchall()
     conn.close()
     
-    return render_template("artists.html", artists=artists_data, DB_PATH=DB_PATH)
+    return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
 
 
 @app.route("/search")
@@ -4942,11 +4954,45 @@ def scan_navidrome():
                     os.environ["SPTNR_SKIP_SINGLES"] = "1"
 
                     logging.info("Starting Navidrome import-only scan (no scoring/singles)")
+                    checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
+                    
                     artist_map = build_artist_index()
                     artists = list(artist_map.items())
                     total = len(artists)
-                    for idx, (artist_name, info) in enumerate(artists, start=1):
+                    
+                    # Check if we have a checkpoint from a previous scan
+                    start_idx = 0
+                    last_scanned_artist = None
+                    if os.path.exists(checkpoint_path):
+                        try:
+                            with open(checkpoint_path, 'r') as f:
+                                checkpoint = json.load(f)
+                                last_scanned_artist = checkpoint.get("last_scanned_artist")
+                                if last_scanned_artist:
+                                    # Find the index of the last scanned artist
+                                    for idx, (artist_name, _) in enumerate(artists):
+                                        if artist_name == last_scanned_artist:
+                                            start_idx = idx + 1  # Start from the next artist
+                                            logging.info(f"Resuming Navidrome scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                            break
+                        except Exception as e:
+                            logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
+                    
+                    # Scan artists starting from checkpoint or beginning
+                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
                         scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
+                        
+                        # Update checkpoint with the last scanned artist
+                        try:
+                            with open(checkpoint_path, 'w') as f:
+                                json.dump({"last_scanned_artist": artist_name}, f)
+                        except Exception as e:
+                            logging.warning(f"Error saving checkpoint: {e}")
+                    
+                    # Clear checkpoint when scan completes successfully
+                    if os.path.exists(checkpoint_path):
+                        os.remove(checkpoint_path)
+                    
                     _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Navidrome import-only scan completed")
                 except Exception as e:
@@ -7143,8 +7189,11 @@ def api_lastfm_recommendations():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
+        # Get username from config if available
+        username = lastfm_config.get("username", "")
+        
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key)
+        recommendations = get_lastfm_recommendations(api_key, username=username)
         
         return jsonify({"recommendations": recommendations})
     except Exception as e:

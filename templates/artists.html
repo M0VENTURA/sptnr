@@ -21,6 +21,33 @@
         </div>
     </div>
 
+    {% if total_stats %}
+        <!-- Total Items Section -->
+        <div class="card mb-3 border-primary">
+            <div class="card-header bg-primary bg-opacity-10 border-primary">
+                <h5 class="mb-0">
+                    <i class="bi bi-collection"></i> Total Library Items
+                </h5>
+            </div>
+            <div class="card-body">
+                <div class="row text-center">
+                    <div class="col-md-4">
+                        <div class="h3 mb-0 text-primary">{{ total_stats.album_count or 0 }}</div>
+                        <small class="text-muted">Albums</small>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="h3 mb-0 text-primary">{{ total_stats.track_count or 0 }}</div>
+                        <small class="text-muted">Tracks</small>
+                    </div>
+                    <div class="col-md-4">
+                        <div class="h3 mb-0 text-primary">{{ total_stats.single_count or 0 }}</div>
+                        <small class="text-muted">Singles</small>
+                    </div>
+                </div>
+            </div>
+        </div>
+    {% endif %}
+
     {% if artists|length == 0 %}
         <div class="alert alert-secondary">
             <i class="bi bi-info-circle"></i> No artists found. Run a scan to populate the database.
