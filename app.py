@@ -8867,10 +8867,26 @@ def api_playlist_list():
     """List all playlists in Navidrome, including type and metadata"""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
-        navidrome_config = cfg.get("navidrome", {})
-        base_url = navidrome_config.get("base_url", "http://localhost:4533")
-        user = navidrome_config.get("user", "admin")
-        password = navidrome_config.get("pass", "")
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        nav_cfg = None
+
+        # Multi-user support: find config for current user
+        if navidrome_users and current_user:
+            nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        
+        # Fallback to legacy single-user config
+        if not nav_cfg:
+            nav_cfg = cfg.get("navidrome", {})
+        
+        base_url = nav_cfg.get("base_url", "http://localhost:4533")
+        user = nav_cfg.get("user", "admin")
+        password = nav_cfg.get("pass", "")
+        
+        if not (base_url and user and password):
+            logging.error(f"Navidrome not configured: base_url={base_url}, user={user}, password={'set' if password else 'unset'}")
+            return jsonify({"error": "Navidrome not configured. Please check your config file."}), 400
+        
         import requests as req
 
         # Authenticate
@@ -9239,6 +9255,177 @@ def api_playlist_create_custom():
         logging.error(f"Error creating custom playlist: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
+
+# =============================================================================
+# LISTENBRAINZ RECOMMENDATIONS API
+# =============================================================================
+
+@app.route("/api/listenbrainz/recommendations/<rec_type>", methods=["GET"])
+def api_listenbrainz_recommendations(rec_type):
+    """
+    Get ListenBrainz recommendations for the current user.
+    
+    rec_type can be:
+    - weekly_jams: Current week's personalized jams
+    - weekly_exploration: Discovery mode recommendations
+    - last_week_jams: Previous week's jams
+    - last_week_exploration: Previous week's exploration
+    """
+    try:
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        
+        # Find user config
+        user_cfg = None
+        if navidrome_users and current_user:
+            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        
+        if not user_cfg:
+            return jsonify({"error": "User not found in configuration"}), 404
+        
+        # Get ListenBrainz token
+        lb_token = user_cfg.get("listenbrainz_user_token", "")
+        if not lb_token:
+            return jsonify({"error": "ListenBrainz token not configured for this user"}), 400
+        
+        # Import ListenBrainz client
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+        client = ListenBrainzUserClient(lb_token)
+        
+        # Get username from token
+        username = client.get_username_from_token()
+        if not username:
+            return jsonify({"error": "Failed to validate ListenBrainz token"}), 401
+        
+        # Get recommendations based on type
+        recommendations = []
+        if rec_type == "weekly_jams":
+            recommendations = client.get_weekly_jams(username)
+        elif rec_type == "weekly_exploration":
+            recommendations = client.get_weekly_exploration(username)
+        elif rec_type == "last_week_jams":
+            recommendations = client.get_last_week_jams(username)
+        elif rec_type == "last_week_exploration":
+            recommendations = client.get_last_week_exploration(username)
+        else:
+            return jsonify({"error": f"Unknown recommendation type: {rec_type}"}), 400
+        
+        return jsonify({
+            "success": True,
+            "type": rec_type,
+            "username": username,
+            "count": len(recommendations),
+            "recommendations": recommendations
+        })
+        
+    except Exception as e:
+        logging.error(f"Error fetching ListenBrainz recommendations: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/listenbrainz/create-playlist", methods=["POST"])
+def api_listenbrainz_create_playlist():
+    """
+    Create a Navidrome playlist from ListenBrainz recommendations.
+    Searches for tracks in the local library and adds them to a new playlist.
+    """
+    try:
+        data = request.get_json()
+        rec_type = data.get("type", "weekly_jams")
+        playlist_name = data.get("name", f"ListenBrainz {rec_type.replace('_', ' ').title()}")
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        current_user = session.get("username")
+        navidrome_users = cfg.get("navidrome_users", [])
+        
+        # Find user config
+        user_cfg = None
+        if navidrome_users and current_user:
+            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        
+        if not user_cfg:
+            return jsonify({"error": "User not found in configuration"}), 404
+        
+        # Get ListenBrainz token
+        lb_token = user_cfg.get("listenbrainz_user_token", "")
+        if not lb_token:
+            return jsonify({"error": "ListenBrainz token not configured"}), 400
+        
+        # Get recommendations
+        from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+        client = ListenBrainzUserClient(lb_token)
+        username = client.get_username_from_token()
+        
+        recommendations = []
+        if rec_type == "weekly_jams":
+            recommendations = client.get_weekly_jams(username)
+        elif rec_type == "weekly_exploration":
+            recommendations = client.get_weekly_exploration(username)
+        elif rec_type == "last_week_jams":
+            recommendations = client.get_last_week_jams(username)
+        elif rec_type == "last_week_exploration":
+            recommendations = client.get_last_week_exploration(username)
+        
+        if not recommendations:
+            return jsonify({"error": "No recommendations found"}), 404
+        
+        # Search for matching tracks in database
+        matched_tracks = []
+        missing_tracks = []
+        
+        # Get database connection
+        conn, c = get_db_connection()
+        
+        for rec in recommendations:
+            # Try to match by MBID first, then by artist/title
+            mbid = rec.get("recording_mbid") or rec.get("mbid")
+            artist_name = rec.get("artist_name", "")
+            track_name = rec.get("recording_name") or rec.get("track_name", "")
+            
+            track_id = None
+            if mbid:
+                # Search by MBID in database
+                c.execute("SELECT id FROM tracks WHERE musicbrainz_id = ?", (mbid,))
+                result = c.fetchone()
+                if result:
+                    track_id = result[0]
+            
+            if not track_id and artist_name and track_name:
+                # Search by artist and title
+                c.execute("""
+                    SELECT id FROM tracks 
+                    WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                    LIMIT 1
+                """, (artist_name, track_name))
+                result = c.fetchone()
+                if result:
+                    track_id = result[0]
+            
+            if track_id:
+                matched_tracks.append({"id": track_id, "artist": artist_name, "title": track_name})
+            else:
+                missing_tracks.append({"artist": artist_name, "title": track_name, "mbid": mbid})
+        
+        conn.close()
+        
+        # Note: Playlist creation is delegated to the frontend using matched_tracks
+        # The frontend will call /api/playlist/create-custom with the matched tracks
+        # This endpoint's purpose is to provide the matched/missing track analysis
+        
+        return jsonify({
+            "success": True,
+            "total_recommendations": len(recommendations),
+            "matched": len(matched_tracks),
+            "missing": len(missing_tracks),
+            "matched_tracks": matched_tracks[:100],  # Limit response size but allow more tracks
+            "missing_tracks": missing_tracks[:100],
+            "note": "Use /api/playlist/create-custom to create a playlist with matched_tracks"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error creating ListenBrainz playlist: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/database/cleanup-duplicates", methods=["POST"])

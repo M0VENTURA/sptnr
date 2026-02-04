@@ -263,6 +263,155 @@
       </div>
     </div>
   </div>
+
+  <!-- Spotify Playlist Import Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-spotify"></i> Spotify Playlist Import
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Import playlists from Spotify. Note: Requires Spotify API credentials in configuration.
+        </p>
+
+        <!-- Spotify User ID Input -->
+        <div class="row g-3 mb-4">
+          <div class="col-md-6">
+            <label for="spotifyUserId" class="form-label">Spotify User ID (optional)</label>
+            <input type="text" id="spotifyUserId" class="form-control" placeholder="spotify:user:username">
+            <small class="text-muted">Leave empty to see featured playlists</small>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-success w-100" onclick="loadSpotifyPlaylists()">
+              <i class="bi bi-spotify"></i> Load Playlists
+            </button>
+          </div>
+        </div>
+
+        <!-- Spotify Playlists List -->
+        <div id="spotifyPlaylistsResults" style="display: none;">
+          <h6 class="mb-3">Available Playlists</h6>
+          <div id="spotifyPlaylistsList" style="max-height: 400px; overflow-y: auto;">
+            <!-- Playlists will be listed here -->
+          </div>
+        </div>
+
+        <div id="spotifyPlaylistsEmpty" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> Enter a Spotify User ID and click "Load Playlists", or load featured playlists
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ListenBrainz Recommendations Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-brain"></i> ListenBrainz Recommendations
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Get personalized music recommendations from ListenBrainz based on your listening history.
+        </p>
+
+        <!-- Recommendation Type Selection -->
+        <div class="row g-3 mb-4">
+          <div class="col-md-6">
+            <label for="lbRecType" class="form-label">Recommendation Type</label>
+            <select id="lbRecType" class="form-select">
+              <option value="weekly_jams">Weekly Jams (Current Week)</option>
+              <option value="weekly_exploration">Weekly Exploration (Discovery)</option>
+              <option value="last_week_jams">Last Week's Jams (Currently shows current week)*</option>
+              <option value="last_week_exploration">Last Week's Exploration (Currently shows current week)*</option>
+            </select>
+            <small class="text-muted">* Historical data not available from ListenBrainz API</small>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="loadListenBrainzRecommendations()">
+              <i class="bi bi-download"></i> Load Recommendations
+            </button>
+          </div>
+        </div>
+
+        <!-- Results Section -->
+        <div id="lbRecommendationsResults" style="display: none;">
+          <div class="row mb-4">
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-primary bg-opacity-10 border-primary">
+                <div class="card-body">
+                  <h5 class="card-title">Total Recommendations</h5>
+                  <h2 id="lbTotalCount" class="text-primary">0</h2>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-success bg-opacity-10 border-success">
+                <div class="card-body">
+                  <h5 class="card-title">In Your Library</h5>
+                  <h2 id="lbMatchedCount" class="text-success">0</h2>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-md-4">
+              <div class="card text-center bg-warning bg-opacity-10 border-warning">
+                <div class="card-body">
+                  <h5 class="card-title">Missing Tracks</h5>
+                  <h2 id="lbMissingCount" class="text-warning">0</h2>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Tracks Lists -->
+          <div class="row g-3">
+            <div class="col-12 col-lg-6">
+              <div class="card h-100">
+                <div class="card-header">
+                  <h6 class="mb-0">Matched Tracks (In Library)</h6>
+                </div>
+                <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                  <div id="lbMatchedTracks">
+                    <p class="text-center text-muted py-5">Matched tracks will appear here</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="col-12 col-lg-6">
+              <div class="card h-100">
+                <div class="card-header">
+                  <h6 class="mb-0">Missing Tracks</h6>
+                </div>
+                <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                  <div id="lbMissingTracks">
+                    <p class="text-center text-muted py-5">Missing tracks will appear here</p>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- Actions -->
+          <div class="mt-4 d-flex gap-2 justify-content-end">
+            <button class="btn btn-success" onclick="createPlaylistFromListenBrainz()" id="lbCreatePlaylistBtn">
+              <i class="bi bi-plus-circle"></i> Create Playlist from Matched Tracks
+            </button>
+            <button class="btn btn-outline-primary" onclick="searchMissingTracksOnSoulseek()" id="lbSearchMissingBtn">
+              <i class="bi bi-search"></i> Search Missing on Soulseek
+            </button>
+          </div>
+        </div>
+
+        <div id="lbRecommendationsEmpty" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> Select a recommendation type and click "Load Recommendations" to get started
+        </div>
+      </div>
+    </div>
+  </div>
 </div>
 
 <script>
@@ -754,6 +903,230 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// =============================================================================
+// SPOTIFY PLAYLIST IMPORT
+// =============================================================================
+
+let spotifyPlaylistsData = [];
+
+async function loadSpotifyPlaylists() {
+  const userId = document.getElementById('spotifyUserId').value.trim();
+  
+  try {
+    document.getElementById('spotifyPlaylistsEmpty').style.display = 'none';
+    document.getElementById('spotifyPlaylistsResults').style.display = 'block';
+    
+    // Show loading state
+    document.getElementById('spotifyPlaylistsList').innerHTML = '<div class="text-center py-4"><div class="spinner-border"></div><p class="mt-2">Loading playlists...</p></div>';
+    
+    const url = userId ? `/api/spotify/playlists?user_id=${encodeURIComponent(userId)}` : '/api/spotify/playlists';
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to load Spotify playlists');
+    }
+    
+    const data = await response.json();
+    spotifyPlaylistsData = data.playlists || [];
+    
+    if (spotifyPlaylistsData.length === 0) {
+      document.getElementById('spotifyPlaylistsList').innerHTML = '<p class="text-muted text-center py-5">No playlists found</p>';
+      return;
+    }
+    
+    // Display playlists
+    const playlistsHtml = spotifyPlaylistsData.map((playlist, idx) => `
+      <div class="card mb-2">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div style="flex: 1;">
+              <strong class="d-block">${escapeHtml(playlist.name || 'Untitled')}</strong>
+              <small class="text-muted">${playlist.tracks?.total || 0} tracks</small>
+              ${playlist.description ? `<br><small class="text-secondary">${escapeHtml(playlist.description)}</small>` : ''}
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="importSpotifyPlaylist(${idx})" title="Import this playlist">
+              <i class="bi bi-download"></i> Import
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    
+    document.getElementById('spotifyPlaylistsList').innerHTML = playlistsHtml;
+    
+  } catch (error) {
+    console.error('Error loading Spotify playlists:', error);
+    alert('Error: ' + error.message);
+    document.getElementById('spotifyPlaylistsResults').style.display = 'none';
+    document.getElementById('spotifyPlaylistsEmpty').style.display = 'block';
+  }
+}
+
+async function importSpotifyPlaylist(index) {
+  const playlist = spotifyPlaylistsData[index];
+  if (!playlist) return;
+  
+  const playlistUrl = playlist.external_urls?.spotify || playlist.uri || '';
+  const playlistName = prompt('Enter name for imported playlist:', playlist.name);
+  
+  if (!playlistName) return;
+  
+  try {
+    // Use existing playlist import endpoint
+    const response = await fetch('/api/playlist/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spotify_url: playlistUrl,
+        playlist_name: playlistName,
+        user: document.getElementById('customPlaylistUser')?.value || 'admin'
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to import playlist');
+    }
+    
+    const result = await response.json();
+    alert(`✅ Playlist imported successfully!\n\nMatched: ${result.matched || 0} tracks\nMissing: ${result.missing || 0} tracks`);
+    
+  } catch (error) {
+    console.error('Error importing Spotify playlist:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+// =============================================================================
+// LISTENBRAINZ RECOMMENDATIONS
+// =============================================================================
+
+let lbRecommendationsData = null;
+
+async function loadListenBrainzRecommendations() {
+  const recType = document.getElementById('lbRecType').value;
+  
+  try {
+    document.getElementById('lbRecommendationsEmpty').style.display = 'none';
+    document.getElementById('lbRecommendationsResults').style.display = 'block';
+    
+    // Show loading state
+    document.getElementById('lbTotalCount').textContent = '...';
+    document.getElementById('lbMatchedCount').textContent = '...';
+    document.getElementById('lbMissingCount').textContent = '...';
+    
+    const response = await fetch(`/api/listenbrainz/create-playlist`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ type: recType })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to load recommendations');
+    }
+    
+    const data = await response.json();
+    lbRecommendationsData = data;
+    
+    // Update counts
+    document.getElementById('lbTotalCount').textContent = data.total_recommendations || 0;
+    document.getElementById('lbMatchedCount').textContent = data.matched || 0;
+    document.getElementById('lbMissingCount').textContent = data.missing || 0;
+    
+    // Display matched tracks
+    const matchedHtml = (data.matched_tracks || []).map(track => `
+      <div class="card mb-2 border-success">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong class="d-block">${escapeHtml(track.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+            </div>
+            <span class="badge bg-success">✓</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('lbMatchedTracks').innerHTML = matchedHtml || '<p class="text-muted text-center py-5">No matched tracks found</p>';
+    
+    // Display missing tracks
+    const missingHtml = (data.missing_tracks || []).map(track => `
+      <div class="card mb-2 border-warning">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div>
+              <strong class="d-block">${escapeHtml(track.title || 'Unknown')}</strong>
+              <small class="text-muted">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+              ${track.mbid ? `<br><small class="text-secondary">MBID: ${track.mbid}</small>` : ''}
+            </div>
+            <span class="badge bg-warning">Missing</span>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    document.getElementById('lbMissingTracks').innerHTML = missingHtml || '<p class="text-muted text-center py-5">All tracks are in your library!</p>';
+    
+  } catch (error) {
+    console.error('Error loading ListenBrainz recommendations:', error);
+    alert('Error: ' + error.message);
+    document.getElementById('lbRecommendationsResults').style.display = 'none';
+    document.getElementById('lbRecommendationsEmpty').style.display = 'block';
+  }
+}
+
+async function createPlaylistFromListenBrainz() {
+  if (!lbRecommendationsData || !lbRecommendationsData.matched_tracks || lbRecommendationsData.matched_tracks.length === 0) {
+    alert('No matched tracks to create playlist from');
+    return;
+  }
+  
+  const recType = document.getElementById('lbRecType').value;
+  const playlistName = prompt('Enter playlist name:', `ListenBrainz ${recType.replace(/_/g, ' ')}`);
+  
+  if (!playlistName) return;
+  
+  try {
+    // Get current user from config - use first configured user if available
+    // TODO: Get actual current logged-in user from session
+    const currentUser = document.getElementById('customPlaylistUser')?.value || 'admin';
+    
+    // Use existing custom playlist creation
+    const response = await fetch('/api/playlist/create-custom', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        name: playlistName,
+        description: `ListenBrainz recommendations: ${recType.replace(/_/g, ' ')}`,
+        user: currentUser,
+        is_public: false,
+        songs: lbRecommendationsData.matched_tracks
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to create playlist');
+    }
+    
+    alert('✅ Playlist created successfully!');
+  } catch (error) {
+    console.error('Error creating playlist:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+async function searchMissingTracksOnSoulseek() {
+  if (!lbRecommendationsData || !lbRecommendationsData.missing_tracks) {
+    alert('No missing tracks to search for');
+    return;
+  }
+  
+  alert('Soulseek search functionality coming soon!\n\nMissing ' + lbRecommendationsData.missing_tracks.length + ' tracks.');
+  // TODO: Implement batch search on Soulseek for missing tracks
 }
 </script>
 
