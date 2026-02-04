@@ -1168,7 +1168,18 @@ def artists():
     conn = get_db()
     cursor = conn.cursor()
     
+    # Get total counts for all tracks (including those without artist info)
+    cursor.execute("""
+        SELECT 
+            COUNT(DISTINCT album) as album_count,
+            COUNT(*) as track_count,
+            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count
+        FROM tracks
+    """)
+    total_stats = cursor.fetchone()
+    
     # Use album_artist column (falls back to artist if album_artist is NULL)
+    # Filter out NULL/empty artist names
     cursor.execute("""
         SELECT 
             COALESCE(album_artist, artist) as artist,
@@ -1177,6 +1188,7 @@ def artists():
             COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
+        WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
         GROUP BY COALESCE(album_artist, artist)
         
         UNION ALL
@@ -1188,14 +1200,14 @@ def artists():
             0 as single_count,
             last_updated
         FROM artist_stats
-        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks)
+        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
         
         ORDER BY artist COLLATE NOCASE
     """)
     artists_data = cursor.fetchall()
     conn.close()
     
-    return render_template("artists.html", artists=artists_data, DB_PATH=DB_PATH)
+    return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
 
 
 @app.route("/search")
@@ -7143,8 +7155,11 @@ def api_lastfm_recommendations():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
+        # Get username from config if available
+        username = lastfm_config.get("username", "")
+        
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key)
+        recommendations = get_lastfm_recommendations(api_key, username=username)
         
         return jsonify({"recommendations": recommendations})
     except Exception as e:

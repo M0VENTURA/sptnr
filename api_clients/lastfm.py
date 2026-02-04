@@ -8,15 +8,17 @@ logger = logging.getLogger(__name__)
 class LastFmClient:
     """Last.fm API wrapper for track info and listening stats."""
     
-    def __init__(self, api_key: str, http_session=None):
+    def __init__(self, api_key: str, username: str = None, http_session=None):
         """
         Initialize Last.fm client.
         
         Args:
             api_key: Last.fm API key
+            username: Last.fm username for personalized recommendations (optional)
             http_session: Optional requests.Session (uses shared if not provided)
         """
         self.api_key = api_key
+        self.username = username
         self.session = http_session or session
         self.base_url = "https://ws.audioscrobbler.com/2.0/"
     
@@ -82,20 +84,42 @@ class LastFmClient:
             return {"artists": [], "albums": [], "tracks": []}
     
     def _get_recommended_artists(self) -> list:
-        """Fetch recommended artists from Last.fm."""
-        params = {
-            "method": "geo.getTopArtists",
-            "country": "US",  # Or get from user preferences
-            "api_key": self.api_key,
-            "format": "json",
-            "limit": 20
-        }
+        """Fetch recommended artists from Last.fm.
+        
+        If username is set, uses user-specific recommendations.
+        Otherwise falls back to chart top artists.
+        """
+        # Try user-specific recommendations first if username is provided
+        if self.username:
+            params = {
+                "method": "user.getTopArtists",
+                "user": self.username,
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": 20,
+                "period": "overall"  # overall, 7day, 1month, 3month, 6month, 12month
+            }
+        else:
+            # Fall back to global chart
+            params = {
+                "method": "chart.getTopArtists",
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": 20
+            }
         
         try:
             res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             artists = []
-            for item in res.json().get("topartists", {}).get("artist", []):
+            
+            # Different response structure for user vs chart
+            if self.username:
+                artist_list = res.json().get("topartists", {}).get("artist", [])
+            else:
+                artist_list = res.json().get("artists", {}).get("artist", [])
+            
+            for item in artist_list:
                 # Try to get artist image
                 image_url = ""
                 if isinstance(item.get("image"), list) and len(item["image"]) > 0:
@@ -171,20 +195,41 @@ class LastFmClient:
             return []
     
     def _get_recommended_tracks(self) -> list:
-        """Fetch recommended tracks from Last.fm."""
-        params = {
-            "method": "geo.getTopTracks",
-            "country": "US",
-            "api_key": self.api_key,
-            "format": "json",
-            "limit": 20
-        }
+        """Fetch recommended tracks from Last.fm.
+        
+        If username is set, uses user-specific top tracks.
+        Otherwise falls back to chart top tracks.
+        """
+        # Try user-specific recommendations first if username is provided
+        if self.username:
+            params = {
+                "method": "user.getRecentTracks",
+                "user": self.username,
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": 20
+            }
+        else:
+            # Fall back to global chart
+            params = {
+                "method": "chart.getTopTracks",
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": 20
+            }
         
         try:
             res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
             res.raise_for_status()
             tracks = []
-            for item in res.json().get("tracks", {}).get("track", []):
+            
+            # Different response structure for user vs chart
+            if self.username:
+                track_list = res.json().get("recenttracks", {}).get("track", [])
+            else:
+                track_list = res.json().get("tracks", {}).get("track", [])
+            
+            for item in track_list:
                 image_url = ""
                 if isinstance(item.get("image"), list):
                     for img in reversed(item["image"]):
@@ -192,9 +237,15 @@ class LastFmClient:
                             image_url = img.get("#text", "")
                             break
                 
+                # Handle different artist formats (user.getRecentTracks vs chart)
+                if isinstance(item.get("artist"), dict):
+                    artist_name = item.get("artist", {}).get("name", "Unknown")
+                else:
+                    artist_name = item.get("artist", "Unknown")
+                
                 tracks.append({
                     "name": item.get("name", ""),
-                    "artist": item.get("artist", {}).get("name", "Unknown"),
+                    "artist": artist_name,
                     "playcount": item.get("playcount", 0),
                     "image": image_url,
                     "url": item.get("url", "")
@@ -219,7 +270,7 @@ def get_lastfm_track_info(artist: str, title: str, api_key: str = "") -> dict:
     """Backward-compatible wrapper."""
     client = _get_lastfm_client(api_key)
     return client.get_track_info(artist, title)
-def get_lastfm_recommendations(api_key: str) -> dict:
+def get_lastfm_recommendations(api_key: str, username: str = None) -> dict:
     """Fetch Last.fm recommendations."""
-    client = _get_lastfm_client(api_key)
+    client = LastFmClient(api_key, username=username)
     return client.get_recommendations()
