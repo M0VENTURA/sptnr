@@ -1457,6 +1457,16 @@ def artist_detail(name):
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
         
+        # Get artist country from artists table if it exists
+        artist_country = None
+        try:
+            cursor.execute("SELECT country FROM artists WHERE name = ?", (name,))
+            artist_row = cursor.fetchone()
+            if artist_row and artist_row[0]:
+                artist_country = artist_row[0]
+        except Exception as e:
+            logging.debug(f"Error fetching artist country: {e}")
+        
         # Get qBittorrent and slskd configs
         cfg, _ = _read_yaml(CONFIG_PATH)
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
@@ -1469,6 +1479,7 @@ def artist_detail(name):
                              missing_by_category=missing_by_category,  # Keep for backward compatibility
                              stats=artist_stats,
                              genres=genres,
+                             artist_country=artist_country,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
@@ -1887,6 +1898,56 @@ def api_scan_all_missing_releases():
         "success": True,
         "message": "Missing releases scan started"
     })
+
+
+@app.route("/api/artist/country", methods=["POST"])
+def api_fetch_artist_country():
+    """Fetch artist country from MusicBrainz and update database."""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist_name", "").strip()
+        
+        if not artist_name:
+            return jsonify({"error": "Artist name required"}), 400
+        
+        # Fetch country from MusicBrainz
+        from api_clients.musicbrainz import get_artist_country
+        country = get_artist_country(artist_name, enabled=True)
+        
+        if not country:
+            return jsonify({"error": "No country information found on MusicBrainz"}), 404
+        
+        # Update artists table
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Ensure artist exists in artists table
+        cursor.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
+        artist_row = cursor.fetchone()
+        
+        if artist_row:
+            # Update existing artist
+            cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (country, artist_name))
+        else:
+            # Insert new artist entry
+            cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+                         (artist_name, artist_name, country))
+        
+        # Also update all tracks by this artist
+        cursor.execute("UPDATE tracks SET artist_country = ? WHERE artist = ?", (country, artist_name))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "country": country,
+            "message": f"Updated country to {country}"
+        })
+        
+    except Exception as e:
+        logging.error(f"[ARTIST_COUNTRY] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/artist/cached-missing-releases", methods=["GET"])
