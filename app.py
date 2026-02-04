@@ -2116,8 +2116,8 @@ def api_apply_country_as_genre():
                 existing_genres = []
                 if audio.tags and 'TCON' in audio.tags:
                     genre_str = str(audio.tags['TCON'])
-                    # Split on '; ' first, then on ';' for any that weren't split
-                    existing_genres = [g.strip() for part in genre_str.split(';') for g in [part.strip()] if g]
+                    # Split on ';' and strip whitespace from each part
+                    existing_genres = [part.strip() for part in genre_str.split(';') if part.strip()]
                 
                 # Add country if not already present
                 if country not in existing_genres:
