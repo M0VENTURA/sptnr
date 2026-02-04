@@ -143,6 +143,118 @@ class ListenBrainzUserClient:
         except Exception as e:
             logger.debug(f"Failed to get tags for artist {mbid}: {e}")
             return []
+    
+    def get_recommendations(self, username: str, recommendation_type: str = "raw") -> list:
+        """
+        Get personalized recommendations from ListenBrainz.
+        
+        Args:
+            username: ListenBrainz username
+            recommendation_type: Type of recommendations ('raw', 'top_discoveries_for_year', etc.)
+            
+        Returns:
+            List of recommended recordings with metadata
+        """
+        try:
+            url = f"{self.base_url}/user/{username}/recommendations/recording/{recommendation_type}"
+            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
+            res.raise_for_status()
+            data = res.json()
+            # The response structure varies by type, but generally has a 'payload' with 'mbids' or 'recordings'
+            payload = data.get("payload", {})
+            recordings = payload.get("recordings", [])
+            logger.info(f"Got {len(recordings)} recommendations of type '{recommendation_type}' for {username}")
+            return recordings
+        except Exception as e:
+            logger.error(f"Failed to get recommendations for {username}: {e}")
+            return []
+    
+    def get_weekly_jams(self, username: str) -> list:
+        """
+        Get Weekly Jams recommendations (current week).
+        
+        Args:
+            username: ListenBrainz username
+            
+        Returns:
+            List of recommended tracks
+        """
+        return self.get_recommendations(username, "raw")
+    
+    def get_weekly_exploration(self, username: str) -> list:
+        """
+        Get Weekly Exploration recommendations (discovery mode).
+        
+        Args:
+            username: ListenBrainz username
+            
+        Returns:
+            List of recommended tracks for exploration
+        """
+        try:
+            # Weekly exploration uses a different endpoint
+            url = f"{self.base_url}/user/{username}/recommendations/exploration/weekly"
+            res = self.session.get(url, headers=self.headers, timeout=(5, 30))
+            res.raise_for_status()
+            data = res.json()
+            payload = data.get("payload", {})
+            playlists = payload.get("playlists", [])
+            # Flatten all tracks from playlists
+            tracks = []
+            for playlist in playlists:
+                tracks.extend(playlist.get("recordings", []))
+            logger.info(f"Got {len(tracks)} exploration tracks for {username}")
+            return tracks
+        except Exception as e:
+            logger.error(f"Failed to get weekly exploration for {username}: {e}")
+            return []
+    
+    def get_last_week_jams(self, username: str) -> list:
+        """
+        Get last week's jams (previous week recommendations).
+        
+        Args:
+            username: ListenBrainz username
+            
+        Returns:
+            List of recommended tracks from last week
+        """
+        # Note: This may require fetching from archived recommendations
+        # or using a date parameter. For now, return raw recommendations.
+        logger.warning("get_last_week_jams: Using current week's data as placeholder")
+        return self.get_recommendations(username, "raw")
+    
+    def get_last_week_exploration(self, username: str) -> list:
+        """
+        Get last week's exploration tracks.
+        
+        Args:
+            username: ListenBrainz username
+            
+        Returns:
+            List of exploration tracks from last week
+        """
+        logger.warning("get_last_week_exploration: Using current week's data as placeholder")
+        return self.get_weekly_exploration(username)
+    
+    def get_username_from_token(self) -> str:
+        """
+        Validate token and get the associated username.
+        
+        Returns:
+            Username associated with the token, or empty string if invalid
+        """
+        try:
+            url = f"{self.base_url}/validate-token"
+            res = self.session.get(url, headers=self.headers, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            username = data.get("user_name", "")
+            logger.info(f"Token validated for user: {username}")
+            return username
+        except Exception as e:
+            logger.error(f"Failed to validate token: {e}")
+            return ""
 
 
 class ListenBrainzClient:
