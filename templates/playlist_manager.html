@@ -264,6 +264,48 @@
     </div>
   </div>
 
+  <!-- Spotify Playlist Import Section -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header">
+        <h5 class="mb-0">
+          <i class="bi bi-spotify"></i> Spotify Playlist Import
+        </h5>
+      </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Import playlists from Spotify. Note: Requires Spotify API credentials in configuration.
+        </p>
+
+        <!-- Spotify User ID Input -->
+        <div class="row g-3 mb-4">
+          <div class="col-md-6">
+            <label for="spotifyUserId" class="form-label">Spotify User ID (optional)</label>
+            <input type="text" id="spotifyUserId" class="form-control" placeholder="spotify:user:username">
+            <small class="text-muted">Leave empty to see featured playlists</small>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-success w-100" onclick="loadSpotifyPlaylists()">
+              <i class="bi bi-spotify"></i> Load Playlists
+            </button>
+          </div>
+        </div>
+
+        <!-- Spotify Playlists List -->
+        <div id="spotifyPlaylistsResults" style="display: none;">
+          <h6 class="mb-3">Available Playlists</h6>
+          <div id="spotifyPlaylistsList" style="max-height: 400px; overflow-y: auto;">
+            <!-- Playlists will be listed here -->
+          </div>
+        </div>
+
+        <div id="spotifyPlaylistsEmpty" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> Enter a Spotify User ID and click "Load Playlists", or load featured playlists
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- ListenBrainz Recommendations Section -->
   <div class="mb-4">
     <div class="card">
@@ -861,6 +903,101 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// =============================================================================
+// SPOTIFY PLAYLIST IMPORT
+// =============================================================================
+
+let spotifyPlaylistsData = [];
+
+async function loadSpotifyPlaylists() {
+  const userId = document.getElementById('spotifyUserId').value.trim();
+  
+  try {
+    document.getElementById('spotifyPlaylistsEmpty').style.display = 'none';
+    document.getElementById('spotifyPlaylistsResults').style.display = 'block';
+    
+    // Show loading state
+    document.getElementById('spotifyPlaylistsList').innerHTML = '<div class="text-center py-4"><div class="spinner-border"></div><p class="mt-2">Loading playlists...</p></div>';
+    
+    const url = userId ? `/api/spotify/playlists?user_id=${encodeURIComponent(userId)}` : '/api/spotify/playlists';
+    const response = await fetch(url);
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to load Spotify playlists');
+    }
+    
+    const data = await response.json();
+    spotifyPlaylistsData = data.playlists || [];
+    
+    if (spotifyPlaylistsData.length === 0) {
+      document.getElementById('spotifyPlaylistsList').innerHTML = '<p class="text-muted text-center py-5">No playlists found</p>';
+      return;
+    }
+    
+    // Display playlists
+    const playlistsHtml = spotifyPlaylistsData.map((playlist, idx) => `
+      <div class="card mb-2">
+        <div class="card-body py-2">
+          <div class="d-flex justify-content-between align-items-start">
+            <div style="flex: 1;">
+              <strong class="d-block">${escapeHtml(playlist.name || 'Untitled')}</strong>
+              <small class="text-muted">${playlist.tracks?.total || 0} tracks</small>
+              ${playlist.description ? `<br><small class="text-secondary">${escapeHtml(playlist.description)}</small>` : ''}
+            </div>
+            <button class="btn btn-sm btn-primary" onclick="importSpotifyPlaylist(${idx})" title="Import this playlist">
+              <i class="bi bi-download"></i> Import
+            </button>
+          </div>
+        </div>
+      </div>
+    `).join('');
+    
+    document.getElementById('spotifyPlaylistsList').innerHTML = playlistsHtml;
+    
+  } catch (error) {
+    console.error('Error loading Spotify playlists:', error);
+    alert('Error: ' + error.message);
+    document.getElementById('spotifyPlaylistsResults').style.display = 'none';
+    document.getElementById('spotifyPlaylistsEmpty').style.display = 'block';
+  }
+}
+
+async function importSpotifyPlaylist(index) {
+  const playlist = spotifyPlaylistsData[index];
+  if (!playlist) return;
+  
+  const playlistUrl = playlist.external_urls?.spotify || playlist.uri || '';
+  const playlistName = prompt('Enter name for imported playlist:', playlist.name);
+  
+  if (!playlistName) return;
+  
+  try {
+    // Use existing playlist import endpoint
+    const response = await fetch('/api/playlist/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        spotify_url: playlistUrl,
+        playlist_name: playlistName,
+        user: document.getElementById('customPlaylistUser')?.value || 'admin'
+      })
+    });
+    
+    if (!response.ok) {
+      const error = await response.json();
+      throw new Error(error.error || 'Failed to import playlist');
+    }
+    
+    const result = await response.json();
+    alert(`✅ Playlist imported successfully!\n\nMatched: ${result.matched || 0} tracks\nMissing: ${result.missing || 0} tracks`);
+    
+  } catch (error) {
+    console.error('Error importing Spotify playlist:', error);
+    alert('❌ Error: ' + error.message);
+  }
 }
 
 // =============================================================================
