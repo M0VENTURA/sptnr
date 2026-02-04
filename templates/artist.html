@@ -127,6 +127,32 @@
     </div>
   </div>
 
+  <!-- Artist Country/Origin -->
+  <div class="mb-4">
+    <div class="card">
+      <div class="card-header d-flex justify-content-between align-items-center">
+        <h5 class="card-title mb-0">
+          <i class="bi bi-globe"></i> Country/Origin
+        </h5>
+        <button class="btn btn-sm btn-outline-primary" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
+          <i class="bi bi-cloud-download"></i> Get from MusicBrainz
+        </button>
+      </div>
+      <div class="card-body">
+        <div id="artistCountryDisplay">
+          {% if artist_country %}
+            <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
+              <i class="bi bi-geo-alt"></i> {{ artist_country }}
+            </span>
+            <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
+          {% else %}
+            <span class="text-muted small">No country information available. Click "Get from MusicBrainz" to fetch it.</span>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
   <!-- Statistics Cards -->
   <div class="row g-2 g-md-3 mb-4">
     <div class="col-6 col-md-3">
@@ -1418,6 +1444,53 @@ function applySelectedArtistGenres() {
       alert('❌ Network error: ' + error.message);
       btn.disabled = false;
       btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)';
+    });
+}
+
+function fetchArtistCountry() {
+  const artistName = '{{ artist_name }}';
+  const btn = document.getElementById('fetchArtistCountryBtn');
+  const container = document.getElementById('artistCountryDisplay');
+  
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Fetching...';
+  container.innerHTML = '<span class="text-muted small">Loading country information from MusicBrainz...</span>';
+  
+  fetch('/api/artist/country', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ artist_name: artistName })
+  })
+    .then(r => r.json())
+    .then(data => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get from MusicBrainz';
+      
+      if (data.success && data.country) {
+        container.innerHTML = `
+          <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
+            <i class="bi bi-geo-alt"></i> ${escapeHtml(data.country)}
+          </span>
+          <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
+        `;
+        // Show a success notification
+        alert('✅ ' + data.message);
+      } else {
+        container.innerHTML = `
+          <div class="alert alert-warning mb-0">
+            <i class="bi bi-exclamation-triangle"></i> ${escapeHtml(data.error || 'No country information found')}
+          </div>
+        `;
+      }
+    })
+    .catch(error => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get from MusicBrainz';
+      container.innerHTML = `
+        <div class="alert alert-danger mb-0">
+          <i class="bi bi-x-circle"></i> Error: ${escapeHtml(error.message)}
+        </div>
+      `;
     });
 }
 

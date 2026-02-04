@@ -1457,6 +1457,16 @@ def artist_detail(name):
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
         
+        # Get artist country from artists table if it exists
+        artist_country = None
+        try:
+            cursor.execute("SELECT country FROM artists WHERE name = ?", (name,))
+            artist_row = cursor.fetchone()
+            if artist_row and artist_row[0]:
+                artist_country = artist_row[0]
+        except Exception as e:
+            logging.debug(f"Error fetching artist country: {e}")
+        
         # Get qBittorrent and slskd configs
         cfg, _ = _read_yaml(CONFIG_PATH)
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
@@ -1469,6 +1479,7 @@ def artist_detail(name):
                              missing_by_category=missing_by_category,  # Keep for backward compatibility
                              stats=artist_stats,
                              genres=genres,
+                             artist_country=artist_country,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
@@ -1887,6 +1898,56 @@ def api_scan_all_missing_releases():
         "success": True,
         "message": "Missing releases scan started"
     })
+
+
+@app.route("/api/artist/country", methods=["POST"])
+def api_fetch_artist_country():
+    """Fetch artist country from MusicBrainz and update database."""
+    try:
+        data = request.get_json()
+        artist_name = data.get("artist_name", "").strip()
+        
+        if not artist_name:
+            return jsonify({"error": "Artist name required"}), 400
+        
+        # Fetch country from MusicBrainz
+        from api_clients.musicbrainz import get_artist_country
+        country = get_artist_country(artist_name, enabled=True)
+        
+        if not country:
+            return jsonify({"error": "No country information found on MusicBrainz"}), 404
+        
+        # Update artists table
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Ensure artist exists in artists table
+        cursor.execute("SELECT id FROM artists WHERE name = ?", (artist_name,))
+        artist_row = cursor.fetchone()
+        
+        if artist_row:
+            # Update existing artist
+            cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (country, artist_name))
+        else:
+            # Insert new artist entry
+            cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+                         (artist_name, artist_name, country))
+        
+        # Also update all tracks by this artist
+        cursor.execute("UPDATE tracks SET artist_country = ? WHERE artist = ?", (country, artist_name))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "country": country,
+            "message": f"Updated country to {country}"
+        })
+        
+    except Exception as e:
+        logging.error(f"[ARTIST_COUNTRY] Error: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/artist/cached-missing-releases", methods=["GET"])
@@ -7088,6 +7149,96 @@ def api_lastfm_recommendations():
         return jsonify({"recommendations": recommendations})
     except Exception as e:
         logging.error(f"Last.fm recommendations error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/lastfm/create-playlist", methods=["POST"])
+def api_lastfm_create_playlist():
+    """
+    Create a Navidrome playlist from Last.fm recommendations.
+    Searches for tracks in the local library and matches them.
+    """
+    try:
+        data = request.get_json()
+        rec_type = data.get("type", "tracks")  # tracks, artists, or albums
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+        
+        if not lastfm_config.get("enabled"):
+            return jsonify({"error": "Last.fm not enabled"}), 400
+        
+        api_key = lastfm_config.get("api_key", "")
+        if not api_key:
+            return jsonify({"error": "Last.fm API key not configured"}), 400
+        
+        # Get recommendations
+        from api_clients.lastfm import get_lastfm_recommendations
+        recommendations = get_lastfm_recommendations(api_key)
+        
+        if not recommendations:
+            return jsonify({"error": "No recommendations found"}), 404
+        
+        # Get the appropriate list based on type
+        rec_list = []
+        if rec_type == "tracks":
+            rec_list = recommendations.get("tracks", [])
+        elif rec_type == "artists":
+            rec_list = recommendations.get("artists", [])
+        elif rec_type == "albums":
+            rec_list = recommendations.get("albums", [])
+        
+        if not rec_list:
+            return jsonify({"error": f"No {rec_type} recommendations found"}), 404
+        
+        # Search for matching tracks in database
+        matched_tracks = []
+        missing_tracks = []
+        
+        # Get database connection
+        conn, cursor = get_db_connection()
+        
+        for rec in rec_list:
+            artist_name = rec.get("artist", "")
+            track_name = rec.get("name", "")
+            
+            if not artist_name or not track_name:
+                continue
+            
+            # Search by artist and title
+            cursor.execute("""
+                SELECT id, artist, title FROM tracks 
+                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                LIMIT 1
+            """, (artist_name, track_name))
+            result = cursor.fetchone()
+            
+            if result:
+                matched_tracks.append({
+                    "id": result[0],
+                    "artist": result[1],
+                    "title": result[2]
+                })
+            else:
+                missing_tracks.append({
+                    "artist": artist_name,
+                    "title": track_name,
+                    "playcount": rec.get("playcount", 0)
+                })
+        
+        conn.close()
+        
+        return jsonify({
+            "total_recommendations": len(rec_list),
+            "matched": len(matched_tracks),
+            "missing": len(missing_tracks),
+            "matched_tracks": matched_tracks,
+            "missing_tracks": missing_tracks,
+            "recommendation_type": rec_type
+        })
+        
+    except Exception as e:
+        logging.error(f"[LASTFM_PLAYLIST] Error: {e}", exc_info=True)
         return jsonify({"error": str(e)}), 500
 
 

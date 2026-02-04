@@ -417,6 +417,78 @@ class MusicBrainzClient:
         except Exception as e:
             logger.debug(f"MusicBrainz suggested MBID lookup failed for '{title}' by '{artist}': {e}")
             return "", 0.0
+    
+    def get_artist_country(self, artist: str) -> str:
+        """
+        Fetch artist country/origin from MusicBrainz.
+        
+        Args:
+            artist: Artist name
+            
+        Returns:
+            Country name (e.g., "United States", "United Kingdom") or empty string if not found
+        """
+        if not self.enabled:
+            return ""
+        
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Use rate limiter to enforce proper delays between requests
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    # Fallback to simple delay if rate limiter not available
+                    time.sleep(1.0)
+                
+                # Search for artist with area information
+                params = {
+                    "query": f'artist:{artist}',
+                    "fmt": "json",
+                    "limit": 1,
+                    "inc": "area"
+                }
+                r = self.session.get(f"{self.base_url}artist/", params=params, headers=self.headers, timeout=(3, 5))
+                r.raise_for_status()
+                artists = r.json().get("artists", [])
+                
+                if not artists:
+                    return ""
+                
+                # Get the top match
+                artist_data = artists[0]
+                
+                # Check for area (country) information
+                area = artist_data.get("area", {})
+                if area and area.get("name"):
+                    return area["name"]
+                
+                # Fallback to begin-area (birth country for individuals)
+                begin_area = artist_data.get("begin-area", {})
+                if begin_area and begin_area.get("name"):
+                    return begin_area["name"]
+                
+                return ""
+                
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz artist country lookup attempt {attempt + 1} failed for '{artist}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.warning(f"MusicBrainz artist country lookup failed for '{artist}' after {max_retries} retries: {e}")
+                    return ""
+            except requests.exceptions.RequestException as e:
+                logger.warning(f"MusicBrainz artist country lookup request error for '{artist}': {e}")
+                return ""
+            except Exception as e:
+                logger.warning(f"MusicBrainz artist country lookup failed for '{artist}': {e}")
+                return ""
+        
+        return ""
 
 
 # Backward-compatible module functions
@@ -443,3 +515,8 @@ def get_suggested_mbid(title: str, artist: str, limit: int = 5, enabled: bool = 
     """Backward-compatible wrapper."""
     client = _get_musicbrainz_client(enabled)
     return client.get_suggested_mbid(title, artist, limit)
+
+def get_artist_country(artist: str, enabled: bool = True) -> str:
+    """Get artist country from MusicBrainz."""
+    client = _get_musicbrainz_client(enabled)
+    return client.get_artist_country(artist)

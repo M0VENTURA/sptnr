@@ -102,6 +102,7 @@ required_columns = {
     "lastfm_artist_mbid": "TEXT",             # Last.fm artist MBID (if available)
     "discogs_artist_id": "TEXT",              # Discogs artist ID
     "musicbrainz_artist_id": "TEXT",          # MusicBrainz artist ID
+    "artist_country": "TEXT",                 # Artist country/origin for genre tagging
     # ✅ Advanced single detection fields
     "global_popularity": "REAL",              # Global popularity across all track versions
     "zscore": "REAL",                         # Z-score within album for single detection
@@ -166,7 +167,9 @@ required_artist_columns = {
     "beets_genre": "TEXT",                  # Genre from beets metadata
     "navidrome_genre": "TEXT",              # Genre from Navidrome
     "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
-    "genre_display": "TEXT"                 # Primary display genre (aggregated)
+    "genre_display": "TEXT",                # Primary display genre (aggregated)
+    "country": "TEXT",                      # Artist country/origin from MusicBrainz
+    "musicbrainz_area_id": "TEXT"           # MusicBrainz area ID for geographical data
 }
 
 # ✅ Define columns for the artist_stats table
