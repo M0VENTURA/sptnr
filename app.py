@@ -4979,9 +4979,8 @@ def scan_navidrome():
                             logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
                     
                     # Scan artists starting from checkpoint or beginning
-                    for idx in range(start_idx, total):
-                        artist_name, info = artists[idx]
-                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx+1, total_artists=total)
+                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
+                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
                         
                         # Update checkpoint with the last scanned artist
                         try:
