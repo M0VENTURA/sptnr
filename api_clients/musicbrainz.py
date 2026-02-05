@@ -5,12 +5,18 @@ import time
 import json
 import os
 import re
-import ssl
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
-from urllib3.util.ssl_ import create_urllib3_context
 from . import session
+
+# Import SSLAdapter from helpers to avoid duplication
+import sys
+# Add parent directory to path to import helpers
+parent_dir = os.path.dirname(os.path.dirname(__file__))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+from helpers import SSLAdapter
 
 logger = logging.getLogger(__name__)
 
@@ -89,34 +95,6 @@ _mbid_cache = {}
 _CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
 
 
-class _SSLAdapter(HTTPAdapter):
-    """
-    Custom HTTPAdapter with improved SSL/TLS handling for MusicBrainz API.
-    
-    This adapter creates a custom SSL context that is more resilient to
-    SSL/TLS protocol errors, particularly the "EOF occurred in violation of protocol"
-    error that can occur with MusicBrainz servers.
-    """
-    
-    def init_poolmanager(self, *args, **kwargs):
-        """Initialize the pool manager with a custom SSL context."""
-        # Create a custom SSL context with improved compatibility
-        ctx = create_urllib3_context()
-        
-        # Set minimum TLS version to TLSv1.2 for better compatibility
-        # while still maintaining reasonable security
-        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
-        
-        # Allow legacy server connect for better compatibility with older servers
-        # This helps with servers that might not follow the TLS spec perfectly
-        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
-        
-        # Set the SSL context in kwargs
-        kwargs['ssl_context'] = ctx
-        
-        return super().init_poolmanager(*args, **kwargs)
-
-
 class MusicBrainzClient:
     """MusicBrainz API wrapper for single detection and metadata."""
     
@@ -174,8 +152,8 @@ class MusicBrainzClient:
             allowed_methods=["HEAD", "GET", "OPTIONS"]  # Only retry safe methods
         )
         
-        # Use custom SSL adapter for HTTPS to handle SSL/TLS protocol issues
-        ssl_adapter = _SSLAdapter(max_retries=retry_strategy)
+        # Use custom SSL adapter (imported from helpers) for HTTPS to handle SSL/TLS protocol issues
+        ssl_adapter = SSLAdapter(max_retries=retry_strategy)
         
         # Apply to both http and https
         if hasattr(self.session, 'mount'):
