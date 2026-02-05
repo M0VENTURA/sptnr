@@ -8591,31 +8591,31 @@ def api_album_musicbrainz_lookup():
         headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
         
         # Use shared retry session with built-in retry logic and SSL error handling
-        session = create_retry_session(
+        # Using context manager to ensure session is properly closed
+        with create_retry_session(
             retries=3,
             backoff=1.0,
             status_forcelist=(429, 500, 502, 503, 504)
-        )
-        
-        try:
-            resp = session.get(
-                "https://musicbrainz.org/ws/2/release-group",
-                params={"query": query, "fmt": "json", "limit": 10},
-                headers=headers,
-                timeout=(5, 10)  # (connect_timeout, read_timeout)
-            )
-            resp.raise_for_status()
-            data = resp.json()
-            release_groups = data.get("release-groups", []) or []
-        except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-            logger.error(f"MusicBrainz album lookup failed: {e}")
-            return jsonify({
-                "error": f"MusicBrainz connection failed. Try Discogs instead.",
-                "results": []
-            }), 503
-        except requests.exceptions.RequestException as e:
-            logger.error(f"MusicBrainz request error: {e}")
-            return jsonify({"error": str(e), "results": []}), 500
+        ) as session:
+            try:
+                resp = session.get(
+                    "https://musicbrainz.org/ws/2/release-group",
+                    params={"query": query, "fmt": "json", "limit": 10},
+                    headers=headers,
+                    timeout=(5, 10)  # (connect_timeout, read_timeout)
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                release_groups = data.get("release-groups", []) or []
+            except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                logger.error(f"MusicBrainz album lookup failed: {e}")
+                return jsonify({
+                    "error": f"MusicBrainz connection failed. Try Discogs instead.",
+                    "results": []
+                }), 503
+            except requests.exceptions.RequestException as e:
+                logger.error(f"MusicBrainz request error: {e}")
+                return jsonify({"error": str(e), "results": []}), 500
         
         if not release_groups:
             return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
