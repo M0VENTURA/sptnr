@@ -92,7 +92,7 @@ At 1 request/second, a full scan of 10,000 tracks takes ~2.8 hours.
 - **Contact Info**: Must include valid contact information (email or URL) for the developer
 - **Purpose**: Allows MusicBrainz team to contact you if your app misbehaves
 
-SPTNR uses: `sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )`
+SPTNR uses: `sptnr/<version> ( https://github.com/M0VENTURA/sptnr )` where `<version>` is read from the VERSION file.
 
 ### SPTNR Implementation
 
