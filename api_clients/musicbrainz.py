@@ -85,7 +85,7 @@ class MusicBrainzClient:
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://musicbrainz.org/ws/2/"
-        self.headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
+        self.headers = {"User-Agent": "sptnr/2.0.0-alpha ( https://github.com/M0VENTURA/sptnr )"}
         # Only setup retry strategy if using default session (not a pre-configured one)
         if not custom_session_provided:
             self._setup_retry_strategy()
