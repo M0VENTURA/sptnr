@@ -19,12 +19,9 @@ def _get_version():
         version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
         with open(version_file, 'r') as f:
             return f.read().strip()
-    except (FileNotFoundError, IOError) as e:
+    except (FileNotFoundError, IOError, PermissionError, UnicodeDecodeError) as e:
         logger.debug(f"Could not read VERSION file, using fallback version: {e}")
         return "2.0.0-alpha"  # Fallback version
-    except Exception as e:
-        logger.debug(f"Unexpected error reading VERSION file, using fallback version: {e}")
-        return "2.0.0-alpha"
 
 _VERSION = _get_version()
 
