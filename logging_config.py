@@ -26,12 +26,22 @@ DEBUG_LOG_PATH = os.path.join(LOG_DIR, "debug.log")
 # Ensure log directory exists with fallback for permission errors
 try:
     os.makedirs(LOG_DIR, exist_ok=True)
-except (PermissionError, OSError):
+except (PermissionError, OSError) as e:
     # If we can't create the default log directory (e.g., /config),
     # fall back to a local directory for development/testing
     script_dir = os.path.dirname(os.path.abspath(__file__))
     LOG_DIR = os.path.join(script_dir, "logs")
-    os.makedirs(LOG_DIR, exist_ok=True)
+    
+    try:
+        os.makedirs(LOG_DIR, exist_ok=True)
+    except (PermissionError, OSError) as fallback_error:
+        # If we can't even create a local logs directory, raise a clear error
+        raise RuntimeError(
+            f"Unable to create log directory. Tried '{os.environ.get('LOG_PATH', '/config')}' "
+            f"(failed with {type(e).__name__}: {e}) and fallback '{LOG_DIR}' "
+            f"(failed with {type(fallback_error).__name__}: {fallback_error}). "
+            f"Please set LOG_PATH environment variable to a writable directory."
+        ) from fallback_error
     
     # Update log file paths with fallback directory
     UNIFIED_LOG_PATH = os.path.join(LOG_DIR, "unified_scan.log")
