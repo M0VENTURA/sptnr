@@ -40,6 +40,7 @@ logger.setLevel(logging.INFO)
 # --- Import dependencies ---
 from db_utils import get_db_connection
 from popularity_helpers import fetch_artist_albums, fetch_album_tracks, save_to_db
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 
 try:
     from scan_history import log_album_scan
@@ -528,7 +529,7 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         log_debug(f"Found {len(existing_albums)} existing albums in database")
         
         # Query MusicBrainz for all release groups
-        headers = {"User-Agent": "sptnr-cli/1.0 (https://github.com/M0VENTURA/sptnr)"}
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
         log_debug(f"MusicBrainz query: {query}")
         
