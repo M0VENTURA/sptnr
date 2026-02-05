@@ -2478,7 +2478,7 @@ def api_artist_image():
         if not artist_mbid:
             search_url = "https://musicbrainz.org/ws/2/artist"
             params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             resp = requests.get(search_url, params=params, headers=headers, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
@@ -2496,7 +2496,7 @@ def api_artist_image():
                 "limit": 1,
                 "type": "album"
             }
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             resp = requests.get(search_url, params=params, headers=headers, timeout=3)
             if resp.status_code == 200:
                 data = resp.json()
@@ -2560,7 +2560,7 @@ def api_artist_search_images():
             # Get artist MBID
             search_url = "https://musicbrainz.org/ws/2/artist"
             params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 5}
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
             resp.raise_for_status()
@@ -2795,7 +2795,7 @@ def api_album_search_art():
             # Search for release-group
             search_url = "https://musicbrainz.org/ws/2/release-group"
             params = {"query": f'release:"{album_name}" AND artist:"{artist_name}"', "fmt": "json", "limit": 20}
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
             resp.raise_for_status()
