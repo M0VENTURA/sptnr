@@ -11,6 +11,7 @@ Fetches comprehensive metadata from Spotify API including:
 import json
 import logging
 import sqlite3
+import time
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from api_clients.spotify import SpotifyClient
@@ -32,6 +33,8 @@ class SpotifyMetadataFetcher:
         """
         self.client = spotify_client
         self.conn = db_connection
+        # Set busy timeout for better concurrent write handling
+        self.conn.execute("PRAGMA busy_timeout = 5000")  # 5 seconds
     
     def fetch_and_store_track_metadata(
         self, 
@@ -238,7 +241,7 @@ class SpotifyMetadataFetcher:
         album_metadata: Optional[dict]
     ):
         """
-        Store comprehensive track metadata in database.
+        Store comprehensive track metadata in database with retry logic for concurrent writes.
         
         Args:
             db_track_id: Database track ID (primary key)
@@ -247,8 +250,6 @@ class SpotifyMetadataFetcher:
             artist_metadata: Artist metadata from Spotify
             album_metadata: Album metadata from Spotify
         """
-        cursor = self.conn.cursor()
-        
         # Extract core track metadata
         track_name = track_meta.get("name", "")
         album_name = track_meta.get("album", {}).get("name", "")
@@ -321,10 +322,30 @@ class SpotifyMetadataFetcher:
         
         sql = f"UPDATE tracks SET {set_clause} WHERE id = ?"
         
-        cursor.execute(sql, values)
-        self.conn.commit()
+        # Retry logic for database locked errors
+        max_retries = 3
+        retry_delay = 0.5  # Start with 500ms
         
-        logger.debug(f"Stored metadata for track {db_track_id}")
+        for attempt in range(max_retries):
+            try:
+                cursor = self.conn.cursor()
+                cursor.execute(sql, values)
+                self.conn.commit()
+                logger.debug(f"Stored metadata for track {db_track_id}")
+                return  # Success, exit function
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e) and attempt < max_retries - 1:
+                    # Log retry attempt at debug level to reduce noise
+                    logger.debug(f"Database locked while storing metadata for {db_track_id}, retrying ({attempt + 1}/{max_retries})...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s
+                else:
+                    # Final attempt failed or different error
+                    logger.error(f"Failed to store metadata for track {db_track_id} after {max_retries} attempts: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"Unexpected error storing metadata for track {db_track_id}: {e}")
+                raise
 
 
 def fetch_metadata_for_artist(
