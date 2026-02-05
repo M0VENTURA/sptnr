@@ -1863,8 +1863,7 @@ def popularity_scan(
                                             f"Comprehensive metadata fetch timed out after {API_CALL_TIMEOUT}s",
                                             db_track_id=track_id,
                                             spotify_track_id=spotify_track_id,
-                                            force_refresh=force,
-                                            db_connection=conn
+                                            force_refresh=force
                                         )
                                         if metadata_fetched:
                                             log_debug(f"Comprehensive metadata fetched successfully for: {title}")

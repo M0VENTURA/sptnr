@@ -95,6 +95,35 @@ _mbid_cache = {}
 _CACHE_FILE = "/tmp/mbid_cache.json" if os.path.exists("/tmp") else "mbid_cache.json"
 
 
+def _escape_lucene_special_chars(text: str) -> str:
+    r"""
+    Escape special characters in Lucene query syntax.
+    
+    Lucene special characters that need escaping:
+    + - && || ! ( ) { } [ ] ^ " ~ * ? : \ /
+    
+    Args:
+        text: Text to escape
+        
+    Returns:
+        Escaped text safe for use in Lucene queries
+    """
+    # Characters that need to be escaped with backslash in Lucene
+    # Note: We escape double quotes by replacing them with escaped quotes
+    special_chars = ['+', '-', '&', '|', '!', '(', ')', '{', '}', '[', ']', '^', '"', '~', '*', '?', ':', '\\', '/']
+    
+    escaped = text
+    # Backslash must be escaped first to avoid double-escaping
+    escaped = escaped.replace('\\', '\\\\')
+    
+    # Escape other special characters
+    for char in special_chars:
+        if char != '\\':  # Already handled
+            escaped = escaped.replace(char, '\\' + char)
+    
+    return escaped
+
+
 class MusicBrainzClient:
     """MusicBrainz API wrapper for single detection and metadata."""
     
@@ -193,7 +222,11 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Search using base title to find all versions
-                query = f'{base_title} AND artist:{artist} AND primarytype:Single'
+                # Quote title and artist to handle multi-word values properly (Lucene syntax)
+                # Escape special characters to prevent query syntax errors
+                escaped_title = _escape_lucene_special_chars(base_title)
+                escaped_artist = _escape_lucene_special_chars(artist)
+                query = f'releasegroup:"{escaped_title}" AND artist:"{escaped_artist}" AND primarytype:Single'
                 params = {
                     "query": query,
                     "fmt": "json",
@@ -284,7 +317,11 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Step 1: search recording with richer includes
-                query = f'{title} AND artist:{artist}'
+                # Quote title and artist to handle multi-word values properly (Lucene syntax)
+                # Escape special characters to prevent query syntax errors
+                escaped_title = _escape_lucene_special_chars(title)
+                escaped_artist = _escape_lucene_special_chars(artist)
+                query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
                 rec_params = {
                     "query": query,
                     "fmt": "json",
@@ -373,7 +410,11 @@ class MusicBrainzClient:
                 time.sleep(1.0)
             
             # 1) Find recordings (with releases included for second hop)
-            query = f'{title} AND artist:{artist}'
+            # Quote title and artist to handle multi-word values properly (Lucene syntax)
+            # Escape special characters to prevent query syntax errors
+            escaped_title = _escape_lucene_special_chars(title)
+            escaped_artist = _escape_lucene_special_chars(artist)
+            query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
             rec_params = {
                 "query": query,
                 "fmt": "json",
@@ -473,8 +514,11 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Search for artist with area information
+                # Quote artist name to handle multi-word values properly (Lucene syntax)
+                # Escape special characters to prevent query syntax errors
+                escaped_artist = _escape_lucene_special_chars(artist)
                 params = {
-                    "query": f'artist:{artist}',
+                    "query": f'artist:"{escaped_artist}"',
                     "fmt": "json",
                     "limit": 1,
                     "inc": "area"
