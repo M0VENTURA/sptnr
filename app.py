@@ -1466,7 +1466,7 @@ def artist_detail(name):
                 albums_by_category["unknown"].append(album_dict)
                 categorized_albums.add(album_name)
         
-        # Process compilation albums that were already fetched before conn.close()
+        # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
             album_name = album_dict.get("album", "")
