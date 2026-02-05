@@ -235,3 +235,9 @@ def log_all(msg, level=logging.INFO):
 
 # Initialize loggers on module import
 setup_logging()
+
+# Suppress noisy urllib3 connection pool warnings
+# These warnings are logged when retries happen, but the retries are handled properly
+# We only want to see actual errors, not warnings about connection issues that get retried
+urllib3_logger = logging.getLogger('urllib3.connectionpool')
+urllib3_logger.setLevel(logging.ERROR)  # Only show actual errors, not warnings
