@@ -67,7 +67,9 @@ class SSLAdapter(HTTPAdapter):
         
         # Allow legacy server connect for better compatibility with older servers
         # This helps with servers that might not follow the TLS spec perfectly
-        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        # Note: OP_LEGACY_SERVER_CONNECT is only available in Python 3.12+
+        if hasattr(ssl, 'OP_LEGACY_SERVER_CONNECT'):
+            ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
         
         # Set the SSL context in kwargs
         kwargs['ssl_context'] = ctx
