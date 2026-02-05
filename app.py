@@ -8611,7 +8611,8 @@ def api_album_musicbrainz_lookup():
                 release_groups = data.get("release-groups", []) or []
             except requests.exceptions.RequestException as e:
                 # This catches errors after all retry attempts are exhausted
-                logger.error(f"MusicBrainz album lookup failed after retries: {e}")
+                # Use warning level for transient network issues (not critical errors)
+                logger.warning(f"MusicBrainz album lookup unavailable after retries: {e}")
                 return jsonify({
                     "error": f"MusicBrainz connection failed. Try Discogs instead.",
                     "results": []
@@ -9139,6 +9140,7 @@ def api_artist_apply_genres():
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
     """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
+    logger = logging.getLogger('sptnr')
     try:
         data = request.get_json()
         title = data.get("title", "")
@@ -9224,10 +9226,12 @@ def api_track_musicbrainz_lookup():
                     return jsonify({"error": f"MusicBrainz lookup failed: {str(e)}"}), 500
                 time.sleep(1)
         
-        return jsonify({"error": "MusicBrainz lookup failed after retries"}), 500
+        # Log at warning level for transient network issues (not critical errors)
+        logger.warning(f"MusicBrainz track lookup unavailable after retries for '{title}' by '{artist}'")
+        return jsonify({"error": "MusicBrainz connection failed. Try again later."}), 503
             
     except Exception as e:
-        logging.error(f"MusicBrainz track lookup error: {e}")
+        logger.error(f"MusicBrainz track lookup error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ==========================================================================
