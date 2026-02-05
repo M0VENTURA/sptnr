@@ -10,6 +10,14 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from . import session
 
+# Import SSLAdapter from helpers to avoid duplication
+import sys
+# Add parent directory to path to import helpers
+parent_dir = os.path.dirname(os.path.dirname(__file__))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+from helpers import SSLAdapter
+
 logger = logging.getLogger(__name__)
 
 # Read version from VERSION file
@@ -143,12 +151,14 @@ class MusicBrainzClient:
             status_forcelist=[429, 503, 504],  # Retry on these HTTP status codes
             allowed_methods=["HEAD", "GET", "OPTIONS"]  # Only retry safe methods
         )
-        adapter = HTTPAdapter(max_retries=retry_strategy)
+        
+        # Use custom SSL adapter (imported from helpers) for HTTPS to handle SSL/TLS protocol issues
+        ssl_adapter = SSLAdapter(max_retries=retry_strategy)
         
         # Apply to both http and https
         if hasattr(self.session, 'mount'):
-            self.session.mount("http://", adapter)
-            self.session.mount("https://", adapter)
+            self.session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
+            self.session.mount("https://", ssl_adapter)
     
     def is_single(self, title: str, artist: str) -> bool:
         """

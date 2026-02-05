@@ -1,7 +1,9 @@
 import re
+import ssl
 import requests
 from urllib3.util.retry import Retry
 from requests.adapters import HTTPAdapter
+from urllib3.util.ssl_ import create_urllib3_context
 
 
 def strip_parentheses(s: str) -> str:
@@ -43,6 +45,34 @@ def clean_discogs_biography(text: str) -> str:
     cleaned = re.sub(r'\s+', ' ', cleaned)
     
     return cleaned.strip()
+
+
+class SSLAdapter(HTTPAdapter):
+    """
+    Custom HTTPAdapter with improved SSL/TLS handling.
+    
+    This adapter creates a custom SSL context that is more resilient to
+    SSL/TLS protocol errors, particularly the "EOF occurred in violation of protocol"
+    error that can occur with some servers.
+    """
+    
+    def init_poolmanager(self, *args, **kwargs):
+        """Initialize the pool manager with a custom SSL context."""
+        # Create a custom SSL context with improved compatibility
+        ctx = create_urllib3_context()
+        
+        # Set minimum TLS version to TLSv1.2 for better compatibility
+        # while still maintaining reasonable security
+        ctx.minimum_version = ssl.TLSVersion.TLSv1_2
+        
+        # Allow legacy server connect for better compatibility with older servers
+        # This helps with servers that might not follow the TLS spec perfectly
+        ctx.options |= ssl.OP_LEGACY_SERVER_CONNECT
+        
+        # Set the SSL context in kwargs
+        kwargs['ssl_context'] = ctx
+        
+        return super().init_poolmanager(*args, **kwargs)
 
 
 def detect_live_album(album_title: str) -> dict:
@@ -92,6 +122,7 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
     """Create a requests.Session preconfigured with retry/backoff and optional User-Agent.
 
     Handles HTTP errors, connection errors, and SSL errors with exponential backoff.
+    Uses a custom SSL adapter to handle SSL/TLS protocol issues more gracefully.
     
     Returns a configured `requests.Session` ready to be used by callers.
     """
@@ -105,7 +136,9 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
         allowed_methods=frozenset(allowed_methods),
         raise_on_status=False  # Don't raise exceptions on bad status codes
     )
-    s.mount("https://", HTTPAdapter(max_retries=retry))
+    # Use the custom SSL adapter for better SSL/TLS handling
+    ssl_adapter = SSLAdapter(max_retries=retry)
+    s.mount("https://", ssl_adapter)
     s.mount("http://", HTTPAdapter(max_retries=retry))
     if user_agent:
         s.headers.update({"User-Agent": user_agent})
