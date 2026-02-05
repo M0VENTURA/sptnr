@@ -327,6 +327,7 @@ class SpotifyMetadataFetcher:
         retry_delay = 0.5  # Start with 500ms
         
         for attempt in range(max_retries):
+            cursor = None
             try:
                 cursor = self.conn.cursor()
                 cursor.execute(sql, values)
@@ -334,18 +335,27 @@ class SpotifyMetadataFetcher:
                 logger.debug(f"Stored metadata for track {db_track_id}")
                 return  # Success, exit function
             except sqlite3.OperationalError as e:
-                if "database is locked" in str(e) and attempt < max_retries - 1:
-                    # Log retry attempt at debug level to reduce noise
-                    logger.debug(f"Database locked while storing metadata for {db_track_id}, retrying ({attempt + 1}/{max_retries})...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s
+                if "database is locked" in str(e):
+                    if attempt < max_retries - 1:
+                        # Log retry attempt at debug level to reduce noise
+                        logger.debug(f"Database locked while storing metadata for {db_track_id}, retrying ({attempt + 1}/{max_retries})...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s
+                    else:
+                        # Final attempt failed with database locked error
+                        logger.error(f"Failed to store metadata for track {db_track_id} after {max_retries} attempts: database is locked")
+                        raise
                 else:
-                    # Final attempt failed or different error
-                    logger.error(f"Failed to store metadata for track {db_track_id} after {max_retries} attempts: {e}")
+                    # Non-locking OperationalError - don't retry
+                    logger.error(f"Database error storing metadata for track {db_track_id}: {e}")
                     raise
             except Exception as e:
                 logger.error(f"Unexpected error storing metadata for track {db_track_id}: {e}")
                 raise
+            finally:
+                # Ensure cursor is closed if it was created
+                if cursor is not None:
+                    cursor.close()
 
 
 def fetch_metadata_for_artist(
