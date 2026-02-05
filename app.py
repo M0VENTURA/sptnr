@@ -8591,6 +8591,7 @@ def api_album_musicbrainz_lookup():
         headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
         
         # Use shared retry session with built-in retry logic and SSL error handling
+        # The session automatically retries on SSL, connection, and timeout errors
         # Using context manager to ensure session is properly closed
         with create_retry_session(
             retries=3,
@@ -8607,15 +8608,13 @@ def api_album_musicbrainz_lookup():
                 resp.raise_for_status()
                 data = resp.json()
                 release_groups = data.get("release-groups", []) or []
-            except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                logger.error(f"MusicBrainz album lookup failed: {e}")
+            except requests.exceptions.RequestException as e:
+                # This catches errors after all retry attempts are exhausted
+                logger.error(f"MusicBrainz album lookup failed after retries: {e}")
                 return jsonify({
                     "error": f"MusicBrainz connection failed. Try Discogs instead.",
                     "results": []
                 }), 503
-            except requests.exceptions.RequestException as e:
-                logger.error(f"MusicBrainz request error: {e}")
-                return jsonify({"error": str(e), "results": []}), 500
         
         if not release_groups:
             return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
