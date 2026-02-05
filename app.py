@@ -94,6 +94,7 @@ import time
 import logging
 import re
 from api_clients.slskd import SlskdClient
+from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
 from helpers import create_retry_session, clean_discogs_biography
@@ -1574,9 +1575,7 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     if not artist_name:
         return []
     
-    # Import the MusicBrainz User-Agent to ensure API compliance
-    from api_clients.musicbrainz import _USER_AGENT
-    headers = {"User-Agent": _USER_AGENT}
+    headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
     releases: list[dict] = []
     query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
     url = "https://musicbrainz.org/ws/2/release-group"
@@ -1720,10 +1719,8 @@ def api_import_release():
     
     try:
         # Fetch release details from MusicBrainz including media and recordings
-        # Import the MusicBrainz User-Agent to ensure API compliance
-        from api_clients.musicbrainz import _USER_AGENT
         mb_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
-        headers = {"User-Agent": _USER_AGENT}
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         response = requests.get(
             mb_url,
             params={
@@ -2271,11 +2268,9 @@ def api_artist_bio():
         # Try MusicBrainz first with shorter timeout
         if not artist_mbid:
             try:
-                # Import the MusicBrainz User-Agent to ensure API compliance
-                from api_clients.musicbrainz import _USER_AGENT
                 search_url = "https://musicbrainz.org/ws/2/artist"
                 params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-                headers = {"User-Agent": _USER_AGENT}
+                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                 
                 resp = requests.get(search_url, params=params, headers=headers, timeout=5)
                 resp.raise_for_status()
@@ -2292,11 +2287,9 @@ def api_artist_bio():
         # Fetch from MusicBrainz if we have MBID
         if artist_mbid:
             try:
-                # Import the MusicBrainz User-Agent to ensure API compliance
-                from api_clients.musicbrainz import _USER_AGENT
                 artist_url = f"https://musicbrainz.org/ws/2/artist/{artist_mbid}"
                 params = {"fmt": "json", "inc": "annotation"}
-                headers = {"User-Agent": _USER_AGENT}
+                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                 
                 resp = requests.get(artist_url, params=params, headers=headers, timeout=5)
                 resp.raise_for_status()
@@ -5485,9 +5478,7 @@ def api_musicbrainz_search():
         
         # Then search MusicBrainz
         try:
-            # Import the MusicBrainz User-Agent to ensure API compliance
-            from api_clients.musicbrainz import _USER_AGENT
-            headers = {"User-Agent": _USER_AGENT}
+            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
             
             # Search for release groups
             url = "https://musicbrainz.org/ws/2/release-group"
@@ -6985,15 +6976,13 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
         # If we don't have MBID, try to search for it
         if not album_mbid:
             try:
-                # Import the MusicBrainz User-Agent to ensure API compliance
-                from api_clients.musicbrainz import _USER_AGENT
                 search_url = "https://musicbrainz.org/ws/2/release-group"
                 params = {
                     "query": f'release:"{album_name}" AND artist:"{artist_name}"',
                     "fmt": "json",
                     "limit": 1
                 }
-                headers = {"User-Agent": _USER_AGENT}
+                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
                 resp = requests.get(search_url, params=params, headers=headers, timeout=3)
                 resp.raise_for_status()
                 data = resp.json()
@@ -8599,10 +8588,8 @@ def api_album_musicbrainz_lookup():
             return jsonify({"error": "Missing album or artist"}), 400
         
         # Search MusicBrainz for release groups using shared retry session
-        # Import the MusicBrainz User-Agent to ensure API compliance
-        from api_clients.musicbrainz import _USER_AGENT
         query = f'release:"{album}" AND artist:"{artist}"'
-        headers = {"User-Agent": _USER_AGENT}
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
         # Use shared retry session with built-in retry logic and SSL error handling
         # The session automatically retries on SSL, connection, and timeout errors
@@ -9161,10 +9148,8 @@ def api_track_musicbrainz_lookup():
             return jsonify({"error": "Missing title or artist"}), 400
         
         # Search MusicBrainz for recordings with retry
-        # Import the MusicBrainz User-Agent to ensure API compliance
-        from api_clients.musicbrainz import _USER_AGENT
         query = f'recording:"{title}" AND artist:"{artist}"'
-        headers = {"User-Agent": _USER_AGENT}
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
         max_retries = 2
         for attempt in range(max_retries):
