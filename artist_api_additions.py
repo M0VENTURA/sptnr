@@ -33,9 +33,11 @@ def api_artist_bio():
         
         if not artist_mbid:
             # Try to search for artist on MusicBrainz
+            # Import the MusicBrainz User-Agent to ensure API compliance
+            from api_clients.musicbrainz import _USER_AGENT
             search_url = "https://musicbrainz.org/ws/2/artist"
             params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": _USER_AGENT}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
             resp.raise_for_status()
@@ -51,9 +53,11 @@ def api_artist_bio():
             return jsonify({"bio": "", "source": "MusicBrainz"}), 200
         
         # Fetch artist details with annotation
+        # Import the MusicBrainz User-Agent to ensure API compliance
+        from api_clients.musicbrainz import _USER_AGENT
         artist_url = f"https://musicbrainz.org/ws/2/artist/{artist_mbid}"
         params = {"fmt": "json", "inc": "annotation"}
-        headers = {"User-Agent": "sptnr-web/1.0"}
+        headers = {"User-Agent": _USER_AGENT}
         
         resp = requests.get(artist_url, params=params, headers=headers, timeout=10)
         resp.raise_for_status()
@@ -210,9 +214,11 @@ def api_artist_search_images():
         
         if source == "musicbrainz":
             # Get artist MBID
+            # Import the MusicBrainz User-Agent to ensure API compliance
+            from api_clients.musicbrainz import _USER_AGENT
             search_url = "https://musicbrainz.org/ws/2/artist"
             params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 5}
-            headers = {"User-Agent": "sptnr-web/1.0"}
+            headers = {"User-Agent": _USER_AGENT}
             
             resp = requests.get(search_url, params=params, headers=headers, timeout=10)
             resp.raise_for_status()
