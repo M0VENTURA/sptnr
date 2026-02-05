@@ -9225,7 +9225,9 @@ def api_track_musicbrainz_lookup():
                     return jsonify({"error": f"MusicBrainz lookup failed: {str(e)}"}), 500
                 time.sleep(1)
         
-        return jsonify({"error": "MusicBrainz lookup failed after retries"}), 500
+        # Log at warning level for transient network issues (not critical errors)
+        logging.warning(f"MusicBrainz track lookup unavailable after retries for '{title}' by '{artist}'")
+        return jsonify({"error": "MusicBrainz connection failed. Try again later."}), 503
             
     except Exception as e:
         logging.error(f"MusicBrainz track lookup error: {e}")
