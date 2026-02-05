@@ -8575,7 +8575,6 @@ def track_genre_recommendations():
 @app.route("/api/album/musicbrainz", methods=["POST"])
 def api_album_musicbrainz_lookup():
     """Lookup album on MusicBrainz for multiple matches (Picard-style) with retry logic"""
-    import time
     logger = logging.getLogger('sptnr')
     try:
         data = request.get_json(force=True, silent=True)
@@ -8587,44 +8586,36 @@ def api_album_musicbrainz_lookup():
         if not album or not artist:
             return jsonify({"error": "Missing album or artist"}), 400
         
-        # Search MusicBrainz for release groups with retry
+        # Search MusicBrainz for release groups using shared retry session
         query = f'release:"{album}" AND artist:"{artist}"'
         headers = {"User-Agent": "sptnr-web/1.0 (support@example.com)"}
         
-        max_retries = 3
-        retry_delay = 1.0
-        last_error = None
+        # Use shared retry session with built-in retry logic and SSL error handling
+        session = create_retry_session(
+            retries=3,
+            backoff=1.0,
+            status_forcelist=(429, 500, 502, 503, 504)
+        )
         
-        for attempt in range(max_retries):
-            try:
-                resp = requests.get(
-                    "https://musicbrainz.org/ws/2/release-group",
-                    params={"query": query, "fmt": "json", "limit": 10},
-                    headers=headers,
-                    timeout=5
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                release_groups = data.get("release-groups", []) or []
-                break  # Success, exit retry loop
-            except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
-                last_error = e
-                if attempt < max_retries - 1:
-                    logger.warning(f"MusicBrainz album lookup attempt {attempt + 1} failed: {e}, retrying...")
-                    time.sleep(retry_delay)
-                    retry_delay *= 2  # Exponential backoff
-                else:
-                    logger.error(f"MusicBrainz album lookup failed after {max_retries} retries: {e}")
-                    return jsonify({
-                        "error": f"MusicBrainz connection failed after {max_retries} retries. Try Discogs instead.",
-                        "results": []
-                    }), 503
-            except requests.exceptions.RequestException as e:
-                logger.error(f"MusicBrainz request error: {e}")
-                return jsonify({"error": str(e), "results": []}), 500
-        else:
-            # Fell through without break - should not happen
-            release_groups = []
+        try:
+            resp = session.get(
+                "https://musicbrainz.org/ws/2/release-group",
+                params={"query": query, "fmt": "json", "limit": 10},
+                headers=headers,
+                timeout=(5, 10)  # (connect_timeout, read_timeout)
+            )
+            resp.raise_for_status()
+            data = resp.json()
+            release_groups = data.get("release-groups", []) or []
+        except (requests.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+            logger.error(f"MusicBrainz album lookup failed: {e}")
+            return jsonify({
+                "error": f"MusicBrainz connection failed. Try Discogs instead.",
+                "results": []
+            }), 503
+        except requests.exceptions.RequestException as e:
+            logger.error(f"MusicBrainz request error: {e}")
+            return jsonify({"error": str(e), "results": []}), 500
         
         if not release_groups:
             return jsonify({"results": [], "message": "No MusicBrainz album matches found"}), 200
