@@ -8611,7 +8611,8 @@ def api_album_musicbrainz_lookup():
                 release_groups = data.get("release-groups", []) or []
             except requests.exceptions.RequestException as e:
                 # This catches errors after all retry attempts are exhausted
-                logger.error(f"MusicBrainz album lookup failed after retries: {e}")
+                # Use warning level for transient network issues (not critical errors)
+                logger.warning(f"MusicBrainz album lookup unavailable after retries: {e}")
                 return jsonify({
                     "error": f"MusicBrainz connection failed. Try Discogs instead.",
                     "results": []
