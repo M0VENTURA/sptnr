@@ -85,6 +85,15 @@ At 1 request/second, a full scan of 10,000 tracks takes ~2.8 hours.
 - **Daily Limit**: No official limit, but stricter enforcement with IP blocking for violations
 - **Official Documentation**: [MusicBrainz API Rate Limiting](https://musicbrainz.org/doc/MusicBrainz_API/Rate_Limiting)
 
+### User-Agent Requirement
+
+- **Required**: Every client must set a meaningful User-Agent string
+- **Format**: `AppName/Version ( contact-info )`
+- **Contact Info**: Must include valid contact information (email or URL) for the developer
+- **Purpose**: Allows MusicBrainz team to contact you if your app misbehaves
+
+SPTNR uses: `sptnr/<version> ( https://github.com/M0VENTURA/sptnr )` where `<version>` is read from the VERSION file.
+
 ### SPTNR Implementation
 
 SPTNR now includes integrated MusicBrainz rate limiting that:
@@ -93,6 +102,7 @@ SPTNR now includes integrated MusicBrainz rate limiting that:
 - Prevents IP blocking by respecting rate limits
 - Logs warnings if rate limits are approached
 - Shares rate limiting state across all MusicBrainz operations (single detection, genre lookups, MBID lookups)
+- Uses proper User-Agent header with project contact information
 
 **Important**: MusicBrainz enforces their rate limits much more strictly than other APIs and will block your IP if you exceed 1 request per second. Always respect their limits.
 

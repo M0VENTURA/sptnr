@@ -12,6 +12,24 @@ from . import session
 
 logger = logging.getLogger(__name__)
 
+# Read version from VERSION file
+def _get_version():
+    """Read version from VERSION file."""
+    try:
+        # Try to locate VERSION file relative to this module
+        version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
+        with open(version_file, 'r', encoding='utf-8') as f:
+            return f.read().strip()
+    except (FileNotFoundError, IOError, PermissionError, UnicodeDecodeError) as e:
+        logger.debug(f"Could not read VERSION file, using fallback version: {e}")
+        return "2.0.0-alpha"  # Fallback version
+
+_VERSION = _get_version()
+
+# MusicBrainz API User-Agent (complies with https://musicbrainz.org/doc/MusicBrainz_API)
+# Format: AppName/Version ( contact-info )
+_USER_AGENT = f"sptnr/{_VERSION} ( https://github.com/M0VENTURA/sptnr )"
+
 # Import rate limiter
 try:
     from api_rate_limiter import get_rate_limiter
@@ -85,7 +103,7 @@ class MusicBrainzClient:
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://musicbrainz.org/ws/2/"
-        self.headers = {"User-Agent": "sptnr-cli/2.1 (support@example.com)"}
+        self.headers = {"User-Agent": _USER_AGENT}
         # Only setup retry strategy if using default session (not a pre-configured one)
         if not custom_session_provided:
             self._setup_retry_strategy()
