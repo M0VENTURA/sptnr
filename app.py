@@ -9140,6 +9140,7 @@ def api_artist_apply_genres():
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
     """Lookup track on MusicBrainz for multiple matches (Picard-style) with retry logic"""
+    logger = logging.getLogger('sptnr')
     try:
         data = request.get_json()
         title = data.get("title", "")
@@ -9226,11 +9227,11 @@ def api_track_musicbrainz_lookup():
                 time.sleep(1)
         
         # Log at warning level for transient network issues (not critical errors)
-        logging.warning(f"MusicBrainz track lookup unavailable after retries for '{title}' by '{artist}'")
+        logger.warning(f"MusicBrainz track lookup unavailable after retries for '{title}' by '{artist}'")
         return jsonify({"error": "MusicBrainz connection failed. Try again later."}), 503
             
     except Exception as e:
-        logging.error(f"MusicBrainz track lookup error: {e}")
+        logger.error(f"MusicBrainz track lookup error: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ==========================================================================
