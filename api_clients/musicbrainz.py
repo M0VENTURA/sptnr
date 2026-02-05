@@ -16,8 +16,9 @@ logger = logging.getLogger(__name__)
 def _get_version():
     """Read version from VERSION file."""
     try:
+        # Try to locate VERSION file relative to this module
         version_file = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'VERSION')
-        with open(version_file, 'r') as f:
+        with open(version_file, 'r', encoding='utf-8') as f:
             return f.read().strip()
     except (FileNotFoundError, IOError, PermissionError, UnicodeDecodeError) as e:
         logger.debug(f"Could not read VERSION file, using fallback version: {e}")
