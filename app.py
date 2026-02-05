@@ -1391,6 +1391,39 @@ def artist_detail(name):
         """, (name,))
         missing_releases_data = cursor.fetchall()
         
+        # Get compilation albums where this artist is featured (Various Artists, etc.)
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type
+            FROM tracks
+            WHERE artist = ? AND (
+                COALESCE(album_artist, '') IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
+                OR album LIKE '%compilation%'
+                OR album LIKE '%various%'
+                OR album LIKE '%soundtrack%'
+                OR album LIKE '%tribute%'
+            )
+            GROUP BY album
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+        """, (name,))
+        compilation_albums = cursor.fetchall()
+        
+        # Get artist country from artists table if it exists
+        artist_country = None
+        try:
+            cursor.execute("SELECT country FROM artists WHERE name = ?", (name,))
+            artist_row = cursor.fetchone()
+            if artist_row and artist_row[0]:
+                artist_country = artist_row[0]
+        except Exception as e:
+            logging.debug(f"Error fetching artist country: {e}")
+        
         conn.close()
         
         # Convert Row to dict for template access
@@ -1433,30 +1466,7 @@ def artist_detail(name):
                 albums_by_category["unknown"].append(album_dict)
                 categorized_albums.add(album_name)
         
-        # Get compilation albums where this artist is featured (Various Artists, etc.)
-        # Only get albums not already categorized
-        cursor.execute("""
-            SELECT 
-                album,
-                COUNT(*) as track_count,
-                AVG(stars) as avg_stars,
-                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
-                MAX(last_scanned) as last_updated,
-                MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type
-            FROM tracks
-            WHERE artist = ? AND (
-                COALESCE(album_artist, '') IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
-                OR album LIKE '%compilation%'
-                OR album LIKE '%various%'
-                OR album LIKE '%soundtrack%'
-                OR album LIKE '%tribute%'
-            )
-            GROUP BY album
-            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-        """, (name,))
-        compilation_albums = cursor.fetchall()
-        
+        # Process compilation albums
         for album in compilation_albums:
             album_dict = dict(album)
             album_name = album_dict.get("album", "")
@@ -1519,16 +1529,6 @@ def artist_detail(name):
         
         # Aggregate genres from all tracks by this artist
         genres = aggregate_genres_from_tracks(name, DB_PATH)
-        
-        # Get artist country from artists table if it exists
-        artist_country = None
-        try:
-            cursor.execute("SELECT country FROM artists WHERE name = ?", (name,))
-            artist_row = cursor.fetchone()
-            if artist_row and artist_row[0]:
-                artist_country = artist_row[0]
-        except Exception as e:
-            logging.debug(f"Error fetching artist country: {e}")
         
         # Get qBittorrent and slskd configs
         cfg, _ = _read_yaml(CONFIG_PATH)
