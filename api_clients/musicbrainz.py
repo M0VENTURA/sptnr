@@ -193,7 +193,8 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Search using base title to find all versions
-                query = f'{base_title} AND artist:{artist} AND primarytype:Single'
+                # Quote title and artist to handle multi-word values properly (Lucene syntax)
+                query = f'releasegroup:"{base_title}" AND artist:"{artist}" AND primarytype:Single'
                 params = {
                     "query": query,
                     "fmt": "json",
@@ -284,7 +285,8 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Step 1: search recording with richer includes
-                query = f'{title} AND artist:{artist}'
+                # Quote title and artist to handle multi-word values properly (Lucene syntax)
+                query = f'recording:"{title}" AND artist:"{artist}"'
                 rec_params = {
                     "query": query,
                     "fmt": "json",
@@ -373,7 +375,8 @@ class MusicBrainzClient:
                 time.sleep(1.0)
             
             # 1) Find recordings (with releases included for second hop)
-            query = f'{title} AND artist:{artist}'
+            # Quote title and artist to handle multi-word values properly (Lucene syntax)
+            query = f'recording:"{title}" AND artist:"{artist}"'
             rec_params = {
                 "query": query,
                 "fmt": "json",
@@ -473,8 +476,9 @@ class MusicBrainzClient:
                     time.sleep(1.0)
                 
                 # Search for artist with area information
+                # Quote artist name to handle multi-word values properly (Lucene syntax)
                 params = {
-                    "query": f'artist:{artist}',
+                    "query": f'artist:"{artist}"',
                     "fmt": "json",
                     "limit": 1,
                     "inc": "area"
