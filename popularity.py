@@ -1652,13 +1652,13 @@ def popularity_scan(
                             
                             if artist_country:
                                 log_info(f'Artist country found: {artist} -> {artist_country}')
-                                # Update artists table
-                                cursor.execute("SELECT COUNT(*) FROM artists WHERE name = ?", (artist,))
-                                if cursor.fetchone()[0] > 0:
-                                    cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (artist_country, artist))
-                                else:
-                                    cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
-                                                 (artist, artist, artist_country))
+                                # Update or insert artist entry using UPSERT
+                                cursor.execute("""
+                                    INSERT INTO artists (id, name, country) 
+                                    VALUES (?, ?, ?)
+                                    ON CONFLICT(id) DO UPDATE SET country = excluded.country
+                                """, (artist, artist, artist_country))
+                                
                                 # Update tracks table with artist country
                                 cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
                                              (artist_country, artist))
