@@ -1303,10 +1303,3 @@ def enrich_genres_aggressively(artist_name: str, verbose: bool = False):
     
     return genres_collected
 
-
-
-# ...existing code...
-
-    import difflib
-    return difflib.SequenceMatcher(None, _canon(a), _canon(b)).ratio()
-
