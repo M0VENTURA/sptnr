@@ -1190,7 +1190,7 @@ def artists():
             MAX(last_scanned) as last_updated
         FROM tracks
         WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
-        GROUP BY COALESCE(album_artist, artist)
+        GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
         
         UNION ALL
         
@@ -1201,7 +1201,7 @@ def artists():
             0 as single_count,
             last_updated
         FROM artist_stats
-        WHERE artist_name NOT IN (SELECT DISTINCT COALESCE(album_artist, artist) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
+        WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
         
         ORDER BY artist COLLATE NOCASE
     """)
