@@ -82,7 +82,7 @@
                             <th class="d-none d-md-table-cell text-center">
                                 <i class="bi bi-music-note"></i> Tracks
                             </th>
-                            <th class="d-none d-lg-table-cell text-center">
+                            <th class="d-none d-md-table-cell text-center">
                                 <i class="bi bi-star"></i> Singles
                             </th>
                             <th class="d-none d-lg-table-cell text-center">Last Updated</th>
@@ -117,7 +117,7 @@
                             </td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.album_count or 0 }}</td>
                             <td class="d-none d-md-table-cell text-center">{{ artist.track_count or 0 }}</td>
-                            <td class="d-none d-lg-table-cell text-center">
+                            <td class="d-none d-md-table-cell text-center">
                                 {% if artist.single_count and artist.single_count > 0 %}
                                     <span class="badge bg-warning text-dark" title="Singles">{{ artist.single_count }}</span>
                                 {% else %}

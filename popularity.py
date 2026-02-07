@@ -32,7 +32,7 @@ setup_logging("popularity")
 
 # Import API clients for single detection at module level
 try:
-    from api_clients.musicbrainz import MusicBrainzClient
+    from api_clients.musicbrainz import MusicBrainzClient, get_artist_country
     HAVE_MUSICBRAINZ = True
 except ImportError as e:
     log_debug(f"MusicBrainz client unavailable: {e}")
@@ -1638,6 +1638,38 @@ def popularity_scan(
                     log_debug(f'Updating all tracks for artist {artist} with Spotify artist ID: {spotify_artist_id}')
                     # Batch update all tracks for this artist with the artist ID
                     update_artist_id_for_artist(artist, spotify_artist_id)
+                    
+                    # Fetch and update artist country from MusicBrainz during popularity scan
+                    try:
+                        if HAVE_MUSICBRAINZ:
+                            log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
+                            artist_country = _run_with_timeout(
+                                get_artist_country,
+                                12,  # 12 second timeout for country lookup
+                                artist,
+                                enabled=True
+                            )
+                            
+                            if artist_country:
+                                log_info(f'Artist country found: {artist} -> {artist_country}')
+                                # Update artists table
+                                cursor.execute("SELECT COUNT(*) FROM artists WHERE name = ?", (artist,))
+                                if cursor.fetchone()[0] > 0:
+                                    cursor.execute("UPDATE artists SET country = ? WHERE name = ?", (artist_country, artist))
+                                else:
+                                    cursor.execute("INSERT INTO artists (id, name, country) VALUES (?, ?, ?)", 
+                                                 (artist, artist, artist_country))
+                                # Update tracks table with artist country
+                                cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
+                                             (artist_country, artist))
+                                conn.commit()
+                                log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
+                            else:
+                                log_debug(f'No country information found for artist: {artist}')
+                    except TimeoutError as e:
+                        log_debug(f"Artist country lookup timed out for {artist}: {e}")
+                    except Exception as e:
+                        log_debug(f"Artist country lookup failed for {artist}: {e}")
                 else:
                     log_info(f'No Spotify artist ID found for: {artist}')
             except TimeoutError as e:
