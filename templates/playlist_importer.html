@@ -230,9 +230,14 @@
   <div class="row mb-4">
     <div class="col-12">
       <div class="card">
-        <div class="card-header">
-          <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
-          <small class="text-secondary d-block mt-2">Use the Search or Select buttons to find and download missing tracks. Or manually add tracks to the playlist.</small>
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <div>
+            <h5 class="mb-0"><i class="bi bi-exclamation-circle-fill text-warning"></i> Missing Tracks</h5>
+            <small class="text-secondary d-block mt-2">Use the Search or Select buttons to find and download missing tracks. Or manually add tracks to the playlist.</small>
+          </div>
+          <button class="btn btn-sm btn-outline-success" onclick="searchMissingTracks()" id="searchMissingBtn" style="display: none;" title="Search for all missing tracks in Soulseek">
+            <i class="bi bi-cloud-arrow-down"></i> Search Missing Tracks
+          </button>
         </div>
         <div class="card-body">
           <div id="missingTracksContainer" style="max-height: 500px; overflow-y: auto;">
@@ -573,6 +578,16 @@
       `).join('');
     } else {
       missingContainer.innerHTML = '<p class="text-success text-center py-5">All tracks found in library!</p>';
+    }
+    
+    // Show/hide the "Search Missing Tracks" button based on slskd status and if there are missing tracks
+    const searchMissingBtn = document.getElementById('searchMissingBtn');
+    if (searchMissingBtn) {
+      if (data.slskd_enabled && missingCount > 0) {
+        searchMissingBtn.style.display = 'inline-block';
+      } else {
+        searchMissingBtn.style.display = 'none';
+      }
     }
     
     // Show results section
