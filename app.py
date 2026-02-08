@@ -8329,7 +8329,8 @@ def extract_spotify_playlist_id(url_or_id):
 def get_spotify_playlist_tracks(playlist_id):
     """Fetch tracks from a Spotify playlist"""
     try:
-        from start import spotify_client
+        from popularity_helpers import get_spotify_client
+        spotify_client = get_spotify_client()
         if not spotify_client:
             raise Exception("Spotify client not configured")
         
