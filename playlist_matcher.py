@@ -11,6 +11,11 @@ from typing import Optional, Dict, List, Tuple
 
 logger = logging.getLogger(__name__)
 
+# Matching confidence thresholds
+MAX_FUZZY_SCORE = 0.95  # Maximum score cap for fuzzy matching to avoid false confidence
+STRICT_MATCH_SCORE = 0.95  # Confidence score for exact normalized matches
+ISRC_MATCH_SCORE = 1.0  # Perfect confidence for ISRC matches
+
 
 def normalize_string(text: str) -> str:
     """
@@ -198,11 +203,11 @@ def calculate_track_similarity(
     
     # Boost for good duration match
     if duration_sim >= 0.9:
-        base_score = min(base_score + 0.1, 0.95)
+        base_score = min(base_score + 0.1, MAX_FUZZY_SCORE)
     
     # Boost for album context
     if album_sim >= 0.8 and (title_sim >= 0.6 or artist_sim >= 0.4):
-        base_score = min(base_score + 0.05, 0.95)
+        base_score = min(base_score + 0.05, MAX_FUZZY_SCORE)
     
     components = {
         "title": round(title_sim, 3),
@@ -252,7 +257,7 @@ def match_by_isrc(
                 "stars": row["stars"],
                 "duration": row["duration"] if row["duration"] else 0
             },
-            1.0,  # Perfect confidence for ISRC match
+            ISRC_MATCH_SCORE,  # Perfect confidence for ISRC match
             "isrc"
         )
     
@@ -362,11 +367,24 @@ def match_by_strict(
     if not norm_title or not norm_artist:
         return None
     
-    # Try to find exact normalized match
+    # Use LIKE to filter candidates before loading into memory
+    # This is more efficient than loading entire table
+    title_words = norm_title.split()[:2]  # First 2 words for filtering
+    artist_words = norm_artist.split()[:1]  # First word of artist
+    
+    if not title_words:
+        return None
+    
+    # Build LIKE query for initial filtering
+    title_filter = f"%{title_words[0]}%"
+    artist_filter = f"%{artist_words[0]}%" if artist_words else "%"
+    
     cursor.execute("""
         SELECT id, title, artist, album, stars, duration, isrc
         FROM tracks
-    """)
+        WHERE LOWER(title) LIKE ? AND LOWER(artist) LIKE ?
+        LIMIT 500
+    """, (title_filter, artist_filter))
     
     for row in cursor.fetchall():
         candidate_title = normalize_title(row["title"])
@@ -383,7 +401,7 @@ def match_by_strict(
                     "stars": row["stars"],
                     "duration": row["duration"] if row["duration"] else 0
                 },
-                0.95,  # High confidence for strict match
+                STRICT_MATCH_SCORE,  # High confidence for strict match
                 "strict"
             )
     
@@ -420,7 +438,7 @@ def match_track(
     
     # Try fuzzy match
     if enable_fuzzy:
-        result = match_by_fuzzy(spotify_track, cursor, fuzzy_threshold, logger=logger)
+        result = match_by_fuzzy(spotify_track, cursor, threshold=fuzzy_threshold, logger=logger)
         if result:
             return result
     

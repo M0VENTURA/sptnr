@@ -8235,7 +8235,6 @@ def api_playlist_import():
     except Exception as e:
         logging.error(f"Playlist import error: {str(e)}")
         return jsonify({"error": str(e)}), 500
-        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/playlist/create", methods=["POST"])
