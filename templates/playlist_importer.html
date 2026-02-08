@@ -560,9 +560,11 @@
           </div>
           <div class="track-actions">
             <span class="missing-track-badge">✗ Missing</span>
+            ${data.slskd_enabled ? `
             <button class="btn btn-sm btn-outline-success" onclick="searchTrackInSoulseek('${escapeHtml(track.artist + ' ' + track.title)}', this)" title="Search in Soulseek">
               <i class="bi bi-cloud-arrow-down"></i> Search
             </button>
+            ` : ''}
             <button class="btn btn-sm btn-outline-info" onclick="openReplacementTrackModal('${escapeHtml(track.artist)}', '${escapeHtml(track.title)}', '${escapeHtml(track.album || '')}', 'missing', ${idx})" title="Replace with different song">
               <i class="bi bi-arrow-repeat"></i> Replace
             </button>
