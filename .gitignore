@@ -16,3 +16,4 @@ test_*.py
 *.db
 *.db-shm
 *.db-wal
+test_playlist_matcher.py

@@ -234,7 +234,7 @@ class SpotifyClient:
             playlist_id: Spotify playlist ID
             
         Returns:
-            List of track dictionaries with title, artist, album, spotify_uri, spotify_id
+            List of track dictionaries with title, artist, album, spotify_uri, spotify_id, isrc, duration_ms
         """
         headers = self._headers()
         tracks = []
@@ -257,7 +257,9 @@ class SpotifyClient:
                             "artist": artist,
                             "album": track.get("album", {}).get("name", ""),
                             "spotify_uri": track.get("uri", ""),
-                            "spotify_id": track.get("id", "")
+                            "spotify_id": track.get("id", ""),
+                            "isrc": track.get("external_ids", {}).get("isrc", ""),
+                            "duration_ms": track.get("duration_ms", 0)
                         })
                 
                 # Get next page

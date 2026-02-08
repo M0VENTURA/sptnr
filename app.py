@@ -100,6 +100,7 @@ import io
 from helpers import create_retry_session, clean_discogs_biography
 import difflib
 import unicodedata
+from playlist_matcher import match_track as enhanced_match_track
 import requests
 import hashlib
 
@@ -8136,7 +8137,7 @@ def playlist_import():
 
 @app.route("/api/playlist/import", methods=["POST"])
 def api_playlist_import():
-    """API endpoint to import a Spotify playlist and match to Navidrome database"""
+    """API endpoint to import a Spotify playlist and match to Navidrome database using enhanced ISRC + fuzzy + strict matching"""
     try:
         data = request.get_json()
         spotify_url = data.get("spotify_url", "").strip()
@@ -8160,120 +8161,64 @@ def api_playlist_import():
         if not spotify_tracks:
             return jsonify({"error": "Playlist is empty or could not be fetched"}), 400
         
-        # Match tracks to Navidrome database with normalization + fuzzy scoring
+        # Match tracks using enhanced 3-tier strategy: ISRC → Fuzzy → Strict
         matched_tracks = []
         missing_tracks = []
+        
+        # Statistics for matching strategies
+        match_stats = {
+            "isrc": 0,
+            "fuzzy": 0,
+            "strict": 0,
+            "unmatched": 0
+        }
         
         conn = get_db()
         cursor = conn.cursor()
 
-        def _normalize(text: str) -> str:
-            """Lowercase, strip accents, drop version/feat tags, collapse whitespace."""
-            if not text:
-                return ""
-            # Strip accents
-            text = unicodedata.normalize("NFKD", text)
-            text = "".join(c for c in text if not unicodedata.combining(c))
-            text = text.lower()
-            # Remove bracketed suffixes (versions, mixes, remasters)
-            text = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", text)
-            # Remove common suffix words
-            text = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", text)
-            # Drop 'feat/ft'
-            text = re.sub(r"(?i)\b(feat\.?|ft\.?)\b", " ", text)
-            # Keep alnum only
-            text = re.sub(r"[^a-z0-9]+", " ", text)
-            return " ".join(text.split())
-
-        def _similarity(a: str, b: str) -> float:
-            if not a or not b:
-                return 0.0
-            return difflib.SequenceMatcher(None, a, b).ratio()
-
-        def _find_best_match(track: dict) -> tuple[dict | None, float]:
-            raw_title = (track.get("title") or "").strip()
-            raw_artist = (track.get("artist") or "").strip()
-            raw_album = (track.get("album") or "").strip()
-
-            primary_artist = raw_artist.split(",")[0].strip()
-
-            norm_title = _normalize(raw_title)
-            norm_artist = _normalize(primary_artist)
-            norm_album = _normalize(raw_album)
-
-            if not norm_title or not norm_artist:
-                return None, 0.0
-
-            # Pull a candidate set using both raw and normalized tokens
-            title_like = f"%{raw_title.lower()}%" if raw_title else "%"
-            artist_like = f"%{primary_artist.lower()}%" if primary_artist else "%"
-
-            cursor.execute("""
-                SELECT id, title, artist, album, stars
-                FROM tracks
-                WHERE LOWER(title) LIKE ? OR LOWER(artist) LIKE ?
-                LIMIT 250
-            """, (title_like, artist_like))
-            candidates = cursor.fetchall() or []
-
-            # If no candidates, widen by first token of normalized title
-            if not candidates and norm_title:
-                seed = norm_title.split(" ")[0]
-                cursor.execute("""
-                    SELECT id, title, artist, album, stars
-                    FROM tracks
-                    WHERE LOWER(title) LIKE ?
-                    LIMIT 250
-                """, (f"%{seed}%",))
-                candidates = cursor.fetchall() or []
-
-            best_row = None
-            best_score = 0.0
-
-            for row in candidates:
-                cand_title = _normalize(row["title"])
-                cand_artist = _normalize(row["artist"])
-                cand_album = _normalize(row["album"])
-
-                title_score = _similarity(norm_title, cand_title)
-                artist_score = _similarity(norm_artist, cand_artist)
-                album_score = _similarity(norm_album, cand_album) if norm_album and cand_album else 0.0
-
-                combined = (0.6 * title_score) + (0.35 * artist_score) + (0.05 * album_score)
-
-                if combined > best_score:
-                    best_score = combined
-                    best_row = row
-
-            # Accept only reasonably confident matches
-            if best_row and best_score >= 0.72:
-                return best_row, round(best_score, 3)
-            return None, round(best_score, 3)
-
         for spotify_track in spotify_tracks:
-            match_row, confidence = _find_best_match(spotify_track)
-            if match_row:
+            # Use enhanced matching from playlist_matcher
+            matched_track, confidence, strategy = enhanced_match_track(
+                spotify_track,
+                cursor,
+                enable_isrc=True,
+                enable_fuzzy=True,
+                enable_strict=True,
+                fuzzy_threshold=0.80,  # Based on navispot's threshold
+                logger=logging
+            )
+            
+            if matched_track:
                 matched_tracks.append({
-                    "id": match_row["id"],
-                    "title": match_row["title"],
-                    "artist": match_row["artist"],
-                    "album": match_row["album"],
-                    "stars": match_row["stars"],
-                    "confidence": confidence
+                    "id": matched_track["id"],
+                    "title": matched_track["title"],
+                    "artist": matched_track["artist"],
+                    "album": matched_track["album"],
+                    "stars": matched_track["stars"],
+                    "confidence": confidence,
+                    "strategy": strategy
                 })
+                match_stats[strategy] += 1
             else:
                 missing_tracks.append({
                     "title": spotify_track.get("title", ""),
                     "artist": spotify_track.get("artist", ""),
                     "album": spotify_track.get("album", ""),
+                    "spotify_id": spotify_track.get("spotify_id", ""),
+                    "isrc": spotify_track.get("isrc", ""),
                     "best_score": confidence
                 })
+                match_stats["unmatched"] += 1
         
         conn.close()
         
         # Check if slskd is enabled
         config_data, _ = _read_yaml(CONFIG_PATH)
         slskd_enabled = config_data.get("slskd", {}).get("enabled", False)
+        
+        # Log matching statistics
+        logging.info(f"Playlist import '{playlist_name}': Matched {len(matched_tracks)}/{len(spotify_tracks)} tracks")
+        logging.info(f"  Strategy breakdown: ISRC={match_stats['isrc']}, Fuzzy={match_stats['fuzzy']}, Strict={match_stats['strict']}, Unmatched={match_stats['unmatched']}")
         
         return jsonify({
             "success": True,
@@ -8283,7 +8228,8 @@ def api_playlist_import():
             "missing_tracks": missing_tracks,
             "slskd_enabled": slskd_enabled,
             "spotify_playlist_id": playlist_id,
-            "message": f"Matched {len(matched_tracks)}/{len(spotify_tracks)} tracks"
+            "message": f"Matched {len(matched_tracks)}/{len(spotify_tracks)} tracks",
+            "match_stats": match_stats
         })
     
     except Exception as e:
