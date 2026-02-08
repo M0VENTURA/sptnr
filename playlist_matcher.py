@@ -250,7 +250,7 @@ def match_by_isrc(
                 "artist": row["artist"],
                 "album": row["album"],
                 "stars": row["stars"],
-                "duration": row.get("duration", 0)
+                "duration": row["duration"] if row["duration"] else 0
             },
             1.0,  # Perfect confidence for ISRC match
             "isrc"
@@ -319,7 +319,7 @@ def match_by_fuzzy(
             "title": row["title"],
             "artist": row["artist"],
             "album": row["album"],
-            "duration": row.get("duration", 0)
+            "duration": row["duration"] if row["duration"] else 0
         }
         
         score, components = calculate_track_similarity(spotify_track, navidrome_track)
@@ -332,7 +332,7 @@ def match_by_fuzzy(
                 "artist": row["artist"],
                 "album": row["album"],
                 "stars": row["stars"],
-                "duration": row.get("duration", 0),
+                "duration": row["duration"] if row["duration"] else 0,
                 "components": components
             }
     
@@ -381,7 +381,7 @@ def match_by_strict(
                     "artist": row["artist"],
                     "album": row["album"],
                     "stars": row["stars"],
-                    "duration": row.get("duration", 0)
+                    "duration": row["duration"] if row["duration"] else 0
                 },
                 0.95,  # High confidence for strict match
                 "strict"
