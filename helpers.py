@@ -385,13 +385,22 @@ def find_matching_spotify_single(
     spotify_results: list,
     track_title: str,
     track_duration_ms: int = None,
+    track_artist: str = None,
+    track_album: str = None,
+    track_isrc: str = None,
     duration_tolerance_sec: int = 2,
     logger=None
 ) -> dict | None:
     """
     Find a matching Spotify single using sophisticated version-aware matching logic.
     
-    Implements the PR #131 requirements:
+    Now enhanced with improved matching from matching_utils.py:
+    - Full Unicode normalization (accent removal)
+    - Collaboration handling (feat., ft., with, &, etc.)
+    - Weighted fuzzy matching (title 35%, artist 25%, duration 25%, album 15%)
+    - ISRC-based matching for perfect confidence
+    
+    Original PR #131 requirements:
     1. Extract parenthetical version tags from both track and Spotify release
     2. Match version types (live matches live, remix matches remix, etc.)
     3. Override version matching for explicitly marked singles
@@ -404,6 +413,9 @@ def find_matching_spotify_single(
         spotify_results: List of Spotify search results
         track_title: Original track title from album
         track_duration_ms: Track duration in milliseconds (optional)
+        track_artist: Track artist name (optional, for improved matching)
+        track_album: Track album name (optional, for improved matching)
+        track_isrc: Track ISRC code (optional, for perfect matching)
         duration_tolerance_sec: Tolerance for duration matching in seconds
         logger: Logger instance for debugging output
         
@@ -415,6 +427,21 @@ def find_matching_spotify_single(
             logger.debug(f"[DEBUG] No Spotify releases provided for matching: {track_title}")
         return None
     
+    # Import matching utilities for improved matching
+    try:
+        from matching_utils import (
+            normalize_title as normalize_title_advanced,
+            normalize_artist,
+            calculate_track_similarity,
+            matches_by_isrc,
+            is_alternate_version as is_alternate_version_advanced
+        )
+        use_advanced_matching = True
+    except ImportError:
+        if logger:
+            logger.debug("[DEBUG] matching_utils not available, using legacy matching")
+        use_advanced_matching = False
+    
     # Extract version tag from original track
     track_version_tag = extract_version_tag(track_title)
     track_normalized = normalize_title_for_matching(track_title)
@@ -425,6 +452,7 @@ def find_matching_spotify_single(
         logger.debug(f"[DEBUG]   Version tag: {track_version_tag or 'None'}")
         logger.debug(f"[DEBUG]   Normalized: {track_normalized}")
         logger.debug(f"[DEBUG]   Duration: {track_duration_sec}s" if track_duration_sec else "[DEBUG]   Duration: N/A")
+        logger.debug(f"[DEBUG]   ISRC: {track_isrc}" if track_isrc else "[DEBUG]   ISRC: N/A")
         logger.debug(f"[DEBUG] Total Spotify releases to check: {len(spotify_results)}")
     
     accepted_releases = []
@@ -436,10 +464,22 @@ def find_matching_spotify_single(
         album_type = album_info.get("album_type", "").lower()
         album_name = album_info.get("name", "").lower()
         release_duration_ms = result.get("duration_ms", 0)
+        release_artist = result.get("artists", [{}])[0].get("name", "") if result.get("artists") else ""
+        release_isrc = result.get("external_ids", {}).get("isrc") if result.get("external_ids") else None
         
         if logger:
             logger.debug(f"[DEBUG] Release {idx + 1}: {release_title}")
             logger.debug(f"[DEBUG]   Album: {album_name} (type: {album_type})")
+            logger.debug(f"[DEBUG]   Artist: {release_artist}")
+        
+        # PRIORITY: ISRC matching (if available)
+        if use_advanced_matching and track_isrc and release_isrc:
+            if matches_by_isrc(track_isrc, release_isrc):
+                if logger:
+                    logger.debug(f"[DEBUG]   ✅ ISRC MATCH: Perfect match via ISRC")
+                # ISRC match is authoritative - accept immediately
+                accepted_releases.append((result, False, 1.0))  # (result, is_override, confidence)
+                continue
         
         # Extract version tag from Spotify release
         release_version_tag = extract_version_tag(release_title)
@@ -484,13 +524,39 @@ def find_matching_spotify_single(
                 logger.debug(f"[DEBUG]   ❌ REJECTED: Version tag mismatch")
             continue
         
-        # Rule 4: Title matching
+        # Rule 4: Title matching (with advanced fuzzy matching if available)
         title_match = False
-        if release_normalized == track_normalized:
-            title_match = True
-        elif release_normalized.startswith(track_normalized):
-            # Allow "Track Name - Single" to match "Track Name"
-            title_match = True
+        match_confidence = 0.0
+        
+        if use_advanced_matching and track_artist and release_artist:
+            # Use advanced fuzzy matching
+            track_dict = {
+                "title": track_title,
+                "artist": track_artist,
+                "album": track_album or "",
+                "duration": track_duration_ms or 0
+            }
+            release_dict = {
+                "title": release_title,
+                "artist": release_artist,
+                "album": album_name,
+                "duration": release_duration_ms
+            }
+            
+            match_confidence, components = calculate_track_similarity(track_dict, release_dict)
+            title_match = match_confidence >= 0.80  # Use fuzzy threshold
+            
+            if logger:
+                logger.debug(f"[DEBUG]   Fuzzy match score: {match_confidence:.3f} (components: {components})")
+        else:
+            # Use legacy exact matching
+            if release_normalized == track_normalized:
+                title_match = True
+                match_confidence = 0.95
+            elif release_normalized.startswith(track_normalized):
+                # Allow "Track Name - Single" to match "Track Name"
+                title_match = True
+                match_confidence = 0.90
         
         if not title_match:
             if logger:
@@ -522,20 +588,18 @@ def find_matching_spotify_single(
         
         if logger:
             logger.debug(f"[DEBUG]   ✅ ACCEPTED: {release_title}" + (" (via override)" if is_override_match else ""))
-        accepted_releases.append((result, is_override_match))
+        accepted_releases.append((result, is_override_match, match_confidence))
     
     # Prefer exact version matches over override matches
+    # Sort by: 1) non-override first, 2) highest confidence, 3) first in list
     if accepted_releases:
-        # First try to find a non-override match
-        exact_matches = [r for r, override in accepted_releases if not override]
-        if exact_matches:
-            best_match = exact_matches[0]
-        else:
-            # Fall back to override matches
-            best_match = accepted_releases[0][0]
+        # Sort by: (not is_override, confidence, -idx)
+        # This prefers non-overrides, then higher confidence, then earlier results
+        accepted_releases.sort(key=lambda x: (not x[1], x[2]), reverse=True)
+        best_match = accepted_releases[0][0]
         
         if logger:
-            logger.debug(f"[DEBUG] ✓ Best match: {best_match.get('name')} (album: {best_match.get('album', {}).get('name')})")
+            logger.debug(f"[DEBUG] ✓ Best match: {best_match.get('name')} (album: {best_match.get('album', {}).get('name')}, confidence: {accepted_releases[0][2]:.3f})")
         return best_match
     
     if logger:
