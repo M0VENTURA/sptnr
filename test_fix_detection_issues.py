@@ -178,7 +178,7 @@ class TestDiscogsSingleMatching(unittest.TestCase):
     """Test that Discogs single matching uses stricter threshold."""
     
     def test_fuzzy_threshold(self):
-        """Test that the new threshold (0.95) prevents false positives."""
+        """Test that the new threshold (0.97) prevents false positives."""
         import difflib
         
         # "Life in Technicolor" vs "Life in Technicolor II"
@@ -191,8 +191,8 @@ class TestDiscogsSingleMatching(unittest.TestCase):
         # Old threshold of 0.80 would match (ratio is 0.927)
         self.assertGreater(ratio, 0.80, "Ratio should exceed old threshold")
         
-        # New threshold of 0.95 should NOT match
-        self.assertLess(ratio, 0.95, "Ratio should be below new threshold")
+        # New threshold of 0.97 should NOT match
+        self.assertLess(ratio, 0.97, "Ratio should be below new threshold")
         
         # "Lost!" vs "Lost+"
         ratio = difflib.SequenceMatcher(
@@ -204,8 +204,22 @@ class TestDiscogsSingleMatching(unittest.TestCase):
         # Old threshold of 0.80 would match (ratio is 0.80)
         self.assertGreaterEqual(ratio, 0.80, "Ratio should meet old threshold")
         
-        # New threshold of 0.95 should NOT match
-        self.assertLess(ratio, 0.95, "Ratio should be below new threshold")
+        # New threshold of 0.97 should NOT match
+        self.assertLess(ratio, 0.97, "Ratio should be below new threshold")
+    
+    def test_exact_match_after_lowercasing(self):
+        """Test that exact matches work after lowercasing."""
+        import difflib
+        
+        # "Life in Technicolor ii" vs "Life in Technicolor II"
+        ratio = difflib.SequenceMatcher(
+            None, 
+            "life in technicolor ii", 
+            "life in technicolor ii"
+        ).ratio()
+        
+        # Should be exact match after lowercasing
+        self.assertEqual(ratio, 1.0, "Should be exact match after lowercasing")
 
 
 class TestColdplayAlbumScenario(unittest.TestCase):

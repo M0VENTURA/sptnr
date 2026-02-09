@@ -487,21 +487,29 @@ class DiscogsClient:
                 if not tracks or len(tracks) > 7:
                     continue
                 
-                # Find track match using stricter fuzzy matching threshold
-                # Increased from 0.80 to 0.95 to avoid false positives like:
-                # "Life in Technicolor" matching "Life in Technicolor II"
-                # "Lost!" matching "Lost+"
+                # Find track match using exact matching after lowercasing and stripping whitespace
+                # This ensures we only match singles with the exact same name
+                # while being case-insensitive (e.g., "Life in Technicolor ii" matches "Life in Technicolor II")
+                # Previous fuzzy threshold of 0.95 was too strict and broke legitimate matches
                 best_idx, best_ratio = -1, 0.0
                 for i, t in enumerate(tracks):
-                    r = difflib.SequenceMatcher(None, t.get("title", "").lower(), nav_title).ratio()
+                    track_title_lower = (t.get("title", "") or "").lower().strip()
+                    # Use exact string match after lowercasing and stripping for precision
+                    if track_title_lower == nav_title.strip():
+                        best_idx, best_ratio = i, 1.0
+                        break
+                    # Also try fuzzy matching with high threshold as fallback
+                    r = difflib.SequenceMatcher(None, track_title_lower, nav_title.strip()).ratio()
                     if r > best_ratio:
                         best_idx, best_ratio = i, r
                 
-                # Require higher threshold (0.95) to avoid false positives
-                # Old threshold of 0.80 caused these false matches:
-                # - Album track "Life in Technicolor" incorrectly matched single "Life in Technicolor II" (ratio 0.927)
-                # - Album track "Lost+" incorrectly matched single "Lost!" (ratio 0.800)
-                if best_ratio < 0.95:
+                # Require exact match (1.0) or very high fuzzy match (0.97) for singles
+                # This prevents false positives while allowing minor formatting differences
+                # - Exact match: "Life in Technicolor ii" == "Life in Technicolor II" (after lowercasing)
+                # - High fuzzy (0.97+): Allows for minor punctuation/spacing variations
+                # - Rejects: "Life in Technicolor" vs "Life in Technicolor II" (ratio 0.927)
+                # - Rejects: "Lost!" vs "Lost+" (ratio 0.800)
+                if best_ratio < 0.97:
                     continue
                 
                 mtitle = (tracks[best_idx].get("title", "") or "").lower()
