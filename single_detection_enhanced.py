@@ -767,6 +767,14 @@ def detect_single_enhanced(
     if verbose:
         log_debug(f"Pre-filter: Checking {title} (high priority)")
     
+    # ALBUM-LEVEL POPULARITY FILTER
+    # Reject single detection if track popularity is below album mean
+    # This prevents album tracks with separate single releases from being incorrectly marked
+    if album_mean > 0 and popularity > 0 and popularity < album_mean:
+        if verbose:
+            log_debug(f"Album-level popularity filter: Rejecting {title} (pop={popularity:.1f} < album_mean={album_mean:.1f})")
+        return result
+    
     # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
