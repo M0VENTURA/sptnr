@@ -182,6 +182,7 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
         if keyword in album_lower:
             return True
     
+    # No compilation indicators found
     return False
 
 
@@ -211,10 +212,24 @@ def is_special_edition_album(album_title: str) -> bool:
     
     # Check for pattern "Original Album: Something Edition"
     # This catches cases like "Viva la Vida: Prospekt's March Edition"
-    if ':' in album_title and 'edition' in album_lower:
-        # If there's a colon AND the word edition, it's likely a special edition
-        return True
+    # but not "Greatest Hits: First Edition" or "Live: Studio Edition"
+    if ':' in album_title:
+        # Split by colon and check if "edition" appears in the part after the colon
+        parts = album_title.split(':', 1)
+        if len(parts) > 1:
+            after_colon = parts[1].lower()
+            # "edition" should be in the text after the colon
+            if 'edition' in after_colon:
+                # Make sure it's not a common album type like "First Edition" or "Studio Edition"
+                # by checking if it has qualifying words before "edition"
+                words_before_edition = after_colon.split('edition')[0].strip()
+                # If there are multiple words before "edition", it's likely a special edition
+                # e.g., "Prospekt's March Edition", "Deluxe Edition", etc.
+                # But "First Edition" or "Studio Edition" would only have one word
+                if len(words_before_edition.split()) > 1 or any(kw in after_colon for kw in ['deluxe', 'special', 'expanded', 'limited', 'collector', 'tour', 'bonus']):
+                    return True
     
+    # No special edition indicators found
     return False
 
 
