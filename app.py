@@ -54,7 +54,8 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         # Use navidrome_genres which are populated from Navidrome during import
-        cursor.execute("SELECT navidrome_genres FROM tracks WHERE artist = ?", (artist_name,))
+        # Use COALESCE(album_artist, artist) to match the artist list page logic
+        cursor.execute("SELECT navidrome_genres FROM tracks WHERE COALESCE(album_artist, artist) = ?", (artist_name,))
         rows = cursor.fetchall()
         conn.close()
         for row in rows:
@@ -1327,6 +1328,7 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
+        # Use COALESCE(album_artist, artist) to match the artist list page logic
         cursor.execute("""
             SELECT 
                 album,
@@ -1337,13 +1339,14 @@ def artist_detail(name):
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
+        # Use COALESCE(album_artist, artist) to match the artist list page logic
         try:
             cursor.execute("""
                 SELECT 
@@ -1360,7 +1363,7 @@ def artist_detail(name):
                     MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE artist = ?
+                WHERE COALESCE(album_artist, artist) = ?
             """, (name,))
         except:
             # Fallback for databases without beets columns
@@ -1379,7 +1382,7 @@ def artist_detail(name):
                     NULL as musicbrainz_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE artist = ?
+                WHERE COALESCE(album_artist, artist) = ?
             """, (name,))
         
         artist_stats = cursor.fetchone()
@@ -1394,6 +1397,7 @@ def artist_detail(name):
         missing_releases_data = cursor.fetchall()
         
         # Get compilation albums where this artist is featured (Various Artists, etc.)
+        # Use artist column here since we're looking for track artist in compilations
         cursor.execute("""
             SELECT 
                 album,
