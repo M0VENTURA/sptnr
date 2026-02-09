@@ -146,8 +146,19 @@ SPECIAL_EDITION_KEYWORDS = [
     "tour edition",
     "limited edition",
     "collector's edition",
-    "collector edition",
     "remastered"
+]
+
+# Base keywords for pattern matching (used in colon+edition detection)
+# These are the core qualifiers that indicate a special edition
+SPECIAL_EDITION_BASE_KEYWORDS = [
+    "deluxe",
+    "special",
+    "expanded",
+    "limited",
+    "collector",
+    "tour",
+    "bonus"
 ]
 
 
@@ -226,7 +237,7 @@ def is_special_edition_album(album_title: str) -> bool:
                 # If there are multiple words before "edition", it's likely a special edition
                 # e.g., "Prospekt's March Edition", "Deluxe Edition", etc.
                 # But "First Edition" or "Studio Edition" would only have one word
-                if len(words_before_edition.split()) > 1 or any(kw in after_colon for kw in ['deluxe', 'special', 'expanded', 'limited', 'collector', 'tour', 'bonus']):
+                if len(words_before_edition.split()) > 1 or any(kw in after_colon for kw in SPECIAL_EDITION_BASE_KEYWORDS):
                     return True
     
     # No special edition indicators found
