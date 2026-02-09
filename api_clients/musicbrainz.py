@@ -54,18 +54,23 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     """
     Extract base title and version keywords from a track title.
     
+    IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, IV, etc.)
+    to ensure different songs are not matched as the same track.
+    
     Args:
         title: Track title (e.g., "Song Title (Live)", "Song Title - Acoustic Version")
         
     Returns:
         Tuple of (base_title, version_keywords_set)
-        - base_title: Title without version suffixes
+        - base_title: Title without version suffixes (but preserving important suffixes)
         - version_keywords_set: Set of version keywords found (e.g., {'live', 'acoustic'})
     
     Examples:
         "Untot im Drachenboot (Live in Wacken 2022)" -> ("Untot im Drachenboot", {'live'})
         "Song Title - Acoustic Version" -> ("Song Title", {'acoustic'})
         "Regular Song" -> ("Regular Song", set())
+        "Lost!" -> ("Lost!", set()) - preserves punctuation suffix
+        "Life in Technicolor II" -> ("Life in Technicolor II", set()) - preserves Roman numeral
     """
     title_lower = title.lower()
     found_versions = set()
@@ -75,8 +80,33 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
         if re.search(r'\b' + re.escape(keyword) + r'\b', title_lower):
             found_versions.add(keyword)
     
+    # Save the original title before removing parenthetical content
+    original_title = title.strip()
+    
     # Extract base title (remove parenthesized/bracketed content and dash-based suffixes)
-    base_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)  # Remove (anything) or [anything]
+    # But FIRST check if the title has important suffixes we need to preserve
+    
+    # Preserve punctuation suffixes (!, +, ?, etc.) at the end of the title
+    # These distinguish different songs like "Lost!" vs "Lost+"
+    preserved_suffix = ""
+    title_match = re.search(r'([!+?]+)\s*$', original_title)
+    if title_match:
+        preserved_suffix = title_match.group(1)
+        # Temporarily remove it for processing
+        title = original_title[:title_match.start()]
+    
+    # Remove parenthesized/bracketed content
+    base_title = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
+    
+    # Preserve Roman numerals at the end (I, II, III, IV, V, etc.)
+    # These distinguish different songs like "Song" vs "Song II"
+    # Match space + Roman numeral at the end of the title
+    roman_suffix = ""
+    roman_match = re.search(r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$', base_title, re.IGNORECASE)
+    if roman_match:
+        roman_suffix = roman_match.group(0)  # Preserve the space and Roman numeral
+        # Temporarily remove it for version keyword processing
+        base_title = base_title[:roman_match.start()]
     
     # Dynamically build pattern from VERSION_KEYWORDS for consistency
     version_pattern = '|'.join(keyword.capitalize() for keyword in VERSION_KEYWORDS)
@@ -87,6 +117,12 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
         flags=re.IGNORECASE
     )
     base_title = base_title.strip()
+    
+    # Re-attach preserved suffixes in the correct order
+    if roman_suffix:
+        base_title = base_title + roman_suffix.rstrip()  # Add back Roman numeral (strip trailing space)
+    if preserved_suffix:
+        base_title = base_title + preserved_suffix  # Add back punctuation suffix
     
     return base_title, found_versions
 

@@ -52,18 +52,36 @@ def normalize_title_strict(title: str) -> str:
     
     Now enhanced with Unicode normalization and accent removal when matching_utils available.
     
+    IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, etc.)
+    to ensure different songs are not matched as the same track.
+    
     - lowercase
     - remove accents (Unicode NFD decomposition)
-    - remove punctuation
+    - remove punctuation (except trailing !, +, ?)
     - remove bracketed suffixes
     - collapse whitespace
     - strip leading articles (a, an, the)
+    - preserve Roman numerals at end
     """
     if MATCHING_UTILS_AVAILABLE:
         # Use advanced normalization with Unicode accent removal
         return normalize_title_advanced(title)
     
     # Legacy normalization (fallback)
+    # Preserve trailing punctuation suffixes (!, +, ?) before normalization
+    preserved_suffix = ""
+    suffix_match = re.search(r'([!+?]+)\s*$', title)
+    if suffix_match:
+        preserved_suffix = suffix_match.group(1)
+        title = title[:suffix_match.start()]
+    
+    # Preserve Roman numerals at the end (I, II, III, IV, V, etc.) before normalization
+    roman_suffix = ""
+    roman_match = re.search(r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$', title, re.IGNORECASE)
+    if roman_match:
+        roman_suffix = " " + roman_match.group(1).lower()  # Preserve as lowercase
+        title = title[:roman_match.start()]
+    
     # Remove bracketed/parenthesized content
     normalized = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
     # Remove dash-based versions
@@ -79,6 +97,13 @@ def normalize_title_strict(title: str) -> str:
     normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized)
     # Collapse whitespace
     normalized = re.sub(r'\s+', ' ', normalized)
+    
+    # Re-attach preserved suffixes
+    if roman_suffix:
+        normalized = normalized + roman_suffix
+    if preserved_suffix:
+        normalized = normalized + preserved_suffix
+    
     return normalized
 
 
