@@ -493,7 +493,7 @@ class DiscogsClient:
                 # Previous fuzzy threshold of 0.95 was too strict and broke legitimate matches
                 best_idx, best_ratio = -1, 0.0
                 for i, t in enumerate(tracks):
-                    track_title_lower = (t.get("title", "") or "").lower().strip()
+                    track_title_lower = t.get("title", "").lower().strip()
                     # Use exact string match after lowercasing and stripping for precision
                     if track_title_lower == nav_title.strip():
                         best_idx, best_ratio = i, 1.0

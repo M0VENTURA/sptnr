@@ -270,7 +270,6 @@ class MusicBrainzClient:
                 # Lucene quoted queries are case-sensitive, so we strip Roman numerals and punctuation
                 # to ensure "Life in Technicolor ii" finds "Life in Technicolor II"
                 # We'll filter by exact base title match later (case-insensitive)
-                import re
                 search_title = base_title
                 # Strip Roman numeral suffix for search (we'll match it later)
                 search_title = re.sub(ROMAN_NUMERAL_PATTERN, '', search_title, flags=re.IGNORECASE).strip()
