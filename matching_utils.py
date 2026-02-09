@@ -37,6 +37,11 @@ FUZZY_THRESHOLD = 0.80  # Minimum score for fuzzy matching to be accepted
 # Used to distinguish tracks like "Song II" from "Song III"
 ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
 
+# Punctuation suffix pattern for title preservation
+# Matches trailing punctuation (!, +, ?) at the end of titles
+# Used to distinguish tracks like "Lost!" from "Lost+"
+PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
+
 
 def normalize_string(text: str) -> str:
     """
@@ -58,7 +63,7 @@ def normalize_string(text: str) -> str:
     
     # Preserve trailing punctuation suffixes (!, +, ?) before normalization
     preserved_suffix = ""
-    suffix_match = re.search(r'([!+?]+)\s*$', text)
+    suffix_match = re.search(PUNCTUATION_SUFFIX_PATTERN, text)
     if suffix_match:
         preserved_suffix = suffix_match.group(1)
         text = text[:suffix_match.start()]

@@ -39,14 +39,16 @@ try:
         calculate_duration_similarity,
         calculate_track_similarity,
         is_fuzzy_match,
-        ROMAN_NUMERAL_PATTERN
+        ROMAN_NUMERAL_PATTERN,
+        PUNCTUATION_SUFFIX_PATTERN
     )
     MATCHING_UTILS_AVAILABLE = True
 except ImportError:
     log_debug("matching_utils not available, using legacy normalization")
     MATCHING_UTILS_AVAILABLE = False
-    # Fallback pattern if matching_utils not available
+    # Fallback patterns if matching_utils not available
     ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
+    PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
 
 
 def normalize_title_strict(title: str) -> str:
@@ -73,7 +75,7 @@ def normalize_title_strict(title: str) -> str:
     # Legacy normalization (fallback)
     # Preserve trailing punctuation suffixes (!, +, ?) before normalization
     preserved_suffix = ""
-    suffix_match = re.search(r'([!+?]+)\s*$', title)
+    suffix_match = re.search(PUNCTUATION_SUFFIX_PATTERN, title)
     if suffix_match:
         preserved_suffix = suffix_match.group(1)
         title = title[:suffix_match.start()]

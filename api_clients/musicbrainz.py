@@ -46,12 +46,13 @@ except ImportError:
     logger.warning("Rate limiter not available for MusicBrainz")
     _rate_limiter = None
 
-# Import Roman numeral pattern from matching_utils
+# Import Roman numeral and punctuation patterns from matching_utils
 try:
-    from matching_utils import ROMAN_NUMERAL_PATTERN
+    from matching_utils import ROMAN_NUMERAL_PATTERN, PUNCTUATION_SUFFIX_PATTERN
 except ImportError:
     # Fallback if matching_utils not available
     ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
+    PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
 
 # Version keywords to detect in track titles (immutable tuple for performance)
 VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
@@ -96,7 +97,7 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     # Preserve punctuation suffixes (!, +, ?, etc.) at the end of the title
     # These distinguish different songs like "Lost!" vs "Lost+"
     preserved_suffix = ""
-    title_match = re.search(r'([!+?]+)\s*$', original_title)
+    title_match = re.search(PUNCTUATION_SUFFIX_PATTERN, original_title)
     if title_match:
         preserved_suffix = title_match.group(1)
         # Temporarily remove it for processing
@@ -128,7 +129,7 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     
     # Re-attach preserved suffixes in the correct order
     if roman_suffix:
-        base_title = base_title + roman_suffix  # Already has proper spacing from group(0)
+        base_title = base_title + roman_suffix  # Suffix includes proper spacing (space + roman numeral)
     if preserved_suffix:
         base_title = base_title + preserved_suffix  # Add back punctuation suffix
     
