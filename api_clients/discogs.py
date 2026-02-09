@@ -379,9 +379,10 @@ class DiscogsClient:
         if not self.enabled or not self.token:
             return False
         
-        # Special edition albums should not have tracks marked as singles
-        # unless they are explicitly confirmed by multiple sources
-        # For now, reject single detection for special edition albums from Discogs
+        # Reject single detection for special edition albums via Discogs
+        # Special edition/deluxe/expanded albums often contain bonus tracks that were not
+        # released as singles. To prevent false positives, we skip Discogs single detection
+        # for these albums. Other sources (Spotify, MusicBrainz) can still confirm singles.
         if album_context and album_context.get("is_special_edition"):
             logger.debug(f"Discogs: Skipping single check for '{title}' from special edition album")
             return False
