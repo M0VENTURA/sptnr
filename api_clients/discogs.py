@@ -454,7 +454,12 @@ class DiscogsClient:
             # If no results with filter, try without filter as fallback (for non-standard releases)
             if not results:
                 _throttle_discogs()
-                fallback_params = {k: v for k, v in params.items() if k != "format"}  # Remove format filter
+                # Remove format filter for fallback search
+                fallback_params = {
+                    "q": params["q"],
+                    "type": params["type"],
+                    "per_page": params["per_page"]
+                }
                 results = make_discogs_search_request(fallback_params)
             
             if not results:
