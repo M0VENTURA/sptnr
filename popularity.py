@@ -1277,11 +1277,14 @@ def detect_single_for_track(
             if verbose:
                 log_verbose(f"   Spotify returned {len(spotify_results)} releases for {title}")
             
-            # Use the sophisticated version-aware matching
+            # Use the sophisticated version-aware matching with improved fuzzy matching
             matched_release = find_matching_spotify_single(
                 spotify_results=spotify_results,
                 track_title=title,
                 track_duration_ms=duration_ms,
+                track_artist=artist,  # Pass artist for improved fuzzy matching
+                track_album=album,    # Pass album for improved fuzzy matching
+                track_isrc=isrc,      # Pass ISRC for perfect matching
                 duration_tolerance_sec=2,
                 logger=logger if verbose else None
             )

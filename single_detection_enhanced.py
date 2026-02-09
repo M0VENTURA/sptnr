@@ -30,15 +30,40 @@ logger = logging.getLogger(__name__)
 # Stage 6: Strict Version Matching Rules
 # ============================================================================
 
+# Import improved matching utilities for better normalization and matching
+try:
+    from matching_utils import (
+        normalize_title as normalize_title_advanced,
+        normalize_artist,
+        normalize_string,
+        calculate_duration_similarity,
+        calculate_track_similarity,
+        is_fuzzy_match
+    )
+    MATCHING_UTILS_AVAILABLE = True
+except ImportError:
+    log_debug("matching_utils not available, using legacy normalization")
+    MATCHING_UTILS_AVAILABLE = False
+
+
 def normalize_title_strict(title: str) -> str:
     """
     Normalize title per problem statement Stage 6.
+    
+    Now enhanced with Unicode normalization and accent removal when matching_utils available.
+    
     - lowercase
+    - remove accents (Unicode NFD decomposition)
     - remove punctuation
     - remove bracketed suffixes
     - collapse whitespace
     - strip leading articles (a, an, the)
     """
+    if MATCHING_UTILS_AVAILABLE:
+        # Use advanced normalization with Unicode accent removal
+        return normalize_title_advanced(title)
+    
+    # Legacy normalization (fallback)
     # Remove bracketed/parenthesized content
     normalized = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
     # Remove dash-based versions
@@ -74,9 +99,20 @@ def is_non_canonical_version_strict(title: str) -> bool:
 
 
 def duration_matches_strict(duration1: Optional[float], duration2: Optional[float]) -> bool:
-    """Duration must match within ±2 seconds per Stage 6."""
+    """
+    Duration must match within ±2 seconds per Stage 6.
+    
+    Enhanced to use advanced duration similarity calculation when available.
+    """
     if duration1 is None or duration2 is None:
         return True  # Can't verify
+    
+    if MATCHING_UTILS_AVAILABLE:
+        # Use advanced duration similarity (0.90-1.0 within 3 seconds)
+        similarity = calculate_duration_similarity(duration1, duration2)
+        return similarity >= 0.90
+    
+    # Legacy: strict ±2 seconds
     return abs(duration1 - duration2) <= 2.0
 
 
