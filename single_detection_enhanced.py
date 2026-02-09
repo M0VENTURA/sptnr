@@ -135,16 +135,14 @@ COMPILATION_KEYWORDS = [
 
 # Keywords for detecting special edition/deluxe/expanded albums
 # Tracks from these albums should not be marked as singles by Discogs alone
-# Note: Uses substring matching, so 'edition' will match 'Deluxe Edition', 'Special Edition', etc.
+# Note: Uses substring matching, so 'edition' will match 'Deluxe Edition', 'Tour Edition', etc.
 SPECIAL_EDITION_KEYWORDS = [
     "deluxe",
     "expanded",
     "edition",
     "reissue",
     "anniversary",
-    "bonus",
-    "tour edition",
-    "limited edition"
+    "bonus"
 ]
 
 
