@@ -135,14 +135,19 @@ COMPILATION_KEYWORDS = [
 
 # Keywords for detecting special edition/deluxe/expanded albums
 # Tracks from these albums should not be marked as singles by Discogs alone
-# Note: Uses substring matching, so 'edition' will match 'Deluxe Edition', 'Tour Edition', etc.
 SPECIAL_EDITION_KEYWORDS = [
     "deluxe",
     "expanded",
-    "edition",
     "reissue",
     "anniversary",
-    "bonus"
+    "bonus",
+    "special edition",
+    "extended edition",
+    "tour edition",
+    "limited edition",
+    "collector's edition",
+    "collector edition",
+    "remastered"
 ]
 
 
@@ -187,6 +192,10 @@ def is_special_edition_album(album_title: str) -> bool:
     These albums often contain bonus tracks or alternate versions that were not
     released as singles. Single detection should be more conservative for these.
     
+    Detection criteria:
+    1. Contains special edition keywords (deluxe, expanded, reissue, etc.)
+    2. Album title has format "Original: Bonus Edition" (colon followed by edition)
+    
     Args:
         album_title: Album title
         
@@ -194,9 +203,18 @@ def is_special_edition_album(album_title: str) -> bool:
         True if album appears to be a special edition
     """
     album_lower = album_title.lower()
+    
+    # Check for special edition keywords
     for keyword in SPECIAL_EDITION_KEYWORDS:
         if keyword in album_lower:
             return True
+    
+    # Check for pattern "Original Album: Something Edition"
+    # This catches cases like "Viva la Vida: Prospekt's March Edition"
+    if ':' in album_title and 'edition' in album_lower:
+        # If there's a colon AND the word edition, it's likely a special edition
+        return True
+    
     return False
 
 
