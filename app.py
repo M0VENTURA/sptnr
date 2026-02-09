@@ -54,8 +54,7 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         # Use navidrome_genres which are populated from Navidrome during import
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
-        cursor.execute("SELECT navidrome_genres FROM tracks WHERE COALESCE(album_artist, artist) = ?", (artist_name,))
+        cursor.execute("SELECT navidrome_genres FROM tracks WHERE artist = ?", (artist_name,))
         rows = cursor.fetchall()
         conn.close()
         for row in rows:
@@ -1181,18 +1180,18 @@ def artists():
     """)
     total_stats = cursor.fetchone()
     
-    # Use album_artist column (falls back to artist if album_artist is NULL)
+    # Use artist column for consistency with detail page
     # Filter out NULL/empty artist names
     cursor.execute("""
         SELECT 
-            COALESCE(album_artist, artist) as artist,
+            artist,
             COUNT(DISTINCT album) as album_count,
             COUNT(*) as track_count,
             COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
-        WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
-        GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
+        WHERE artist IS NOT NULL AND artist != ''
+        GROUP BY artist COLLATE NOCASE
         
         UNION ALL
         
@@ -1203,7 +1202,7 @@ def artists():
             0 as single_count,
             last_updated
         FROM artist_stats
-        WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
+        WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL)
         
         ORDER BY artist COLLATE NOCASE
     """)
@@ -1328,7 +1327,6 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
         cursor.execute("""
             SELECT 
                 album,
@@ -1339,14 +1337,13 @@ def artist_detail(name):
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type
             FROM tracks
-            WHERE COALESCE(album_artist, artist) = ?
+            WHERE artist = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
         try:
             cursor.execute("""
                 SELECT 
@@ -1363,7 +1360,7 @@ def artist_detail(name):
                     MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(album_artist, artist) = ?
+                WHERE artist = ?
             """, (name,))
         except:
             # Fallback for databases without beets columns
@@ -1382,7 +1379,7 @@ def artist_detail(name):
                     NULL as musicbrainz_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(album_artist, artist) = ?
+                WHERE artist = ?
             """, (name,))
         
         artist_stats = cursor.fetchone()
