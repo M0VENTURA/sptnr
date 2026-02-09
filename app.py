@@ -1455,13 +1455,14 @@ def artist_detail(name):
             # Determine if this album should be categorized as a single release
             # An album is considered a single if:
             # 1. Spotify marks it as "single"
-            # 2. It has < 3 tracks (typical single release)
-            # 3. All or most tracks are marked as singles (singles_count >= track_count or singles_count > 0 and track_count <= 3)
+            # 2. It has < 3 tracks when no album_type is set (typical single release)
+            # 3. Most tracks (≥2) are marked as singles in a small release (≤3 tracks)
+            # 4. All tracks in the album are marked as singles
             is_single_release = (
                 album_type == "single" or 
                 (not album_type and track_count < 3) or
-                (singles_count > 0 and track_count <= 3) or
-                (singles_count >= track_count and track_count > 0)
+                (singles_count >= 2 and track_count <= 3) or
+                (singles_count >= track_count and track_count > 0)  # Guard against empty albums
             )
             
             # Categorize based on spotify_album_type, track count, and singles_count
