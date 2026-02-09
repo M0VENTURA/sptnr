@@ -371,7 +371,8 @@ class DiscogsClient:
         
         # Require exact match after cleaning to avoid false positives
         # This prevents "Life in Technicolor" from matching "Life in Technicolor II"
-        matches_title = track_title_lower == video_title_cleaned
+        # Ensure lowercase comparison (video_title is already lowercased, but explicit for clarity)
+        matches_title = track_title_lower == video_title_cleaned.lower()
         
         # Also check description with exact matching
         if not matches_title and video_desc:
@@ -383,7 +384,7 @@ class DiscogsClient:
                 parts = desc_cleaned.split(' - ', 1)
                 if len(parts) == 2:
                     desc_cleaned = parts[1].strip()
-            matches_title = track_title_lower == desc_cleaned
+            matches_title = track_title_lower == desc_cleaned.lower()
         
         return is_official and matches_title
     
@@ -497,9 +498,9 @@ class DiscogsClient:
                         best_idx, best_ratio = i, r
                 
                 # Require higher threshold (0.95) to avoid false positives
-                # Old threshold of 0.80 caused:
-                # - "Life in Technicolor" to match "Life in Technicolor II" (ratio 0.927)
-                # - "Lost+" to match "Lost!" (ratio 0.800)
+                # Old threshold of 0.80 caused these false matches:
+                # - Album track "Life in Technicolor" incorrectly matched single "Life in Technicolor II" (ratio 0.927)
+                # - Album track "Lost+" incorrectly matched single "Lost!" (ratio 0.800)
                 if best_ratio < 0.95:
                     continue
                 
