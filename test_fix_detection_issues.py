@@ -65,6 +65,20 @@ class TestMusicBrainzMatching(unittest.TestCase):
         self.assertFalse(matches, 
             "Life in Technicolor should NOT match Life in Technicolor II")
     
+    def test_case_insensitive_roman_numeral_matching(self):
+        """Test that Roman numerals match case-insensitively."""
+        # Track: "Life in Technicolor ii" (lowercase)
+        track_base, track_versions = _extract_version_info("Life in Technicolor ii")
+        
+        # Single: "Life in Technicolor II" (uppercase)
+        single_base, single_versions = _extract_version_info("Life in Technicolor II")
+        
+        # Should match because base titles are the same (case-insensitive)
+        matches = (track_base.lower() == single_base.lower() and 
+                  track_versions == single_versions)
+        self.assertTrue(matches, 
+            "Life in Technicolor ii should match Life in Technicolor II")
+    
     def test_punctuation_differentiation(self):
         """Test that punctuation suffixes distinguish tracks."""
         # Track: "Lost!"

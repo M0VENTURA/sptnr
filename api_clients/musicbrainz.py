@@ -266,10 +266,20 @@ class MusicBrainzClient:
                     # Fallback to simple delay if rate limiter not available
                     time.sleep(1.0)
                 
-                # Search using base title to find all versions
+                # Search using base title WITHOUT Roman numerals/punctuation to find all versions
+                # Lucene quoted queries are case-sensitive, so we strip Roman numerals and punctuation
+                # to ensure "Life in Technicolor ii" finds "Life in Technicolor II"
+                # We'll filter by exact base title match later (case-insensitive)
+                import re
+                search_title = base_title
+                # Strip Roman numeral suffix for search (we'll match it later)
+                search_title = re.sub(ROMAN_NUMERAL_PATTERN, '', search_title, flags=re.IGNORECASE).strip()
+                # Strip punctuation suffix for search (we'll match it later)
+                search_title = re.sub(PUNCTUATION_SUFFIX_PATTERN, '', search_title).strip()
+                
                 # Quote title and artist to handle multi-word values properly (Lucene syntax)
                 # Escape special characters to prevent query syntax errors
-                escaped_title = _escape_lucene_special_chars(base_title)
+                escaped_title = _escape_lucene_special_chars(search_title)
                 escaped_artist = _escape_lucene_special_chars(artist)
                 query = f'releasegroup:"{escaped_title}" AND artist:"{escaped_artist}" AND primarytype:Single'
                 params = {
