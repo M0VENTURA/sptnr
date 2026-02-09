@@ -1230,6 +1230,41 @@ def detect_single_for_track(
             "is_single": False
         }
     
+    # ALBUM-LEVEL POPULARITY FILTER (for standard detection path)
+    # If album and popularity are provided, check against album mean
+    if album and popularity and popularity > 0:
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Calculate album mean popularity (excluding tracks with parentheses)
+            cursor.execute("""
+                SELECT popularity_score 
+                FROM tracks 
+                WHERE artist = ? AND album = ? AND popularity_score > 0
+            """, (artist, album))
+            album_popularities = [row[0] for row in cursor.fetchall() if row[0] > 0]
+            
+            if album_popularities:
+                from statistics import mean as stat_mean
+                album_mean = stat_mean(album_popularities)
+                
+                if popularity < album_mean:
+                    if verbose:
+                        log_verbose(f"   ⊗ Skipping single: {title} (popularity {popularity:.1f} < album mean {album_mean:.1f})")
+                    conn.close()
+                    return {
+                        "sources": [],
+                        "confidence": "low",
+                        "is_single": False
+                    }
+            
+            conn.close()
+        except Exception as e:
+            if verbose:
+                log_verbose(f"   ⚠ Could not calculate album mean for popularity filter: {e}")
+            # Continue with detection if we can't calculate album mean
+    
     single_sources = []
     
     # Load discogs token from config if not provided
