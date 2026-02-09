@@ -370,13 +370,20 @@ class DiscogsClient:
         Args:
             title: Track title
             artist: Artist name
-            album_context: Optional album context dict (is_live, is_unplugged)
+            album_context: Optional album context dict (is_live, is_unplugged, is_special_edition)
             timeout: Request timeout
             
         Returns:
             True if detected as single
         """
         if not self.enabled or not self.token:
+            return False
+        
+        # Special edition albums should not have tracks marked as singles
+        # unless they are explicitly confirmed by multiple sources
+        # For now, reject single detection for special edition albums from Discogs
+        if album_context and album_context.get("is_special_edition"):
+            logger.debug(f"Discogs: Skipping single check for '{title}' from special edition album")
             return False
         
         # Cache lookup

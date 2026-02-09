@@ -133,6 +133,23 @@ COMPILATION_KEYWORDS = [
     "platinum"
 ]
 
+# Keywords for detecting special edition/deluxe/expanded albums
+# Tracks from these albums should not be marked as singles unless they have
+# explicit metadata confirming single status from multiple sources
+SPECIAL_EDITION_KEYWORDS = [
+    "deluxe",
+    "expanded",
+    "edition",
+    "reissue",
+    "anniversary",
+    "bonus",
+    "special edition",
+    "expanded edition",
+    "deluxe edition",
+    "tour edition",
+    "limited edition"
+]
+
 
 def is_compilation_album(album_type: Optional[str], album_title: str, track_count: int) -> bool:
     """
@@ -165,6 +182,26 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
         if keyword in album_lower:
             return True
     
+    return False
+
+
+def is_special_edition_album(album_title: str) -> bool:
+    """
+    Detect if an album is a special edition, deluxe, or expanded release.
+    
+    These albums often contain bonus tracks or alternate versions that were not
+    released as singles. Single detection should be more conservative for these.
+    
+    Args:
+        album_title: Album title
+        
+    Returns:
+        True if album appears to be a special edition
+    """
+    album_lower = album_title.lower()
+    for keyword in SPECIAL_EDITION_KEYWORDS:
+        if keyword in album_lower:
+            return True
     return False
 
 
@@ -754,6 +791,12 @@ def detect_single_enhanced(
     if is_compilation and verbose:
         log_debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
     
+    # Detect if this is a special edition album
+    is_special_edition = is_special_edition_album(album)
+    
+    if is_special_edition and verbose:
+        log_debug(f"[DEBUG] Special edition album detected: {album}")
+    
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
@@ -784,7 +827,10 @@ def detect_single_enhanced(
             log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
-            discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
+            discogs_confirmed = discogs_client.is_single(title, artist, album_context={
+                'duration': duration,
+                'is_special_edition': is_special_edition
+            })
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
