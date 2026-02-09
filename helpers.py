@@ -433,8 +433,7 @@ def find_matching_spotify_single(
             normalize_title as normalize_title_advanced,
             normalize_artist,
             calculate_track_similarity,
-            matches_by_isrc,
-            is_alternate_version as is_alternate_version_advanced
+            matches_by_isrc
         )
         use_advanced_matching = True
     except ImportError:
@@ -464,8 +463,11 @@ def find_matching_spotify_single(
         album_type = album_info.get("album_type", "").lower()
         album_name = album_info.get("name", "").lower()
         release_duration_ms = result.get("duration_ms", 0)
-        release_artist = result.get("artists", [{}])[0].get("name", "") if result.get("artists") else ""
-        release_isrc = result.get("external_ids", {}).get("isrc") if result.get("external_ids") else None
+        
+        # Get artist and ISRC safely
+        artists_list = result.get("artists", [])
+        release_artist = artists_list[0].get("name", "") if artists_list else ""
+        release_isrc = result.get("external_ids", {}).get("isrc")
         
         if logger:
             logger.debug(f"[DEBUG] Release {idx + 1}: {release_title}")

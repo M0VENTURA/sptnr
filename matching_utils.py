@@ -19,7 +19,6 @@ Key Features:
 - Graduated duration matching with penalties
 """
 
-import difflib
 import unicodedata
 import re
 import logging
