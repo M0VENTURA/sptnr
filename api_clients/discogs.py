@@ -332,8 +332,8 @@ class DiscogsClient:
         A video is considered official if:
         1. The word "official" appears in the video title or description
            (avoiding false positives like "unofficial" by checking word boundaries)
-        2. The track title appears in the video title or description
-           (using substring matching for flexibility with formatting variations)
+        2. The track title matches the video title exactly (after cleaning)
+           (requires exact match to avoid false positives like "Song" matching "Song II")
         
         Args:
             video: Video dict from Discogs API with 'title' and 'description' keys
@@ -353,8 +353,37 @@ class DiscogsClient:
             re.search(official_pattern, video_desc) is not None
         )
         
-        # Track title matching uses substring for flexibility (handles formatting variations)
-        matches_title = (track_title_lower in video_title or track_title_lower in video_desc)
+        # Track title matching: Extract the title part from video title before comparing
+        # Remove common video suffixes like "official video", "music video", "hd", etc.
+        # Also remove common artist name prefixes like "Artist - Title"
+        video_title_cleaned = re.sub(
+            r'\s*[\(\[]?(official|music)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*$',
+            '', video_title, flags=re.IGNORECASE
+        ).strip()
+        
+        # Remove "artist - " prefix if present (common in video titles)
+        # This handles cases like "Coldplay - Life in Technicolor"
+        if ' - ' in video_title_cleaned:
+            parts = video_title_cleaned.split(' - ', 1)
+            if len(parts) == 2:
+                # Use the part after the dash as the title
+                video_title_cleaned = parts[1].strip()
+        
+        # Require exact match after cleaning to avoid false positives
+        # This prevents "Life in Technicolor" from matching "Life in Technicolor II"
+        matches_title = track_title_lower == video_title_cleaned
+        
+        # Also check description with exact matching
+        if not matches_title and video_desc:
+            desc_cleaned = re.sub(
+                r'\s*[\(\[]?(official|music)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*',
+                '', video_desc, flags=re.IGNORECASE
+            ).strip()
+            if ' - ' in desc_cleaned:
+                parts = desc_cleaned.split(' - ', 1)
+                if len(parts) == 2:
+                    desc_cleaned = parts[1].strip()
+            matches_title = track_title_lower == desc_cleaned
         
         return is_official and matches_title
     
@@ -457,14 +486,21 @@ class DiscogsClient:
                 if not tracks or len(tracks) > 7:
                     continue
                 
-                # Find track match
+                # Find track match using stricter fuzzy matching threshold
+                # Increased from 0.80 to 0.95 to avoid false positives like:
+                # "Life in Technicolor" matching "Life in Technicolor II"
+                # "Lost!" matching "Lost+"
                 best_idx, best_ratio = -1, 0.0
                 for i, t in enumerate(tracks):
                     r = difflib.SequenceMatcher(None, t.get("title", "").lower(), nav_title).ratio()
                     if r > best_ratio:
                         best_idx, best_ratio = i, r
                 
-                if best_ratio < 0.80:
+                # Require higher threshold (0.95) to avoid false positives
+                # Old threshold of 0.80 caused:
+                # - "Life in Technicolor" to match "Life in Technicolor II" (ratio 0.927)
+                # - "Lost+" to match "Lost!" (ratio 0.800)
+                if best_ratio < 0.95:
                     continue
                 
                 mtitle = (tracks[best_idx].get("title", "") or "").lower()
