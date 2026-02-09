@@ -38,12 +38,17 @@ try:
         normalize_string,
         calculate_duration_similarity,
         calculate_track_similarity,
-        is_fuzzy_match
+        is_fuzzy_match,
+        ROMAN_NUMERAL_PATTERN,
+        PUNCTUATION_SUFFIX_PATTERN
     )
     MATCHING_UTILS_AVAILABLE = True
 except ImportError:
     log_debug("matching_utils not available, using legacy normalization")
     MATCHING_UTILS_AVAILABLE = False
+    # Fallback patterns if matching_utils not available
+    ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
+    PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
 
 
 def normalize_title_strict(title: str) -> str:
@@ -52,18 +57,36 @@ def normalize_title_strict(title: str) -> str:
     
     Now enhanced with Unicode normalization and accent removal when matching_utils available.
     
+    IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, etc.)
+    to ensure different songs are not matched as the same track.
+    
     - lowercase
     - remove accents (Unicode NFD decomposition)
-    - remove punctuation
+    - remove punctuation (except trailing !, +, ?)
     - remove bracketed suffixes
     - collapse whitespace
     - strip leading articles (a, an, the)
+    - preserve Roman numerals at end
     """
     if MATCHING_UTILS_AVAILABLE:
         # Use advanced normalization with Unicode accent removal
         return normalize_title_advanced(title)
     
     # Legacy normalization (fallback)
+    # Preserve trailing punctuation suffixes (!, +, ?) before normalization
+    preserved_suffix = ""
+    suffix_match = re.search(PUNCTUATION_SUFFIX_PATTERN, title)
+    if suffix_match:
+        preserved_suffix = suffix_match.group(1)
+        title = title[:suffix_match.start()]
+    
+    # Preserve Roman numerals at the end (I, II, III, IV, V, etc.) before normalization
+    roman_suffix = ""
+    roman_match = re.search(ROMAN_NUMERAL_PATTERN, title, re.IGNORECASE)
+    if roman_match:
+        roman_suffix = " " + roman_match.group(1).lower()  # Preserve as lowercase
+        title = title[:roman_match.start()]
+    
     # Remove bracketed/parenthesized content
     normalized = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
     # Remove dash-based versions
@@ -79,6 +102,13 @@ def normalize_title_strict(title: str) -> str:
     normalized = re.sub(r'^(?:a|an|the)\s+', '', normalized)
     # Collapse whitespace
     normalized = re.sub(r'\s+', ' ', normalized)
+    
+    # Re-attach preserved suffixes
+    if roman_suffix:
+        normalized = normalized + roman_suffix
+    if preserved_suffix:
+        normalized = normalized + preserved_suffix
+    
     return normalized
 
 

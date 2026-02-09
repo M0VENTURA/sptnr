@@ -32,10 +32,23 @@ STRICT_MATCH_SCORE = 0.95  # Confidence score for exact normalized matches
 ISRC_MATCH_SCORE = 1.0  # Perfect confidence for ISRC matches
 FUZZY_THRESHOLD = 0.80  # Minimum score for fuzzy matching to be accepted
 
+# Roman numeral pattern for title suffix preservation
+# Matches Roman numerals I-XX at the end of titles
+# Used to distinguish tracks like "Song II" from "Song III"
+ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
+
+# Punctuation suffix pattern for title preservation
+# Matches trailing punctuation (!, +, ?) at the end of titles
+# Used to distinguish tracks like "Lost!" from "Lost+"
+PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
+
 
 def normalize_string(text: str) -> str:
     """
     Normalize text for comparison: lowercase, remove accents, clean punctuation.
+    
+    IMPORTANT: Preserves trailing punctuation (!, +, ?) to distinguish different songs
+    like "Lost!" vs "Lost+".
     
     This is the base normalization used for all text comparisons.
     
@@ -47,6 +60,13 @@ def normalize_string(text: str) -> str:
     """
     if not text:
         return ""
+    
+    # Preserve trailing punctuation suffixes (!, +, ?) before normalization
+    preserved_suffix = ""
+    suffix_match = re.search(PUNCTUATION_SUFFIX_PATTERN, text)
+    if suffix_match:
+        preserved_suffix = suffix_match.group(1)
+        text = text[:suffix_match.start()]
     
     # Remove accents using Unicode NFD decomposition
     text = unicodedata.normalize("NFD", text)
@@ -61,17 +81,29 @@ def normalize_string(text: str) -> str:
     # Collapse whitespace
     text = re.sub(r"\s+", " ", text)
     
-    return text.strip()
+    # Re-attach preserved suffix
+    result = text.strip()
+    if preserved_suffix:
+        result = result + preserved_suffix
+    
+    return result
 
 
 def normalize_title(title: str) -> str:
     """
     Normalize track title with special handling for versions and live recordings.
     
+    IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, etc.)
+    to ensure different songs are not matched as the same track.
+    
     Removes:
     - Live indicators: (live), - live, [live], live$
     - Version/remix/remaster tags in parentheses/brackets
     - Keywords: remaster, remastered, deluxe, edit, mix, version, bonus
+    
+    Preserves:
+    - Trailing punctuation: "Lost!" vs "Lost+"
+    - Roman numerals: "Song II" vs "Song III"
     
     Args:
         title: Track title to normalize
@@ -81,6 +113,14 @@ def normalize_title(title: str) -> str:
     """
     if not title:
         return ""
+    
+    # Preserve Roman numerals at the end (I, II, III, IV, V, etc.) before normalization
+    # Match space + Roman numeral at the end of the title
+    roman_suffix = ""
+    roman_match = re.search(ROMAN_NUMERAL_PATTERN, title, re.IGNORECASE)
+    if roman_match:
+        roman_suffix = " " + roman_match.group(1).lower()  # Preserve as lowercase
+        title = title[:roman_match.start()]
     
     # Remove live indicators
     live_patterns = [
@@ -100,7 +140,14 @@ def normalize_title(title: str) -> str:
         title
     )
     
-    return normalize_string(title)
+    # Normalize the base title (this will also preserve trailing punctuation)
+    result = normalize_string(title)
+    
+    # Re-attach Roman numeral suffix if present
+    if roman_suffix:
+        result = result + roman_suffix
+    
+    return result
 
 
 def normalize_artist(artist: str) -> str:
