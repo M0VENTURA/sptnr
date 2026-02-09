@@ -1443,7 +1443,7 @@ def detect_single_for_track(
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
     
     # Video detection requires a second method to approve it (Spotify, Discogs single, or MusicBrainz)
-    if has_discogs_single or (has_discogs_video and (has_discogs_single or has_other_sources)):
+    if has_discogs_single or (has_discogs_video and has_other_sources):
         single_confidence = "high"
     elif has_other_sources or has_discogs_video:
         single_confidence = "medium"
