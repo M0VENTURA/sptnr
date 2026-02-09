@@ -426,13 +426,15 @@ class DiscogsClient:
             return self._single_cache[cache_key]
         
         try:
-            # Try search without format filter first (to catch singles with non-standard format tags)
+            # Try search WITH format filter first (to prioritize singles/EPs over albums)
+            # This ensures we find actual single releases instead of album appearances
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {
                 "q": f"{artist} {title}", 
                 "type": "release", 
-                "per_page": 15
+                "per_page": 15,
+                "format": "Single, EP"  # Prioritize singles and EPs
             }
             
             # Helper function for making search requests with rate limit handling
@@ -449,10 +451,10 @@ class DiscogsClient:
             
             results = make_discogs_search_request(params)
             
-            # If no results without filter, try with format filter as fallback
+            # If no results with filter, try without filter as fallback (for non-standard releases)
             if not results:
                 _throttle_discogs()
-                fallback_params = {**params, "format": "Single, EP"}
+                fallback_params = {k: v for k, v in params.items() if k != "format"}  # Remove format filter
                 results = make_discogs_search_request(fallback_params)
             
             if not results:
