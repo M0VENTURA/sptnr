@@ -362,10 +362,14 @@ class DiscogsClient:
         """
         Discogs single detection (best-effort, rate-limit safe).
         
-        Strong paths:
+        Detection paths:
           - Explicit 'Single' in release formats
-          - EP with first track == A-side AND an official video on the same release
-          - Structural fallback: 1–2 track A/B sides where matched title is present
+          - EP with first track match (the track is the A-side/first track)
+          - Official music video confirmation
+          
+        Note: Previously had a "structural fallback" for 1-2 track releases,
+        but this was removed as it incorrectly marked album tracks as singles
+        when their separate single release existed in Discogs.
           
         Args:
             title: Track title
@@ -486,11 +490,14 @@ class DiscogsClient:
                         self._single_cache[cache_key] = True
                         return True
                 
-                # Structural fallback: 1-2 tracks
-                if 1 <= len(tracks) <= 2:
-                    if best_idx == 0:
-                        self._single_cache[cache_key] = True
-                        return True
+                # Removed structural fallback: 1-2 tracks
+                # This was too permissive and incorrectly marked album tracks as singles
+                # when their single release (1-2 tracks) was found in Discogs.
+                # For example, "Viva la Vida" from the album would match the "Viva la Vida" single.
+                # We now only rely on the three strong paths above:
+                # 1. Explicit "Single" in release formats
+                # 2. EP with first track match
+                # 3. Official music video confirmation
             
             self._single_cache[cache_key] = False
             return False
