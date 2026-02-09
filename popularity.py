@@ -1237,13 +1237,13 @@ def detect_single_for_track(
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Calculate album mean popularity (excluding tracks with parentheses)
+            # Calculate album mean popularity
             cursor.execute("""
                 SELECT popularity_score 
                 FROM tracks 
                 WHERE artist = ? AND album = ? AND popularity_score > 0
             """, (artist, album))
-            album_popularities = [row[0] for row in cursor.fetchall() if row[0] > 0]
+            album_popularities = [row[0] for row in cursor.fetchall()]
             
             if album_popularities:
                 from statistics import mean as stat_mean
