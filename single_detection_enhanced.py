@@ -133,6 +133,34 @@ COMPILATION_KEYWORDS = [
     "platinum"
 ]
 
+# Keywords for detecting special edition/deluxe/expanded albums
+# Tracks from these albums should not be marked as singles by Discogs alone
+SPECIAL_EDITION_KEYWORDS = [
+    "deluxe",
+    "expanded",
+    "reissue",
+    "anniversary",
+    "bonus",
+    "special edition",
+    "extended edition",
+    "tour edition",
+    "limited edition",
+    "collector's edition",
+    "remastered"
+]
+
+# Base keywords for pattern matching (used in colon+edition detection)
+# These are the core qualifiers that indicate a special edition
+SPECIAL_EDITION_BASE_KEYWORDS = [
+    "deluxe",
+    "special",
+    "expanded",
+    "limited",
+    "collector",
+    "tour",
+    "bonus"
+]
+
 
 def is_compilation_album(album_type: Optional[str], album_title: str, track_count: int) -> bool:
     """
@@ -165,6 +193,55 @@ def is_compilation_album(album_type: Optional[str], album_title: str, track_coun
         if keyword in album_lower:
             return True
     
+    # No compilation indicators found
+    return False
+
+
+def is_special_edition_album(album_title: str) -> bool:
+    """
+    Detect if an album is a special edition, deluxe, or expanded release.
+    
+    These albums often contain bonus tracks or alternate versions that were not
+    released as singles. Single detection should be more conservative for these.
+    
+    Detection criteria:
+    1. Contains special edition keywords (deluxe, expanded, reissue, etc.)
+    2. Album title has format "Original: Bonus Edition" (colon followed by edition)
+    
+    Args:
+        album_title: Album title
+        
+    Returns:
+        True if album appears to be a special edition
+    """
+    album_lower = album_title.lower()
+    
+    # Check for special edition keywords
+    for keyword in SPECIAL_EDITION_KEYWORDS:
+        if keyword in album_lower:
+            return True
+    
+    # Check for pattern "Original Album: Something Edition"
+    # This catches cases like "Viva la Vida: Prospekt's March Edition"
+    # but not "Greatest Hits: First Edition" or "Live: Studio Edition"
+    if ':' in album_title:
+        # Split by colon and check if "edition" appears in the part after the colon
+        parts = album_title.split(':', 1)
+        if len(parts) > 1:
+            after_colon = parts[1].lower()
+            # "edition" should be in the text after the colon
+            if 'edition' in after_colon:
+                # Make sure it's not a common album type like "First Edition" or "Studio Edition"
+                # by checking if it has qualifying words before "edition"
+                words_before_edition = after_colon.split('edition')[0].strip()
+                # Check if this is likely a special edition:
+                # 1. Multiple words before "edition" (e.g., "Prospekt's March Edition")
+                # 2. OR contains a qualifier keyword (e.g., "Deluxe Edition", "Special Edition")
+                # This avoids false positives like "First Edition" or "Studio Edition"
+                if len(words_before_edition.split()) > 1 or any(kw in after_colon for kw in SPECIAL_EDITION_BASE_KEYWORDS):
+                    return True
+    
+    # No special edition indicators found
     return False
 
 
@@ -754,6 +831,12 @@ def detect_single_enhanced(
     if is_compilation and verbose:
         log_debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
     
+    # Detect if this is a special edition album
+    is_special_edition = is_special_edition_album(album)
+    
+    if is_special_edition and verbose:
+        log_debug(f"[DEBUG] Special edition album detected: {album}")
+    
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
@@ -784,7 +867,10 @@ def detect_single_enhanced(
             log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             
             # Use existing is_single method
-            discogs_confirmed = discogs_client.is_single(title, artist, album_context={'duration': duration})
+            discogs_confirmed = discogs_client.is_single(title, artist, album_context={
+                'duration': duration,
+                'is_special_edition': is_special_edition
+            })
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
