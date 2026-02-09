@@ -292,23 +292,23 @@ class MusicBrainzClient:
                 res.raise_for_status()
                 rgs = res.json().get("release-groups", [])
                 
-                # Check if any result is a single with matching version
+                # Check if any result is a single with matching version AND title
                 for rg in rgs:
                     if (rg.get("primary-type") or "").lower() != "single":
                         continue
                     
-                    # Extract version from release-group title
+                    # Extract version and base title from release-group title
                     rg_title = rg.get("title", "")
-                    _, rg_versions = _extract_version_info(rg_title)
+                    rg_base_title, rg_versions = _extract_version_info(rg_title)
                     
                     # Match if:
-                    # 1. Both have same version keywords (e.g., both live, both acoustic)
-                    # 2. OR both have no version keywords (both are studio versions)
-                    if track_versions == rg_versions:
-                        logger.debug(f"MusicBrainz single match: '{title}' matched '{rg_title}' (versions: {track_versions})")
+                    # 1. Base titles match exactly (case-insensitive, preserving suffixes like !, +, ?, II, III, etc.)
+                    # 2. AND version keywords match (e.g., both live, both acoustic, or both studio)
+                    if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
+                        logger.debug(f"MusicBrainz single match: '{title}' matched '{rg_title}' (base: '{base_title}' == '{rg_base_title}', versions: {track_versions})")
                         return True
                     else:
-                        logger.debug(f"MusicBrainz version mismatch: track '{title}' ({track_versions}) vs release '{rg_title}' ({rg_versions})")
+                        logger.debug(f"MusicBrainz mismatch: track '{title}' (base: '{base_title}', versions: {track_versions}) vs release '{rg_title}' (base: '{rg_base_title}', versions: {rg_versions})")
                 
                 # No matching single found with same version
                 return False
