@@ -234,9 +234,10 @@ def is_special_edition_album(album_title: str) -> bool:
                 # Make sure it's not a common album type like "First Edition" or "Studio Edition"
                 # by checking if it has qualifying words before "edition"
                 words_before_edition = after_colon.split('edition')[0].strip()
-                # If there are multiple words before "edition", it's likely a special edition
-                # e.g., "Prospekt's March Edition", "Deluxe Edition", etc.
-                # But "First Edition" or "Studio Edition" would only have one word
+                # Check if this is likely a special edition:
+                # 1. Multiple words before "edition" (e.g., "Prospekt's March Edition")
+                # 2. OR contains a qualifier keyword (e.g., "Deluxe Edition", "Special Edition")
+                # This avoids false positives like "First Edition" or "Studio Edition"
                 if len(words_before_edition.split()) > 1 or any(kw in after_colon for kw in SPECIAL_EDITION_BASE_KEYWORDS):
                     return True
     
