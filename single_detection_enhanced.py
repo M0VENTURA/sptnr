@@ -38,12 +38,15 @@ try:
         normalize_string,
         calculate_duration_similarity,
         calculate_track_similarity,
-        is_fuzzy_match
+        is_fuzzy_match,
+        ROMAN_NUMERAL_PATTERN
     )
     MATCHING_UTILS_AVAILABLE = True
 except ImportError:
     log_debug("matching_utils not available, using legacy normalization")
     MATCHING_UTILS_AVAILABLE = False
+    # Fallback pattern if matching_utils not available
+    ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
 
 
 def normalize_title_strict(title: str) -> str:
@@ -77,7 +80,7 @@ def normalize_title_strict(title: str) -> str:
     
     # Preserve Roman numerals at the end (I, II, III, IV, V, etc.) before normalization
     roman_suffix = ""
-    roman_match = re.search(r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$', title, re.IGNORECASE)
+    roman_match = re.search(ROMAN_NUMERAL_PATTERN, title, re.IGNORECASE)
     if roman_match:
         roman_suffix = " " + roman_match.group(1).lower()  # Preserve as lowercase
         title = title[:roman_match.start()]

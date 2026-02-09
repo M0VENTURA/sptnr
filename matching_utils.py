@@ -32,6 +32,11 @@ STRICT_MATCH_SCORE = 0.95  # Confidence score for exact normalized matches
 ISRC_MATCH_SCORE = 1.0  # Perfect confidence for ISRC matches
 FUZZY_THRESHOLD = 0.80  # Minimum score for fuzzy matching to be accepted
 
+# Roman numeral pattern for title suffix preservation
+# Matches Roman numerals I-XX at the end of titles
+# Used to distinguish tracks like "Song II" from "Song III"
+ROMAN_NUMERAL_PATTERN = r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$'
+
 
 def normalize_string(text: str) -> str:
     """
@@ -107,7 +112,7 @@ def normalize_title(title: str) -> str:
     # Preserve Roman numerals at the end (I, II, III, IV, V, etc.) before normalization
     # Match space + Roman numeral at the end of the title
     roman_suffix = ""
-    roman_match = re.search(r'\s+(I{1,3}|IV|V|VI{0,3}|IX|X{1,3}|XI{0,3}|XIV|XV|XVI{0,3}|XIX|XX)\s*$', title, re.IGNORECASE)
+    roman_match = re.search(ROMAN_NUMERAL_PATTERN, title, re.IGNORECASE)
     if roman_match:
         roman_suffix = " " + roman_match.group(1).lower()  # Preserve as lowercase
         title = title[:roman_match.start()]
