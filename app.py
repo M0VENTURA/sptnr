@@ -1449,20 +1449,33 @@ def artist_detail(name):
             album_dict['is_missing'] = False  # Mark as discovered
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
+            singles_count = album_dict.get("singles_count", 0)
             album_name = album_dict.get("album", "")
             
-            # Categorize based on spotify_album_type and track count
+            # Determine if this album should be categorized as a single release
+            # An album is considered a single if:
+            # 1. Spotify marks it as "single"
+            # 2. It has < 3 tracks (typical single release)
+            # 3. All or most tracks are marked as singles (singles_count >= track_count or singles_count > 0 and track_count <= 3)
+            is_single_release = (
+                album_type == "single" or 
+                (not album_type and track_count < 3) or
+                (singles_count > 0 and track_count <= 3) or
+                (singles_count >= track_count and track_count > 0)
+            )
+            
+            # Categorize based on spotify_album_type, track count, and singles_count
             if album_type == "compilation":
                 albums_by_category["compilation"].append(album_dict)
+                categorized_albums.add(album_name)
+            elif is_single_release:
+                albums_by_category["single"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_type == "album" or (not album_type and track_count > 6):
                 albums_by_category["album"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_type == "ep" or (not album_type and 3 <= track_count <= 6):
                 albums_by_category["ep"].append(album_dict)
-                categorized_albums.add(album_name)
-            elif album_type == "single" or (not album_type and track_count < 3):
-                albums_by_category["single"].append(album_dict)
                 categorized_albums.add(album_name)
             else:
                 albums_by_category["unknown"].append(album_dict)
