@@ -1435,14 +1435,17 @@ def detect_single_for_track(
             log_debug(f"   Discogs: Token not configured for video detection")
     
     # Calculate confidence based on sources per problem statement
-    # High confidence: Discogs single or music video
-    # Medium confidence: Spotify, MusicBrainz, Last.fm single
-    has_discogs = "discogs" in single_sources or "discogs_video" in single_sources
+    # High confidence: Discogs single format OR (discogs_video + any other source)
+    # Medium confidence: Spotify, MusicBrainz, Last.fm single, or discogs_video alone
+    # Low confidence: No sources
+    has_discogs_single = "discogs" in single_sources
+    has_discogs_video = "discogs_video" in single_sources
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
     
-    if has_discogs:
+    # Video detection requires a second method to approve it (Spotify, Discogs single, or MusicBrainz)
+    if has_discogs_single or (has_discogs_video and has_other_sources):
         single_confidence = "high"
-    elif has_other_sources:
+    elif has_other_sources or has_discogs_video:
         single_confidence = "medium"
     else:
         single_confidence = "low"

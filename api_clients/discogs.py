@@ -473,19 +473,6 @@ class DiscogsClient:
                     self._single_cache[cache_key] = True
                     return True
                 
-                # Strong path 3: Check for music videos in the release
-                # If a release has an official video for the matched track, it's likely a single
-                videos = data.get("videos", []) or []
-                if videos:
-                    log_info(f"   Discogs: Checking {len(videos)} video(s) in release {rid} for '{title}'")
-                for video in videos:
-                    if self._is_official_video_for_track(video, nav_title):
-                        # Official video for this track found - likely a single
-                        log_unified(f"   ✓ Discogs confirms single via official music video in release {rid}: {title}")
-                        log_info(f"   Discogs result: Official music video found in release for '{title}' (video: {video.get('title', 'N/A')})")
-                        self._single_cache[cache_key] = True
-                        return True
-                
                 # Structural fallback: 1-2 tracks
                 if 1 <= len(tracks) <= 2:
                     if best_idx == 0:
