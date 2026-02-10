@@ -294,7 +294,7 @@ def fetch_album_tracks(album_id):
     """
     Fetch all tracks for an album using Subsonic API (wrapper using NavidromeClient).
     :param album_id: Album ID in Navidrome
-    :return: List of track objects
+    :return: Dict with 'tracks' (list of track objects) and 'artist' (album artist name)
     """
     nav_client = _get_nav_client()
     if nav_client is None:

@@ -135,10 +135,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             if album_context.get("is_live") or album_context.get("is_unplugged"):
                 logging.info(f"      🎤 Detected live/unplugged album: {album_name}")
             try:
-                tracks = fetch_album_tracks(album_id)
+                album_data = fetch_album_tracks(album_id)
+                tracks = album_data.get("tracks", [])
+                api_album_artist = album_data.get("artist", "")
             except Exception as e:
                 logging.debug(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
+                api_album_artist = ""
 
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
 
@@ -156,10 +159,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             # Track the number of tracks actually processed for this album
             album_tracks_processed = 0
             
-            # Get the album artist from the album object or fall back to the artist we're importing for
-            # The track's albumArtist field can be incorrect (e.g., containing track artist with feat.)
-            # Priority: album.artist > artist_name (function parameter) > track.albumArtist (as last resort)
-            album_artist_value = alb.get("artist", artist_name)
+            # Get the album artist with priority order:
+            # 1. api_album_artist - from getAlbum.view response (most reliable)
+            # 2. alb.get("artist") - from getArtist.view response 
+            # 3. artist_name - the function parameter (artist we're importing)
+            # Note: track.albumArtist field can be incorrect (e.g., containing track artist with feat.)
+            album_artist_value = api_album_artist or alb.get("artist") or artist_name
 
             for t in tracks:
                 track_id = t.get("id")

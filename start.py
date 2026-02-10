@@ -501,7 +501,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             logging.debug(f"Scanning album {album_count}/{len(albums)}: {album_name}")
             
             try:
-                tracks = fetch_album_tracks(album_id)
+                album_data = fetch_album_tracks(album_id)
+                tracks = album_data.get("tracks", [])
+                api_album_artist = album_data.get("artist", "")
                 if tracks:
                     print(f"      ðŸŽµ Found {len(tracks)} tracks")
                     logging.info(f"Found {len(tracks)} tracks in album '{album_name}'")
@@ -509,6 +511,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 print(f"      âŒ Failed to fetch tracks: {e}")
                 logging.error(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
+                api_album_artist = ""
 
             # Album-level skip if counts already match cached tracks (unless force=True)
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
@@ -522,10 +525,12 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             tracks_skipped = 0
             tracks_updated = 0
             
-            # Get the album artist from the album object or fall back to the artist we're importing for
-            # The track's albumArtist field can be incorrect (e.g., containing track artist with feat.)
-            # Priority: album.artist > name (function parameter) > track.albumArtist (as last resort)
-            album_artist_value = alb.get("artist", name)
+            # Get the album artist with priority order:
+            # 1. api_album_artist - from getAlbum.view response (most reliable)
+            # 2. alb.get("artist") - from getArtist.view response 
+            # 3. name - the function parameter (artist we're importing)
+            # Note: track.albumArtist field can be incorrect (e.g., containing track artist with feat.)
+            album_artist_value = api_album_artist or alb.get("artist") or name
             
             for t in tracks:
                 track_id = t.get("id")
@@ -640,7 +645,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
 
 def update_artist_stats(artist_id, artist_name):
     album_count = len(fetch_artist_albums(artist_id))
-    track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_id))
+    track_count = sum(len(fetch_album_tracks(a['id']).get("tracks", [])) for a in fetch_artist_albums(artist_id))
     conn = get_db_connection()
     cursor = conn.cursor()
     cursor.execute("""
@@ -926,7 +931,7 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
 
 
             album_count = len(fetch_artist_albums(artist_info['id']))
-            track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+            track_count = sum(len(fetch_album_tracks(a['id']).get("tracks", [])) for a in fetch_artist_albums(artist_info['id']))
             conn = get_db_connection()
             cursor = conn.cursor()
             cursor.execute("""
@@ -970,7 +975,7 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
                         albums = fetch_artist_albums(artist_id)
                         navidrome_album_count += len(albums)
                         for album in albums:
-                            tracks = fetch_album_tracks(album.get("id"))
+                            tracks = fetch_album_tracks(album.get("id")).get("tracks", [])
                             navidrome_track_count += len(tracks)
             
             print(f"ðŸ“Š Navidrome: {navidrome_artist_count} artists, {navidrome_album_count} albums, {navidrome_track_count} tracks")
@@ -1044,7 +1049,7 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
 
 
                 album_count = len(fetch_artist_albums(artist_info['id']))
-                track_count = sum(len(fetch_album_tracks(a['id'])) for a in fetch_artist_albums(artist_info['id']))
+                track_count = sum(len(fetch_album_tracks(a['id']).get("tracks", [])) for a in fetch_artist_albums(artist_info['id']))
                 conn = get_db_connection()
                 cursor = conn.cursor()
                 cursor.execute("""
