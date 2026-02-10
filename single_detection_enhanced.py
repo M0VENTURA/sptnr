@@ -685,14 +685,13 @@ def determine_final_status(
         return 'low'
     
     # Z-score can ONLY produce medium confidence, NEVER high confidence
-    # Z-score MUST require metadata confirmation for MEDIUM confidence
-    # Z-score does NOT require metadata for LOW confidence
+    # Z-score does NOT require metadata (metadata is just a bonus indicator)
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
     if use_zscore_detection:
-        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (with metadata)
-        if has_metadata and (album_z >= 0.5 or artist_z >= 1.0):
+        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (no metadata required)
+        if album_z >= 0.5 or artist_z >= 1.0:
             return 'medium'
         
         # Low confidence: album_z >= 0.2 AND >= 3 versions (no metadata required)
@@ -1029,39 +1028,59 @@ def detect_single_enhanced(
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
-        try:
-            # Log MusicBrainz checks to info log only (not unified)
-            log_debug(f"[MUSICBRAINZ] Querying MusicBrainz API for single: {title} by {artist}")
-            log_info(f"   Checking MusicBrainz for single: {title}")
-            log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
+        # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
+        # If we already have medium-confidence from z-score, skip MusicBrainz (saves ~1-2 seconds)
+        early_z_check_needed = not (spotify_confirmed or discogs_confirmed)
+        
+        if early_z_check_needed:
+            # Quick z-score check to see if we can skip MusicBrainz
+            temp_album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+            # Get artist stats for quick artist_z check
+            temp_artist_mean, temp_artist_stddev, _ = calculate_artist_stats(conn, artist)
+            temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
             
-            # Use existing is_single method
-            musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
-            if musicbrainz_confirmed:
-                result['single_sources'].append('musicbrainz')
-                result['single_sources_used'].append('musicbrainz')
-                log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED as single")
-                log_info(f"   ✓ MusicBrainz confirms single: {title}")
-                log_debug(f"   MusicBrainz result: Single confirmed for '{title}'")
+            # If z-scores already qualify for medium confidence, skip MusicBrainz
+            if temp_album_z >= 0.5 or temp_artist_z >= 1.0:
+                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have medium confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
+                musicbrainz_confirmed = False
             else:
-                log_debug(f"[MUSICBRAINZ] ✗ NOT confirmed as single by MusicBrainz")
-                log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
-                log_debug(f"   MusicBrainz result: No single found for '{title}'")
-        except Exception as e:
-            # Log SSL and connection errors more gracefully
-            error_type = type(e).__name__
-            if 'SSL' in error_type or 'ssl' in str(e).lower():
-                log_debug(f"[MUSICBRAINZ] SSL ERROR: {error_type}")
-                log_info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
-                log_debug(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
-            elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
-                log_debug(f"[MUSICBRAINZ] TIMEOUT ERROR: {error_type}")
-                log_info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
-                log_debug(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
-            else:
-                log_debug(f"[MUSICBRAINZ] ERROR during lookup: {error_type}: {str(e)}")
-                log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
-                log_debug(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
+                # Need to call MusicBrainz
+                try:
+                    # Log MusicBrainz checks to info log only (not unified)
+                    log_debug(f"[MUSICBRAINZ] Querying MusicBrainz API for single: {title} by {artist}")
+                    log_info(f"   Checking MusicBrainz for single: {title}")
+                    log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
+                    
+                    # Use existing is_single method
+                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
+                    if musicbrainz_confirmed:
+                        result['single_sources'].append('musicbrainz')
+                        result['single_sources_used'].append('musicbrainz')
+                        log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED as single")
+                        log_info(f"   ✓ MusicBrainz confirms single: {title}")
+                        log_debug(f"   MusicBrainz result: Single confirmed for '{title}'")
+                    else:
+                        log_debug(f"[MUSICBRAINZ] ✗ NOT confirmed as single by MusicBrainz")
+                        log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                        log_debug(f"   MusicBrainz result: No single found for '{title}'")
+                except Exception as e:
+                    # Log SSL and connection errors more gracefully
+                    error_type = type(e).__name__
+                    if 'SSL' in error_type or 'ssl' in str(e).lower():
+                        log_debug(f"[MUSICBRAINZ] SSL ERROR: {error_type}")
+                        log_info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+                        log_debug(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
+                    elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
+                        log_debug(f"[MUSICBRAINZ] TIMEOUT ERROR: {error_type}")
+                        log_info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+                        log_debug(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
+                    else:
+                        log_debug(f"[MUSICBRAINZ] ERROR during lookup: {error_type}: {str(e)}")
+                        log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                        log_debug(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
+                    musicbrainz_confirmed = False
+        else:
+            musicbrainz_confirmed = False
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
@@ -1073,33 +1092,40 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Client disabled in configuration")
                 log_info(f"   ⓘ MusicBrainz client is disabled")
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
+        musicbrainz_confirmed = False
     
-    # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE)
+    # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE) - ALSO SKIPPABLE
     discogs_video_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         if hasattr(discogs_client, 'has_official_video'):
-            try:
-                # Log Discogs video checks to info log only (not unified)
-                log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
-                log_info(f"   Checking Discogs for music video: {title}")
-                log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
-                
-                # Check for official music video
-                discogs_video_confirmed = discogs_client.has_official_video(title, artist)
-                if discogs_video_confirmed:
-                    result['single_sources'].append('discogs_video')
-                    result['single_sources_used'].append('discogs_video')
-                    log_debug(f"[DISCOGS_VIDEO] ✓ CONFIRMED - Official video found")
-                    log_info(f"   ✓ Discogs confirms music video: {title}")
-                    log_debug(f"   Discogs result: Music video confirmed for '{title}'")
-                else:
-                    log_debug(f"[DISCOGS_VIDEO] ✗ NOT confirmed - No official video found")
-                    log_info(f"   ⓘ Discogs does not confirm music video: {title}")
-                    log_debug(f"   Discogs result: No music video found for '{title}'")
-            except Exception as e:
-                log_debug(f"[DISCOGS_VIDEO] ERROR during lookup: {type(e).__name__}: {str(e)}")
-                log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
-                log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+            # OPTIMIZATION: Skip Discogs video if we already have metadata confirmation
+            if discogs_confirmed or spotify_confirmed or musicbrainz_confirmed:
+                log_debug(f"[DISCOGS_VIDEO] SKIPPED - Already have metadata confirmation (discogs={discogs_confirmed}, spotify={spotify_confirmed}, mb={musicbrainz_confirmed})")
+                discogs_video_confirmed = False
+            else:
+                try:
+                    # Log Discogs video checks to info log only (not unified)
+                    log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
+                    log_info(f"   Checking Discogs for music video: {title}")
+                    log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                    
+                    # Check for official music video
+                    discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                    if discogs_video_confirmed:
+                        result['single_sources'].append('discogs_video')
+                        result['single_sources_used'].append('discogs_video')
+                        log_debug(f"[DISCOGS_VIDEO] ✓ CONFIRMED - Official video found")
+                        log_info(f"   ✓ Discogs confirms music video: {title}")
+                        log_debug(f"   Discogs result: Music video confirmed for '{title}'")
+                    else:
+                        log_debug(f"[DISCOGS_VIDEO] ✗ NOT confirmed - No official video found")
+                        log_info(f"   ⓘ Discogs does not confirm music video: {title}")
+                        log_debug(f"   Discogs result: No music video found for '{title}'")
+                except Exception as e:
+                    log_debug(f"[DISCOGS_VIDEO] ERROR during lookup: {type(e).__name__}: {str(e)}")
+                    log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
+                    log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+                    discogs_video_confirmed = False
         elif verbose:
             log_debug(f"[DISCOGS_VIDEO] has_official_video method not available")
             log_info(f"   ⓘ Discogs video method not available")
