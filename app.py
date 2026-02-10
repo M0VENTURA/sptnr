@@ -27,7 +27,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from datetime import datetime
 import copy
 from functools import wraps
-from navidrome_import import scan_artist_to_db
+from navidrome_import import scan_artist_to_db, _fetch_artist_metadata
 from popularity import popularity_scan, row_get
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -3500,9 +3500,16 @@ def _run_artist_scan_pipeline(artist_name: str):
                 log_unified(f"❌ Scan aborted: no tracks found for '{artist_name}' - artist does not exist in library")
                 return
             
-            # Artist exists as track artist only - skip Navidrome import, go straight to popularity scan
+            # Artist exists as track artist only
+            # Skip Navidrome track import (tracks already imported via album artist)
+            # But still fetch artist-level metadata (bio, images) from external APIs
             log_unified(f"Artist '{artist_name}' is a track artist (e.g., from Various Artists albums)")
-            log_unified(f"Skipping Navidrome import (Step 1/2) - artist metadata already imported via album artist")
+            log_unified(f"Step 1/2: Fetching artist metadata for track artist '{artist_name}'")
+            try:
+                _fetch_artist_metadata(artist_name, verbose=True)
+                log_unified(f"Artist metadata fetched successfully")
+            except Exception as e:
+                log_unified(f"Warning: Failed to fetch artist metadata: {e}")
             log_unified(f"Step 2/2: Running popularity scan for track artist '{artist_name}' (force={force})")
             popularity_scan(verbose=True, force=force, artist_filter=artist_name)
         else:
