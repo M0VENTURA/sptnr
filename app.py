@@ -1340,7 +1340,8 @@ def artist_detail(name):
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type
+                MAX(spotify_album_type) as album_type,
+                MAX(discogs_release_id) as discogs_release_id
             FROM tracks
             WHERE COALESCE(album_artist, artist) = ?
             GROUP BY album
@@ -1364,7 +1365,8 @@ def artist_detail(name):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
                     MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
-                    MAX(discogs_artist_id) as discogs_artist_id
+                    MAX(discogs_artist_id) as discogs_artist_id,
+                    MAX(discogs_release_id) as discogs_release_id
                 FROM tracks
                 WHERE COALESCE(album_artist, artist) = ?
             """, (name,))
@@ -1383,7 +1385,8 @@ def artist_detail(name):
                     NULL as spotify_artist_id,
                     NULL as lastfm_artist_mbid,
                     NULL as musicbrainz_artist_id,
-                    NULL as discogs_artist_id
+                    NULL as discogs_artist_id,
+                    NULL as discogs_release_id
                 FROM tracks
                 WHERE COALESCE(album_artist, artist) = ?
             """, (name,))
