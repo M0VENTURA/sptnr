@@ -521,6 +521,12 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             tracks_written = 0
             tracks_skipped = 0
             tracks_updated = 0
+            
+            # Get the album artist from the album object or fall back to the artist we're importing for
+            # The track's albumArtist field can be incorrect (e.g., containing track artist with feat.)
+            # Priority: album.artist > name (function parameter) > track.albumArtist (as last resort)
+            album_artist_value = alb.get("artist", name)
+            
             for t in tracks:
                 track_id = t.get("id")
                 if not track_id:
@@ -596,7 +602,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "track_number": _safe_int(t.get("trackNumber") or t.get("track")),
                     "disc_number": _safe_int(t.get("discNumber") or t.get("disc") or 1) or 1,
                     "year": t.get("year"),  # Release year
-                    "album_artist": t.get("albumArtist", ""),  # Album artist
+                    "album_artist": album_artist_value,  # Album artist from album object
                     "bitrate": t.get("bitRate"),  # Bitrate in kbps
                     "sample_rate": t.get("samplingRate"),  # Sample rate in Hz
                 }

@@ -260,6 +260,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             
             # Track the number of tracks actually processed for this album
             album_tracks_processed = 0
+            
+            # Get the album artist from the album object or fall back to the artist we're importing for
+            # The track's albumArtist field can be incorrect (e.g., containing track artist with feat.)
+            # Priority: album.artist > artist_name (function parameter) > track.albumArtist (as last resort)
+            album_artist_value = alb.get("artist", artist_name)
 
             for t in tracks:
                 track_id = t.get("id")
@@ -330,7 +335,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "track_number": _safe_int(raw_track),
                     "disc_number": _safe_int(raw_disc),
                     "year": t.get("year"),
-                    "album_artist": t.get("albumArtist", ""),
+                    "album_artist": album_artist_value,
                     "bitrate": t.get("bitRate"),
                     "sample_rate": t.get("samplingRate"),
                     # Store album context for single detection
