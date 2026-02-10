@@ -676,13 +676,9 @@ def determine_final_status(
     if high_confidence_count >= 1:
         return 'high'
     
-    # Mark as medium confidence if: 2+ medium sources
-    if medium_confidence_count >= 2:
+    # Mark as medium confidence if: 1+ medium sources (Spotify, MusicBrainz, or Discogs video)
+    if medium_confidence_count >= 1:
         return 'medium'
-    
-    # Mark as low confidence if: 1 medium source
-    if medium_confidence_count == 1:
-        return 'low'
     
     # Z-score can ONLY produce medium confidence, NEVER high confidence
     # Z-score does NOT require metadata (metadata is just a bonus indicator)
