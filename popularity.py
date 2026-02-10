@@ -23,6 +23,7 @@ from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
 from helpers import find_matching_spotify_single
+from matching_utils import normalize_album
 
 # Import centralized logging
 from logging_config import setup_logging, log_unified, log_info, log_debug
@@ -1923,14 +1924,17 @@ def popularity_scan(
                             
                                 if not skip_spotify_lookup:
                                     log_info(f'Searching Spotify for track: {title} by {artist}')
-                                    log_debug(f'Spotify search params - title: {title}, artist: {artist}, album: {album}')
+                                    # Normalize album name to remove version suffixes for better matching
+                                    # This helps match albums like "Helix (2021 version)" with "Helix"
+                                    normalized_album = normalize_album(album) if album else None
+                                    log_debug(f'Spotify search params - title: {title}, artist: {artist}, album: {album} (normalized: {normalized_album})')
                                     # For popularity scoring, we pass album for better matching accuracy
                                     # For live/unplugged albums, this is especially important to avoid matching studio versions
                                     spotify_search_results = _run_with_timeout(
                                         search_spotify_track,
                                         API_CALL_TIMEOUT,
                                         f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                        title, artist, album
+                                        title, artist, normalized_album
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_spotify_request()
