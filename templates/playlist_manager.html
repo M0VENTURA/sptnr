@@ -1632,22 +1632,34 @@ async function searchMissingTracksOnSoulseek() {
   }
 }
 
+.nav-pills {
+  gap: 0.5rem;
+  border-bottom: 2px solid var(--border-color);
+  padding-bottom: 1rem;
+}
+
 .nav-pills .nav-link {
   cursor: pointer;
   transition: all 0.2s ease;
-  border: 1px solid transparent;
+  border: none;
   padding: 0.5rem 1rem;
+  background-color: var(--tertiary-bg);
+  color: var(--text-secondary);
+  border-radius: 4px;
+  font-weight: 500;
 }
 
 .nav-pills .nav-link:hover {
-  background-color: #e9ecef;
-  border-color: #dee2e6;
+  background-color: var(--secondary-bg);
+  color: var(--text-primary);
+  transform: translateY(-2px);
 }
 
 .nav-pills .nav-link.active {
-  background-color: #0d6efd;
-  border-color: #0d6efd;
-  color: white;
+  background-color: var(--secondary-bg);
+  color: var(--spotify-green);
+  border-bottom: 3px solid var(--spotify-green);
+  border-radius: 4px 4px 0 0;
 }
 
 .track-row {
