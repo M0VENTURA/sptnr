@@ -1100,19 +1100,24 @@ def dashboard():
         cursor = conn.cursor()
 
         cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
-        artist_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        artist_count = result[0] if result else 0
 
         cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
-        album_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        album_count = result[0] if result else 0
 
         cursor.execute("SELECT COUNT(*) FROM tracks")
-        track_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        track_count = result[0] if result else 0
 
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars = 5")
-        five_star_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        five_star_count = result[0] if result else 0
 
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single = 1")
-        singles_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        singles_count = result[0] if result else 0
 
         conn.close()
 
@@ -2321,7 +2326,6 @@ def api_artist_bio():
         if not bio:
             try:
                 from api_clients.discogs import DiscogsClient
-                from helpers import _read_yaml
                 
                 config_data, _ = _read_yaml(CONFIG_PATH)
                 discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
@@ -2604,7 +2608,6 @@ def api_artist_search_images():
         elif source == "discogs":
             # Search Discogs for artist
             from api_clients.discogs import DiscogsClient
-            from helpers import _read_yaml
 
             config_data, _ = _read_yaml(CONFIG_PATH)
             discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
@@ -2624,7 +2627,6 @@ def api_artist_search_images():
         elif source == "spotify":
             # Search Spotify for artist
             from api_clients.spotify import SpotifyClient
-            from helpers import _read_yaml
             
             config_data, _ = _read_yaml(CONFIG_PATH)
             spotify = SpotifyClient(config_data)
@@ -2856,7 +2858,6 @@ def api_album_search_art():
         elif source == "discogs":
             # Search Discogs for release
             from popularity import _discogs_search, _get_discogs_session
-            from helpers import _read_yaml
             
             config_data, _ = _read_yaml(CONFIG_PATH)
             discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
@@ -2899,7 +2900,6 @@ def api_album_search_art():
         elif source == "spotify":
             # Search Spotify for album
             from api_clients.spotify import SpotifyClient
-            from helpers import _read_yaml
             
             config_data, _ = _read_yaml(CONFIG_PATH)
             spotify = SpotifyClient(config_data)
@@ -3049,7 +3049,8 @@ def api_add_artist():
         
         # Check if artist already exists in tracks
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
-        existing_count = cursor.fetchone()[0]
+        result = cursor.fetchone()
+        existing_count = result[0] if result else 0
         
         # Fetch all releases from MusicBrainz
         logging.info(f"[ADD_ARTIST] Fetching MusicBrainz releases for: {artist_name}")
@@ -7863,7 +7864,8 @@ def api_lastfm_create_playlist():
         missing_tracks = []
         
         # Get database connection
-        conn, cursor = get_db_connection()
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
         for rec in rec_list:
             artist_name = rec.get("artist", "")
