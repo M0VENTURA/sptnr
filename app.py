@@ -7666,7 +7666,7 @@ def api_downloads_process_one():
 
 @app.route("/api/lastfm/recommendations", methods=["GET"])
 def api_lastfm_recommendations():
-    """Get Last.fm recommendations"""
+    """Get Last.fm recommendations with collection status"""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
         lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
@@ -7689,6 +7689,63 @@ def api_lastfm_recommendations():
         
         from api_clients.lastfm import get_lastfm_recommendations
         recommendations = get_lastfm_recommendations(api_key, username=username or None)
+        
+        # Check which albums/artists/tracks are already in collection
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Get all albums in collection for quick lookup
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks")
+            existing_albums = set()
+            for row in cursor.fetchall():
+                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+                album = row[1] if isinstance(row, tuple) else row.get('album', '')
+                if artist and album:
+                    existing_albums.add((artist.lower().strip(), album.lower().strip()))
+            
+            # Get all artists in collection
+            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks")
+            existing_artists = set()
+            for row in cursor.fetchall():
+                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+                if artist:
+                    existing_artists.add(artist.lower().strip())
+            
+            conn.close()
+            
+            # Mark which items are in collection
+            for album in recommendations.get("albums", []):
+                album_key = (album.get("artist", "").lower().strip(), album.get("name", "").lower().strip())
+                album["in_collection"] = album_key in existing_albums
+            
+            for artist in recommendations.get("artists", []):
+                artist_key = artist.get("name", "").lower().strip()
+                artist["in_collection"] = artist_key in existing_artists
+            
+            # For tracks, check both artist+track combo
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks")
+            existing_tracks = set()
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks")
+                for row in cursor.fetchall():
+                    artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+                    title = row[1] if isinstance(row, tuple) else row.get('title', '')
+                    if artist and title:
+                        existing_tracks.add((artist.lower().strip(), title.lower().strip()))
+                conn.close()
+            except:
+                pass
+            
+            for track in recommendations.get("tracks", []):
+                track_key = (track.get("artist", "").lower().strip(), track.get("name", "").lower().strip())
+                track["in_collection"] = track_key in existing_tracks
+        
+        except Exception as e:
+            logging.warning(f"Failed to check collection status: {e}")
+            # Continue without collection status if DB check fails
         
         return jsonify({"recommendations": recommendations})
     except Exception as e:

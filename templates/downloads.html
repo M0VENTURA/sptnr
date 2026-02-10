@@ -2245,26 +2245,79 @@ function displayLastfmArtists(artists) {
     return;
   }
   
-  artists.forEach(artist => {
-    const card = document.createElement('div');
-    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
-    card.innerHTML = `
-      <div class="card h-100 recommendation-card">
-        ${artist.image ? `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-person" style="font-size: 3rem; color: white;"></i></div>`}
-        <div class="card-body d-flex flex-column">
-          <h6 class="card-title text-truncate">${escapeHtml(artist.name)}</h6>
-          <small class="text-muted mb-2">${artist.listeners ? `${parseInt(artist.listeners).toLocaleString()} listeners` : 'Artist'}</small>
-          <small class="text-muted text-truncate" title="${escapeHtml(artist.url)}">Playcount: ${artist.playcount || 0}</small>
-          <div class="mt-auto pt-2">
-            <button class="btn btn-sm btn-primary w-100" onclick="downloadArtist('${escapeHtml(artist.name)}')">
-              <i class="bi bi-download"></i> Download
-            </button>
+  // Filter out artists already in collection
+  const newArtists = artists.filter(artist => !artist.in_collection);
+  const existingArtists = artists.filter(artist => artist.in_collection);
+  
+  // Display new artists
+  if (newArtists.length > 0) {
+    newArtists.forEach(artist => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card">
+          ${artist.image ? `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-person" style="font-size: 3rem; color: white;"></i></div>`}
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(artist.name)}</h6>
+            <small class="text-muted mb-2">${artist.listeners ? `${parseInt(artist.listeners).toLocaleString()} listeners` : 'Artist'}</small>
+            <small class="text-muted text-truncate" title="${escapeHtml(artist.url)}">Playcount: ${artist.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <button class="btn btn-sm btn-primary w-100" onclick="downloadArtist('${escapeHtml(artist.name)}')">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    `;
-    grid.appendChild(card);
-  });
+      `;
+      grid.appendChild(card);
+    });
+  }
+  
+  // Show existing artists
+  if (existingArtists.length > 0) {
+    if (newArtists.length > 0) {
+      const separator = document.createElement('div');
+      separator.className = 'col-12 my-3';
+      separator.innerHTML = '<hr>';
+      grid.appendChild(separator);
+      
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-muted mb-3"><i class="bi bi-check-circle"></i> <strong>${existingArtists.length} artist(s) already in your collection</strong></p>`;
+      grid.appendChild(label);
+    } else {
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-success mb-3"><i class="bi bi-check-circle"></i> All recommended artists are already in your collection!</p>`;
+      grid.appendChild(label);
+    }
+    
+    existingArtists.forEach(artist => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card" style="opacity: 0.7;">
+          <div style="position: relative;">
+            ${artist.image ? `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-person" style="font-size: 3rem; color: white;"></i></div>`}
+            <div style="position: absolute; top: 10px; right: 10px; background: rgba(40, 167, 69, 0.9); border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
+              <i class="bi bi-check" style="color: white; font-size: 1.5rem;"></i>
+            </div>
+          </div>
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(artist.name)}</h6>
+            <small class="text-muted mb-2">${artist.listeners ? `${parseInt(artist.listeners).toLocaleString()} listeners` : 'Artist'}</small>
+            <small class="text-muted text-truncate">Playcount: ${artist.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <span class="badge bg-success w-100">
+                <i class="bi bi-check-circle"></i> In Collection
+              </span>
+            </div>
+          </div>
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  }
 }
 
 function displayLastfmAlbums(albums) {
@@ -2276,26 +2329,80 @@ function displayLastfmAlbums(albums) {
     return;
   }
   
-  albums.forEach(album => {
-    const card = document.createElement('div');
-    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
-    card.innerHTML = `
-      <div class="card h-100 recommendation-card">
-        ${album.image ? `<img src="${escapeHtml(album.image)}" class="card-img-top" alt="${escapeHtml(album.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-disc" style="font-size: 3rem; color: white;"></i></div>`}
-        <div class="card-body d-flex flex-column">
-          <h6 class="card-title text-truncate">${escapeHtml(album.name)}</h6>
-          <small class="text-muted mb-2">${escapeHtml(album.artist || 'Unknown Artist')}</small>
-          <small class="text-muted text-truncate">Playcount: ${album.playcount || 0}</small>
-          <div class="mt-auto pt-2">
-            <button class="btn btn-sm btn-primary w-100" onclick="downloadAlbum('${escapeHtml(album.artist)}', '${escapeHtml(album.name)}')">
-              <i class="bi bi-download"></i> Download
-            </button>
+  // Filter out albums already in collection
+  const newAlbums = albums.filter(album => !album.in_collection);
+  const existingAlbums = albums.filter(album => album.in_collection);
+  
+  // Display new albums
+  if (newAlbums.length > 0) {
+    newAlbums.forEach(album => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card">
+          ${album.image ? `<img src="${escapeHtml(album.image)}" class="card-img-top" alt="${escapeHtml(album.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-disc" style="font-size: 3rem; color: white;"></i></div>`}
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(album.name)}</h6>
+            <small class="text-muted mb-2">${escapeHtml(album.artist || 'Unknown Artist')}</small>
+            <small class="text-muted text-truncate">Playcount: ${album.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <button class="btn btn-sm btn-primary w-100" onclick="downloadAlbum('${escapeHtml(album.artist)}', '${escapeHtml(album.name)}')">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    `;
-    grid.appendChild(card);
-  });
+      `;
+      grid.appendChild(card);
+    });
+  }
+  
+  // Show separator if there are both new and existing
+  if (existingAlbums.length > 0) {
+    if (newAlbums.length > 0) {
+      const separator = document.createElement('div');
+      separator.className = 'col-12 my-3';
+      separator.innerHTML = '<hr>';
+      grid.appendChild(separator);
+      
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-muted mb-3"><i class="bi bi-check-circle"></i> <strong>${existingAlbums.length} album(s) already in your collection</strong></p>`;
+      grid.appendChild(label);
+    } else {
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-success mb-3"><i class="bi bi-check-circle"></i> All recommended albums are already in your collection!</p>`;
+      grid.appendChild(label);
+    }
+    
+    // Display existing albums as read-only cards with checkmark
+    existingAlbums.forEach(album => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card" style="opacity: 0.7;">
+          <div style="position: relative;">
+            ${album.image ? `<img src="${escapeHtml(album.image)}" class="card-img-top" alt="${escapeHtml(album.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-disc" style="font-size: 3rem; color: white;"></i></div>`}
+            <div style="position: absolute; top: 10px; right: 10px; background: rgba(40, 167, 69, 0.9); border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
+              <i class="bi bi-check" style="color: white; font-size: 1.5rem;"></i>
+            </div>
+          </div>
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(album.name)}</h6>
+            <small class="text-muted mb-2">${escapeHtml(album.artist || 'Unknown Artist')}</small>
+            <small class="text-muted text-truncate">Playcount: ${album.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <span class="badge bg-success w-100">
+                <i class="bi bi-check-circle"></i> In Collection
+              </span>
+            </div>
+          </div>
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  }
 }
 
 function displayLastfmTracks(tracks) {
@@ -2307,26 +2414,79 @@ function displayLastfmTracks(tracks) {
     return;
   }
   
-  tracks.forEach(track => {
-    const card = document.createElement('div');
-    card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
-    card.innerHTML = `
-      <div class="card h-100 recommendation-card">
-        ${track.image ? `<img src="${escapeHtml(track.image)}" class="card-img-top" alt="${escapeHtml(track.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-music-note" style="font-size: 3rem; color: white;"></i></div>`}
-        <div class="card-body d-flex flex-column">
-          <h6 class="card-title text-truncate">${escapeHtml(track.name)}</h6>
-          <small class="text-muted mb-2">${escapeHtml(track.artist || 'Unknown Artist')}</small>
-          <small class="text-muted text-truncate">Playcount: ${track.playcount || 0}</small>
-          <div class="mt-auto pt-2">
-            <button class="btn btn-sm btn-primary w-100" onclick="downloadTrack('${escapeHtml(track.artist)}', '${escapeHtml(track.name)}')">
-              <i class="bi bi-download"></i> Download
-            </button>
+  // Filter out tracks already in collection
+  const newTracks = tracks.filter(track => !track.in_collection);
+  const existingTracks = tracks.filter(track => track.in_collection);
+  
+  // Display new tracks
+  if (newTracks.length > 0) {
+    newTracks.forEach(track => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card">
+          ${track.image ? `<img src="${escapeHtml(track.image)}" class="card-img-top" alt="${escapeHtml(track.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-music-note" style="font-size: 3rem; color: white;"></i></div>`}
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(track.name)}</h6>
+            <small class="text-muted mb-2">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+            <small class="text-muted text-truncate">Playcount: ${track.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <button class="btn btn-sm btn-primary w-100" onclick="downloadTrack('${escapeHtml(track.artist)}', '${escapeHtml(track.name)}')">
+                <i class="bi bi-download"></i> Download
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    `;
-    grid.appendChild(card);
-  });
+      `;
+      grid.appendChild(card);
+    });
+  }
+  
+  // Show existing tracks
+  if (existingTracks.length > 0) {
+    if (newTracks.length > 0) {
+      const separator = document.createElement('div');
+      separator.className = 'col-12 my-3';
+      separator.innerHTML = '<hr>';
+      grid.appendChild(separator);
+      
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-muted mb-3"><i class="bi bi-check-circle"></i> <strong>${existingTracks.length} track(s) already in your collection</strong></p>`;
+      grid.appendChild(label);
+    } else {
+      const label = document.createElement('div');
+      label.className = 'col-12';
+      label.innerHTML = `<p class="text-success mb-3"><i class="bi bi-check-circle"></i> All recommended tracks are already in your collection!</p>`;
+      grid.appendChild(label);
+    }
+    
+    existingTracks.forEach(track => {
+      const card = document.createElement('div');
+      card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
+      card.innerHTML = `
+        <div class="card h-100 recommendation-card" style="opacity: 0.7;">
+          <div style="position: relative;">
+            ${track.image ? `<img src="${escapeHtml(track.image)}" class="card-img-top" alt="${escapeHtml(track.name)}" style="height: 200px; object-fit: cover;">` : `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-music-note" style="font-size: 3rem; color: white;"></i></div>`}
+            <div style="position: absolute; top: 10px; right: 10px; background: rgba(40, 167, 69, 0.9); border-radius: 50%; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center;">
+              <i class="bi bi-check" style="color: white; font-size: 1.5rem;"></i>
+            </div>
+          </div>
+          <div class="card-body d-flex flex-column">
+            <h6 class="card-title text-truncate">${escapeHtml(track.name)}</h6>
+            <small class="text-muted mb-2">${escapeHtml(track.artist || 'Unknown Artist')}</small>
+            <small class="text-muted text-truncate">Playcount: ${track.playcount || 0}</small>
+            <div class="mt-auto pt-2">
+              <span class="badge bg-success w-100">
+                <i class="bi bi-check-circle"></i> In Collection
+              </span>
+            </div>
+          </div>
+        </div>
+      `;
+      grid.appendChild(card);
+    });
+  }
 }
 
 function downloadArtist(artist) {
