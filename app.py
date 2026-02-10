@@ -2656,6 +2656,10 @@ def api_artist_set_image():
     if not artist_name or not image_url:
         return jsonify({"error": "Artist name and image URL required"}), 400
     
+    # Validate that image_url is a valid HTTP/HTTPS URL, not a data URI or other scheme
+    if not image_url.startswith(('http://', 'https://')):
+        return jsonify({"error": "Image URL must be a valid HTTP or HTTPS URL"}), 400
+    
     try:
         conn = get_db()
         cursor = conn.cursor()
@@ -2996,6 +3000,10 @@ def api_album_set_art():
     
     if not artist_name or not album_name or not image_url:
         return jsonify({"error": "Artist, album name, and image URL required"}), 400
+    
+    # Validate that image_url is a valid HTTP/HTTPS URL, not a data URI or other scheme
+    if not image_url.startswith(('http://', 'https://')):
+        return jsonify({"error": "Image URL must be a valid HTTP or HTTPS URL"}), 400
     
     logger = logging.getLogger('sptnr')
     try:
