@@ -55,9 +55,8 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         # Use navidrome_genres which are populated from Navidrome during import
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
-        # Use NULLIF to treat empty strings as NULL
-        cursor.execute("SELECT navidrome_genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", (artist_name,))
+        # Query by album_artist to match the artist list page logic
+        cursor.execute("SELECT navidrome_genres FROM tracks WHERE album_artist = ?", (artist_name,))
         rows = cursor.fetchall()
         conn.close()
         for row in rows:
@@ -1199,21 +1198,21 @@ def artists():
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
-    # Simply count distinct albums and filter out artists with 0 albums
-    # This removes the UNION ALL that was adding artists from artist_stats with 0 content
-    # Use NULLIF to treat empty strings as NULL, ensuring COALESCE falls back to artist field
+    # Only show artists who are the album_artist on at least one album
+    # This prevents showing individual artists who only appear as track artists on compilations
     try:
         cursor.execute("""
             SELECT 
-                COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                album_artist as display_name,
+                album_artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
+            WHERE album_artist IS NOT NULL 
+                AND album_artist != ''
+            GROUP BY album_artist COLLATE NOCASE
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
@@ -1354,8 +1353,7 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
-        # Query by COALESCE(album_artist, artist) to match how artists are listed
-        # Use NULLIF to treat empty strings as NULL
+        # Query where this artist is the album_artist
         cursor.execute("""
             SELECT 
                 album,
@@ -1367,15 +1365,14 @@ def artist_detail(name):
                 MAX(spotify_album_type) as album_type,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+            WHERE album_artist = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
-        # Query by COALESCE(album_artist, artist) to match how artists are listed
-        # Use NULLIF to treat empty strings as NULL
+        # Query where this artist is the album_artist
         cursor.execute("""
             SELECT 
                 COUNT(*) as track_count,
@@ -1392,7 +1389,7 @@ def artist_detail(name):
                 MAX(discogs_artist_id) as discogs_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+            WHERE album_artist = ?
         """, (name,))
         
         artist_stats = cursor.fetchone()
@@ -3236,11 +3233,10 @@ def album_detail(artist, album):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Query by COALESCE(album_artist, artist) to match how albums are grouped
-        # Use NULLIF to treat empty strings as NULL
-        # Try both COALESCE and plain artist for backwards compatibility
+        # Query by album_artist since the artist list now only shows album_artists
+        # Try both album_artist and artist for backwards compatibility with old links
         tracks_data = None
-        for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
+        for artist_clause in ["album_artist", "artist"]:
             cursor.execute(f"""
                 SELECT *
                 FROM tracks
@@ -3279,7 +3275,7 @@ def album_detail(artist, album):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+                WHERE album_artist = ? AND album = ?
             """, (artist, album))
         except:
             # Fallback for databases without beets columns or album_artist column
@@ -3322,7 +3318,7 @@ def album_detail(artist, album):
         cursor.execute("""
             SELECT COUNT(*) as singles_count
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND is_single = 1
+            WHERE album_artist = ? AND album = ? AND is_single = 1
         """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
@@ -3330,7 +3326,7 @@ def album_detail(artist, album):
         # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
         cursor.execute("""
             SELECT DISTINCT navidrome_genres FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
+            WHERE album_artist = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
@@ -3669,7 +3665,7 @@ def album_edit(artist, album):
                     flash(f"Invalid column name in update: {column_name}", "danger")
                     return redirect(url_for("album_detail", artist=artist, album=album))
             
-            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
+            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE album_artist = ? AND album = ?"
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
             conn.commit()
@@ -3679,7 +3675,7 @@ def album_edit(artist, album):
                 from beets_integration import update_track_metadata_with_beets
                 
                 # Get all track IDs for this album
-                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?", 
+                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE album_artist = ? AND album = ?", 
                              (album_artist, album_title))
                 tracks = cursor.fetchall()
                 
@@ -7477,7 +7473,7 @@ def api_album_art(artist, album):
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT cover_art_url FROM tracks 
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
+                WHERE album_artist = ? AND album = ? 
                 AND cover_art_url IS NOT NULL 
                 LIMIT 1
             """, (artist, album))
