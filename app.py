@@ -7678,11 +7678,17 @@ def api_lastfm_recommendations():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
-        # Get username from config if available
-        username = lastfm_config.get("username", "")
+        # Get username from current user's navidrome settings (per-user configuration)
+        current_user = session.get("username")
+        username = None
+        if current_user:
+            navidrome_users = cfg.get("navidrome_users", [])
+            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+            if user_cfg:
+                username = user_cfg.get("lastfm_username", "")
         
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key, username=username)
+        recommendations = get_lastfm_recommendations(api_key, username=username or None)
         
         return jsonify({"recommendations": recommendations})
     except Exception as e:
@@ -7710,8 +7716,14 @@ def api_lastfm_create_playlist():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
-        # Get username from config for user-specific recommendations
-        username = lastfm_config.get("username", "")
+        # Get username from current user's navidrome settings (per-user configuration)
+        current_user = session.get("username")
+        username = None
+        if current_user:
+            navidrome_users = cfg.get("navidrome_users", [])
+            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+            if user_cfg:
+                username = user_cfg.get("lastfm_username", "")
         
         # Get recommendations with username to personalize results
         from api_clients.lastfm import get_lastfm_recommendations

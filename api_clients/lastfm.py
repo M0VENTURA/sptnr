@@ -141,7 +141,47 @@ class LastFmClient:
             return []
     
     def _get_recommended_albums(self) -> list:
-        """Fetch recommended albums from Last.fm top tracks by artist."""
+        """Fetch recommended albums from Last.fm.
+        
+        If username is set, uses user's top albums.
+        Otherwise falls back to geoographic top artists' albums.
+        """
+        # Try user-specific recommendations first if username is provided
+        if self.username:
+            params = {
+                "method": "user.getTopAlbums",
+                "user": self.username,
+                "api_key": self.api_key,
+                "format": "json",
+                "limit": 12,
+                "period": "overall"  # overall, 7day, 1month, 3month, 6month, 12month
+            }
+            try:
+                res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+                res.raise_for_status()
+                albums = []
+                
+                for item in res.json().get("topalbums", {}).get("album", []):
+                    image_url = ""
+                    if isinstance(item.get("image"), list):
+                        for img in reversed(item["image"]):
+                            if img.get("#text"):
+                                image_url = img.get("#text", "")
+                                break
+                    
+                    albums.append({
+                        "name": item.get("name", ""),
+                        "artist": item.get("artist", {}).get("name", "") if isinstance(item.get("artist"), dict) else item.get("artist", ""),
+                        "playcount": item.get("playcount", 0),
+                        "image": image_url,
+                        "url": item.get("url", "")
+                    })
+                return albums[:12]
+            except Exception as e:
+                logger.error(f"Failed to fetch user top albums: {e}")
+                return []
+        
+        # Fall back to geographic top artists' albums
         params = {
             "method": "geo.getTopArtists",
             "country": "US",
@@ -270,7 +310,7 @@ def get_lastfm_track_info(artist: str, title: str, api_key: str = "") -> dict:
     """Backward-compatible wrapper."""
     client = _get_lastfm_client(api_key)
     return client.get_track_info(artist, title)
-def get_lastfm_recommendations(api_key: str, username: str = None) -> dict:
+def get_lastfm_recommendations(api_key: str, username: str | None = None) -> dict:
     """Fetch Last.fm recommendations."""
     client = LastFmClient(api_key, username=username)
     return client.get_recommendations()
