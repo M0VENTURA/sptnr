@@ -3233,23 +3233,18 @@ def album_detail(artist, album):
         cursor = conn.cursor()
         
         # Query by COALESCE(album_artist, artist) to match how albums are grouped
-        cursor.execute("""
-            SELECT *
-            FROM tracks
-            WHERE COALESCE(album_artist, artist) = ? AND album = ?
-            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
-        """, (artist, album))
-        tracks_data = cursor.fetchall()
-        
-        if not tracks_data:
-            # Fallback: try with just artist column for backwards compatibility
-            cursor.execute("""
+        # Try both COALESCE and plain artist for backwards compatibility
+        tracks_data = None
+        for artist_clause in ["COALESCE(album_artist, artist)", "artist"]:
+            cursor.execute(f"""
                 SELECT *
                 FROM tracks
-                WHERE artist = ? AND album = ?
+                WHERE {artist_clause} = ? AND album = ?
                 ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
             """, (artist, album))
             tracks_data = cursor.fetchall()
+            if tracks_data:
+                break
         
         if not tracks_data:
             return render_template("album.html",
@@ -3660,6 +3655,15 @@ def album_edit(artist, album):
         
         # Execute update
         if update_fields:
+            # Validate that update_fields only contains safe column assignments
+            # All field assignments should be in the format "column_name = ?"
+            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'beets_album_mbid', 'genres'}
+            for field in update_fields:
+                column_name = field.split('=')[0].strip()
+                if column_name not in allowed_columns:
+                    flash(f"Invalid column name in update: {column_name}", "danger")
+                    return redirect(url_for("album_detail", artist=artist, album=album))
+            
             sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE COALESCE(album_artist, artist) = ? AND album = ?"
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
