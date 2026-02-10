@@ -2236,9 +2236,11 @@ def popularity_scan(
                 log_info(f'Starting singles detection for "{artist} - {album}"')
                 singles_detected = 0
                 
-                # Initialize Spotify results cache for singles detection if not already set
-                # (may already exist from popularity scan in non-singles_only mode)
-                if 'spotify_results_cache' not in locals():
+                # Initialize Spotify results cache for singles detection if not set
+                # (already exists from popularity scan in non-singles_only mode)
+                try:
+                    spotify_results_cache
+                except NameError:
                     spotify_results_cache = {}
                 
                 # Log which sources are available for single detection
