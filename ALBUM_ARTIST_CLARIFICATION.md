@@ -9,6 +9,8 @@ PR #250 proposed changing the album_artist import logic from:
 
 to:
 ```python
+# In the context of the import function, artist_name is the parameter
+# representing the artist being imported (e.g., "A Killer's Confession")
 album_artist_value = alb.get("artist", artist_name)
 "album_artist": album_artist_value
 ```
