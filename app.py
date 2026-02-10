@@ -1201,12 +1201,11 @@ def artists():
     # Filter artists to show only those with at least one album or EP
     # Only show artists who are the album_artist on at least one album
     # This prevents showing individual artists who only appear as track artists on compilations
-    # Use NULLIF to treat empty strings as NULL for proper fallback
     try:
         cursor.execute("""
             SELECT 
-                COALESCE(NULLIF(album_artist, ''), artist) as display_name,
-                COALESCE(NULLIF(album_artist, ''), artist) as link_artist,
+                album_artist as display_name,
+                album_artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
@@ -1214,7 +1213,7 @@ def artists():
             FROM tracks
             WHERE album_artist IS NOT NULL 
                 AND album_artist != ''
-            GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
+            GROUP BY album_artist COLLATE NOCASE
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
