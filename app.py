@@ -3487,7 +3487,8 @@ def _run_artist_scan_pipeline(artist_name: str):
             try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ?", (artist_name,))
-                track_count = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                track_count = result[0] if result else 0
                 log_unified(f"Found {track_count} tracks for '{artist_name}'")
             finally:
                 conn.close()
@@ -3565,7 +3566,8 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             try:
                 cursor = conn.cursor()
                 cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND album = ?", (artist_name, album_name))
-                track_count = cursor.fetchone()[0]
+                result = cursor.fetchone()
+                track_count = result[0] if result else 0
                 log_unified(f"Found {track_count} tracks for '{album_display}'")
             finally:
                 conn.close()
