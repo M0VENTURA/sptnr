@@ -91,18 +91,18 @@
                     </thead>
                     <tbody>
                         {% for artist in artists %}
-                        {% set first_letter = artist.artist[0]|upper if artist.artist else '#' %}
+                        {% set first_letter = artist.display_name[0]|upper if artist.display_name else '#' %}
                         {% set letter_key = first_letter if first_letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' else '#' %}
-                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.artist }}">
+                        <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}">
                             <td class="d-none d-sm-table-cell">
-                                <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
-                                    {{ artist.artist }}
+                                <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
+                                    {{ artist.display_name }}
                                 </a>
                             </td>
                             <td class="d-sm-none">
                                 <div class="text-truncate">
-                                    <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="text-decoration-none">
-                                        <strong>{{ artist.artist }}</strong>
+                                    <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
+                                        <strong>{{ artist.display_name }}</strong>
                                     </a>
                                 </div>
                                 <div class="small text-muted">
@@ -133,10 +133,10 @@
                             </td>
                             <td class="text-center">
                                 <div class="btn-group btn-group-sm" role="group">
-                                    <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.artist }}')" title="Get artist metadata">
+                                    <button class="btn btn-outline-primary" type="button" onclick="lookupMetadata('artist', '{{ artist.link_artist }}')" title="Get artist metadata">
                                         <i class="bi bi-search"></i>
                                     </button>
-                                    <a href="{{ url_for('artist_detail', name=artist.artist) }}" class="btn btn-outline-secondary" title="View artist details">
+                                    <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="btn btn-outline-secondary" title="View artist details">
                                         <i class="bi bi-arrow-right"></i>
                                     </a>
                                 </div>

@@ -1204,7 +1204,8 @@ def artists():
     try:
         cursor.execute("""
             SELECT 
-                COALESCE(album_artist, artist) as artist,
+                COALESCE(album_artist, artist) as display_name,
+                artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
@@ -1216,7 +1217,8 @@ def artists():
             UNION ALL
             
             SELECT
-                artist_name as artist,
+                artist_name as display_name,
+                artist_name as link_artist,
                 0 as album_count,
                 0 as track_count,
                 0 as single_count,
@@ -1224,13 +1226,14 @@ def artists():
             FROM artist_stats
             WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
             
-            ORDER BY artist COLLATE NOCASE
+            ORDER BY display_name COLLATE NOCASE
         """)
     except:
         # Fallback for databases without album_artist column
         cursor.execute("""
             SELECT 
-                artist,
+                artist as display_name,
+                artist as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
@@ -1242,7 +1245,8 @@ def artists():
             UNION ALL
             
             SELECT
-                artist_name as artist,
+                artist_name as display_name,
+                artist_name as link_artist,
                 0 as album_count,
                 0 as track_count,
                 0 as single_count,
@@ -1250,7 +1254,7 @@ def artists():
             FROM artist_stats
             WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL)
             
-            ORDER BY artist COLLATE NOCASE
+            ORDER BY display_name COLLATE NOCASE
         """)
     artists_data = cursor.fetchall()
     conn.close()
