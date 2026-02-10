@@ -550,38 +550,62 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         
         log_info(f"Querying MusicBrainz for releases by {artist_name}...")
         
-        # Paginate through results
-        session = create_retry_session(user_agent=headers.get("User-Agent"), retries=3, backoff=2.0)
+        # Paginate through results with improved error handling
+        session = create_retry_session(user_agent=headers.get("User-Agent"), retries=5, backoff=2.0)
         for page in range(max_pages):
-            try:
-                log_debug(f"MusicBrainz API call - Page {page+1}, Offset: {offset}, Limit: {page_size}")
-                resp = session.get(
-                    "https://musicbrainz.org/ws/2/release-group",
-                    params={"query": query, "fmt": "json", "limit": page_size, "offset": offset},
-                    timeout=15
-                )
-                resp.raise_for_status()
-                data = resp.json()
-                log_debug(f"MusicBrainz API response - Status: {resp.status_code}, Release groups: {len(data.get('release-groups', []))}")
-                
-                release_groups = data.get("release-groups", []) or []
-                if not release_groups:
-                    log_debug(f"No more release groups found at offset {offset}")
+            retry_count = 0
+            max_retries = 2
+            last_error = None
+            
+            while retry_count < max_retries:
+                try:
+                    log_debug(f"MusicBrainz API call - Page {page+1}, Offset: {offset}, Limit: {page_size}")
+                    resp = session.get(
+                        "https://musicbrainz.org/ws/2/release-group",
+                        params={"query": query, "fmt": "json", "limit": page_size, "offset": offset},
+                        timeout=15
+                    )
+                    resp.raise_for_status()
+                    data = resp.json()
+                    log_debug(f"MusicBrainz API response - Status: {resp.status_code}, Release groups: {len(data.get('release-groups', []))}")
+                    
+                    release_groups = data.get("release-groups", []) or []
+                    if not release_groups:
+                        log_debug(f"No more release groups found at offset {offset}")
+                        break
+                    
+                    all_mb_releases.extend(release_groups)
+                    
+                    # Check if we've fetched all available
+                    total_count = data.get("count", 0)
+                    log_debug(f"Total MusicBrainz releases available: {total_count}, Fetched so far: {len(all_mb_releases)}")
+                    if offset + len(release_groups) >= total_count:
+                        break
+                    
+                    offset += page_size
+                    time.sleep(2.0)  # Rate limiting - increased from 1.0 to 2.0
+                    
+                    # Success - exit retry loop
                     break
-                
-                all_mb_releases.extend(release_groups)
-                
-                # Check if we've fetched all available
-                total_count = data.get("count", 0)
-                log_debug(f"Total MusicBrainz releases available: {total_count}, Fetched so far: {len(all_mb_releases)}")
-                if offset + len(release_groups) >= total_count:
+                    
+                except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+                    last_error = e
+                    retry_count += 1
+                    if retry_count < max_retries:
+                        wait_time = 5 * retry_count  # 5s, 10s backoff
+                        log_debug(f"MusicBrainz connection error for {artist_name} at offset {offset}, retry {retry_count}/{max_retries} in {wait_time}s: {e}")
+                        time.sleep(wait_time)
+                    else:
+                        log_debug(f"MusicBrainz query failed after {max_retries} retries for {artist_name} at offset {offset}: {e}", exc_info=True)
+                        break
+                        
+                except Exception as e:
+                    log_debug(f"MusicBrainz query failed for {artist_name} at offset {offset}: {e}", exc_info=True)
                     break
-                
-                offset += page_size
-                time.sleep(1.0)  # Rate limiting
-                
-            except Exception as e:
-                log_debug(f"MusicBrainz query failed for {artist_name} at offset {offset}: {e}", exc_info=True)
+            
+            # If we exhausted retries, break out of page loop
+            if retry_count >= max_retries and last_error:
+                log_info(f"Stopping MusicBrainz scan for {artist_name} due to repeated connection errors")
                 break
         
         if not all_mb_releases:

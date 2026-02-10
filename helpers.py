@@ -120,11 +120,20 @@ def detect_live_album(album_title: str) -> dict:
 
 def create_retry_session(user_agent: str | None = None, retries: int = 5, backoff: float = 1.2,
                          status_forcelist: tuple = (429, 500, 502, 503, 504),
-                         allowed_methods: tuple = ("GET", "POST")) -> requests.Session:
+                         allowed_methods: tuple = ("GET", "POST"),
+                         verify_ssl: bool = True) -> requests.Session:
     """Create a requests.Session preconfigured with retry/backoff and optional User-Agent.
 
     Handles HTTP errors, connection errors, and SSL errors with exponential backoff.
     Uses a custom SSL adapter to handle SSL/TLS protocol issues more gracefully.
+    
+    Args:
+        user_agent: Optional User-Agent string to use for all requests
+        retries: Number of retries for failed connections
+        backoff: Exponential backoff factor between retries
+        status_forcelist: HTTP status codes to retry on
+        allowed_methods: HTTP methods to allow retries for
+        verify_ssl: Whether to verify SSL certificates (default True)
     
     Returns a configured `requests.Session` ready to be used by callers.
     """
@@ -138,6 +147,10 @@ def create_retry_session(user_agent: str | None = None, retries: int = 5, backof
         allowed_methods=frozenset(allowed_methods),
         raise_on_status=False  # Don't raise exceptions on bad status codes
     )
+    
+    # Set SSL verification for the session
+    s.verify = verify_ssl
+    
     # Use the custom SSL adapter for better SSL/TLS handling
     ssl_adapter = SSLAdapter(max_retries=retry)
     s.mount("https://", ssl_adapter)
