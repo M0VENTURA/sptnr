@@ -116,25 +116,32 @@ class NavidromeClient:
             logger.error(f"❌ Failed to fetch albums for artist {artist_id}: {e}")
             return []
     
-    def fetch_album_tracks(self, album_id: str) -> list:
+    def fetch_album_tracks(self, album_id: str) -> dict:
         """
-        Fetch all tracks for an album.
+        Fetch all tracks for an album along with album metadata.
         
         Args:
             album_id: Navidrome album ID
             
         Returns:
-            List of track objects from Navidrome
+            Dict with 'tracks' (list of track objects) and 'artist' (album artist name)
         """
         url = f"{self.base_url}/rest/getAlbum.view"
         params = self._build_params(id=album_id)
         try:
             res = self.session.get(url, params=params)
             res.raise_for_status()
-            return res.json().get("subsonic-response", {}).get("album", {}).get("song", [])
+            album = res.json().get("subsonic-response", {}).get("album", {})
+            return {
+                "tracks": album.get("song", []),
+                "artist": album.get("artist", ""),
+                "artistId": album.get("artistId", ""),
+                "name": album.get("name", ""),
+                "id": album.get("id", "")
+            }
         except Exception as e:
             logger.error(f"❌ Failed to fetch tracks for album {album_id}: {e}")
-            return []
+            return {"tracks": [], "artist": "", "artistId": "", "name": "", "id": ""}
     
     def build_artist_index(self) -> dict:
         """
