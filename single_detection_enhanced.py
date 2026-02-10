@@ -865,33 +865,59 @@ def detect_single_enhanced(
     
     # Log entry for this track detection
     log_debug(f"[DETECT] Starting single detection for: '{title}' by {artist} (album: {album}, pop: {popularity:.1f})")
-    
+
     # Get album statistics
     album_mean, album_stddev, album_track_count = calculate_album_stats(conn, artist, album)
     log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
-    
+
     # Get all album popularities for pre-filter
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT popularity_score
+        SELECT id, title, popularity_score
         FROM tracks
         WHERE artist = ? AND album = ? AND popularity_score > 0
         ORDER BY popularity_score DESC
     """, (artist, album))
-    album_popularities = [row[0] for row in cursor.fetchall()]
-    
+    album_rows = cursor.fetchall()
+    album_popularities = [row[2] for row in album_rows]
+
+    # --- Prefer canonical (non-alternate) version for single detection ---
+    # If both canonical and alternate (e.g., acoustic) versions exist for the same base title,
+    # only allow the canonical version to be marked as the single.
+    import re
+    def base_title(t):
+        # Remove trailing parenthesis and common alternate markers
+        return re.sub(r'\s*\([^)]*\)$', '', t).strip().lower()
+
+    current_base = base_title(title)
+    # Find all tracks with the same base title
+    same_base_tracks = [row for row in album_rows if base_title(row[1]) == current_base]
+    if len(same_base_tracks) > 1:
+        # Prefer canonical (non-alternate) version
+        def is_alternate(t):
+            alt_keywords = ["acoustic", "live", "remix", "edit", "mix", "orchestral", "unplugged", "demo", "instrumental", "karaoke"]
+            t_low = t.lower()
+            return any(alt in t_low for alt in alt_keywords)
+        # If a canonical version exists, only allow it to be marked as single
+        canonical_tracks = [row for row in same_base_tracks if not is_alternate(row[1])]
+        if canonical_tracks:
+            # If this is an alternate version, do not mark as single
+            if is_alternate(title):
+                log_debug(f"[ALT FILTER] Skipping alternate version '{title}' in favor of canonical version for single detection.")
+                return result
+
     # Detect if this is a compilation album
     is_compilation = is_compilation_album(album_type, album, album_track_count)
-    
+
     if is_compilation and verbose:
         log_debug(f"[DEBUG] Compilation detected — checking all tracks for singles.")
-    
+
     # Detect if this is a special edition album
     is_special_edition = is_special_edition_album(album)
-    
+
     if is_special_edition and verbose:
         log_debug(f"[DEBUG] Special edition album detected: {album}")
-    
+
     # Count Spotify versions
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count

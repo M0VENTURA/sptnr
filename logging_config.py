@@ -116,7 +116,8 @@ def setup_logging(service_name="sptnr"):
             UNIFIED_LOG_PATH,
             when='midnight',
             interval=1,
-            backupCount=BACKUP_COUNT
+            backupCount=BACKUP_COUNT,
+            encoding='utf-8'
         )
         unified_handler.setFormatter(standard_formatter)
         unified_handler.addFilter(UnifiedLogFilter())
@@ -132,7 +133,8 @@ def setup_logging(service_name="sptnr"):
             INFO_LOG_PATH,
             when='midnight',
             interval=1,
-            backupCount=BACKUP_COUNT
+            backupCount=BACKUP_COUNT,
+            encoding='utf-8'
         )
         info_handler.setFormatter(prefix_formatter)
         info_logger.addHandler(info_handler)
@@ -147,10 +149,14 @@ def setup_logging(service_name="sptnr"):
             DEBUG_LOG_PATH,
             when='midnight',
             interval=1,
-            backupCount=BACKUP_COUNT
+            backupCount=BACKUP_COUNT,
+            encoding='utf-8'
         )
         debug_handler.setFormatter(prefix_formatter)
         debug_logger.addHandler(debug_handler)
+        # Add a test/info log entry with a Unicode star to verify correct display
+        info_logger = logging.getLogger(INFO_LOGGER)
+        info_logger.info('Logging Unicode test: ★ (U+2605)')
     
     return unified_logger, info_logger, debug_logger
 

@@ -84,213 +84,315 @@ class LastFmClient:
             return {"artists": [], "albums": [], "tracks": []}
     
     def _get_recommended_artists(self) -> list:
-        """Fetch recommended artists from Last.fm.
+        """Fetch recommended artists from Last.fm based on similar artists.
         
-        If username is set, uses user-specific recommendations.
-        Otherwise falls back to chart top artists.
+        Strategy:
+        1. Get user's top artists (to understand their taste)
+        2. For each top artist, fetch similar artists using artist.getSimilar
+        3. Dedup and return the similar artists (not the user's own top artists)
         """
-        # Try user-specific recommendations first if username is provided
-        if self.username:
-            params = {
-                "method": "user.getTopArtists",
-                "user": self.username,
-                "api_key": self.api_key,
-                "format": "json",
-                "limit": 20,
-                "period": "overall"  # overall, 7day, 1month, 3month, 6month, 12month
-            }
-        else:
-            # Fall back to global chart
-            params = {
-                "method": "chart.getTopArtists",
-                "api_key": self.api_key,
-                "format": "json",
-                "limit": 20
-            }
+        recommended_artists = {}
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            artists = []
-            
-            # Different response structure for user vs chart
+            # Step 1: Get user's top artists to understand their taste
             if self.username:
-                artist_list = res.json().get("topartists", {}).get("artist", [])
+                params = {
+                    "method": "user.getTopArtists",
+                    "user": self.username,
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 10,
+                    "period": "3month"  # Use recent period for current taste
+                }
             else:
-                artist_list = res.json().get("artists", {}).get("artist", [])
+                # Fall back to global chart
+                params = {
+                    "method": "chart.getTopArtists",
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 10
+                }
             
-            for item in artist_list:
-                # Try to get artist image
-                image_url = ""
-                if isinstance(item.get("image"), list) and len(item["image"]) > 0:
-                    for img in reversed(item["image"]):
-                        if img.get("size") == "extralarge" or img.get("#text"):
-                            image_url = img.get("#text", "")
-                            break
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            
+            # Get the top artists
+            if self.username:
+                top_artists = res.json().get("topartists", {}).get("artist", [])
+            else:
+                top_artists = res.json().get("artists", {}).get("artist", [])
+            
+            # Step 2: For each top artist, get similar artists
+            for top_artist in top_artists:
+                artist_name = top_artist.get("name", "")
+                if not artist_name:
+                    continue
                 
-                artists.append({
-                    "name": item.get("name", ""),
-                    "listeners": item.get("listeners", 0),
-                    "playcount": item.get("playcount", 0),
-                    "image": image_url,
-                    "url": item.get("url", "")
-                })
-            return artists
+                try:
+                    # Fetch similar artists using artist.getSimilar
+                    similar_params = {
+                        "method": "artist.getSimilar",
+                        "artist": artist_name,
+                        "api_key": self.api_key,
+                        "format": "json",
+                        "limit": 5
+                    }
+                    
+                    similar_res = self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
+                    if similar_res.status_code == 200:
+                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
+                        
+                        for similar_artist in similar_artists:
+                            name = similar_artist.get("name", "")
+                            if not name or name in recommended_artists:
+                                continue
+                            
+                            # Extract image
+                            image_url = ""
+                            if isinstance(similar_artist.get("image"), list):
+                                for img in reversed(similar_artist["image"]):
+                                    if img.get("#text"):
+                                        image_url = img.get("#text", "")
+                                        break
+                            
+                            recommended_artists[name] = {
+                                "name": name,
+                                "listeners": similar_artist.get("listeners", 0),
+                                "playcount": 0,
+                                "image": image_url,
+                                "url": similar_artist.get("url", "")
+                            }
+                except Exception as e:
+                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
+                    continue
+            
+            return list(recommended_artists.values())[:20]
         except Exception as e:
             logger.error(f"Failed to fetch recommended artists: {e}")
             return []
     
     def _get_recommended_albums(self) -> list:
-        """Fetch recommended albums from Last.fm.
+        """Fetch recommended albums from Last.fm based on similar artists.
         
-        If username is set, uses user's top albums.
-        Otherwise falls back to geoographic top artists' albums.
+        Strategy:
+        1. Get user's top artists (to understand their taste)
+        2. For each top artist, fetch similar artists
+        3. For each similar artist, fetch their top albums
+        4. Return albums from similar artists (NEW recommendations, not user's own top albums)
         """
-        # Try user-specific recommendations first if username is provided
-        if self.username:
-            params = {
-                "method": "user.getTopAlbums",
-                "user": self.username,
-                "api_key": self.api_key,
-                "format": "json",
-                "limit": 12,
-                "period": "overall"  # overall, 7day, 1month, 3month, 6month, 12month
-            }
-            try:
-                res = self.session.get(self.base_url, params=params, timeout=(5, 10))
-                res.raise_for_status()
-                albums = []
-                
-                for item in res.json().get("topalbums", {}).get("album", []):
-                    image_url = ""
-                    if isinstance(item.get("image"), list):
-                        for img in reversed(item["image"]):
-                            if img.get("#text"):
-                                image_url = img.get("#text", "")
-                                break
-                    
-                    albums.append({
-                        "name": item.get("name", ""),
-                        "artist": item.get("artist", {}).get("name", "") if isinstance(item.get("artist"), dict) else item.get("artist", ""),
-                        "playcount": item.get("playcount", 0),
-                        "image": image_url,
-                        "url": item.get("url", "")
-                    })
-                return albums[:12]
-            except Exception as e:
-                logger.error(f"Failed to fetch user top albums: {e}")
-                return []
-        
-        # Fall back to geographic top artists' albums
-        params = {
-            "method": "geo.getTopArtists",
-            "country": "US",
-            "api_key": self.api_key,
-            "format": "json",
-            "limit": 10
-        }
+        recommended_albums = {}
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            albums = []
-            
-            # Get top artists, then get their top albums
-            for artist_item in res.json().get("topartists", {}).get("artist", [])[:5]:
-                artist_name = artist_item.get("name", "")
-                artist_url = artist_item.get("url", "")
-                
-                # Get top tracks for this artist (which will show albums)
-                track_params = {
-                    "method": "artist.getTopTracks",
-                    "artist": artist_name,
+            # Step 1: Get user's top artists
+            if self.username:
+                params = {
+                    "method": "user.getTopArtists",
+                    "user": self.username,
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 3
+                    "limit": 8,
+                    "period": "3month"
                 }
-                
-                track_res = self.session.get(self.base_url, params=track_params, timeout=(5, 10))  # (connect_timeout, read_timeout)
-                if track_res.status_code == 200:
-                    for track in track_res.json().get("toptracks", {}).get("track", []):
-                        album_info = track.get("album", {})
-                        if album_info and album_info.get("title"):
-                            image_url = ""
-                            if isinstance(album_info.get("image"), list):
-                                for img in reversed(album_info["image"]):
-                                    if img.get("#text"):
-                                        image_url = img.get("#text", "")
-                                        break
-                            
-                            albums.append({
-                                "name": album_info.get("title", ""),
-                                "artist": artist_name,
-                                "playcount": track.get("playcount", 0),
-                                "image": image_url,
-                                "url": album_info.get("url", "")
-                            })
+            else:
+                params = {
+                    "method": "chart.getTopArtists",
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 8
+                }
             
-            return albums[:12]  # Return up to 12 albums
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            
+            if self.username:
+                top_artists = res.json().get("topartists", {}).get("artist", [])
+            else:
+                top_artists = res.json().get("artists", {}).get("artist", [])
+            
+            # Step 2: For each top artist, get similar artists and their albums
+            for top_artist in top_artists:
+                artist_name = top_artist.get("name", "")
+                if not artist_name:
+                    continue
+                
+                try:
+                    # Get similar artists
+                    similar_params = {
+                        "method": "artist.getSimilar",
+                        "artist": artist_name,
+                        "api_key": self.api_key,
+                        "format": "json",
+                        "limit": 3
+                    }
+                    
+                    similar_res = self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
+                    if similar_res.status_code == 200:
+                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
+                        
+                        # Step 3: Get top albums from each similar artist
+                        for similar_artist in similar_artists:
+                            similar_artist_name = similar_artist.get("name", "")
+                            if not similar_artist_name:
+                                continue
+                            
+                            try:
+                                album_params = {
+                                    "method": "artist.getTopAlbums",
+                                    "artist": similar_artist_name,
+                                    "api_key": self.api_key,
+                                    "format": "json",
+                                    "limit": 3
+                                }
+                                
+                                album_res = self.session.get(self.base_url, params=album_params, timeout=(5, 10))
+                                if album_res.status_code == 200:
+                                    top_albums = album_res.json().get("topalbums", {}).get("album", [])
+                                    
+                                    for album in top_albums:
+                                        album_name = album.get("name", "")
+                                        if not album_name:
+                                            continue
+                                        
+                                        album_key = (similar_artist_name.lower(), album_name.lower())
+                                        if album_key in recommended_albums:
+                                            continue
+                                        
+                                        # Extract image
+                                        image_url = ""
+                                        if isinstance(album.get("image"), list):
+                                            for img in reversed(album["image"]):
+                                                if img.get("#text"):
+                                                    image_url = img.get("#text", "")
+                                                    break
+                                        
+                                        recommended_albums[album_key] = {
+                                            "name": album_name,
+                                            "artist": similar_artist_name,
+                                            "playcount": 0,
+                                            "image": image_url,
+                                            "url": album.get("url", "")
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Failed to fetch albums for {similar_artist_name}: {e}")
+                                continue
+                except Exception as e:
+                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
+                    continue
+            
+            return list(recommended_albums.values())[:12]
         except Exception as e:
             logger.error(f"Failed to fetch recommended albums: {e}")
             return []
     
     def _get_recommended_tracks(self) -> list:
-        """Fetch recommended tracks from Last.fm.
+        """Fetch recommended tracks from Last.fm based on similar artists.
         
-        If username is set, uses user-specific top tracks.
-        Otherwise falls back to chart top tracks.
+        Strategy:
+        1. Get user's top artists (to understand their taste)
+        2. For each top artist, fetch similar artists
+        3. For each similar artist, fetch their top tracks
+        4. Return tracks from similar artists (NEW recommendations, not user's own recent tracks)
         """
-        # Try user-specific recommendations first if username is provided
-        if self.username:
-            params = {
-                "method": "user.getRecentTracks",
-                "user": self.username,
-                "api_key": self.api_key,
-                "format": "json",
-                "limit": 20
-            }
-        else:
-            # Fall back to global chart
-            params = {
-                "method": "chart.getTopTracks",
-                "api_key": self.api_key,
-                "format": "json",
-                "limit": 20
-            }
+        recommended_tracks = {}
         
         try:
-            res = self.session.get(self.base_url, params=params, timeout=(5, 10))  # (connect_timeout, read_timeout)
-            res.raise_for_status()
-            tracks = []
-            
-            # Different response structure for user vs chart
+            # Step 1: Get user's top artists
             if self.username:
-                track_list = res.json().get("recenttracks", {}).get("track", [])
+                params = {
+                    "method": "user.getTopArtists",
+                    "user": self.username,
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 8,
+                    "period": "3month"
+                }
             else:
-                track_list = res.json().get("tracks", {}).get("track", [])
+                params = {
+                    "method": "chart.getTopArtists",
+                    "api_key": self.api_key,
+                    "format": "json",
+                    "limit": 8
+                }
             
-            for item in track_list:
-                image_url = ""
-                if isinstance(item.get("image"), list):
-                    for img in reversed(item["image"]):
-                        if img.get("#text"):
-                            image_url = img.get("#text", "")
-                            break
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            
+            if self.username:
+                top_artists = res.json().get("topartists", {}).get("artist", [])
+            else:
+                top_artists = res.json().get("artists", {}).get("artist", [])
+            
+            # Step 2: For each top artist, get similar artists and their tracks
+            for top_artist in top_artists:
+                artist_name = top_artist.get("name", "")
+                if not artist_name:
+                    continue
                 
-                # Handle different artist formats (user.getRecentTracks vs chart)
-                if isinstance(item.get("artist"), dict):
-                    artist_name = item.get("artist", {}).get("name", "Unknown")
-                else:
-                    artist_name = item.get("artist", "Unknown")
-                
-                tracks.append({
-                    "name": item.get("name", ""),
-                    "artist": artist_name,
-                    "playcount": item.get("playcount", 0),
-                    "image": image_url,
-                    "url": item.get("url", "")
-                })
-            return tracks
+                try:
+                    # Get similar artists
+                    similar_params = {
+                        "method": "artist.getSimilar",
+                        "artist": artist_name,
+                        "api_key": self.api_key,
+                        "format": "json",
+                        "limit": 3
+                    }
+                    
+                    similar_res = self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
+                    if similar_res.status_code == 200:
+                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
+                        
+                        # Step 3: Get top tracks from each similar artist
+                        for similar_artist in similar_artists:
+                            similar_artist_name = similar_artist.get("name", "")
+                            if not similar_artist_name:
+                                continue
+                            
+                            try:
+                                track_params = {
+                                    "method": "artist.getTopTracks",
+                                    "artist": similar_artist_name,
+                                    "api_key": self.api_key,
+                                    "format": "json",
+                                    "limit": 4
+                                }
+                                
+                                track_res = self.session.get(self.base_url, params=track_params, timeout=(5, 10))
+                                if track_res.status_code == 200:
+                                    top_tracks = track_res.json().get("toptracks", {}).get("track", [])
+                                    
+                                    for track in top_tracks:
+                                        track_name = track.get("name", "")
+                                        if not track_name:
+                                            continue
+                                        
+                                        track_key = (similar_artist_name.lower(), track_name.lower())
+                                        if track_key in recommended_tracks:
+                                            continue
+                                        
+                                        # Extract image
+                                        image_url = ""
+                                        if isinstance(track.get("image"), list):
+                                            for img in reversed(track["image"]):
+                                                if img.get("#text"):
+                                                    image_url = img.get("#text", "")
+                                                    break
+                                        
+                                        recommended_tracks[track_key] = {
+                                            "name": track_name,
+                                            "artist": similar_artist_name,
+                                            "playcount": track.get("playcount", 0),
+                                            "image": image_url,
+                                            "url": track.get("url", "")
+                                        }
+                            except Exception as e:
+                                logger.debug(f"Failed to fetch tracks for {similar_artist_name}: {e}")
+                                continue
+                except Exception as e:
+                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
+                    continue
+            
+            return list(recommended_tracks.values())[:20]
         except Exception as e:
             logger.error(f"Failed to fetch recommended tracks: {e}")
             return []
