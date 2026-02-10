@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from db_utils import get_db_connection, ensure_album_artist_column
+from db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -139,7 +139,13 @@ def log_verbose(msg):
 app = Flask(__name__)
 
 # Ensure album_artist column exists in database on startup
-ensure_album_artist_column()
+ensure_result = ensure_album_artist_column()
+
+# Verify the migration worked
+verification = verify_album_artist_column()
+if not verification["exists"]:
+    import logging
+    logging.warning(f"⚠️ Database migration issue: {verification['message']}")
 
 # --- Unified Log API ---
 @app.route("/api/unified-log")
