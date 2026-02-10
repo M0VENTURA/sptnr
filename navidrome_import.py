@@ -379,6 +379,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         # Scan for missing releases from MusicBrainz
         try:
             _scan_missing_musicbrainz_releases(artist_name, verbose=verbose)
+        except (requests.exceptions.ConnectionError, requests.exceptions.Timeout) as e:
+            # Silently skip MusicBrainz scan on connection errors - these are transient
+            log_debug(f"Skipping MusicBrainz scan for {artist_name} due to connection issue: {type(e).__name__}")
         except Exception as e:
             log_debug(f"Failed to scan missing MusicBrainz releases for {artist_name}: {e}", exc_info=True)
     except Exception as e:
