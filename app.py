@@ -1377,149 +1377,78 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
-        try:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(album_artist, artist) = ?
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
-        except:
-            # Fallback for databases without album_artist column
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE artist = ?
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
+        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type,
+                MAX(discogs_release_id) as discogs_release_id
+            FROM tracks
+            WHERE artist = ?
+            GROUP BY album
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+        """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
-        # Use COALESCE(album_artist, artist) to match the artist list page logic
-        try:
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as track_count,
-                    COUNT(DISTINCT album) as album_count,
-                    AVG(stars) as avg_stars,
-                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                    SUM(COALESCE(duration, 0)) as total_duration,
-                    MIN(year) as earliest_year,
-                    MAX(year) as latest_year,
-                    MAX(beets_artist_mbid) as beets_artist_mbid,
-                    MAX(spotify_artist_id) as spotify_artist_id,
-                    MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                    MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
-                    MAX(discogs_artist_id) as discogs_artist_id,
-                    MAX(discogs_release_id) as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(album_artist, artist) = ?
-            """, (name,))
-        except:
-            # Fallback for databases without beets columns
-            cursor.execute("""
-                SELECT 
-                    COUNT(*) as track_count,
-                    COUNT(DISTINCT album) as album_count,
-                    AVG(stars) as avg_stars,
-                    SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                    SUM(COALESCE(duration, 0)) as total_duration,
-                    MIN(year) as earliest_year,
-                    MAX(year) as latest_year,
-                    NULL as beets_artist_mbid,
-                    NULL as spotify_artist_id,
-                    NULL as lastfm_artist_mbid,
-                    NULL as musicbrainz_artist_id,
-                    NULL as discogs_artist_id,
-                    NULL as discogs_release_id
-                FROM tracks
-                WHERE COALESCE(album_artist, artist) = ?
-            """, (name,))
+        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as track_count,
+                COUNT(DISTINCT album) as album_count,
+                AVG(stars) as avg_stars,
+                SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
+                SUM(COALESCE(duration, 0)) as total_duration,
+                MIN(year) as earliest_year,
+                MAX(year) as latest_year,
+                MAX(beets_artist_mbid) as beets_artist_mbid,
+                MAX(spotify_artist_id) as spotify_artist_id,
+                MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
+                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
+                MAX(discogs_artist_id) as discogs_artist_id,
+                MAX(discogs_release_id) as discogs_release_id
+            FROM tracks
+            WHERE artist = ?
+        """, (name,))
         
         artist_stats = cursor.fetchone()
         
         # Get missing releases from database cache
-        try:
-            cursor.execute("""
-                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
-                FROM missing_releases
-                WHERE COALESCE(album_artist, artist) = ?
-                ORDER BY first_release_date DESC
-            """, (name,))
-        except:
-            # Fallback for databases without album_artist column
-            cursor.execute("""
-                SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
-                FROM missing_releases
-                WHERE artist = ?
-                ORDER BY first_release_date DESC
-            """, (name,))
+        cursor.execute("""
+            SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
+            FROM missing_releases
+            WHERE artist = ?
+            ORDER BY first_release_date DESC
+        """, (name,))
         missing_releases_data = cursor.fetchall()
         
         # Get compilation albums where this artist is featured (Various Artists, etc.)
-        # Use artist column here since we're looking for track artist in compilations
-        try:
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type
-                FROM tracks
-                WHERE COALESCE(album_artist, artist) = ? AND (
-                    COALESCE(album_artist, '') IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
-                    OR album LIKE '%compilation%'
-                    OR album LIKE '%various%'
-                    OR album LIKE '%soundtrack%'
-                    OR album LIKE '%tribute%'
-                )
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
-        except:
-            # Fallback for databases without album_artist column
-            cursor.execute("""
-                SELECT 
-                    album,
-                    COUNT(*) as track_count,
-                    AVG(stars) as avg_stars,
-                    COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
-                    MAX(last_scanned) as last_updated,
-                    MIN(year) as album_year,
-                    MAX(spotify_album_type) as album_type
-                FROM tracks
-                WHERE artist = ? AND (
-                    artist IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
-                    OR album LIKE '%compilation%'
-                    OR album LIKE '%various%'
-                    OR album LIKE '%soundtrack%'
-                    OR album LIKE '%tribute%'
-                )
-                GROUP BY album
-                ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
-            """, (name,))
+        # Query by regular artist column
+        cursor.execute("""
+            SELECT 
+                album,
+                COUNT(*) as track_count,
+                AVG(stars) as avg_stars,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
+                MAX(last_scanned) as last_updated,
+                MIN(year) as album_year,
+                MAX(spotify_album_type) as album_type
+            FROM tracks
+            WHERE artist = ? AND (
+                album_artist IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
+                OR album LIKE '%compilation%'
+                OR album LIKE '%various%'
+                OR album LIKE '%soundtrack%'
+                OR album LIKE '%tribute%'
+            )
+            GROUP BY album
+            ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
+        """, (name,))
         compilation_albums = cursor.fetchall()
         
         # Get artist country from artists table if it exists
