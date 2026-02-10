@@ -1883,6 +1883,7 @@ def popularity_scan(
                         # Try to get popularity from Spotify (using cached data or API)
                         spotify_score = 0
                         spotify_search_results = None
+                        spotify_release_date = None
                     
                         # Check if we can use cached Spotify popularity score
                         if not skip_spotify_lookup and not (FORCE_RESCAN or force):
@@ -1971,11 +1972,15 @@ def popularity_scan(
                                     if best_match:
                                         spotify_score = best_match.get("popularity", 0)
                                         spotify_track_id = best_match.get("id")
+                                        # Extract release date from Spotify result for age scoring
+                                        spotify_release_date = best_match.get("album", {}).get("release_date")
                                         log_info(f'Spotify popularity score: {spotify_score}')
                                         log_debug(f'Spotify track ID: {spotify_track_id}')
+                                        log_debug(f'Spotify release date: {spotify_release_date}')
                                     else:
                                         spotify_score = 0
                                         spotify_track_id = None
+                                        spotify_release_date = None
                                         log_info(f'No Spotify match found for: {title}')
                                 
                                     # Fetch comprehensive metadata for this track
@@ -2077,18 +2082,19 @@ def popularity_scan(
                                 log_debug(f"Last.fm error details: {type(e).__name__}: {str(e)}")
 
                         # Try to get ListenBrainz score if mbid is available
-                        # Calculate age score if year is available
+                        # Calculate age score if release date is available
                         age_score = 0
-                        track_year = row_get(track, "year")
-                        if track_year:
+                        if spotify_release_date:
                             try:
-                                log_debug(f'Calculating age score for year: {track_year}')
-                                age_score = score_by_age(track_year)
-                                log_debug(f'Age score calculated: {age_score:.1f} (year: {track_year})')
+                                log_debug(f'Calculating age score for release date: {spotify_release_date}')
+                                # Apply age decay to Spotify score if available, otherwise use a base score of 1
+                                base_score = spotify_score if spotify_score > 0 else 1
+                                age_score, days_since = score_by_age(base_score, spotify_release_date)
+                                log_debug(f'Age score calculated: {age_score:.1f} (release date: {spotify_release_date}, days since: {days_since})')
                             except Exception as e:
                                 log_debug(f"Age score calculation failed: {e}")
                         else:
-                            log_debug(f'No year available for age scoring: {title}')
+                            log_debug(f'No release date available for age scoring: {title}')
 
                         # Calculate weighted popularity score
                         # Only include sources that have data (score > 0)
