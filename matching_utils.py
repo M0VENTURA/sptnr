@@ -186,6 +186,75 @@ def normalize_artist(artist: str) -> str:
     return normalize_string(artist)
 
 
+def normalize_album(album: str) -> str:
+    """
+    Normalize album name for search and matching purposes.
+    
+    Removes version/edition suffixes to help match albums like:
+    - "Helix (2021 version)" -> "Helix"
+    - "Album Name (Deluxe Edition)" -> "Album Name"
+    - "Greatest Hits - Remastered" -> "Greatest Hits"
+    
+    This is useful for searching Spotify/MusicBrainz where the exact album
+    version may differ from what's in the local library.
+    
+    Removes:
+    - Year suffixes in parentheses: (2021 version), (2020 remaster)
+    - Edition suffixes: deluxe, expanded, reissue, anniversary, special edition
+    - Remaster indicators: remaster, remastered
+    - Content in parentheses/brackets after removing specific patterns
+    
+    Args:
+        album: Album name to normalize
+        
+    Returns:
+        Normalized album string
+    """
+    if not album:
+        return ""
+    
+    # Remove year-based version suffixes like "(2021 version)", "(2020 remaster)"
+    # Pattern: ( + optional text + 4 digits + optional text + )
+    # This catches patterns like "(2021 version)", "(10th Anniversary 2020)", etc.
+    album = re.sub(r'\([^)]*\d{4}[^)]*\)', '', album)
+    
+    # Remove standalone anniversary editions (catches patterns like "10th Anniversary Edition")
+    album = re.sub(r'\([^)]*\d+(?:st|nd|rd|th)\s+anniversary[^)]*\)', '', album, flags=re.IGNORECASE)
+    
+    # Remove edition/version keywords and their surrounding context
+    # These patterns match both standalone and in parentheses/brackets
+    # Only remove if they're in parentheses/brackets or after dash to avoid false positives
+    edition_patterns = [
+        # Parentheses-based patterns
+        r'\(\s*deluxe\s*(?:edition|version)?\s*\)',
+        r'\(\s*expanded\s*(?:edition|version)?\s*\)',
+        r'\(\s*reissue\s*\)',
+        r'\(\s*anniversary\s*(?:edition)?\s*\)',
+        r'\(\s*special\s*edition\s*\)',
+        r'\(\s*extended\s*edition\s*\)',
+        r'\(\s*tour\s*edition\s*\)',
+        r'\(\s*limited\s*edition\s*\)',
+        r'\(\s*collector\'?s?\s*edition\s*\)',
+        r'\(\s*remaster(?:ed)?\s*\)',
+        r'\(\s*bonus\s*(?:tracks?|edition)?\s*\)',
+        # Dash-based patterns (only after dash to avoid removing album names like "The Deluxe")
+        r'\s+-\s+deluxe(?:\s+edition)?',
+        r'\s+-\s+remaster(?:ed)?',
+        r'\s+-\s+expanded(?:\s+edition)?',
+        r'\s+-\s+special\s+edition',
+    ]
+    
+    for pattern in edition_patterns:
+        album = re.sub(pattern, '', album, flags=re.IGNORECASE)
+    
+    # Remove any remaining empty parentheses or brackets
+    album = re.sub(r'\s*\(\s*\)\s*', ' ', album)
+    album = re.sub(r'\s*\[\s*\]\s*', ' ', album)
+    
+    # Use base normalization to clean up
+    return normalize_string(album)
+
+
 def levenshtein_distance(s1: str, s2: str) -> int:
     """
     Calculate Levenshtein distance between two strings.
@@ -338,8 +407,8 @@ def calculate_track_similarity(
     )
     
     album_sim = calculate_similarity(
-        normalize_string(track1.get(album_key1, "")),
-        normalize_string(track2.get(album_key2, ""))
+        normalize_album(track1.get(album_key1, "")),
+        normalize_album(track2.get(album_key2, ""))
     )
     
     duration_sim = calculate_duration_similarity(
