@@ -2548,11 +2548,11 @@ def popularity_scan(
                         stars = max(1, 4 - band_index)
                         
                         # NEW: 5-STAR LOGIC PER PROBLEM STATEMENT
-                        # A track becomes 5â˜… ONLY if:
+                        # A track becomes 5★ ONLY if:
                         # - it has high-confidence status, OR
                         # - it has >= 2 medium-confidence sources
                         #
-                        # Do NOT assign 5â˜… based on popularity alone.
+                        # Do NOT assign 5★ based on popularity alone.
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
@@ -2593,7 +2593,7 @@ def popularity_scan(
                                         original_stars = stars
                                         stars = max(stars - 1, 3 if single_confidence == "high" else 2)
                                         if stars < original_stars:
-                                            log_info(f"Downgraded '{title}': {original_stars}â˜… -> {stars}â˜… (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
+                                            log_info(f"Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
                                             log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {artist_stats['median_popularity']}")
                         else:
                             # Track is excluded from statistics
@@ -2635,7 +2635,7 @@ def popularity_scan(
                             log_debug(f"Skipped Navidrome sync for track {track_id}")
                     
                     # Log star distribution
-                    dist_str = ", ".join([f"{stars}â˜…: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
+                    dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
                     log_debug(f'Star distribution details: {star_distribution}')
                     
@@ -2679,7 +2679,7 @@ def popularity_scan(
                         sources_str = ", ".join(formatted_sources) if formatted_sources else ""
                         
                         # Create star rating string (max 5 stars)
-                        stars_str = "â˜…" * min(track_stars, 5)
+                        stars_str = "★" * min(track_stars, 5)
                         
                         if track_is_single:
                             singles.append((track_title, stars_str, sources_str))
@@ -2837,7 +2837,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     Create/refresh 'Essential {artist}' smart playlist using Navidrome's 0â€“5 rating scale.
 
     Logic:
-      - Case A: if artist has >= 10 five-star tracks, build a pure 5â˜… essentials playlist.
+      - Case A: if artist has >= 10 five-star tracks, build a pure 5★ essentials playlist.
       - Case B: if total tracks >= 100, build top 10% essentials sorted by rating.
     
     Args:
@@ -2848,7 +2848,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     five_star_tracks = [t for t in tracks if (t["stars"] or 0) == 5]
     playlist_name = f"Essential {artist_name}"
 
-    # CASE A â€“ 10+ five-star tracks â†’ purely 5â˜… essentials
+    # CASE A – 10+ five-star tracks → purely 5★ essentials
     if len(five_star_tracks) >= 10:
         _delete_nsp_file(playlist_name)
         playlist_data = {
@@ -2858,10 +2858,10 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
             "sort": "random"
         }
         _create_nsp_file(playlist_name, playlist_data)
-        log_basic(f"Essential playlist created for '{artist_name}' (5â˜… essentials)")
+        log_basic(f"Essential playlist created for '{artist_name}' (5★ essentials)")
         return
 
-    # CASE B â€“ 100+ total tracks â†’ top 10% by rating
+    # CASE B – 100+ total tracks → top 10% by rating
     if total_tracks >= 100:
         _delete_nsp_file(playlist_name)
         limit = max(1, math.ceil(total_tracks * 0.10))
@@ -2879,7 +2879,7 @@ def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
     # If artist no longer meets requirements, delete existing playlist if it exists
     log_basic(
         f"No Essential playlist created for '{artist_name}' "
-        f"(total={total_tracks}, fiveâ˜…={len(five_star_tracks)})"
+        f"(total={total_tracks}, five★={len(five_star_tracks)})"
     )
     # Clean up old playlist if it exists but requirements are no longer met
     _delete_nsp_file(playlist_name)
