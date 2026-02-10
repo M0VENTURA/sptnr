@@ -1199,10 +1199,9 @@ def artists():
     total_stats = cursor.fetchone()
     
     # Filter artists to show only those with at least one album or EP
-    # Simply count distinct albums and filter out artists with 0 albums
-    # This removes the UNION ALL that was adding artists from artist_stats with 0 content
-    # Use NULLIF to treat empty strings as NULL, ensuring COALESCE falls back to artist field
-    # Exclude tracks where album_artist is "Various Artists" to prevent showing artists who only appear on compilations
+    # Only show artists who are the album_artist on at least one album
+    # This prevents showing individual artists who only appear as track artists on compilations
+    # Use NULLIF to treat empty strings as NULL for proper fallback
     try:
         cursor.execute("""
             SELECT 
@@ -1213,13 +1212,8 @@ def artists():
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
-                AND COALESCE(NULLIF(album_artist, ''), artist) != ''
-                AND (
-                    album_artist IS NULL 
-                    OR album_artist = '' 
-                    OR album_artist NOT IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
-                )
+            WHERE album_artist IS NOT NULL 
+                AND album_artist != ''
             GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
