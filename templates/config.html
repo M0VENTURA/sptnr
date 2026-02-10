@@ -101,8 +101,13 @@
             
             <!-- Spotify Configuration -->
             <div class="mb-3">
-              <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+              <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify</h6>
               <div class="row g-2">
+                <div class="col-12">
+                  <label class="form-label form-label-sm">Spotify Username</label>
+                  <input type="text" class="form-control form-control-sm user-spotify-username" placeholder="spotify_username" value="{{ user.get('spotify_username', '') }}">
+                  <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
+                </div>
                 <div class="col-12 col-sm-6">
                   <label class="form-label form-label-sm">Client ID</label>
                   <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id" value="{{ user.get('spotify_client_id', '') }}">
@@ -116,10 +121,15 @@
             
             <!-- ListenBrainz Configuration -->
             <div class="mb-3">
-              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm & ListenBrainz</h6>
               <div class="row g-2">
                 <div class="col-12">
-                  <label class="form-label form-label-sm">User Token</label>
+                  <label class="form-label form-label-sm">Last.fm Username</label>
+                  <input type="text" class="form-control form-control-sm user-lastfm-username" placeholder="lastfm_username" value="{{ user.get('lastfm_username', '') }}">
+                  <small class="form-text text-muted">Your Last.fm username (for personalized recommendations)</small>
+                </div>
+                <div class="col-12">
+                  <label class="form-label form-label-sm">ListenBrainz User Token</label>
                   <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token" value="{{ user.get('listenbrainz_user_token', '') }}">
                   <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
                 </div>
@@ -760,8 +770,10 @@ function buildConfigObject() {
       display_name: card.querySelector('.user-display-name').value,
       base_url: card.querySelector('.user-nav-url').value,
       pass: card.querySelector('.user-nav-password').value,
+      spotify_username: card.querySelector('.user-spotify-username').value,
       spotify_client_id: card.querySelector('.user-spotify-id').value,
       spotify_client_secret: card.querySelector('.user-spotify-secret').value,
+      lastfm_username: card.querySelector('.user-lastfm-username').value,
       listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
     };
     // Only add user if it has at least username and Navidrome URL
@@ -961,8 +973,13 @@ function addNewUser() {
     
     <!-- Spotify Configuration -->
     <div class="mb-3">
-      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify API</h6>
+      <h6 class="text-success mb-2"><i class="bi bi-spotify"></i> Spotify</h6>
       <div class="row g-2">
+        <div class="col-12">
+          <label class="form-label form-label-sm">Spotify Username</label>
+          <input type="text" class="form-control form-control-sm user-spotify-username" placeholder="spotify_username">
+          <small class="form-text text-muted">Your Spotify profile username (for personalized recommendations)</small>
+        </div>
         <div class="col-12 col-sm-6">
           <label class="form-label form-label-sm">Client ID</label>
           <input type="text" class="form-control form-control-sm user-spotify-id" placeholder="spotify_client_id">
@@ -976,10 +993,15 @@ function addNewUser() {
     
     <!-- ListenBrainz Configuration -->
     <div class="mb-3">
-      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> ListenBrainz API</h6>
+      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm & ListenBrainz</h6>
       <div class="row g-2">
         <div class="col-12">
-          <label class="form-label form-label-sm">User Token</label>
+          <label class="form-label form-label-sm">Last.fm Username</label>
+          <input type="text" class="form-control form-control-sm user-lastfm-username" placeholder="lastfm_username">
+          <small class="form-text text-muted">Your Last.fm username (for personalized recommendations)</small>
+        </div>
+        <div class="col-12">
+          <label class="form-label form-label-sm">ListenBrainz User Token</label>
           <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token">
           <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
         </div>
