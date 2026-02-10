@@ -618,11 +618,20 @@
 <script>
 
 // ===============================
+// GLOBAL VARIABLES
+// ===============================
+let currentPlaylistId = null;
+let currentPlaylistData = null;
+
+// ===============================
 // TAB SWITCHING FUNCTIONALITY
 // ===============================
 function switchTab(tabName) {
+  console.log('switchTab called with:', tabName);
+  
   // Hide all sections
   document.querySelectorAll('.tab-section').forEach(section => {
+    console.log('Hiding section:', section.id);
     section.style.display = 'none';
   });
   
@@ -632,35 +641,37 @@ function switchTab(tabName) {
   });
   
   // Show selected section
-  switch(tabName) {
-    case 'browse':
-      document.getElementById('browseSection').style.display = 'block';
-      document.getElementById('browseTab').classList.add('active');
-      break;
-    case 'spotify':
-      document.getElementById('spotifySection').style.display = 'block';
-      document.getElementById('spotifyTab').classList.add('active');
-      break;
-    case 'smart':
-      document.getElementById('smartSection').style.display = 'block';
-      document.getElementById('smartTab').classList.add('active');
-      break;
-    case 'lastfm':
-      document.getElementById('lastfmSection').style.display = 'block';
-      document.getElementById('lastfmTab').classList.add('active');
-      break;
-    case 'listenbrainz':
-      document.getElementById('listenbrainzSection').style.display = 'block';
-      document.getElementById('listenbrainzTab').classList.add('active');
-      break;
+  console.log('Showing tab:', tabName);
+  const sectionMap = {
+    'browse': ['browseSection', 'browseTab'],
+    'spotify': ['spotifySection', 'spotifyTab'],
+    'smart': ['smartSection', 'smartTab'],
+    'lastfm': ['lastfmSection', 'lastfmTab'],
+    'listenbrainz': ['listenbrainzSection', 'listenbrainzTab']
+  };
+  
+  if (sectionMap[tabName]) {
+    const [sectionId, tabId] = sectionMap[tabName];
+    const section = document.getElementById(sectionId);
+    const tab = document.getElementById(tabId);
+    
+    console.log('Section element:', section);
+    console.log('Tab element:', tab);
+    
+    if (section) {
+      section.style.display = 'block';
+      console.log('Set display to block for:', sectionId);
+    }
+    if (tab) {
+      tab.classList.add('active');
+      console.log('Added active class to:', tabId);
+    }
   }
 }
 
 // ===============================
 // PLAYLIST DROPDOWNS (Navidrome Only)
 // ===============================
-let currentPlaylistId = null;
-let currentPlaylistData = null;
 
 document.addEventListener('DOMContentLoaded', function() {
   // Initialize first tab
@@ -824,7 +835,6 @@ function refreshPlaylistDetails() {
 // PLAYLIST DOWNLOADER
 // =============================================================================
 
-let currentPlaylistData = null;
 let selectedReplacements = {};
 
 async function loadPlaylistList() {
