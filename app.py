@@ -1397,7 +1397,7 @@ def artist_detail(name):
         cursor.execute("""
             SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
             FROM missing_releases
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
             ORDER BY first_release_date DESC
         """, (name,))
         missing_releases_data = cursor.fetchall()
@@ -1414,7 +1414,7 @@ def artist_detail(name):
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type
             FROM tracks
-            WHERE artist = ? AND (
+            WHERE COALESCE(album_artist, artist) = ? AND (
                 COALESCE(album_artist, '') IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
                 OR album LIKE '%compilation%'
                 OR album LIKE '%various%'
@@ -1829,6 +1829,9 @@ def api_scan_all_missing_releases():
             return jsonify({"error": "Missing releases scan already running"}), 400
     
     def run_missing_releases_scan():
+        # Define progress_file at function scope so it's always available
+        progress_file = os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json")
+        
         try:
             conn = get_db()
             cursor = conn.cursor()
@@ -1862,7 +1865,6 @@ def api_scan_all_missing_releases():
                         "percent_complete": int((processed / total_artists * 100)) if total_artists > 0 else 0
                     }
                     
-                    progress_file = os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json")
                     with open(progress_file, 'w') as f:
                         json.dump(progress_data, f)
                     
@@ -2316,12 +2318,25 @@ def api_artist_bio():
         if not bio:
             try:
                 from api_clients.discogs import DiscogsClient
-                discogs_client = DiscogsClient()
-                artist_data = discogs_client.search_artist(artist_name)
-                if artist_data:
-                    bio = artist_data.get("profile", "")
-                    if bio:
-                        source = "Discogs"
+                from helpers import _read_yaml
+                
+                config_data, _ = _read_yaml(CONFIG_PATH)
+                discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
+                discogs_token = discogs_config.get("token", "") or os.environ.get("DISCOGS_TOKEN", "")
+                
+                if discogs_token:
+                    discogs_client = DiscogsClient(discogs_token)
+                    # Use session to search since search_artist is not available
+                    search_url = f"https://api.discogs.com/database/search"
+                    params = {"q": artist_name, "type": "artist", "per_page": 1}
+                    res = discogs_client.session.get(search_url, headers=discogs_client.headers, params=params, timeout=10)
+                    if res.status_code == 200:
+                        results = res.json().get("results", [])
+                        if results:
+                            artist_data = results[0]
+                            bio = artist_data.get("profile", "") or artist_data.get("basic_information", {}).get("notes", "")
+                            if bio:
+                                source = "Discogs"
             except Exception as e:
                 logging.debug(f"Discogs bio fetch failed: {e}")
         
@@ -7309,12 +7324,29 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
     """
     try:
         from api_clients.discogs import DiscogsClient
-        discogs = DiscogsClient()
-        album_data = discogs.search_album(artist_name, album_name)
-        if album_data and album_data.get("cover_url"):
-            resp = requests.get(album_data["cover_url"], timeout=3)
-            if resp.status_code == 200:
-                return resp.content
+        
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
+        discogs_token = discogs_config.get("token", "") or os.environ.get("DISCOGS_TOKEN", "")
+        
+        if not discogs_token:
+            return None
+            
+        discogs = DiscogsClient(discogs_token)
+        
+        # Search for album
+        search_url = f"https://api.discogs.com/database/search"
+        params = {"q": f"{artist_name} {album_name}", "type": "release", "per_page": 1}
+        res = discogs.session.get(search_url, headers=discogs.headers, params=params, timeout=5)
+        
+        if res.status_code == 200:
+            results = res.json().get("results", [])
+            if results:
+                result = results[0]
+                if result.get("cover_url"):
+                    resp = requests.get(result["cover_url"], timeout=3)
+                    if resp.status_code == 200:
+                        return resp.content
     except Exception as e:
         logging.debug(f"Failed to fetch album art from Discogs: {e}")
     
@@ -7750,7 +7782,15 @@ def api_lastfm_recommendations():
             logging.warning(f"Failed to check collection status: {e}")
             # Continue without collection status if DB check fails
         
-        return jsonify({"recommendations": recommendations})
+        # Filter out albums, artists, and tracks already in collection
+        filtered_recommendations = dict(recommendations)
+        if "albums" in recommendations:
+            filtered_recommendations["albums"] = [album for album in recommendations["albums"] if not album.get("in_collection")]
+        if "artists" in recommendations:
+            filtered_recommendations["artists"] = [artist for artist in recommendations["artists"] if not artist.get("in_collection")]
+        if "tracks" in recommendations:
+            filtered_recommendations["tracks"] = [track for track in recommendations["tracks"] if not track.get("in_collection")]
+        return jsonify({"recommendations": filtered_recommendations})
     except Exception as e:
         logging.error(f"Last.fm recommendations error: {str(e)}")
         return jsonify({"error": str(e)}), 500
@@ -8048,10 +8088,6 @@ def slskd_status():
         
         logging.info(f"slskd_status: Returning {len(active_downloads)} active downloads")
         return jsonify({"downloads": active_downloads})
-        
-    except Exception as e:
-        logging.error(f"Error fetching slskd status: {e}", exc_info=True)
-        return jsonify({"error": str(e)}), 500
         
     except Exception as e:
         logging.error(f"Error fetching slskd status: {e}", exc_info=True)
