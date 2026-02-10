@@ -1817,13 +1817,14 @@ def popularity_scan(
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
                     log_debug(f'Alternate takes map: {alternate_takes_map}')
                 
+                # Cache Spotify search results for singles detection reuse
+                # Initialize unconditionally for both singles_only and normal mode
+                spotify_results_cache = {}
+                
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only:
                     # Batch updates for this album (commit once at end instead of per-track)
                     track_updates = []
-                    
-                    # Cache Spotify search results for singles detection reuse
-                    spotify_results_cache = {}
                     
                     # Track progress within album
                     total_tracks = len(album_tracks)
