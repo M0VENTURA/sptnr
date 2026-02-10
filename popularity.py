@@ -1847,10 +1847,9 @@ def popularity_scan(
                                     # Get cached component scores
                                     cached_spotify_score = row_get(track, 'spotify_score', 0)
                                     cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
-                                    cached_listenbrainz_score = row_get(track, 'listenbrainz_score', 0)
                                 
-                                    # Add to batch update with cached scores
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, cached_listenbrainz_score, track_id))
+                                    # Add to batch update with cached scores (genres remain unchanged when using cache)
+                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
@@ -1884,6 +1883,7 @@ def popularity_scan(
                         spotify_score = 0
                         spotify_search_results = None
                         spotify_release_date = None
+                        lastfm_info = {}  # Initialize for genre extraction later
                     
                         # Check if we can use cached Spotify popularity score
                         if not skip_spotify_lookup and not (FORCE_RESCAN or force):
@@ -2096,6 +2096,31 @@ def popularity_scan(
                         else:
                             log_debug(f'No release date available for age scoring: {title}')
 
+                        # Collect genre sources from available APIs
+                        spotify_genres_json = None
+                        lastfm_tags_json = None
+                        
+                        # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
+                        try:
+                            spotify_artist_genres = row_get(track, 'spotify_artist_genres')
+                            if spotify_artist_genres:
+                                spotify_genres_json = spotify_artist_genres
+                                log_debug(f'Spotify genres available for: {title}')
+                        except Exception as e:
+                            log_debug(f'Failed to extract Spotify genres: {e}')
+                        
+                        # Extract Last.fm tags from API response
+                        try:
+                            if lastfm_info and lastfm_info.get("toptags"):
+                                tags_list = lastfm_info.get("toptags", {}).get("tag", [])
+                                if tags_list and isinstance(tags_list, list):
+                                    tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
+                                    if tag_names:
+                                        lastfm_tags_json = json.dumps(tag_names)
+                                        log_debug(f'Last.fm tags extracted for: {title} - {len(tag_names)} tags')
+                        except Exception as e:
+                            log_debug(f'Failed to extract Last.fm tags: {e}')
+
                         # Calculate weighted popularity score
                         # Only include sources that have data (score > 0)
                         scores = []
@@ -2120,7 +2145,7 @@ def popularity_scan(
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -2145,14 +2170,14 @@ def popularity_scan(
                             log_debug(f"Progress milestone - 75% completed for album {album}")
                             milestones_logged.add(75)
 
-# Batch update all popularity scores for this album in one commit (skipped in singles_only mode)
+# Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if track_updates and not singles_only:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
-                    log_debug(f"Batch committed {len(track_updates)} popularity scores for album '{album}'")
+                    log_debug(f"Batch committed {len(track_updates)} popularity scores and genre sources for album '{album}'")
                 
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
