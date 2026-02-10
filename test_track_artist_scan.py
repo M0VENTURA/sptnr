@@ -100,6 +100,7 @@ def test_track_artist_scan():
     # Import the app module after DB is set up
     with patch('app.get_db') as mock_get_db, \
          patch('app.build_artist_index') as mock_build_index, \
+         patch('app._fetch_artist_metadata') as mock_fetch_metadata, \
          patch('app.popularity_scan') as mock_pop_scan, \
          patch('app.log_unified') as mock_log:
         
@@ -122,7 +123,12 @@ def test_track_artist_scan():
         from app import _run_artist_scan_pipeline
         _run_artist_scan_pipeline("At the Drive-In")
         
-        # Verify that popularity_scan was called (even without artist_id)
+        # Verify that _fetch_artist_metadata was called for track artist
+        assert mock_fetch_metadata.called, "_fetch_artist_metadata should have been called for track artist"
+        fetch_args = mock_fetch_metadata.call_args
+        assert fetch_args[0][0] == 'At the Drive-In', "Should fetch metadata for track artist"
+        
+        # Verify that popularity_scan was also called
         assert mock_pop_scan.called, "popularity_scan should have been called for track artist"
         call_args = mock_pop_scan.call_args
         assert call_args[1]['artist_filter'] == 'At the Drive-In', "Should filter by track artist name"
@@ -133,12 +139,12 @@ def test_track_artist_scan():
         
         assert "track artist" in log_messages.lower() or "Track artist" in log_messages, \
             "Should log that artist is a track artist"
-        assert "Skipping Navidrome import" in log_messages, \
-            "Should skip Navidrome import for track artists"
+        assert "Fetching artist metadata" in log_messages, \
+            "Should log that artist metadata is being fetched"
         
         print("✓ Track artist scan succeeded")
+        print("✓ Artist metadata fetching was called for 'At the Drive-In'")
         print("✓ Popularity scan was called for 'At the Drive-In'")
-        print("✓ Navidrome import was skipped (track artists already imported via album artist)")
         return True
 
 
@@ -248,7 +254,7 @@ def main():
             print("Summary of fix:")
             print("- Track artists (from Various Artists albums) can now be scanned")
             print("- Artist scan checks tracks table when artist_id not found in artist_stats")
-            print("- Navidrome import is skipped for track artists (already imported via album artist)")
+            print("- Artist metadata (bio, images) is now fetched for track artists")
             print("- Popularity scan still runs for track artists to update their scores")
             print("=" * 70)
             return 0
