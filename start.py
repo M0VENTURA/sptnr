@@ -503,7 +503,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             try:
                 album_data = fetch_album_tracks(album_id)
                 tracks = album_data.get("tracks", [])
-                album_artist_from_api = album_data.get("artist", "")
+                api_album_artist = album_data.get("artist", "")
                 if tracks:
                     print(f"      ðŸŽµ Found {len(tracks)} tracks")
                     logging.info(f"Found {len(tracks)} tracks in album '{album_name}'")
@@ -511,7 +511,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                 print(f"      âŒ Failed to fetch tracks: {e}")
                 logging.error(f"Failed to fetch tracks for album '{album_name}': {e}")
                 tracks = []
-                album_artist_from_api = ""
+                api_album_artist = ""
 
             # Album-level skip if counts already match cached tracks (unless force=True)
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
@@ -526,11 +526,11 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             tracks_updated = 0
             
             # Get the album artist with priority order:
-            # 1. album_artist_from_api - from getAlbum.view response (most reliable)
+            # 1. api_album_artist - from getAlbum.view response (most reliable)
             # 2. alb.get("artist") - from getArtist.view response 
             # 3. name - the function parameter (artist we're importing)
             # Note: track.albumArtist field can be incorrect (e.g., containing track artist with feat.)
-            album_artist_value = album_artist_from_api or alb.get("artist") or name
+            album_artist_value = api_album_artist or alb.get("artist") or name
             
             for t in tracks:
                 track_id = t.get("id")
