@@ -1202,6 +1202,7 @@ def artists():
     # Simply count distinct albums and filter out artists with 0 albums
     # This removes the UNION ALL that was adding artists from artist_stats with 0 content
     # Use NULLIF to treat empty strings as NULL, ensuring COALESCE falls back to artist field
+    # Exclude tracks where album_artist is "Various Artists" to prevent showing artists who only appear on compilations
     try:
         cursor.execute("""
             SELECT 
@@ -1212,7 +1213,13 @@ def artists():
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
                 MAX(last_scanned) as last_updated
             FROM tracks
-            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) IS NOT NULL 
+                AND COALESCE(NULLIF(album_artist, ''), artist) != ''
+                AND (
+                    album_artist IS NULL 
+                    OR album_artist = '' 
+                    OR album_artist NOT IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
+                )
             GROUP BY COALESCE(NULLIF(album_artist, ''), artist) COLLATE NOCASE
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
