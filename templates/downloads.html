@@ -32,6 +32,11 @@
       </button>
     </li>
     <li class="nav-item" role="presentation">
+      <button class="nav-link" id="playlistTab" data-bs-toggle="tab" data-bs-target="#playlistContent" type="button" role="tab">
+        <i class="bi bi-collection-play"></i> Playlist Downloads
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
       <button class="nav-link" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab">
         <i class="bi bi-heart"></i> Last.fm Recommendations
       </button>
@@ -292,6 +297,33 @@
                 </div>
               </div>
               
+              <!-- Download Options -->
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input" type="checkbox" id="persistentSearchCheck" checked>
+                  <label class="form-check-label" for="persistentSearchCheck">
+                    <small><i class="bi bi-arrow-repeat"></i> Keep searching until found (with auto-retry)</small>
+                  </label>
+                </div>
+                <small class="text-muted d-block mt-1">
+                  If enabled, failed downloads will automatically retry every 5 minutes until the track is verified in Navidrome.
+                </small>
+              </div>
+
+              <!-- Add to Session (Optional) -->
+              <div class="mb-3">
+                <label for="mbSessionSelector" class="form-label">
+                  <small><i class="bi bi-collection-play"></i> Add to Playlist Session (Optional)</small>
+                </label>
+                <select class="form-select form-select-sm" id="mbSessionSelector">
+                  <option value="">— None (standalone download)</option>
+                  <option value="create">+ Create new session...</option>
+                </select>
+                <small class="text-muted d-block mt-1">
+                  Group related downloads together and track their progress as a session.
+                </small>
+              </div>
+              
               <div id="mbLoading" class="text-center py-4" style="display: none;">
                 <div class="spinner-border text-info" role="status">
                   <span class="visually-hidden">Searching...</span>
@@ -352,6 +384,76 @@
       </div>
     </div>
     <!-- End MusicBrainz Tab -->
+
+    <!-- Playlist Downloads Tab -->
+    <div class="tab-pane fade" id="playlistContent" role="tabpanel">
+      <div class="row g-4 mb-4">
+        <!-- Create New Session -->
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-plus-circle"></i> Create New Playlist Download Session
+              </h5>
+            </div>
+            <div class="card-body">
+              <form id="newSessionForm" onsubmit="createPlaylistSession(event)">
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <label for="sessionName" class="form-label">Session Name</label>
+                    <input type="text" class="form-control" id="sessionName" placeholder="e.g., Indie Rock Collection" required>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="totalTracks" class="form-label">Expected Tracks</label>
+                    <input type="number" class="form-control" id="totalTracks" min="1" value="1" required>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="downloadMethod" class="form-label">Download Method</label>
+                    <select class="form-select" id="downloadMethod">
+                      <option value="qbittorrent">qBittorrent</option>
+                      <option value="slskd">Soulseek</option>
+                    </select>
+                  </div>
+                  <div class="col-12">
+                    <div class="form-check">
+                      <input class="form-check-input" type="checkbox" id="sessionPriorityQueue" checked>
+                      <label class="form-check-label" for="sessionPriorityQueue">
+                        Enable priority queue (prioritize certain downloads in session)
+                      </label>
+                    </div>
+                  </div>
+                  <div class="col-12">
+                    <button type="submit" class="btn btn-success">
+                      <i class="bi bi-plus-circle"></i> Create Session
+                    </button>
+                  </div>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Active Sessions List -->
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-clock-history"></i> Active Sessions
+              </h5>
+              <button class="btn btn-sm btn-outline-primary" onclick="refreshPlaylistSessions()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+              </button>
+            </div>
+            <div class="card-body">
+              <div id="playlistSessionsContainer" style="max-height: 800px; overflow-y: auto;">
+                <p class="text-muted text-center py-4">Loading sessions...</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Playlist Downloads Tab -->
 
     <!-- Last.fm Recommendations Tab -->
     <div class="tab-pane fade" id="lastfmContent" role="tabpanel">
@@ -1660,10 +1762,48 @@ function escapeHtml(text) {
 }
 
 function downloadMbRelease(releaseId, releaseTitle, artist, method) {
-    if (!confirm(`Download "${releaseTitle}" by ${artist} via ${method}?`)) {
+    const persistentSearch = document.getElementById('persistentSearchCheck').checked;
+    const sessionSelector = document.getElementById('mbSessionSelector');
+    const selectedSession = sessionSelector.value;
+    
+    // Handle "create new session" option
+    if (selectedSession === 'create') {
+        const sessionName = prompt('Enter name for new playlist session:');
+        if (!sessionName) return;
+        
+        // Create session first, then add download to it
+        fetch('/api/playlist-downloads/create', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                session_name: sessionName,
+                total_tracks: 1,
+                priority_queue: false
+            })
+        })
+        .then(response => response.json())
+        .then(sessionData => {
+            if (sessionData.error) {
+                alert('Error creating session: ' + sessionData.error);
+                return;
+            }
+            // Now add the download to the session
+            addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, sessionData.session_id);
+        })
+        .catch(error => {
+            alert('Error creating session: ' + error.message);
+        });
         return;
     }
     
+    if (!confirm(`Download "${releaseTitle}" by ${artist} via ${method}?${persistentSearch ? '\n\nPersistent search enabled - will auto-retry if failed.' : ''}`)) {
+        return;
+    }
+    
+    addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, selectedSession || null);
+}
+
+function addDownloadToSession(releaseId, releaseTitle, artist, method, persistentSearch, sessionId) {
     fetch('/api/musicbrainz/download', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1671,7 +1811,10 @@ function downloadMbRelease(releaseId, releaseTitle, artist, method) {
             release_id: releaseId,
             release_title: releaseTitle,
             artist: artist,
-            method: method
+            method: method,
+            persistent_search: persistentSearch,
+            max_retries: 3,
+            session_id: sessionId
         })
     })
     .then(response => response.json())
@@ -1679,7 +1822,14 @@ function downloadMbRelease(releaseId, releaseTitle, artist, method) {
         if (data.error) {
             alert('Error: ' + data.error);
         } else {
-            alert(`Download queued: ${releaseTitle}\nTracking ID: ${data.tracking_id || 'N/A'}`);
+            let msg = `Download queued: ${releaseTitle}\nTracking ID: ${data.tracking_id || 'N/A'}`;
+            if (data.persistent_search) {
+                msg += '\n\n✓ Persistent search enabled - will retry automatically on failure';
+            }
+            if (data.session_id) {
+                msg += `\n✓ Added to session ID: ${data.session_id}`;
+            }
+            alert(msg);
             // Refresh downloads list
             setTimeout(refreshMbDownloads, 1000);
         }
@@ -1688,6 +1838,45 @@ function downloadMbRelease(releaseId, releaseTitle, artist, method) {
         alert('Error initiating download: ' + error.message);
     });
 }
+
+async function loadMbSessionSelector() {
+    try {
+        const response = await fetch('/api/playlist-downloads');
+        const data = await response.json();
+        
+        if (!response.ok || !data.sessions) {
+            return;
+        }
+        
+        const selector = document.getElementById('mbSessionSelector');
+        const activeOption = selector.value; // Preserve current selection
+        const currentOptions = Array.from(selector.querySelectorAll('option'));
+        
+        // Find the position of the "create new" option
+        const createOption = selector.querySelector('option[value="create"]');
+        
+        // Remove all dynamic session options (keep only the first two options)
+        currentOptions.forEach((opt, idx) => {
+            if (idx > 1) opt.remove();
+        });
+        
+        // Add active sessions
+        for (const session of data.sessions.filter(s => s.status !== 'completed' && s.status !== 'cancelled')) {
+            const option = document.createElement('option');
+            option.value = session.id;
+            option.textContent = `${session.session_name} (${session.completed_tracks}/${session.total_tracks})`;
+            selector.insertBefore(option, createOption);
+        }
+        
+    } catch (error) {
+        console.error('Error loading sessions:', error);
+    }
+}
+
+// Load sessions when MusicBrainz tab is clicked
+document.getElementById('mbTab').addEventListener('click', function() {
+    setTimeout(loadMbSessionSelector, 200);
+});
 
 function refreshMbDownloads() {
     const loadingEl = document.getElementById('mbDownloadsLoading');
@@ -1735,9 +1924,22 @@ function refreshMbDownloads() {
             const canRemove = ['completed', 'failed', 'error', 'cancelled'].includes(dl.status.toLowerCase());
             const isAwaitingSelection = dl.status.toLowerCase() === 'awaiting_selection' && dl.method === 'slskd';
             
+            // Display persistent search badge
+            let persistentBadge = '';
+            let retryInfo = '';
+            if (dl.persistent_search) {
+                persistentBadge = ' <span class="badge bg-secondary ms-1" title="Auto-retry enabled"><i class="bi bi-arrow-repeat"></i> Auto-retry</span>';
+                if (dl.retry_count) {
+                    retryInfo = ` <small class="text-muted">(Retry ${dl.retry_count}/${dl.max_retries || 3})</small>`;
+                }
+            }
+            
             html += `
                 <tr>
-                    <td><strong>${dl.release_title}</strong></td>
+                    <td>
+                        <div><strong>${dl.release_title}</strong>${persistentBadge}</div>
+                        ${retryInfo ? `<div>${retryInfo}</div>` : ''}
+                    </td>
                     <td>${dl.artist}</td>
                     <td class="text-center">
                         <span class="badge ${dl.method === 'slskd' ? 'bg-success' : 'bg-primary'}">
@@ -2148,6 +2350,304 @@ function downloadTrack(artist, track) {
   document.getElementById('slskdTab').click();
   setTimeout(() => performSlskdSearch(), 300);
 }
+
+// ===== Playlist Download Session Management =====
+
+let playlistSessionRefreshInterval = null;
+
+async function createPlaylistSession(event) {
+  event.preventDefault();
+  
+  const sessionName = document.getElementById('sessionName').value.trim();
+  const totalTracks = parseInt(document.getElementById('totalTracks').value);
+  const priorityQueue = document.getElementById('sessionPriorityQueue').checked;
+  
+  if (!sessionName || totalTracks <= 0) {
+    alert('Please fill in all fields');
+    return;
+  }
+  
+  try {
+    const response = await fetch('/api/playlist-downloads/create', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_name: sessionName,
+        total_tracks: totalTracks,
+        priority_queue: priorityQueue
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      alert(`Error: ${data.error || 'Failed to create session'}`);
+      return;
+    }
+    
+    // Reset form
+    document.getElementById('newSessionForm').reset();
+    
+    // Show success and refresh
+    alert(`Session created! ID: ${data.session_id}. You can now add downloads to this session.`);
+    refreshPlaylistSessions();
+    
+  } catch (error) {
+    console.error('Error creating session:', error);
+    alert('Error creating session');
+  }
+}
+
+async function refreshPlaylistSessions() {
+  try {
+    const response = await fetch('/api/playlist-downloads');
+    const data = await response.json();
+    
+    if (!response.ok) {
+      console.error('Error fetching sessions:', data.error);
+      document.getElementById('playlistSessionsContainer').innerHTML = 
+        `<div class="alert alert-danger">Error loading sessions: ${data.error}</div>`;
+      return;
+    }
+    
+    const container = document.getElementById('playlistSessionsContainer');
+    
+    if (!data.sessions || data.sessions.length === 0) {
+      container.innerHTML = '<p class="text-muted text-center py-4">No active sessions yet. Create one above to get started!</p>';
+      return;
+    }
+    
+    let html = '';
+    for (const session of data.sessions) {
+      const progressClass = session.status === 'completed' ? 'bg-success' : 
+                           session.status === 'cancelled' ? 'bg-danger' : 'bg-primary';
+      
+      html += `
+        <div class="card mb-3">
+          <div class="card-header d-flex justify-content-between align-items-start">
+            <div>
+              <h6 class="card-title mb-1">${escapeHtml(session.session_name)}</h6>
+              <small class="text-muted">
+                Created: ${new Date(session.created_at).toLocaleString()}
+                | User: ${session.user}
+              </small>
+            </div>
+            <div class="d-flex gap-2">
+              <span class="badge bg-secondary">${session.status}</span>
+              ${session.status !== 'completed' && session.status !== 'cancelled' ? 
+                `<button class="btn btn-sm btn-danger" onclick="cancelPlaylistSession(${session.id})">
+                  <i class="bi bi-x-circle"></i>
+                </button>` : ''}
+              <button class="btn btn-sm btn-info" onclick="showSessionDetails(${session.id})">
+                <i class="bi bi-info-circle"></i>
+              </button>
+            </div>
+          </div>
+          <div class="card-body">
+            <div class="mb-2">
+              <div class="d-flex justify-content-between mb-1">
+                <span class="small"><strong>Progress</strong></span>
+                <span class="small"><strong>${session.completed_tracks}/${session.total_tracks}</strong></span>
+              </div>
+              <div class="progress" style="height: 20px;">
+                <div class="progress-bar bg-success" role="progressbar" 
+                     style="width: ${session.progress_percent}%;" 
+                     aria-valuenow="${session.progress_percent}" aria-valuemin="0" aria-valuemax="100">
+                  ${session.progress_percent}%
+                </div>
+              </div>
+            </div>
+            <div class="row g-2">
+              <div class="col-md-3">
+                <small class="text-muted">Completed:</small>
+                <div class="text-success"><strong>${session.completed_tracks}</strong></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Failed:</small>
+                <div class="text-danger"><strong>${session.failed_tracks}</strong></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Skipped:</small>
+                <div class="text-warning"><strong>${session.skipped_tracks}</strong></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Remaining:</small>
+                <div class="text-info"><strong>${session.total_tracks - session.completed_tracks - session.failed_tracks - session.skipped_tracks}</strong></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    }
+    
+    container.innerHTML = html;
+    
+  } catch (error) {
+    console.error('Error refreshing sessions:', error);
+    document.getElementById('playlistSessionsContainer').innerHTML = 
+      `<div class="alert alert-danger">Error loading sessions: ${error.message}</div>`;
+  }
+}
+
+async function showSessionDetails(sessionId) {
+  try {
+    const response = await fetch(`/api/playlist-downloads/${sessionId}`);
+    const session = await response.json();
+    
+    if (!response.ok) {
+      alert(`Error: ${session.error || 'Failed to load session'}`);
+      return;
+    }
+    
+    // Build tracks table
+    let tracksHtml = `
+      <table class="table table-sm">
+        <thead>
+          <tr>
+            <th>Track</th>
+            <th>Artist</th>
+            <th>Status</th>
+            <th>Method</th>
+            <th>Retries</th>
+          </tr>
+        </thead>
+        <tbody>
+    `;
+    
+    for (const track of session.tracks) {
+      const statusBadge = track.status === 'completed' ? 'bg-success' :
+                         track.status === 'failed' ? 'bg-danger' :
+                         track.status === 'queued' ? 'bg-warning' : 'bg-info';
+      
+      tracksHtml += `
+        <tr>
+          <td>${escapeHtml(track.title)}</td>
+          <td>${escapeHtml(track.artist)}</td>
+          <td><span class="badge ${statusBadge}">${track.status}</span></td>
+          <td>${track.current_method || track.method}</td>
+          <td>${track.retry_count}/${track.max_retries}</td>
+        </tr>
+      `;
+    }
+    
+    tracksHtml += '</tbody></table>';
+    
+    // Show in alert (can be improved with a modal)
+    const message = `Session: ${session.session_name}
+Progress: ${session.completed_tracks}/${session.total_tracks} (${session.progress_percent}%)
+Status: ${session.status}
+Failed: ${session.failed_tracks}, Skipped: ${session.skipped_tracks}
+
+${tracksHtml}`;
+    
+    // Create a more detailed modal instead of alert
+    const modal = document.createElement('div');
+    modal.className = 'modal fade';
+    modal.innerHTML = `
+      <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title">${escapeHtml(session.session_name)}</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="row mb-3">
+              <div class="col-md-3">
+                <small class="text-muted">Status</small>
+                <div><span class="badge bg-secondary">${session.status}</span></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Progress</small>
+                <div><strong>${session.progress_percent}%</strong></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Completed</small>
+                <div><strong class="text-success">${session.completed_tracks}</strong></div>
+              </div>
+              <div class="col-md-3">
+                <small class="text-muted">Failed</small>
+                <div><strong class="text-danger">${session.failed_tracks}</strong></div>
+              </div>
+            </div>
+            <div class="table-responsive">
+              ${tracksHtml}
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+          </div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    const bsModal = new bootstrap.Modal(modal);
+    bsModal.show();
+    
+    modal.addEventListener('hidden.bs.modal', () => {
+      modal.remove();
+    });
+    
+  } catch (error) {
+    console.error('Error loading session details:', error);
+    alert('Error loading session details');
+  }
+}
+
+async function cancelPlaylistSession(sessionId) {
+  if (!confirm('Cancel this session? All remaining downloads will be marked as skipped.')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/playlist-downloads/${sessionId}/cancel`, {
+      method: 'POST'
+    });
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      alert(`Error: ${data.error || 'Failed to cancel session'}`);
+      return;
+    }
+    
+    alert('Session cancelled');
+    refreshPlaylistSessions();
+    
+  } catch (error) {
+    console.error('Error cancelling session:', error);
+    alert('Error cancelling session');
+  }
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+// Auto-refresh playlist sessions every 10 seconds when tab is visible
+document.getElementById('playlistTab').addEventListener('click', function() {
+  clearInterval(playlistSessionRefreshInterval);
+  refreshPlaylistSessions();
+  playlistSessionRefreshInterval = setInterval(refreshPlaylistSessions, 10000);
+});
+
+// Clear interval if switching away from tab
+document.querySelectorAll('.nav-link').forEach(tab => {
+  tab.addEventListener('click', function() {
+    if (this.id !== 'playlistTab') {
+      clearInterval(playlistSessionRefreshInterval);
+    }
+  });
+});
+
+// Initial load when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  if (document.getElementById('playlistTab').classList.contains('active')) {
+    refreshPlaylistSessions();
+  }
+});
 </script>
 
 <!-- Modal for Soulseek search results -->

@@ -394,7 +394,7 @@
 
   <!-- EPs Section -->
   <div class="card mb-4">
-    <div class="card-header">
+    <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
         <span class="badge bg-primary">{{ total_discovered_eps }}</span>
@@ -435,7 +435,7 @@
 
   <!-- Singles Section -->
   <div class="card mb-4">
-    <div class="card-header">
+    <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles
         <span class="badge bg-primary">{{ total_discovered_singles }}</span>
@@ -476,15 +476,17 @@
 
   <!-- Compilations Section -->
   <div class="card mb-4">
-    <div class="card-header">
-      <h5 class="card-title mb-0">
-        <i class="bi bi-collection"></i> Compilations
-        <span class="badge bg-primary">{{ total_discovered_compilations }}</span>
-        {% if total_missing_compilations > 0 %}
-          <span class="badge bg-warning text-dark">{{ total_missing_compilations }} missing</span>
-        {% endif %}
-      </h5>
-      <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <div>
+        <h5 class="card-title mb-0">
+          <i class="bi bi-collection"></i> Compilations
+          <span class="badge bg-primary">{{ total_discovered_compilations }}</span>
+          {% if total_missing_compilations > 0 %}
+            <span class="badge bg-warning text-dark">{{ total_missing_compilations }} missing</span>
+          {% endif %}
+        </h5>
+        <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
+      </div>
     </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0">

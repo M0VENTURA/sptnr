@@ -618,6 +618,50 @@ class DiscogsClient:
             logger.debug(f"Discogs video check failed for '{title}' by '{artist}': {e}")
             return False
     
+    def get_artist_id(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> Optional[str]:
+        """
+        Search for an artist on Discogs and get their artist ID.
+        
+        Args:
+            artist: Artist name
+            timeout: Request timeout
+            
+        Returns:
+            Discogs artist ID (as string) or None if not found
+        """
+        if not self.enabled or not self.token:
+            return None
+        
+        try:
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {"q": artist, "type": "artist", "per_page": 5}
+            
+            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                _throttle_discogs()
+                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            res.raise_for_status()
+            
+            results = res.json().get("results", [])
+            if not results:
+                logger.debug(f"No Discogs artist found for '{artist}'")
+                return None
+            
+            # Return the first result's ID
+            artist_id = results[0].get("id")
+            if artist_id:
+                logger.debug(f"Found Discogs artist ID for '{artist}': {artist_id}")
+                return str(artist_id)
+            
+            return None
+            
+        except Exception as e:
+            logger.debug(f"Discogs artist ID lookup failed for '{artist}': {e}")
+            return None
+    
     def get_genres(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> list[str]:
         """
         Fetch genres and styles from Discogs API.

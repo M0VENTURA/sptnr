@@ -115,12 +115,17 @@
                             </h6>
                             <p class="small text-muted mb-3">Synchronize music library from Navidrome server</p>
                             <div class="d-flex gap-2">
-                                <form method="POST" action="{{ url_for('scan_navidrome') }}" class="flex-grow-1">
-                                    <button type="submit" class="btn btn-primary btn-sm w-100 scan-start-btn" data-scan-type="navidrome">
+                                <div class="btn-group w-100" role="group">
+                                    <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
                                         <i class="bi bi-play-fill"></i> Start
                                     </button>
-                                </form>
-                                <form method="POST" action="{{ url_for('scan_stop_navidrome') }}">
+                                    <ul class="dropdown-menu">
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                    </ul>
+                                </div>
+                                <form method="POST" action="{{ url_for('scan_stop_navidrome') }}" class="d-flex">
                                     <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
                                         <i class="bi bi-stop-fill"></i>
                                     </button>
@@ -139,12 +144,19 @@
                             </h6>
                             <p class="small text-muted mb-3">Calculate popularity ratings and identify singles</p>
                             <div class="d-flex gap-2">
-                                <form method="POST" action="{{ url_for('scan_popularity_route') }}" class="flex-grow-1">
-                                    <button type="submit" class="btn btn-success btn-sm w-100 scan-start-btn" data-scan-type="popularity">
+                                <div class="btn-group w-100" role="group">
+                                    <button type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
                                         <i class="bi bi-play-fill"></i> Start
                                     </button>
-                                </form>
-                                <form method="POST" action="{{ url_for('scan_stop_popularity') }}">
+                                    <ul class="dropdown-menu">
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
+                                    </ul>
+                                </div>
+                                <form method="POST" action="{{ url_for('scan_stop_popularity') }}" class="d-flex">
                                     <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
                                         <i class="bi bi-stop-fill"></i>
                                     </button>
@@ -163,12 +175,17 @@
                             </h6>
                             <p class="small text-muted mb-3">Scan /music folder with beets, capture file paths and metadata</p>
                             <div class="d-flex gap-2">
-                                <form method="POST" action="{{ url_for('scan_mp3') }}" class="flex-grow-1">
-                                    <button type="submit" class="btn btn-info btn-sm w-100 scan-start-btn" data-scan-type="mp3" style="color: #000; font-weight: 600;">
+                                <div class="btn-group w-100" role="group">
+                                    <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="mp3" style="color: #000; font-weight: 600;">
                                         <i class="bi bi-play-fill"></i> Start
                                     </button>
-                                </form>
-                                <form method="POST" action="{{ url_for('scan_stop_mp3') }}">
+                                    <ul class="dropdown-menu">
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="mp3" data-action="mp3" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="mp3" data-action="mp3" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="mp3" data-action="mp3" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                    </ul>
+                                </div>
+                                <form method="POST" action="{{ url_for('scan_stop_mp3') }}" class="d-flex">
                                     <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
                                         <i class="bi bi-stop-fill"></i>
                                     </button>
@@ -447,6 +464,37 @@ document.addEventListener('DOMContentLoaded', function() {
     const recentScansBody = document.getElementById('recent-scans-body');
     const popButton = document.getElementById('popularity-start-btn');
     const popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
+
+    // Handle scan action dropdown clicks
+    document.querySelectorAll('.scan-action-btn').forEach(btn => {
+        btn.addEventListener('click', function(e) {
+            e.preventDefault();
+            const scanType = this.getAttribute('data-scan-type');
+            const action = this.getAttribute('data-action');
+            const mode = this.getAttribute('data-mode');
+            
+            // Build the form and submit it
+            let actionUrl = '';
+            if (action === 'navidrome') {
+                actionUrl = '{{ url_for("scan_navidrome") }}';
+            } else if (action === 'popularity') {
+                actionUrl = '{{ url_for("scan_popularity_route") }}';
+            } else if (action === 'mp3') {
+                actionUrl = '{{ url_for("scan_mp3") }}';
+            }
+            
+            // Add query parameters to URL
+            const url = new URL(actionUrl, window.location.origin);
+            url.searchParams.append('mode', mode);
+            
+            // Submit via POST form
+            const form = document.createElement('form');
+            form.method = 'POST';
+            form.action = url.toString();
+            document.body.appendChild(form);
+            form.submit();
+        });
+    });
 
     // Cache previous state to avoid unnecessary DOM updates
     let previousScanStates = {};

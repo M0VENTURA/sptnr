@@ -266,73 +266,90 @@ class ListenBrainzUserClient:
 
 
 class ListenBrainzClient:
-    """ListenBrainz API wrapper for listening stats."""
+    """ListenBrainz API wrapper for listening stats.
     
-    def __init__(self, http_session=None, enabled: bool = True):
+    NOTE: ListenBrainz does NOT provide a public API endpoint for global listen counts.
+    Global listen statistics are only available via:
+    - PostgreSQL data dumps (processed locally)
+    - Big Data infrastructure (Spark pipelines) 
+    
+    User-specific listen counts ARE available if authenticated with a user token.
+    """
+    
+    def __init__(self, http_session=None, enabled: bool = True, user_token: str = ""):
         """
         Initialize ListenBrainz client.
         
         Args:
             http_session: Optional requests.Session (uses shared if not provided)
             enabled: Whether ListenBrainz is enabled
+            user_token: User authentication token for personal stats (optional)
         """
         self.session = http_session or session
         self.enabled = enabled
+        self.user_token = user_token
         self.base_url = "https://api.listenbrainz.org/1"
+        self.headers = {}
+        if user_token:
+            self.headers["Authorization"] = f"Token {user_token}"
     
     def get_listen_count(self, mbid: str = "", artist: str = "", title: str = "") -> int:
         """
-        Fetch ListenBrainz listen count using MBID or fallback search.
+        Fetch ListenBrainz listen count.
+        
+        IMPORTANT: ListenBrainz does NOT provide a public API for global listen counts.
+        This always returns 0. Global stats require:
+        - Processing PostgreSQL data dumps locally
+        - Access to ListenBrainz Big Data infrastructure
+        
+        User-specific listen stats could be implemented if user provides token.
         
         Args:
-            mbid: MusicBrainz recording ID (preferred)
-            artist: Artist name (for fallback)
-            title: Track title (for fallback)
+            mbid: MusicBrainz recording ID
+            artist: Artist name
+            title: Track title
             
         Returns:
-            Listen count
+            Always returns 0 (global endpoint not available)
         """
         if not self.enabled:
+            logger.debug("ListenBrainz is disabled")
             return 0
         
-        # If no MBID provided, try to get one from MusicBrainz
-        if not mbid and artist and title:
-            try:
-                from api_clients.musicbrainz import get_suggested_mbid
-                mbid, confidence = get_suggested_mbid(title, artist, limit=1)
-                if mbid and confidence >= 0.75:
-                    logger.debug(f"Got MBID from MusicBrainz for '{title}': {mbid} (confidence: {confidence})")
-                else:
-                    if confidence < 0.75:
-                        logger.debug(f"MusicBrainz confidence too low for '{title}': {confidence} (need >= 0.75)")
-                    mbid = ""
-            except Exception as e:
-                logger.debug(f"MusicBrainz MBID lookup failed for '{title}': {e}")
+        # Log why we can't fetch global stats
+        logger.debug(
+            f"ListenBrainz global listen count for '{title}' cannot be fetched via API. "
+            f"ListenBrainz does not provide a public endpoint for global listen counts. "
+            f"Global statistics are only available via data dumps or their Big Data infrastructure."
+        )
         
-        # Primary: stats by MBID (if available)
-        if mbid:
-            try:
-                url = f"{self.base_url}/stats/recording/{mbid}"
-                res = self.session.get(url, timeout=(5, 10))  # (connect_timeout, read_timeout)
-                res.raise_for_status()
-                data = res.json()
-                payload = data.get("payload", {})
-                count = int(payload.get("total_listen_count", 0))
-                if count > 0:
-                    logger.debug(f"ListenBrainz count for '{title}' (MBID {mbid}): {count}")
-                    return count
-                else:
-                    logger.debug(f"ListenBrainz no listens found for MBID {mbid} ('{title}')")
-                    return 0
-            except Exception as e:
-                logger.debug(f"ListenBrainz MBID lookup failed for {mbid} ('{title}'): {e}")
+        # Could implement user-specific stats here if token provided
+        if self.user_token and mbid:
+            return self._get_user_listen_count(mbid)
         
-        # Fallback: Without a reliable search endpoint, return 0
-        # The /1/recording/search endpoint is not available or deprecated
-        # ListenBrainz primarily works with MBIDs, not artist/title search
-        if not mbid:
-            logger.debug(f"ListenBrainz: No MBID available for '{artist} - {title}'")
         return 0
+    
+    def _get_user_listen_count(self, mbid: str) -> int:
+        """
+        Get user's personal listen count for a recording (requires auth token).
+        
+        Args:
+            mbid: MusicBrainz recording ID
+            
+        Returns:
+            User's listen count for this recording, or 0
+        """
+        if not self.user_token or not mbid:
+            return 0
+        
+        try:
+            # This endpoint requires authentication - would fetch user's personal stats
+            # Implementation would go here if we wanted to support it
+            logger.debug(f"User-specific listen stats not yet implemented for {mbid}")
+            return 0
+        except Exception as e:
+            logger.debug(f"Failed to fetch user listen count: {e}")
+            return 0
 
 
 class AudioDbClient:

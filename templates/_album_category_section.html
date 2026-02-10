@@ -6,13 +6,13 @@
            alt="{{ album.title }}" 
            class="img-thumbnail"
            style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-           onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%232a2a2a%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+           onerror="this.src='/api/album-art-placeholder'">
     {% else %}
       <img src="{{ url_for('api_album_art', artist=artist_name, album=album.album) }}" 
            alt="{{ album.album }}" 
            class="img-thumbnail"
            style="width: 80px; height: 80px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-           onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%232a2a2a%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2210%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+           onerror="this.src='/api/album-art-placeholder'">
     {% endif %}
   </td>
   <td class="d-flex justify-content-between d-md-table-cell">

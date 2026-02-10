@@ -645,22 +645,44 @@ def determine_final_status(
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
     """
-    # NEW HIGH-CONFIDENCE RULES:
+    # Count high-confidence and medium-confidence sources
+    high_confidence_count = 0
+    medium_confidence_count = 0
+    
+    # HIGH-CONFIDENCE SOURCES:
     # RULE 1: Discogs confirms exact track version as single
     if discogs_confirmed:
-        return 'high'
+        high_confidence_count += 1
     
     # RULE 2: popularity >= album_mean + 6 AND has_metadata
-    # This can ONLY produce high confidence if metadata is present
     if has_metadata and popularity >= (album_mean + 6):
+        high_confidence_count += 1
+    
+    # MEDIUM-CONFIDENCE SOURCES:
+    # Spotify confirms
+    if spotify_confirmed:
+        medium_confidence_count += 1
+    
+    # MusicBrainz confirms
+    if musicbrainz_confirmed:
+        medium_confidence_count += 1
+    
+    # Discogs music video confirms
+    if discogs_video_confirmed:
+        medium_confidence_count += 1
+    
+    # DETERMINE FINAL STATUS:
+    # Mark as high confidence if: 1+ high sources
+    if high_confidence_count >= 1:
         return 'high'
     
-    # High confidence must NEVER be assigned if has_metadata is False
-    # (already handled by has_metadata check above)
-    
-    # Check metadata-based medium confidence
-    if spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed:
+    # Mark as medium confidence if: 2+ medium sources
+    if medium_confidence_count >= 2:
         return 'medium'
+    
+    # Mark as low confidence if: 1 medium source
+    if medium_confidence_count == 1:
+        return 'low'
     
     # Z-score can ONLY produce medium confidence, NEVER high confidence
     # Z-score MUST require metadata confirmation for MEDIUM confidence
@@ -842,8 +864,12 @@ def detect_single_enhanced(
         'single_detection_last_updated': datetime.now().isoformat()
     }
     
+    # Log entry for this track detection
+    log_debug(f"[DETECT] Starting single detection for: '{title}' by {artist} (album: {album}, pop: {popularity:.1f})")
+    
     # Get album statistics
     album_mean, album_stddev, album_track_count = calculate_album_stats(conn, artist, album)
+    log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
     
     # Get all album popularities for pre-filter
     cursor = conn.cursor()
@@ -873,10 +899,12 @@ def detect_single_enhanced(
     
     # STAGE 1: Pre-Filter (with compilation override)
     if not should_check_track(popularity, album_mean, album_stddev, album_popularities, spotify_version_count, is_compilation):
+        log_debug(f"[PREFILTER] ✗ REJECTED - Track does not meet pre-filter criteria (not high priority)")
         if verbose:
             log_debug(f"Pre-filter: Skipping {title} (not high priority)")
         return result
     
+    log_debug(f"[PREFILTER] ✓ PASSED - Track meets priority criteria")
     if verbose:
         log_debug(f"Pre-filter: Checking {title} (high priority)")
     
@@ -884,15 +912,19 @@ def detect_single_enhanced(
     # Reject single detection if track popularity is below album mean
     # This prevents album tracks with separate single releases from being incorrectly marked
     if album_mean > 0 and popularity > 0 and popularity < album_mean:
+        log_debug(f"[ALBUM_FILTER] ✗ REJECTED - Album-level popularity filter: pop={popularity:.1f} < album_mean={album_mean:.1f}")
         if verbose:
             log_debug(f"Album-level popularity filter: Rejecting {title} (pop={popularity:.1f} < album_mean={album_mean:.1f})")
         return result
+    
+    log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, mean={album_mean:.1f})")
     
     # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
             # Log Discogs checks to info log only (not unified)
+            log_debug(f"[DISCOGS] Querying Discogs API for single: {title} by {artist}")
             log_info(f"   Checking Discogs for single: {title}")
             log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
             
@@ -904,6 +936,7 @@ def detect_single_enhanced(
             if discogs_confirmed:
                 result['single_sources'].append('discogs')
                 result['single_sources_used'].append('discogs')
+                log_debug(f"[DISCOGS] ✓ CONFIRMED as single")
                 log_info(f"   ✓ Discogs confirms single: {title}")
                 log_debug(f"   Discogs result: Single confirmed for '{title}'")
                 
@@ -929,26 +962,32 @@ def detect_single_enhanced(
                     log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
                     log_debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
                 
+                log_debug(f"[DETECT] ✓ RETURNING EARLY - Discogs confirmed as single")
                 return result
             else:
+                log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
                 log_info(f"   ⓘ Discogs does not confirm single: {title}")
                 log_debug(f"   Discogs result: No single found for '{title}'")
         except Exception as e:
+            log_debug(f"[DISCOGS] ERROR during lookup: {type(e).__name__}: {str(e)}")
             log_info(f"   ⚠ Discogs single check failed for {title}: {e}")
             log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not discogs_client:
+                log_debug(f"[DISCOGS] Client not available (module import failed)")
                 log_info(f"   ⓘ Discogs client not available")
                 log_debug(f"   Discogs: Client not available (module import failed)")
             elif not getattr(discogs_client, 'enabled', True):
+                log_debug(f"[DISCOGS] Client disabled in configuration")
                 log_info(f"   ⓘ Discogs client is disabled")
                 log_debug(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
     if spotify_results:
+        log_debug(f"[SPOTIFY] Checking {len(spotify_results)} Spotify results for single")
         norm_title = normalize_title_strict(title)
         for result_item in spotify_results:
             result_title = result_item.get('name', '')
@@ -956,33 +995,43 @@ def detect_single_enhanced(
             album_type_check = album_info.get('album_type', '').lower()
             album_name = album_info.get('name', '')
             
+            log_debug(f"[SPOTIFY] Checking result: '{result_title}' (type: {album_type_check}, album: '{album_name}')")
+            
             # Check title match
             if normalize_title_strict(result_title) != norm_title:
+                log_debug(f"[SPOTIFY] Title mismatch: '{result_title}' != '{title}'")
                 continue
             
             # Reject non-canonical
             if is_non_canonical_version_strict(result_title):
+                log_debug(f"[SPOTIFY] Rejected non-canonical version: '{result_title}'")
                 continue
             
             # Check if single or EP with matching title
             if album_type_check == 'single':
                 spotify_confirmed = True
+                log_debug(f"[SPOTIFY] ✓ CONFIRMED - Found as Spotify single")
                 break
             elif album_type_check == 'ep' and normalize_title_strict(album_name) == norm_title:
                 spotify_confirmed = True
+                log_debug(f"[SPOTIFY] ✓ CONFIRMED - Found as Spotify EP with matching title")
                 break
         
         if spotify_confirmed:
             result['single_sources'].append('spotify')
             result['single_sources_used'].append('spotify')
-            if verbose:
-                log_debug(f"Spotify: Confirmed single for {title}")
+            log_debug(f"[SPOTIFY] Spotify confirmed single for {title}")
+        else:
+            log_debug(f"[SPOTIFY] ✗ NOT confirmed - No single/EP matches found")
+    else:
+        log_debug(f"[SPOTIFY] No Spotify results available")
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
             # Log MusicBrainz checks to info log only (not unified)
+            log_debug(f"[MUSICBRAINZ] Querying MusicBrainz API for single: {title} by {artist}")
             log_info(f"   Checking MusicBrainz for single: {title}")
             log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
             
@@ -991,30 +1040,37 @@ def detect_single_enhanced(
             if musicbrainz_confirmed:
                 result['single_sources'].append('musicbrainz')
                 result['single_sources_used'].append('musicbrainz')
+                log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED as single")
                 log_info(f"   ✓ MusicBrainz confirms single: {title}")
                 log_debug(f"   MusicBrainz result: Single confirmed for '{title}'")
             else:
+                log_debug(f"[MUSICBRAINZ] ✗ NOT confirmed as single by MusicBrainz")
                 log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
                 log_debug(f"   MusicBrainz result: No single found for '{title}'")
         except Exception as e:
             # Log SSL and connection errors more gracefully
             error_type = type(e).__name__
             if 'SSL' in error_type or 'ssl' in str(e).lower():
+                log_debug(f"[MUSICBRAINZ] SSL ERROR: {error_type}")
                 log_info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
                 log_debug(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
             elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
+                log_debug(f"[MUSICBRAINZ] TIMEOUT ERROR: {error_type}")
                 log_info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
                 log_debug(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
             else:
+                log_debug(f"[MUSICBRAINZ] ERROR during lookup: {error_type}: {str(e)}")
                 log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
                 log_debug(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not musicbrainz_client:
+                log_debug(f"[MUSICBRAINZ] Client not available (module import failed)")
                 log_info(f"   ⓘ MusicBrainz client not available")
                 log_debug(f"   MusicBrainz: Client not available (module import failed)")
             elif not getattr(musicbrainz_client, 'enabled', True):
+                log_debug(f"[MUSICBRAINZ] Client disabled in configuration")
                 log_info(f"   ⓘ MusicBrainz client is disabled")
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
     
@@ -1024,6 +1080,7 @@ def detect_single_enhanced(
         if hasattr(discogs_client, 'has_official_video'):
             try:
                 # Log Discogs video checks to info log only (not unified)
+                log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
                 log_info(f"   Checking Discogs for music video: {title}")
                 log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
                 
@@ -1032,24 +1089,30 @@ def detect_single_enhanced(
                 if discogs_video_confirmed:
                     result['single_sources'].append('discogs_video')
                     result['single_sources_used'].append('discogs_video')
+                    log_debug(f"[DISCOGS_VIDEO] ✓ CONFIRMED - Official video found")
                     log_info(f"   ✓ Discogs confirms music video: {title}")
                     log_debug(f"   Discogs result: Music video confirmed for '{title}'")
                 else:
+                    log_debug(f"[DISCOGS_VIDEO] ✗ NOT confirmed - No official video found")
                     log_info(f"   ⓘ Discogs does not confirm music video: {title}")
                     log_debug(f"   Discogs result: No music video found for '{title}'")
             except Exception as e:
+                log_debug(f"[DISCOGS_VIDEO] ERROR during lookup: {type(e).__name__}: {str(e)}")
                 log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
                 log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
         elif verbose:
+            log_debug(f"[DISCOGS_VIDEO] has_official_video method not available")
             log_info(f"   ⓘ Discogs video method not available")
             log_debug(f"   Discogs: has_official_video method not available")
     else:
         # Only log client availability messages in verbose mode to reduce log noise
         if verbose:
             if not discogs_client:
+                log_debug(f"[DISCOGS_VIDEO] Client not available")
                 log_info(f"   ⓘ Discogs video client not available")
                 log_debug(f"   Discogs: Video client not available")
             elif not getattr(discogs_client, 'enabled', True):
+                log_debug(f"[DISCOGS_VIDEO] Client disabled")
                 log_info(f"   ⓘ Discogs client is disabled")
                 log_debug(f"   Discogs: Client is disabled in configuration")
     
@@ -1086,17 +1149,23 @@ def detect_single_enhanced(
     
     if artist_mean > 0 and popularity < artist_mean:
         if not has_explicit_metadata:
+            log_debug(f"[ARTIST_FILTER] ✗ REJECTED - Artist-level sanity filter: pop={popularity:.1f} < artist_mean={artist_mean:.1f}, NO explicit metadata")
             if verbose:
                 log_debug(f"Artist-level sanity filter: Rejecting {title} (pop={popularity:.1f} < artist_mean={artist_mean:.1f}, no explicit metadata)")
             # Return early - track doesn't qualify for single detection
             return result
         else:
+            log_debug(f"[ARTIST_FILTER] ✓ PASSED - Despite pop={popularity:.1f} < artist_mean={artist_mean:.1f}, allowing due to explicit metadata")
             if verbose:
                 log_debug(f"Artist-level sanity filter: Allowing {title} despite pop={popularity:.1f} < artist_mean={artist_mean:.1f} (has explicit metadata)")
+    else:
+        log_debug(f"[ARTIST_FILTER] ✓ PASSED - pop={popularity:.1f} >= artist_mean={artist_mean:.1f}")
     
     # Determine if this track is a standout across the entire artist catalogue
     # A track is considered an artist-level standout if it exceeds the artist median popularity
     is_artist_level_standout = artist_median_popularity > 0 and popularity >= artist_median_popularity
+    
+    log_debug(f"[ARTIST_STANDOUT] is_artist_level_standout={is_artist_level_standout} (pop={popularity:.1f}, median={artist_median_popularity:.1f})")
     
     if verbose and album_is_underperforming:
         if is_artist_level_standout:
@@ -1139,6 +1208,9 @@ def detect_single_enhanced(
     # NOT z-score, popularity outlier, or version_count
     has_metadata = has_explicit_metadata
     
+    log_debug(f"[FINAL_DECISION] Sources found: {result['single_sources']}")
+    log_debug(f"[FINAL_DECISION] Has metadata: {has_metadata}, discogs: {discogs_confirmed}, spotify: {spotify_confirmed}, mb: {musicbrainz_confirmed}, video: {discogs_video_confirmed}")
+    
     final_status = determine_final_status(
         discogs_confirmed,
         spotify_confirmed,
@@ -1154,9 +1226,13 @@ def detect_single_enhanced(
         has_metadata
     )
     
+    log_debug(f"[FINAL_DECISION] Final status determined: {final_status}")
+    
     result['single_status'] = final_status
     result['single_confidence'] = final_status
-    result['is_single'] = final_status == 'high'
+    result['is_single'] = final_status in ('high', 'medium')
+    
+    log_debug(f"[RESULT] is_single set to: {result['is_single']} (status: {final_status})")
     
     # Map confidence to numeric score
     confidence_scores = {'high': 1.0, 'medium': 0.67, 'low': 0.33, 'none': 0.0}
@@ -1166,6 +1242,8 @@ def detect_single_enhanced(
     if verbose:
         log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
         log_debug(f"[DEBUG] Final single status for {title}: {final_status}")
+    
+    log_debug(f"[DETECT] ✓ Detection complete for '{title}' - is_single={result['is_single']}, confidence={final_status}")
     
     return result
 

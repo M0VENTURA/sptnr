@@ -41,6 +41,7 @@ logger.setLevel(logging.INFO)
 from db_utils import get_db_connection
 from popularity_helpers import fetch_artist_albums, fetch_album_tracks, save_to_db
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+from helpers import create_retry_session
 
 try:
     from scan_history import log_album_scan
@@ -118,7 +119,7 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
         log_debug(f"Failed to save Navidrome scan progress: {e}", exc_info=True)
 
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None):
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None):
     """
     Scan a single artist from Navidrome and persist tracks to DB.
 
@@ -127,6 +128,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         artist_id: Navidrome ID of the artist
         verbose: Enable verbose logging
         force: Force re-import even if cached
+        filter_missing: Only scan artists/albums with missing fields
         processed_artists: Current artist index (1-based) for progress tracking
         total_artists: Total number of artists for progress tracking
         album_filter: Only scan this specific album (if provided)
@@ -168,15 +170,20 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         albums = fetch_artist_albums(artist_id)
         log_debug(f"API Response: fetch_artist_albums returned {len(albums)} albums for artist_id={artist_id}")
         
+        # If filter_missing is enabled and this artist has no missing fields, skip it
+        if filter_missing and len(albums_needing_reimport) == 0 and len(existing_track_ids) > 0:
+            log_debug(f"Skipping artist '{artist_name}' - no albums with missing fields (filter_missing=True)")
+            return
+        
         # Unified log: Simple artist-level progress only
         log_unified(f"Navidrome Import Scan - Scanning Artist {artist_name} ({len(albums)} albums to be scanned)")
         
         # Detailed logging to info
         log_info(f"Starting Navidrome import for artist: {artist_name}")
-        log_info(f"Artist: {artist_name}, Total albums: {len(albums)}, Force: {force}, Album filter: {album_filter or 'None'}")
+        log_info(f"Artist: {artist_name}, Total albums: {len(albums)}, Force: {force}, Filter missing: {filter_missing}, Album filter: {album_filter or 'None'}")
         
         # Debug logging for technical details
-        log_debug(f"Navidrome import - Artist: {artist_name}, Artist ID: {artist_id}, Albums: {len(albums)}, Force: {force}, Processed: {processed_artists}/{total_artists}")
+        log_debug(f"Navidrome import - Artist: {artist_name}, Artist ID: {artist_id}, Albums: {len(albums)}, Force: {force}, Filter missing: {filter_missing}, Processed: {processed_artists}/{total_artists}")
         
         # Save artist-level progress
         if total_artists > 0:
@@ -190,6 +197,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         
         for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
+            
+            # Skip albums that don't match filter_missing (if enabled)
+            if filter_missing and album_name not in albums_needing_reimport:
+                log_debug(f"Skipping album '{album_name}' - no missing fields (filter_missing=True)")
+                continue
             
             # Skip albums that don't match the filter (if provided)
             if album_filter and album_name.strip() != album_filter.strip():
@@ -511,12 +523,10 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         artist_name: Name of the artist
         verbose: Enable verbose logging
     """
-    import requests
     import difflib
-    import unicodedata
-    import re
     
     conn = None
+    session = None
     try:
         log_debug(f"Starting MusicBrainz release scan for: {artist_name}")
         
@@ -541,14 +551,14 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         log_info(f"Querying MusicBrainz for releases by {artist_name}...")
         
         # Paginate through results
+        session = create_retry_session(user_agent=headers.get("User-Agent"), retries=3, backoff=2.0)
         for page in range(max_pages):
             try:
                 log_debug(f"MusicBrainz API call - Page {page+1}, Offset: {offset}, Limit: {page_size}")
-                resp = requests.get(
+                resp = session.get(
                     "https://musicbrainz.org/ws/2/release-group",
                     params={"query": query, "fmt": "json", "limit": page_size, "offset": offset},
-                    headers=headers,
-                    timeout=10
+                    timeout=15
                 )
                 resp.raise_for_status()
                 data = resp.json()
@@ -677,6 +687,11 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
         log_info(f"Error scanning missing MusicBrainz releases for {artist_name}: {e}")
         log_debug(f"_scan_missing_musicbrainz_releases error for {artist_name}: {e}", exc_info=True)
     finally:
+        if session:
+            try:
+                session.close()
+            except Exception:
+                pass
         if conn:
             try:
                 conn.close()

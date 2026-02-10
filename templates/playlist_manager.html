@@ -14,31 +14,42 @@
   <!-- Tab-style Navigation -->
   <ul class="nav nav-pills mb-4" role="tablist">
     <li class="nav-item">
-      <span class="nav-link active" role="button" aria-current="page">
+      <button class="nav-link active" id="browseTab" role="button" onclick="switchTab('browse')">
         <i class="bi bi-folder2-open"></i> Browse & Manage
-      </span>
+      </button>
     </li>
     <li class="nav-item">
-      <a class="nav-link" href="/playlist/import">
+      <button class="nav-link" id="spotifyTab" role="button" onclick="switchTab('spotify')">
         <i class="bi bi-spotify"></i> Import from Spotify
-      </a>
+      </button>
     </li>
     <li class="nav-item">
-      <a class="nav-link" href="/smart-playlists">
+      <button class="nav-link" id="smartTab" role="button" onclick="switchTab('smart')">
         <i class="bi bi-sliders"></i> Smart Playlists
-      </a>
+      </button>
+    </li>
+    <li class="nav-item">
+      <button class="nav-link" id="lastfmTab" role="button" onclick="switchTab('lastfm')">
+        <i class="bi bi-heart"></i> Last.fm Recommendations
+      </button>
+    </li>
+    <li class="nav-item">
+      <button class="nav-link" id="listenbrainzTab" role="button" onclick="switchTab('listenbrainz')">
+        <i class="bi bi-brain"></i> ListenBrainz
+      </button>
     </li>
   </ul>
 
   <!-- Playlist Selection -->
-  <div class="row mb-4">
-    <div class="col-12">
-      <div class="card">
-        <div class="card-header">
-          <h5 class="mb-0">
-            <i class="bi bi-folder2-open"></i> Browse Playlists
-          </h5>
-        </div>
+  <div id="browseSection" class="tab-section">
+    <div class="row mb-4">
+      <div class="col-12">
+        <div class="card">
+          <div class="card-header">
+            <h5 class="mb-0">
+              <i class="bi bi-folder2-open"></i> Browse Playlists
+            </h5>
+          </div>
         <div class="card-body">
           <div class="row g-3">
             <div class="col-md-6">
@@ -285,15 +296,17 @@
       </div>
     </div>
   </div>
+  </div><!-- END browseSection -->
 
   <!-- Spotify Playlist Import Section -->
-  <div class="mb-4">
-    <div class="card">
-      <div class="card-header">
-        <h5 class="mb-0">
-          <i class="bi bi-spotify"></i> Spotify Playlist Import
-        </h5>
-      </div>
+  <div id="spotifySection" class="tab-section" style="display: none;">
+    <div class="mb-4">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-spotify"></i> Spotify Playlist Import
+          </h5>
+        </div>
       <div class="card-body">
         <p class="text-muted mb-4">
           Import playlists from Spotify. Note: Requires Spotify API credentials in configuration.
@@ -326,16 +339,17 @@
         </div>
       </div>
     </div>
-  </div>
+  </div><!-- END spotifySection -->
 
   <!-- Last.fm Recommendations Section -->
-  <div class="mb-4">
-    <div class="card">
-      <div class="card-header">
-        <h5 class="mb-0">
-          <i class="bi bi-heart"></i> Last.fm Recommendations
-        </h5>
-      </div>
+  <div id="lastfmSection" class="tab-section" style="display: none;">
+    <div class="mb-4">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-heart"></i> Last.fm Recommendations
+          </h5>
+        </div>
       <div class="card-body">
         <p class="text-muted mb-4">
           Get popular music recommendations from Last.fm based on global listening trends.
@@ -432,16 +446,17 @@
         </div>
       </div>
     </div>
-  </div>
+  </div><!-- END lastfmSection -->
 
   <!-- ListenBrainz Recommendations Section -->
-  <div class="mb-4">
-    <div class="card">
-      <div class="card-header">
-        <h5 class="mb-0">
-          <i class="bi bi-brain"></i> ListenBrainz Recommendations
-        </h5>
-      </div>
+  <div id="listenbrainzSection" class="tab-section" style="display: none;">
+    <div class="mb-4">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-brain"></i> ListenBrainz Recommendations
+          </h5>
+        </div>
       <div class="card-body">
         <p class="text-muted mb-4">
           Get personalized music recommendations from ListenBrainz based on your listening history.
@@ -539,10 +554,50 @@
         </div>
       </div>
     </div>
-  </div>
-</div>
+  </div><!-- END listenbrainzSection -->
+</div><!-- END container -->
 
 <script>
+
+// ===============================
+// TAB SWITCHING FUNCTIONALITY
+// ===============================
+function switchTab(tabName) {
+  // Hide all sections
+  document.querySelectorAll('.tab-section').forEach(section => {
+    section.style.display = 'none';
+  });
+  
+  // Remove active class from all tabs
+  document.querySelectorAll('.nav-link').forEach(tab => {
+    tab.classList.remove('active');
+  });
+  
+  // Show selected section
+  switch(tabName) {
+    case 'browse':
+      document.getElementById('browseSection').style.display = 'block';
+      document.getElementById('browseTab').classList.add('active');
+      break;
+    case 'spotify':
+      document.getElementById('spotifySection').style.display = 'block';
+      document.getElementById('spotifyTab').classList.add('active');
+      break;
+    case 'smart':
+      // Smart playlists section could show Last.fm/ListenBrainz, or we can create dedicated smart generators
+      document.getElementById('lastfmSection').style.display = 'block';
+      document.getElementById('smartTab').classList.add('active');
+      break;
+    case 'lastfm':
+      document.getElementById('lastfmSection').style.display = 'block';
+      document.getElementById('lastfmTab').classList.add('active');
+      break;
+    case 'listenbrainz':
+      document.getElementById('listenbrainzSection').style.display = 'block';
+      document.getElementById('listenbrainzTab').classList.add('active');
+      break;
+  }
+}
 
 // ===============================
 // PLAYLIST DROPDOWNS (Navidrome Only)
@@ -1387,6 +1442,33 @@ async function searchMissingTracksOnSoulseek() {
 </script>
 
 <style>
+/* Tab Section Styling */
+.tab-section {
+  animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+.nav-pills .nav-link {
+  cursor: pointer;
+  transition: all 0.2s ease;
+}
+
+.nav-pills .nav-link:hover {
+  background-color: var(--bs-nav-pills-link-hover-bg, #e9ecef);
+}
+
+.nav-pills .nav-link.active {
+  background-color: var(--bs-nav-pills-link-active-bg, #0d6efd);
+}
+
 .track-row {
   display: flex;
   justify-content: space-between;

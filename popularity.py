@@ -926,12 +926,10 @@ from popularity_helpers import (
     search_spotify_track,
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
-    get_listenbrainz_score,
     score_by_age,
     update_artist_id_for_artist,
     SPOTIFY_WEIGHT,
     LASTFM_WEIGHT,
-    LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
 from api_rate_limiter import get_rate_limiter
@@ -1472,7 +1470,9 @@ def popularity_scan(
     artist_filter: str = None,
     album_filter: str = None,
     skip_header: bool = False,
-    force: bool = False
+    force: bool = False,
+    filter_missing: bool = False,
+    singles_only: bool = False
 ):
     """
     Detect track popularity from external sources.
@@ -1484,6 +1484,8 @@ def popularity_scan(
         album_filter: Only scan tracks for this specific album (requires artist_filter)
         skip_header: Skip logging the header (useful when called from unified_scan)
         force: Force re-scan of albums even if they were already scanned
+        filter_missing: Only scan artists/albums with missing popularity data
+        singles_only: Only rescan singles detection, skip popularity scoring
     """
     if not skip_header:
         log_unified("Popularity Scan - Starting Popularity Scan")
@@ -1491,13 +1493,18 @@ def popularity_scan(
         log_info("Popularity Scanner Started")
         log_info("=" * 60)
         log_info(f"Popularity scan started at {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-        log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}")
+        log_debug(f"Popularity scan params - verbose: {verbose}, resume: {resume_from}, artist: {artist_filter}, album: {album_filter}, force: {force}, filter_missing: {filter_missing}, singles_only: {singles_only}")
     
     # Log scan mode details to info
-    if FORCE_RESCAN or force:
+    if singles_only:
+        log_info("Singles-only mode enabled - will only rescan singles detection")
+    elif FORCE_RESCAN or force:
         log_info("Force rescan mode enabled - will rescan all albums regardless of scan history")
     else:
         log_info("Normal scan mode - will skip albums that were already scanned")
+    
+    if filter_missing:
+        log_info("Filter missing mode enabled - will only scan albums with missing popularity data")
 
     # Log filter mode details to info
     if artist_filter:
@@ -1680,6 +1687,38 @@ def popularity_scan(
                     # Batch update all tracks for this artist with the artist ID
                     update_artist_id_for_artist(artist, spotify_artist_id)
                     
+                    # Fetch and update Discogs artist ID from Discogs API during popularity scan
+                    try:
+                        from popularity_helpers import update_discogs_artist_id_for_artist
+                        from api_clients.discogs import DiscogsClient
+                        
+                        # Get Discogs client if available
+                        discogs_config = cfg.get("api_integrations", {}).get("discogs", {})
+                        if discogs_config.get("enabled") and discogs_config.get("personal_token"):
+                            try:
+                                discogs_client = DiscogsClient(token=discogs_config.get("personal_token"))
+                                discogs_artist_id = _run_with_timeout(
+                                    discogs_client.get_artist_id,
+                                    12,  # 12 second timeout for Discogs artist lookup
+                                    artist
+                                )
+                                
+                                if discogs_artist_id:
+                                    log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
+                                    # Update all tracks for this artist
+                                    update_discogs_artist_id_for_artist(artist, discogs_artist_id)
+                                    log_debug(f'Updated artist Discogs ID in database: {artist} -> {discogs_artist_id}')
+                                else:
+                                    log_debug(f'No Discogs artist ID found for artist: {artist}')
+                            except TimeoutError as e:
+                                log_debug(f"Discogs artist ID lookup timed out for {artist}: {e}")
+                            except Exception as e:
+                                log_debug(f"Discogs artist ID lookup failed for {artist}: {e}")
+                        else:
+                            log_debug(f"Discogs not enabled or token missing for artist: {artist}")
+                    except Exception as e:
+                        log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
+                    
                     # Fetch and update artist country from MusicBrainz during popularity scan
                     try:
                         if HAVE_MUSICBRAINZ:
@@ -1723,16 +1762,22 @@ def popularity_scan(
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
-                # Check if album was already scanned (unless force rescan is enabled)
-                if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
-                    log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
-                    log_info(f'Album "{artist} - {album}" was already scanned within {album_skip_days} days')
-                    skipped_count += 1
-                    continue
+                album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
                 
-                log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
-                log_info(f'Starting popularity scan for album: "{artist} - {album}"')
-                album_scanned = 0
+                # In singles_only mode, skip popularity scanning and go directly to singles detection
+                if singles_only:
+                    log_unified(f'Singles Detection - Scanning Album {album} ({album_num}/{len(albums)})')
+                    log_info(f'Singles-only mode: Skipping popularity scan, going directly to singles detection for "{artist} - {album}"')
+                else:
+                    # Check if album was already scanned (unless force rescan is enabled)
+                    if not (FORCE_RESCAN or force) and was_album_scanned(artist, album, 'popularity', album_skip_days):
+                        log_unified(f'Popularity Scan - Skipping album "{album}" (scanned within last {album_skip_days} days)')
+                        log_info(f'Album "{artist} - {album}" was already scanned within {album_skip_days} days')
+                        skipped_count += 1
+                        continue
+                    
+                    log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
+                    log_info(f'Starting popularity scan for album: "{artist} - {album}"')
                 
                 # Detect if this is a live/unplugged album
                 is_live_album = is_live_or_alternate_album(album)
@@ -1757,27 +1802,35 @@ def popularity_scan(
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
                     log_debug(f'Alternate takes map: {alternate_takes_map}')
                 
-                # Batch updates for this album (commit once at end instead of per-track)
-                track_updates = []
+                # In singles_only mode, skip all popularity scoring
+                if not singles_only:
+                    # Batch updates for this album (commit once at end instead of per-track)
+                    track_updates = []
+                    
+                    # Cache Spotify search results for singles detection reuse
+                    spotify_results_cache = {}
+                    
+                    # Track progress within album
+                    total_tracks = len(album_tracks)
+                    tracks_processed = 0
+                    # Pre-calculate milestone track counts for efficient checking
+                    milestone_25 = int(total_tracks * 0.25)
+                    milestone_50 = int(total_tracks * 0.50)
+                    milestone_75 = int(total_tracks * 0.75)
+                    milestones_logged = set()
                 
-                # Cache Spotify search results for singles detection reuse
-                spotify_results_cache = {}
+                else:
+                    # Single-only mode: skip popularity processing, will do singles detection only
+                    log_info(f"Singles-only mode for album '{album}': all popularity processing skipped")
+                    track_updates = []
                 
-                # Track progress within album
-                total_tracks = len(album_tracks)
-                tracks_processed = 0
-                # Pre-calculate milestone track counts for efficient checking
-                milestone_25 = int(total_tracks * 0.25)
-                milestone_50 = int(total_tracks * 0.50)
-                milestone_75 = int(total_tracks * 0.75)
-                milestones_logged = set()
-                
-                for track in album_tracks:
-                    track_id = track["id"]
-                    title = track["title"]
+                if not singles_only:
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
 
-                    log_info(f'Processing track: "{title}" (Track ID: {track_id})')
-                    log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {artist}')
+                        log_info(f'Processing track: "{title}" (Track ID: {track_id})')
+                        log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {artist}')
 
                     # Check if we can use the complete cached popularity_score
                     # This avoids all API calls if the final score is still valid
@@ -2024,36 +2077,6 @@ def popularity_scan(
                             log_debug(f"Last.fm error details: {type(e).__name__}: {str(e)}")
 
                     # Try to get ListenBrainz score if mbid is available
-                    listenbrainz_score = 0
-                    track_mbid = row_get(track, "mbid")
-                    if track_mbid and not skip_spotify_lookup:  # Use same filter
-                        try:
-                            log_info(f'Getting ListenBrainz score for: {title}')
-                            log_debug(f'ListenBrainz lookup params - mbid: {track_mbid}, artist: {artist}, title: {title}')
-                            listenbrainz_count = _run_with_timeout(
-                                get_listenbrainz_score,
-                                API_CALL_TIMEOUT,
-                                f"ListenBrainz lookup timed out after {API_CALL_TIMEOUT}s",
-                                track_mbid, artist, title
-                            )
-                            if listenbrainz_count and listenbrainz_count > 0:
-                                # Convert listen count to score (similar to Last.fm logarithmic scoring)
-                                listenbrainz_score = calculate_lastfm_popularity_score(listenbrainz_count)
-                                log_info(f'ListenBrainz listen count: {listenbrainz_count} (score: {listenbrainz_score:.1f})')
-                                log_debug(f'ListenBrainz scoring - count: {listenbrainz_count}, calculated score: {listenbrainz_score}')
-                            else:
-                                log_debug(f'No ListenBrainz data found for: {title}')
-                        except TimeoutError as e:
-                            log_info(f"ListenBrainz lookup timed out for {artist} - {title}")
-                            log_debug(f"Timeout error: {e}")
-                        except Exception as e:
-                            log_debug(f"ListenBrainz lookup failed for {artist} - {title}: {e}")
-                    else:
-                        if not track_mbid:
-                            log_debug(f'Skipping ListenBrainz lookup for: {title} (no MBID available)')
-                        else:
-                            log_debug(f'Skipping ListenBrainz lookup for: {title} (keyword filter)')
-
                     # Calculate age score if year is available
                     age_score = 0
                     track_year = row_get(track, "year")
@@ -2082,11 +2105,6 @@ def popularity_scan(
                         weights.append(LASTFM_WEIGHT)
                         log_debug(f'Including Last.fm score: {lastfm_score} (weight: {LASTFM_WEIGHT})')
                     
-                    if listenbrainz_score > 0:
-                        scores.append(listenbrainz_score)
-                        weights.append(LISTENBRAINZ_WEIGHT)
-                        log_debug(f'Including ListenBrainz score: {listenbrainz_score} (weight: {LISTENBRAINZ_WEIGHT})')
-                    
                     if age_score > 0:
                         scores.append(age_score)
                         weights.append(AGE_WEIGHT)
@@ -2096,11 +2114,11 @@ def popularity_scan(
                     if scores and weights:
                         total_weight = sum(weights)
                         popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                        track_updates.append((popularity_score, spotify_score, lastfm_score, listenbrainz_score, track_id))
+                        track_updates.append((popularity_score, spotify_score, lastfm_score, track_id))
                         scanned_count += 1
                         album_scanned += 1
                         log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
-                        log_debug(f'Weighted popularity calculation - spotify: {spotify_score}, lastfm: {lastfm_score}, listenbrainz: {listenbrainz_score}, age: {age_score}, final: {popularity_score:.1f}')
+                        log_debug(f'Weighted popularity calculation - spotify: {spotify_score}, lastfm: {lastfm_score}, age: {age_score}, final: {popularity_score:.1f}')
                     else:
                         log_info(f"No popularity score found for {artist} - {title}")
                         log_debug(f'No data sources available for scoring')
@@ -2121,17 +2139,20 @@ def popularity_scan(
                         log_debug(f"Progress milestone - 75% completed for album {album}")
                         milestones_logged.add(75)
 
-                # Batch update all popularity scores for this album in one commit
-                if track_updates:
+# Batch update all popularity scores for this album in one commit (skipped in singles_only mode)
+                if track_updates and not singles_only:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, listenbrainz_score = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
                     log_debug(f"Batch committed {len(track_updates)} popularity scores for album '{album}'")
-
-                log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
-                log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
+                
+                if not singles_only:
+                    log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
+                    log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
+                
+                # End of popularity scanning section (skipped in singles_only mode)
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')

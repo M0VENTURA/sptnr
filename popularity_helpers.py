@@ -16,7 +16,7 @@ from collections import defaultdict
 
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
-from api_clients.audiodb_and_listenbrainz import ListenBrainzClient, score_by_age as _score_by_age
+from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
 from api_clients import timeout_safe_session
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
@@ -24,8 +24,7 @@ CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 _DEFAULT_WEIGHTS = {
     "spotify": 0.4,
     "lastfm": 0.3,
-    "listenbrainz": 0.2,
-    "age": 0.1,
+    "age": 0.3,
 }
 
 _DEFAULT_FEATURES = {
@@ -34,10 +33,8 @@ _DEFAULT_FEATURES = {
 
 _spotify_client: SpotifyClient | None = None
 _lastfm_client: LastFmClient | None = None
-_listenbrainz_client: ListenBrainzClient | None = None
 
 _spotify_enabled = True
-_listenbrainz_enabled = True
 _clients_configured = False
 
 
@@ -52,18 +49,17 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_weights(cfg: dict) -> Tuple[float, float, float, float]:
+def _resolve_weights(cfg: dict) -> Tuple[float, float, float]:
     weights = cfg.get("weights") if isinstance(cfg, dict) else None
     weights = weights or {}
     return (
         float(weights.get("spotify", _DEFAULT_WEIGHTS["spotify"])),
         float(weights.get("lastfm", _DEFAULT_WEIGHTS["lastfm"])),
-        float(weights.get("listenbrainz", _DEFAULT_WEIGHTS["listenbrainz"])),
         float(weights.get("age", _DEFAULT_WEIGHTS["age"])),
     )
 
 
-SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
+SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
 
 
 def _worker_threads(cfg: dict) -> int:
@@ -79,18 +75,17 @@ def configure_popularity_helpers(
     *,
     spotify_client: SpotifyClient | None = None,
     lastfm_client: LastFmClient | None = None,
-    listenbrainz_client: ListenBrainzClient | None = None,
     config: dict | None = None,
 ) -> None:
     """Configure shared clients and refresh weights based on provided config."""
-    global _spotify_client, _lastfm_client, _listenbrainz_client
-    global _spotify_enabled, _listenbrainz_enabled, _clients_configured
-    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT
+    global _spotify_client, _lastfm_client
+    global _spotify_enabled, _clients_configured
+    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT
 
     cfg = config if config is not None else _load_config()
 
     # Refresh weights from config
-    SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
+    SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
 
     api_cfg = cfg.get("api_integrations") if isinstance(cfg, dict) else None
     api_cfg = api_cfg or {}
@@ -114,13 +109,6 @@ def configure_popularity_helpers(
         _lastfm_client = lastfm_client
     else:
         _lastfm_client = LastFmClient(lastfm_cfg.get("api_key", ""), http_session=timeout_safe_session)
-
-    listenbrainz_cfg = api_cfg.get("listenbrainz") or {}
-    _listenbrainz_enabled = bool(listenbrainz_cfg.get("enabled", True))
-    if listenbrainz_client is not None:
-        _listenbrainz_client = listenbrainz_client
-    else:
-        _listenbrainz_client = ListenBrainzClient(enabled=_listenbrainz_enabled)
 
     _clients_configured = True
 
@@ -232,13 +220,6 @@ def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int 
     
     # Cap at 100
     return min(100.0, max(0.0, score))
-
-
-def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
-    _ensure_clients_from_config()
-    if not _listenbrainz_enabled or _listenbrainz_client is None:
-        return 0
-    return _listenbrainz_client.get_listen_count(mbid, artist, title)
 
 
 def score_by_age(playcount: Any, release_str: str):
@@ -543,6 +524,35 @@ def update_artist_id_for_artist(artist_name: str, artist_id: str) -> int:
         return 0
 
 
+def update_discogs_artist_id_for_artist(artist_name: str, discogs_artist_id: str) -> int:
+    """
+    Update all tracks for an artist with the Discogs artist ID.
+    This helps populate the cache for existing tracks.
+    
+    Args:
+        artist_name: Artist name
+        discogs_artist_id: Discogs artist ID to cache
+        
+    Returns:
+        Number of tracks updated
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute(
+            "UPDATE tracks SET discogs_artist_id = ? WHERE artist = ? AND discogs_artist_id IS NULL",
+            (discogs_artist_id, artist_name)
+        )
+        updated = cursor.rowcount
+        conn.commit()
+        conn.close()
+        logging.debug(f"Updated {updated} tracks with Discogs artist ID for '{artist_name}'")
+        return updated
+    except Exception as e:
+        logging.error(f"Failed to update Discogs artist ID for '{artist_name}': {e}")
+        return 0
+
+
 def fetch_comprehensive_metadata(db_track_id: str, spotify_track_id: str, force_refresh: bool = False) -> bool:
     """
     Fetch comprehensive Spotify metadata for a track and store in database.
@@ -602,11 +612,9 @@ __all__ = [
     "get_spotify_artist_single_track_ids",
     "search_spotify_track",
     "get_lastfm_track_info",
-    "get_listenbrainz_score",
     "score_by_age",
     "SPOTIFY_WEIGHT",
     "LASTFM_WEIGHT",
-    "LISTENBRAINZ_WEIGHT",
     "AGE_WEIGHT",
     "fetch_artist_albums",
     "fetch_album_tracks",

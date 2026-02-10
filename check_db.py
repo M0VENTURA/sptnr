@@ -14,7 +14,6 @@ required_columns = {
     "title": "TEXT",
     "spotify_score": "REAL",
     "lastfm_score": "REAL",
-    "listenbrainz_score": "REAL",
     "age_score": "REAL",
     "score": "REAL",                    # Composite popularity score
     "final_score": "REAL",              # ✅ Added for weighted score
@@ -425,6 +424,114 @@ def update_schema(db_path):
             completed_at TIMESTAMP
         );
     """)
+    
+    # ✅ Add missing columns to managed_downloads for persistent search feature
+    cursor.execute("PRAGMA table_info(managed_downloads);")
+    existing_download_columns = [row[1] for row in cursor.fetchall()]
+    
+    managed_downloads_new_columns = {
+        "persistent_search": "INTEGER DEFAULT 0",
+        "max_retries": "INTEGER DEFAULT 3",
+        "retry_count": "INTEGER DEFAULT 0",
+        "retry_delay_seconds": "INTEGER DEFAULT 300",
+        "last_search_attempt": "TIMESTAMP",
+        "completion_verified": "INTEGER DEFAULT 0"
+    }
+    
+    download_columns_added = []
+    for col, col_type in managed_downloads_new_columns.items():
+        if col not in existing_download_columns:
+            try:
+                cursor.execute(f"ALTER TABLE managed_downloads ADD COLUMN {col} {col_type};")
+                download_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                # Column might already exist
+                if "duplicate column name" not in str(e).lower():
+                    raise
+    
+    if download_columns_added:
+        print(f"✅ Added {len(download_columns_added)} missing managed_downloads column(s): {', '.join(download_columns_added)}")
+    
+    # ✅ Ensure playlist_download_sessions table exists (for grouped downloads)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS playlist_download_sessions (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            session_name TEXT NOT NULL,
+            user TEXT,
+            status TEXT DEFAULT 'in_progress',
+            total_tracks INTEGER,
+            completed_tracks INTEGER DEFAULT 0,
+            failed_tracks INTEGER DEFAULT 0,
+            skipped_tracks INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            completed_at TIMESTAMP
+        );
+    """)
+    
+    # ✅ Add missing columns to playlist_download_sessions
+    cursor.execute("PRAGMA table_info(playlist_download_sessions);")
+    existing_session_columns = [row[1] for row in cursor.fetchall()]
+    
+    playlist_session_new_columns = {
+        "average_retry_count": "REAL DEFAULT 0",
+        "estimated_completion": "TIMESTAMP",
+        "priority_queue": "INTEGER DEFAULT 0"
+    }
+    
+    session_columns_added = []
+    for col, col_type in playlist_session_new_columns.items():
+        if col not in existing_session_columns:
+            try:
+                cursor.execute(f"ALTER TABLE playlist_download_sessions ADD COLUMN {col} {col_type};")
+                session_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+    
+    if session_columns_added:
+        print(f"✅ Added {len(session_columns_added)} missing playlist_download_sessions column(s): {', '.join(session_columns_added)}")
+    
+    # ✅ Update managed_downloads to support method fallback
+    cursor.execute("PRAGMA table_info(managed_downloads);")
+    existing_fallback_columns = [row[1] for row in cursor.fetchall()]
+    
+    fallback_columns = {
+        "session_id": "INTEGER",
+        "current_method": "TEXT",
+        "methods_tried": "TEXT",
+        "next_method": "TEXT",
+        "last_method_failed_at": "TIMESTAMP",
+        "priority": "INTEGER DEFAULT 0"
+    }
+    
+    fallback_columns_added = []
+    for col, col_type in fallback_columns.items():
+        if col not in existing_fallback_columns:
+            try:
+                cursor.execute(f"ALTER TABLE managed_downloads ADD COLUMN {col} {col_type};")
+                fallback_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    raise
+    
+    if fallback_columns_added:
+        print(f"✅ Added {len(fallback_columns_added)} fallback column(s) to managed_downloads: {', '.join(fallback_columns_added)}")
+    
+    # ✅ Create index on playlist_download_sessions
+    indexes_to_add = [
+        ("idx_playlist_sessions_status", "playlist_download_sessions(status)"),
+        ("idx_playlist_sessions_created", "playlist_download_sessions(created_at DESC)"),
+        ("idx_managed_downloads_session", "managed_downloads(session_id)"),
+        ("idx_managed_downloads_priority", "managed_downloads(priority DESC)")
+    ]
+    
+    for idx_name, idx_def in indexes_to_add:
+        if idx_name not in [row[1] for row in cursor.execute("SELECT name, tbl_name FROM sqlite_master WHERE type='index'").fetchall()]:
+            try:
+                cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_def};")
+            except sqlite3.OperationalError:
+                pass
 
     # ✅ Ensure slskd_search_results table exists (for user-selectable Soulseek results)
     cursor.execute("""

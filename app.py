@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+from db_utils import get_db_connection
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -6,7 +7,7 @@ ALL_ENV_VARS = [
     "SECRET_KEY", "CONFIG_PATH", "DB_PATH", "LOG_PATH", "APP_DIR", "SPTNR_DISABLE_BOOT_ND_IMPORT", "SPTNR_SKIP_SINGLES",
     "MUSIC_ROOT", "MUSIC_FOLDER", "DOWNLOADS_DIR", "POPULARITY_LOG_PATH", "POPULARITY_LOG_STDOUT", "POPULARITY_PROGRESS_FILE",
     "NAVIDROME_PROGRESS_FILE", "SINGLES_PROGRESS_FILE", "PROGRESS_FILE", "TIMEZONE", "TZ", "SPOTIFY_USER_TOKEN",
-    "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "LISTENBRAINZ_WEIGHT", "AGE_WEIGHT",
+    "SPOTIFY_CLIENT_ID", "SPOTIFY_CLIENT_SECRET", "SPOTIFY_WEIGHT", "LASTFM_WEIGHT", "AGE_WEIGHT",
     "LASTFMAPIKEY", "NAV_BASE_URL", "NAV_USER", "NAV_PASS", "YOUTUBE_API_KEY", "GOOGLE_CSE_ID", "GOOGLE_API_KEY",
     "TRUSTED_CHANNEL_IDS", "DISCOGS_TOKEN", "AI_API_KEY", "DEV_BOOST_WEIGHT", "AUDIODB_API_KEY", "WEB_API_KEY",
     "ENABLE_WEB_API_KEY", "MP3_PROGRESS_FILE", "BEETS_LOG_PATH", "SEARCHAPI_IO_KEY",
@@ -440,7 +441,7 @@ def setup():
                 "scan_worker_threads": 4,
                 "spotify_prefetch_timeout": 30,
             }
-            weights = {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1}
+            weights = {"spotify": 0.4, "lastfm": 0.3, "age": 0.3}
 
             config = {
                 "navidrome_users": users,
@@ -454,7 +455,6 @@ def setup():
                         "enabled": True,
                         "api_key": request.form.get("lastfm_api_key", "")
                     },
-                    "listenbrainz": {"enabled": True},
                     "discogs": {
                         "enabled": True,
                         "token": request.form.get("discogs_token", "")
@@ -827,7 +827,6 @@ def _baseline_config():
         "api_integrations": {
             "spotify": {"enabled": False, "client_id": "", "client_secret": ""},
             "lastfm": {"enabled": False, "api_key": ""},
-            "listenbrainz": {"enabled": True},
             "discogs": {"enabled": False, "token": ""},
             "musicbrainz": {"enabled": True},
             "audiodb": {"enabled": False, "api_key": ""},
@@ -853,7 +852,7 @@ def _baseline_config():
         "downloads": {
             "folder": "/downloads/Music"
         },
-        "weights": {"spotify": 0.4, "lastfm": 0.3, "listenbrainz": 0.2, "age": 0.1},
+        "weights": {"spotify": 0.4, "lastfm": 0.3, "age": 0.3},
         "database": {"path": DB_PATH, "vacuum_on_start": False},
         "logging": {"level": "INFO", "file": LOG_PATH, "console": True},
         "features": {
@@ -1167,7 +1166,8 @@ def dashboard():
 
 @app.route("/artists")
 def artists():
-    """List all album artists (not track artists)"""
+    """List all album artists (not track artists). Only show albums where they are the album artist.
+    Exception: Various Artists shows all compilation albums and their tracks."""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -1181,14 +1181,21 @@ def artists():
     """)
     total_stats = cursor.fetchone()
     
-    # Use album_artist column (falls back to artist if album_artist is NULL)
-    # Filter out NULL/empty artist names
+    # Filter artists to show only:
+    # - Albums where they are the album_artist (excluding compilations for non-Various Artists)
+    # - Tracks by the artist
+    # - Singles by the artist
+    # Exception: Various Artists shows all compilation albums and their tracks
     cursor.execute("""
         SELECT 
             COALESCE(album_artist, artist) as artist,
-            COUNT(DISTINCT album) as album_count,
-            COUNT(*) as track_count,
-            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
+            (CASE 
+                WHEN COALESCE(album_artist, artist) = 'Various Artists'
+                THEN COUNT(DISTINCT album)
+                ELSE COUNT(DISTINCT CASE WHEN album_artist = COALESCE(album_artist, artist) OR album_artist IS NULL THEN album END)
+            END) as album_count,
+            COUNT(CASE WHEN artist = COALESCE(album_artist, artist) THEN 1 END) as track_count,
+            COALESCE(SUM(CASE WHEN artist = COALESCE(album_artist, artist) AND is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
         WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
@@ -1780,7 +1787,6 @@ def api_import_release():
                     "score": 0.0,
                     "spotify_score": 0,
                     "lastfm_score": 0,
-                    "listenbrainz_score": 0,
                     "age_score": 0,
                     "genres": json.dumps([]),  # Serialize as JSON string
                     "file_path": None,
@@ -3291,11 +3297,11 @@ def album_detail(artist, album):
                 'total_discs': 1
             }
         
-        # Count singles in this album (based on 5* ratings as those are the detected singles)
+        # Count singles in this album (based on is_single = 1 from single detection)
         cursor.execute("""
             SELECT COUNT(*) as singles_count
             FROM tracks
-            WHERE artist = ? AND album = ? AND stars = 5
+            WHERE artist = ? AND album = ? AND is_single = 1
         """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
@@ -3967,6 +3973,9 @@ def scan_mp3():
     """Run beets auto-import to scan music folder and capture metadata"""
     global scan_process_mp3
     
+    # Get scan mode from query parameters (default: "all")
+    mode = request.args.get('mode', 'all')  # all, force, missing
+    
     with scan_lock:
         # Clean up stale progress file and dead process reference if they exist
         db_dir = os.path.dirname(DB_PATH)
@@ -3987,14 +3996,17 @@ def scan_mp3():
         try:
             _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
             
+            # Determine force and filter logic based on mode
+            force_rescan = (mode == 'force')
+            
             # Run beets import in background thread instead of subprocess
             def run_beets_scan_bg():
                 global scan_process_mp3
                 try:
                     from beets_auto_import import BeetsAutoImporter
-                    logging.info("Starting Beets auto-import scan in background")
+                    logging.info(f"Starting Beets auto-import scan in background (mode={mode})")
                     importer = BeetsAutoImporter()
-                    importer.import_and_capture(skip_existing=True)
+                    importer.import_and_capture(skip_existing=not force_rescan)
                     _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Beets scan completed successfully")
                 except Exception as e:
@@ -4012,7 +4024,8 @@ def scan_mp3():
             # Store thread reference for tracking
             scan_process_mp3 = {'thread': scan_thread, 'type': 'mp3'}
             
-            flash("✅ Beets auto-import started (capturing file paths & MusicBrainz metadata)", "success")
+            mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
+            flash(f"✅ Beets auto-import started ({mode_desc} scan, capturing file paths & MusicBrainz metadata)", "success")
             logging.info("Beets scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting beets import: {e}", exc_info=True)
@@ -4026,6 +4039,9 @@ def scan_popularity_route():
     """Run popularity score update from external sources"""
     global scan_process_popularity
     
+    # Get scan mode from query parameters (default: "all")
+    mode = request.args.get('mode', 'all')  # all, force, missing, singles
+    
     with scan_lock:
         # Check if scan is already running
         if scan_process_popularity is not None:
@@ -4038,56 +4054,77 @@ def scan_popularity_route():
                 flash("Popularity scan is already running", "warning")
                 return redirect(url_for("dashboard"))
 
-        # Don't start popularity until Navidrome scan finishes
-        nav_running = False
-        if scan_process_navidrome is not None:
-            if isinstance(scan_process_navidrome, dict):
-                nav_thread = scan_process_navidrome.get('thread')
-                nav_running = nav_thread is not None and nav_thread.is_alive()
-            elif hasattr(scan_process_navidrome, 'is_alive'):
-                nav_running = scan_process_navidrome.is_alive()
-            elif hasattr(scan_process_navidrome, 'poll'):
-                nav_running = scan_process_navidrome.poll() is None
+        # Don't start popularity until Navidrome scan finishes (unless singles-only mode)
+        if mode != 'singles':
+            nav_running = False
+            if scan_process_navidrome is not None:
+                if isinstance(scan_process_navidrome, dict):
+                    nav_thread = scan_process_navidrome.get('thread')
+                    nav_running = nav_thread is not None and nav_thread.is_alive()
+                elif hasattr(scan_process_navidrome, 'is_alive'):
+                    nav_running = scan_process_navidrome.is_alive()
+                elif hasattr(scan_process_navidrome, 'poll'):
+                    nav_running = scan_process_navidrome.poll() is None
 
-        if not nav_running:
-            nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
-            try:
-                with open(nav_progress_file, "r", encoding="utf-8") as f:
-                    nav_state = json.load(f)
-                    nav_running = bool(nav_state.get("is_running"))
-            except FileNotFoundError:
-                nav_running = False
-            except Exception:
-                nav_running = False
+            if not nav_running:
+                nav_progress_file = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_progress.json")
+                try:
+                    with open(nav_progress_file, "r", encoding="utf-8") as f:
+                        nav_state = json.load(f)
+                        nav_running = bool(nav_state.get("is_running"))
+                except FileNotFoundError:
+                    nav_running = False
+                except Exception:
+                    nav_running = False
 
-        if nav_running:
-            flash("Please wait for Navidrome scan to finish before starting popularity scan", "warning")
-            return redirect(url_for("dashboard"))
+            if nav_running:
+                flash("Please wait for Navidrome scan to finish before starting popularity scan", "warning")
+                return redirect(url_for("dashboard"))
         
         try:
             db_dir = os.path.dirname(DB_PATH)
-            popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
-            _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
-
-            # Read force setting from config
-            config_data, _ = _read_yaml(CONFIG_PATH)
-            force = config_data.get("features", {}).get("force", False)
+            
+            # Use different progress files for singles-only mode
+            if mode == 'singles':
+                popularity_progress_file = os.path.join(db_dir, "singles_scan_progress.json")
+                _write_progress_file(popularity_progress_file, "singles_scan", True, {"status": "starting"})
+            else:
+                popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
+                _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting"})
 
             # Run popularity scan in background thread instead of subprocess
             from popularity import popularity_scan as scan_popularity_func
+            
+            # Determine force and filter logic based on mode
+            force_rescan = (mode == 'force')
+            filter_missing = (mode == 'missing')
+            singles_only = (mode == 'singles')
+            
             def run_popularity_scan_bg():
                 try:
-                    logging.info(f"Starting popularity score scan in background (force={force})")
-                    scan_popularity_func(verbose=False, force=force)
-                    _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info("Popularity scan completed successfully")
+                    if singles_only:
+                        logging.info(f"Starting singles-only scan in background")
+                        scan_popularity_func(verbose=False, force=False, singles_only=True)
+                        _write_progress_file(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info("Singles scan completed successfully")
+                    else:
+                        logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing})")
+                        scan_popularity_func(verbose=False, force=force_rescan, filter_missing=filter_missing)
+                        _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                        logging.info("Popularity scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
-                    _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                    _write_progress_file(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+            
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
             scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
-            flash("✅ Popularity score scan started", "success")
+            
+            if singles_only:
+                flash("✅ Singles detection scan started (popularity only)", "success")
+            else:
+                mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
+                flash(f"✅ Popularity and singles scan started ({mode_desc} scan)", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:
             logging.error(f"Error starting popularity scan: {e}", exc_info=True)
@@ -5135,6 +5172,9 @@ def scan_navidrome():
     """Run Navidrome import-only scan (no popularity/singles)."""
     global scan_process_navidrome
     
+    # Get scan mode from query parameters (default: "all")
+    mode = request.args.get('mode', 'all')  # all, force, missing
+    
     with scan_lock:
         if scan_process_navidrome is not None:
             if isinstance(scan_process_navidrome, dict):
@@ -5156,7 +5196,7 @@ def scan_navidrome():
                     # Ensure singles/rating pipeline stays off during Navidrome metadata-only import
                     os.environ["SPTNR_SKIP_SINGLES"] = "1"
 
-                    logging.info("Starting Navidrome import-only scan (no scoring/singles)")
+                    logging.info(f"Starting Navidrome import-only scan (mode={mode})")
                     checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "navidrome_scan_checkpoint.json")
                     
                     artist_map = build_artist_index()
@@ -5181,9 +5221,21 @@ def scan_navidrome():
                         except Exception as e:
                             logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
                     
+                    # Determine force and filter logic based on mode
+                    force_rescan = (mode == 'force')
+                    filter_missing = (mode == 'missing')
+                    
                     # Scan artists starting from checkpoint or beginning
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
-                        scan_artist_to_db(artist_name, info.get("id"), verbose=False, force=False, processed_artists=idx, total_artists=total)
+                        scan_artist_to_db(
+                            artist_name, 
+                            info.get("id"), 
+                            verbose=False, 
+                            force=force_rescan,
+                            filter_missing=filter_missing,
+                            processed_artists=idx, 
+                            total_artists=total
+                        )
                         
                         # Update checkpoint with the last scanned artist
                         try:
@@ -5208,7 +5260,8 @@ def scan_navidrome():
             scan_thread = threading.Thread(target=run_navidrome_import_bg, daemon=False)
             scan_thread.start()
             scan_process_navidrome = {'thread': scan_thread, 'type': 'navidrome'}
-            flash("✅ Navidrome import started (metadata only)", "success")
+            mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
+            flash(f"✅ Navidrome import started ({mode_desc} scan)", "success")
         except Exception as e:
             logging.error(f"Error starting Navidrome import: {e}", exc_info=True)
             flash(f"❌ Error starting Navidrome import: {str(e)}", "danger")
@@ -5553,6 +5606,9 @@ def api_musicbrainz_download():
     release_title = data.get("release_title", "").strip()
     artist = data.get("artist", "").strip()
     method = data.get("method", "").strip().lower()
+    persistent_search = data.get("persistent_search", False)  # New: Keep searching until found
+    max_retries = data.get("max_retries", 3)  # New: Max number of retries
+    session_id = data.get("session_id", None)  # New: Link to playlist session (optional)
     
     if not all([release_id, release_title, artist, method]):
         return jsonify({"error": "Missing required parameters"}), 400
@@ -5564,15 +5620,22 @@ def api_musicbrainz_download():
         conn = get_db()
         cursor = conn.cursor()
         
+        # If session_id provided, verify it exists
+        if session_id:
+            cursor.execute("SELECT id FROM playlist_download_sessions WHERE id = ?", (session_id,))
+            if not cursor.fetchone():
+                conn.close()
+                return jsonify({"error": f"Session {session_id} not found"}), 404
+        
         # Create search query
         download_query = f"{artist} {release_title}"
         
-        # Insert into managed_downloads table
+        # Insert into managed_downloads table with persistent search settings and session link
         cursor.execute("""
             INSERT INTO managed_downloads 
-            (release_id, release_title, artist, method, status, download_query, created_at, updated_at)
-            VALUES (?, ?, ?, ?, 'queued', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, (release_id, release_title, artist, method, download_query))
+            (release_id, release_title, artist, method, status, download_query, persistent_search, max_retries, session_id, created_at, updated_at)
+            VALUES (?, ?, ?, ?, 'queued', ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        """, (release_id, release_title, artist, method, download_query, 1 if persistent_search else 0, max_retries, session_id))
         
         tracking_id = cursor.lastrowid
         conn.commit()
@@ -5589,7 +5652,9 @@ def api_musicbrainz_download():
         return jsonify({
             "success": True,
             "tracking_id": tracking_id,
-            "message": f"Download queued for {release_title}"
+            "message": f"Download queued for {release_title}",
+            "persistent_search": persistent_search,
+            "session_id": session_id
         })
         
     except Exception as e:
@@ -6288,7 +6353,228 @@ def _initiate_qbit_download(tracking_id, query, cursor, conn):
         conn.commit()
 
 
+# ============================================================================
+# PLAYLIST DOWNLOAD MANAGEMENT ROUTES
+# ============================================================================
+
+@app.route("/api/playlist-downloads/create", methods=["POST"])
+def api_create_playlist_download_session():
+    """Create a new playlist download session to group multiple tracks"""
+    try:
+        data = request.json or {}
+        session_name = data.get("session_name", "").strip()
+        total_tracks = data.get("total_tracks", 0)
+        priority_queue = data.get("priority_queue", False)
+        
+        if not session_name:
+            return jsonify({"error": "session_name is required"}), 400
+        
+        if total_tracks <= 0:
+            return jsonify({"error": "total_tracks must be > 0"}), 400
+        
+        try:
+            current_user = session.get("username", "unknown")
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            cursor.execute("""
+                INSERT INTO playlist_download_sessions 
+                (session_name, user, status, total_tracks, priority_queue, created_at, updated_at)
+                VALUES (?, ?, 'in_progress', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (session_name, current_user, total_tracks, 1 if priority_queue else 0))
+            
+            session_id = cursor.lastrowid
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"Created playlist download session {session_id}: {session_name} ({total_tracks} tracks)")
+            
+            return jsonify({
+                "success": True,
+                "session_id": session_id,
+                "session_name": session_name,
+                "total_tracks": total_tracks
+            })
+            
+        except Exception as e:
+            logging.error(f"[PLAYLIST_SESSION] Error: {e}")
+            return jsonify({"error": str(e)}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/playlist-downloads/<int:session_id>", methods=["GET"])
+def api_get_playlist_download_session(session_id):
+    """Get playlist download session details and progress"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get session info
+        cursor.execute("""
+            SELECT id, session_name, user, status, total_tracks, completed_tracks, 
+                   failed_tracks, skipped_tracks, created_at, updated_at, completed_at,
+                   estimated_completion, average_retry_count
+            FROM playlist_download_sessions
+            WHERE id = ?
+        """, (session_id,))
+        
+        row = cursor.fetchone()
+        if not row:
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
+        
+        # Get associated tracks
+        cursor.execute("""
+            SELECT id, release_title, artist, method, status, retry_count, max_retries, 
+                   persistent_search, current_method, methods_tried
+            FROM managed_downloads
+            WHERE session_id = ?
+            ORDER BY priority DESC, created_at ASC
+        """, (session_id,))
+        
+        tracks = []
+        for track_row in cursor.fetchall():
+            tracks.append({
+                "id": track_row[0],
+                "title": track_row[1],
+                "artist": track_row[2],
+                "method": track_row[3],
+                "status": track_row[4],
+                "retry_count": track_row[5],
+                "max_retries": track_row[6],
+                "persistent_search": bool(track_row[7]),
+                "current_method": track_row[8],
+                "methods_tried": track_row[9]
+            })
+        
+        conn.close()
+        
+        # Calculate progress percentage
+        total = row[4]
+        completed = row[5]
+        failed = row[6]
+        progress_pct = int((completed / total * 100) if total > 0 else 0)
+        
+        return jsonify({
+            "id": row[0],
+            "session_name": row[1],
+            "user": row[2],
+            "status": row[3],
+            "total_tracks": row[4],
+            "completed_tracks": row[5],
+            "failed_tracks": row[6],
+            "skipped_tracks": row[7],
+            "progress_percent": progress_pct,
+            "created_at": row[8],
+            "updated_at": row[9],
+            "completed_at": row[10],
+            "estimated_completion": row[11],
+            "average_retry_count": row[12],
+            "tracks": tracks
+        })
+        
+    except Exception as e:
+        logging.error(f"[PLAYLIST_GET] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/playlist-downloads/<int:session_id>/cancel", methods=["POST"])
+def api_cancel_playlist_download_session(session_id):
+    """Cancel a playlist download session and mark all downloads as skipped"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Check if session exists
+        cursor.execute("SELECT id FROM playlist_download_sessions WHERE id = ?", (session_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({"error": "Session not found"}), 404
+        
+        # Mark session as cancelled
+        cursor.execute("""
+            UPDATE playlist_download_sessions 
+            SET status = 'cancelled', updated_at = CURRENT_TIMESTAMP
+            WHERE id = ?
+        """, (session_id,))
+        
+        # Mark all active downloads in session as skipped
+        cursor.execute("""
+            UPDATE managed_downloads
+            SET status = 'skipped', updated_at = CURRENT_TIMESTAMP
+            WHERE session_id = ? AND status NOT IN ('completed', 'failed', 'skipped')
+        """, (session_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Cancelled playlist download session {session_id}")
+        
+        return jsonify({
+            "success": True,
+            "session_id": session_id,
+            "message": "Session cancelled and remaining downloads skipped"
+        })
+        
+    except Exception as e:
+        logging.error(f"[PLAYLIST_CANCEL] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/playlist-downloads", methods=["GET"])
+def api_list_playlist_download_sessions():
+    """List all playlist download sessions"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all sessions, ordered by most recent first
+        cursor.execute("""
+            SELECT id, session_name, user, status, total_tracks, completed_tracks, 
+                   failed_tracks, skipped_tracks, created_at, updated_at, completed_at
+            FROM playlist_download_sessions
+            ORDER BY updated_at DESC
+            LIMIT 100
+        """)
+        
+        sessions = []
+        for row in cursor.fetchall():
+            total = row[4]
+            completed = row[5]
+            progress_pct = int((completed / total * 100) if total > 0 else 0)
+            
+            sessions.append({
+                "id": row[0],
+                "session_name": row[1],
+                "user": row[2],
+                "status": row[3],
+                "total_tracks": row[4],
+                "completed_tracks": row[5],
+                "failed_tracks": row[6],
+                "skipped_tracks": row[7],
+                "progress_percent": progress_pct,
+                "created_at": row[8],
+                "updated_at": row[9],
+                "completed_at": row[10]
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "count": len(sessions),
+            "sessions": sessions
+        })
+        
+    except Exception as e:
+        logging.error(f"[PLAYLIST_LIST] Error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/musicbrainz/downloads", methods=["GET"])
+
 def api_musicbrainz_downloads():
     """Get all managed downloads"""
     try:
@@ -6853,8 +7139,6 @@ def api_metadata():
                     metadata["spotify_score"] = track_info.get("spotify_score")
                 if track_info.get("lastfm_ratio"):
                     metadata["lastfm_ratio"] = track_info.get("lastfm_ratio")
-                if track_info.get("listenbrainz_score"):
-                    metadata["listenbrainz_score"] = track_info.get("listenbrainz_score")
                 if track_info.get("final_score"):
                     metadata["final_score"] = track_info.get("final_score")
                 if track_info.get("stars"):
@@ -7097,6 +7381,12 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
         logging.debug(f"Failed to fetch album art from iTunes: {e}")
         return None
 
+
+
+@app.route("/api/album-art-placeholder")
+def album_art_placeholder():
+    """Return a placeholder SVG for missing album art"""
+    return _album_art_placeholder_svg(size=300)
 
 
 @app.route("/api/album-art/<path:artist>/<path:album>")
@@ -7424,9 +7714,12 @@ def api_lastfm_create_playlist():
         if not api_key:
             return jsonify({"error": "Last.fm API key not configured"}), 400
         
-        # Get recommendations
+        # Get username from config for user-specific recommendations
+        username = lastfm_config.get("username", "")
+        
+        # Get recommendations with username to personalize results
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key)
+        recommendations = get_lastfm_recommendations(api_key, username=username)
         
         if not recommendations:
             return jsonify({"error": "No recommendations found"}), 404
@@ -7509,39 +7802,8 @@ def downloads_manager():
 
 @app.route("/smart-playlists")
 def smart_playlists():
-    """Smart Playlist creation UI page"""
-    # Get top 20 most used genres across the database
-    top_genres = []
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Query to get all genres and count songs
-        # Genres are stored as comma-separated values in the 'genres' field
-        cursor.execute("""
-            SELECT genres FROM tracks 
-            WHERE genres IS NOT NULL AND genres != ''
-        """)
-        
-        # Count genre occurrences
-        genre_counts = {}
-        for row in cursor.fetchall():
-            genres_str = row[0]
-            if genres_str:
-                # Split by comma and trim whitespace
-                genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
-                for genre in genres_list:
-                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
-        
-        # Sort by count (descending) and get top 20
-        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-        top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
-        
-        conn.close()
-    except Exception as e:
-        logging.error(f"Error fetching top genres: {e}")
-    
-    return render_template("smart_playlists.html", top_genres=top_genres)
+    """Redirect to unified playlist manager"""
+    return redirect(url_for("playlist_manager"))
 
 
 @app.route("/downloads-monitor")
@@ -7785,19 +8047,8 @@ def api_create_smart_playlist():
 
 @app.route("/beets", methods=["GET"])
 def beets_page():
-    """Beets management page"""
-    try:
-        beets_client = _get_beets_client()
-        status = beets_client.get_status()
-        
-        return render_template(
-            "beets.html",
-            status=status
-        )
-    except Exception as e:
-        logging.error(f"Error loading beets page: {str(e)}")
-        flash(f"Error loading beets page: {str(e)}", "danger")
-        return redirect(url_for("dashboard"))
+    """Redirect to config page - Beets features now integrated there"""
+    return redirect(url_for("config_editor") + "#beets")
 
 
 @app.route("/metadata-compare", methods=["GET"])
@@ -8128,15 +8379,8 @@ def beets_track_recommendations(track_id):
 
 @app.route("/playlist/import")
 def playlist_import():
-    """Page to import Spotify playlists"""
-    # Check if Spotify is configured
-    config_data, _ = _read_yaml(CONFIG_PATH)
-    spotify_enabled = config_data.get("api_integrations", {}).get("spotify", {}).get("enabled", False)
-    slskd_enabled = config_data.get("slskd", {}).get("enabled", False)
-    
-    return render_template("playlist_importer.html", 
-                         spotify_enabled=spotify_enabled,
-                         slskd_enabled=slskd_enabled)
+    """Redirect to unified playlist manager"""
+    return redirect(url_for("playlist_manager"))
 
 
 @app.route("/api/playlist/import", methods=["POST"])
@@ -9191,7 +9435,7 @@ def api_track_musicbrainz_lookup():
 
 @app.route("/playlist-manager")
 def playlist_manager():
-    """Playlist manager page with downloader and custom creator"""
+    """Unified Playlist manager page with all playlist functionality"""
     cfg, _ = _read_yaml(CONFIG_PATH)
     navidrome_config = cfg.get("navidrome", {})
     navidrome_users = cfg.get("navidrome_users", [])
@@ -9203,7 +9447,46 @@ def playlist_manager():
             "user": navidrome_config.get("user")
         }]
     
-    return render_template('playlist_manager.html', navidrome_users=navidrome_users)
+    # Get top 20 most used genres for Smart Playlists section
+    top_genres = []
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Query to get all genres and count songs
+        # Genres are stored as comma-separated values in the 'genres' field
+        cursor.execute("""
+            SELECT genres FROM tracks 
+            WHERE genres IS NOT NULL AND genres != ''
+        """)
+        
+        # Count genre occurrences
+        genre_counts = {}
+        for row in cursor.fetchall():
+            genres_str = row[0]
+            if genres_str:
+                # Split by comma and trim whitespace
+                genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
+                for genre in genres_list:
+                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
+        
+        # Sort by count (descending) and get top 20
+        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+        top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
+        
+        conn.close()
+    except Exception as e:
+        logging.error(f"Error fetching top genres: {e}")
+    
+    # Check service configurations
+    spotify_enabled = cfg.get("api_integrations", {}).get("spotify", {}).get("enabled", False)
+    lastfm_enabled = cfg.get("api_integrations", {}).get("lastfm", {}).get("enabled", False)
+    
+    return render_template('playlist_manager.html', 
+                         navidrome_users=navidrome_users,
+                         top_genres=top_genres,
+                         spotify_enabled=spotify_enabled,
+                         lastfm_enabled=lastfm_enabled)
 
 @app.route("/api/playlist/list")
 def api_playlist_list():
@@ -9843,6 +10126,39 @@ if __name__ == "__main__":
         import traceback
         print(f"Error checking auto-start configuration: {e}")
         print(traceback.format_exc())
+    
+    # Start Download Retry Manager (for persistent downloads)
+    try:
+        def start_retry_manager():
+            """Background thread to manage download retries"""
+            import time as time_module
+            from download_retry_manager import run_retry_manager
+            
+            # Wait for Flask to start
+            time_module.sleep(5)
+            
+            # Run retry manager every 60 seconds
+            while True:
+                try:
+                    cfg, _ = _read_yaml(CONFIG_PATH)
+                    navidrome_config = cfg.get("navidrome", {})
+                    navidrome_url = navidrome_config.get("url", "http://localhost:4533")
+                    navidrome_token = navidrome_config.get("token", "")
+                    
+                    stats = run_retry_manager(DB_PATH, navidrome_url, navidrome_token)
+                    if stats["retried"] > 0 or stats["completed"] > 0:
+                        logging.info(f"[RETRY_MGR] Retried: {stats['retried']}, Completed: {stats['completed']}, Failed: {stats['failed']}")
+                except Exception as e:
+                    logging.error(f"[RETRY_MGR] Error in retry manager: {e}")
+                
+                # Sleep for 60 seconds before next check
+                time_module.sleep(60)
+        
+        print("Starting Download Retry Manager...")
+        retry_thread = threading.Thread(target=start_retry_manager, daemon=True)
+        retry_thread.start()
+    except Exception as e:
+        logging.warning(f"Could not start Download Retry Manager: {e}")
     
     # Start Flask application
     app.run(debug=False, host="0.0.0.0", port=5000)
