@@ -1189,13 +1189,9 @@ def artists():
     cursor.execute("""
         SELECT 
             COALESCE(album_artist, artist) as artist,
-            (CASE 
-                WHEN COALESCE(album_artist, artist) = 'Various Artists'
-                THEN COUNT(DISTINCT album)
-                ELSE COUNT(DISTINCT CASE WHEN album_artist = COALESCE(album_artist, artist) OR album_artist IS NULL THEN album END)
-            END) as album_count,
-            COUNT(CASE WHEN artist = COALESCE(album_artist, artist) THEN 1 END) as track_count,
-            COALESCE(SUM(CASE WHEN artist = COALESCE(album_artist, artist) AND is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
+            COUNT(DISTINCT album) as album_count,
+            COUNT(*) as track_count,
+            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
             MAX(last_scanned) as last_updated
         FROM tracks
         WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
