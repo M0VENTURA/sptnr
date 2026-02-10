@@ -67,9 +67,6 @@
             <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=track.artist) }}">{{ track.artist }}</a></p>
         </div>
         <div class="d-flex gap-2 flex-column flex-md-row w-100 w-md-auto">
-            <button class="btn btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')">
-                <i class="bi bi-search"></i> <span class="d-none d-sm-inline">MP3 Data</span>
-            </button>
             <div class="btn-group" role="group">
                 <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this track">
                     <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
@@ -265,10 +262,6 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Last.fm</div>
                             <div class="metadata-value">{{ track.lastfm_ratio or '—' }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">ListenBrainz</div>
-                            <div class="metadata-value">{{ track.listenbrainz_score or '—' }}</div>
                         </div>
                         <div class="metadata-row">
                             <div class="metadata-label">Score</div>
