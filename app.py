@@ -3232,13 +3232,24 @@ def album_detail(artist, album):
         conn = get_db()
         cursor = conn.cursor()
         
+        # Query by COALESCE(album_artist, artist) to match how albums are grouped
         cursor.execute("""
             SELECT *
             FROM tracks
-            WHERE artist = ? AND album = ?
+            WHERE COALESCE(album_artist, artist) = ? AND album = ?
             ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
         """, (artist, album))
         tracks_data = cursor.fetchall()
+        
+        if not tracks_data:
+            # Fallback: try with just artist column for backwards compatibility
+            cursor.execute("""
+                SELECT *
+                FROM tracks
+                WHERE artist = ? AND album = ?
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+            """, (artist, album))
+            tracks_data = cursor.fetchall()
         
         if not tracks_data:
             return render_template("album.html",
@@ -3268,10 +3279,10 @@ def album_detail(artist, album):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE artist = ? AND album = ?
+                WHERE COALESCE(album_artist, artist) = ? AND album = ?
             """, (artist, album))
         except:
-            # Fallback for databases without beets columns
+            # Fallback for databases without beets columns or album_artist column
             cursor.execute("""
                 SELECT 
                     COUNT(*) as track_count,
@@ -3288,7 +3299,7 @@ def album_detail(artist, album):
                     NULL as spotify_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE artist = ? AND album = ?
+                WHERE COALESCE(album_artist, artist) = ? AND album = ?
             """, (artist, album))
         album_data = cursor.fetchone()
         
@@ -3311,7 +3322,7 @@ def album_detail(artist, album):
         cursor.execute("""
             SELECT COUNT(*) as singles_count
             FROM tracks
-            WHERE artist = ? AND album = ? AND is_single = 1
+            WHERE COALESCE(album_artist, artist) = ? AND album = ? AND is_single = 1
         """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
@@ -3319,7 +3330,7 @@ def album_detail(artist, album):
         # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
         cursor.execute("""
             SELECT DISTINCT navidrome_genres FROM tracks
-            WHERE artist = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
+            WHERE COALESCE(album_artist, artist) = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
@@ -3649,7 +3660,7 @@ def album_edit(artist, album):
         
         # Execute update
         if update_fields:
-            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE artist = ? AND album = ?"
+            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE COALESCE(album_artist, artist) = ? AND album = ?"
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
             conn.commit()
@@ -3659,7 +3670,7 @@ def album_edit(artist, album):
                 from beets_integration import update_track_metadata_with_beets
                 
                 # Get all track IDs for this album
-                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE artist = ? AND album = ?", 
+                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE COALESCE(album_artist, artist) = ? AND album = ?", 
                              (album_artist, album_title))
                 tracks = cursor.fetchall()
                 
@@ -7457,7 +7468,7 @@ def api_album_art(artist, album):
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT cover_art_url FROM tracks 
-                WHERE artist = ? AND album = ? 
+                WHERE COALESCE(album_artist, artist) = ? AND album = ? 
                 AND cover_art_url IS NOT NULL 
                 LIMIT 1
             """, (artist, album))
