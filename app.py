@@ -7729,70 +7729,81 @@ def api_lastfm_recommendations():
         recommendations = get_lastfm_recommendations(api_key, username=username or None)
         
         # Check which albums/artists/tracks are already in collection
+        existing_albums = set()
+        existing_artists = set()
+        existing_tracks = set()
+        
         try:
             conn = get_db()
             cursor = conn.cursor()
             
             # Get all albums in collection for quick lookup
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks")
-            existing_albums = set()
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
             for row in cursor.fetchall():
                 artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
                 album = row[1] if isinstance(row, tuple) else row.get('album', '')
                 if artist and album:
-                    existing_albums.add((artist.lower().strip(), album.lower().strip()))
+                    # Normalize: lowercase, strip, remove extra spaces
+                    artist_norm = ' '.join(artist.split())
+                    album_norm = ' '.join(album.split())
+                    existing_albums.add((artist_norm, album_norm))
             
             # Get all artists in collection
-            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks")
-            existing_artists = set()
+            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL")
             for row in cursor.fetchall():
                 artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
                 if artist:
-                    existing_artists.add(artist.lower().strip())
+                    artist_norm = ' '.join(artist.split())
+                    existing_artists.add(artist_norm)
+            
+            # Get all tracks in collection
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
+            for row in cursor.fetchall():
+                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+                title = row[1] if isinstance(row, tuple) else row.get('title', '')
+                if artist and title:
+                    artist_norm = ' '.join(artist.split())
+                    title_norm = ' '.join(title.split())
+                    existing_tracks.add((artist_norm, title_norm))
             
             conn.close()
-            
-            # Mark which items are in collection
-            for album in recommendations.get("albums", []):
-                album_key = (album.get("artist", "").lower().strip(), album.get("name", "").lower().strip())
-                album["in_collection"] = album_key in existing_albums
-            
-            for artist in recommendations.get("artists", []):
-                artist_key = artist.get("name", "").lower().strip()
-                artist["in_collection"] = artist_key in existing_artists
-            
-            # For tracks, check both artist+track combo
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks")
-            existing_tracks = set()
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks")
-                for row in cursor.fetchall():
-                    artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-                    title = row[1] if isinstance(row, tuple) else row.get('title', '')
-                    if artist and title:
-                        existing_tracks.add((artist.lower().strip(), title.lower().strip()))
-                conn.close()
-            except:
-                pass
-            
-            for track in recommendations.get("tracks", []):
-                track_key = (track.get("artist", "").lower().strip(), track.get("name", "").lower().strip())
-                track["in_collection"] = track_key in existing_tracks
         
         except Exception as e:
             logging.warning(f"Failed to check collection status: {e}")
-            # Continue without collection status if DB check fails
+            # Continue anyway, items just won't be marked as in collection
         
-        # Filter out albums, artists, and tracks already in collection
-        filtered_recommendations = dict(recommendations)
-        if "albums" in recommendations:
-            filtered_recommendations["albums"] = [album for album in recommendations["albums"] if not album.get("in_collection")]
-        if "artists" in recommendations:
-            filtered_recommendations["artists"] = [artist for artist in recommendations["artists"] if not artist.get("in_collection")]
-        if "tracks" in recommendations:
-            filtered_recommendations["tracks"] = [track for track in recommendations["tracks"] if not track.get("in_collection")]
+        # Filter out items already in collection (only return NEW recommendations)
+        filtered_recommendations = {
+            "artists": [],
+            "albums": [],
+            "tracks": []
+        }
+        
+        # Filter artists - only include those NOT in collection
+        for artist in recommendations.get("artists", []):
+            artist_key = artist.get("name", "").lower().strip()
+            artist_norm = ' '.join(artist_key.split())
+            if artist_norm not in existing_artists:
+                filtered_recommendations["artists"].append(artist)
+        
+        # Filter albums - only include those NOT in collection
+        for album in recommendations.get("albums", []):
+            artist_key = album.get("artist", "").lower().strip()
+            album_key = album.get("name", "").lower().strip()
+            artist_norm = ' '.join(artist_key.split())
+            album_norm = ' '.join(album_key.split())
+            if (artist_norm, album_norm) not in existing_albums:
+                filtered_recommendations["albums"].append(album)
+        
+        # Filter tracks - only include those NOT in collection
+        for track in recommendations.get("tracks", []):
+            artist_key = track.get("artist", "").lower().strip()
+            title_key = track.get("name", "").lower().strip()
+            artist_norm = ' '.join(artist_key.split())
+            title_norm = ' '.join(title_key.split())
+            if (artist_norm, title_norm) not in existing_tracks:
+                filtered_recommendations["tracks"].append(track)
+        
         return jsonify({"recommendations": filtered_recommendations})
     except Exception as e:
         logging.error(f"Last.fm recommendations error: {str(e)}")
