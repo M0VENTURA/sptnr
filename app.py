@@ -138,13 +138,14 @@ def log_verbose(msg):
 
 app = Flask(__name__)
 
-# Ensure album_artist column exists in database on startup
+# Ensure album_artist column exists and is populated on startup
+import logging
 ensure_result = ensure_album_artist_column()
 
 # Verify the migration worked
 verification = verify_album_artist_column()
+logging.info(f"Album Artist Migration Status: {verification['message']}")
 if not verification["exists"]:
-    import logging
     logging.warning(f"⚠️ Database migration issue: {verification['message']}")
 
 # --- Unified Log API ---
@@ -1200,30 +1201,57 @@ def artists():
     # - Tracks by the artist
     # - Singles by the artist
     # Exception: Various Artists shows all compilation albums and their tracks
-    cursor.execute("""
-        SELECT 
-            COALESCE(album_artist, artist) as artist,
-            COUNT(DISTINCT album) as album_count,
-            COUNT(*) as track_count,
-            COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
-            MAX(last_scanned) as last_updated
-        FROM tracks
-        WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
-        GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
-        
-        UNION ALL
-        
-        SELECT
-            artist_name as artist,
-            0 as album_count,
-            0 as track_count,
-            0 as single_count,
-            last_updated
-        FROM artist_stats
-        WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
-        
-        ORDER BY artist COLLATE NOCASE
-    """)
+    try:
+        cursor.execute("""
+            SELECT 
+                COALESCE(album_artist, artist) as artist,
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
+            GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
+            
+            UNION ALL
+            
+            SELECT
+                artist_name as artist,
+                0 as album_count,
+                0 as track_count,
+                0 as single_count,
+                last_updated
+            FROM artist_stats
+            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
+            
+            ORDER BY artist COLLATE NOCASE
+        """)
+    except:
+        # Fallback for databases without album_artist column
+        cursor.execute("""
+            SELECT 
+                artist,
+                COUNT(DISTINCT album) as album_count,
+                COUNT(*) as track_count,
+                COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
+                MAX(last_scanned) as last_updated
+            FROM tracks
+            WHERE artist IS NOT NULL AND artist != ''
+            GROUP BY artist COLLATE NOCASE
+            
+            UNION ALL
+            
+            SELECT
+                artist_name as artist,
+                0 as album_count,
+                0 as track_count,
+                0 as single_count,
+                last_updated
+            FROM artist_stats
+            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL)
+            
+            ORDER BY artist COLLATE NOCASE
+        """)
     artists_data = cursor.fetchall()
     conn.close()
     

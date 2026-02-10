@@ -22,7 +22,7 @@ def get_db_connection():
 
 
 def ensure_album_artist_column():
-    """Ensure the album_artist column exists in the tracks table. 
+    """Ensure the album_artist column exists in the tracks table AND populate it with artist data.
     
     This is called on app startup to automatically migrate the database
     if needed, without requiring manual intervention.
@@ -49,29 +49,35 @@ def ensure_album_artist_column():
         cursor.execute("PRAGMA table_info(tracks)")
         columns = {row[1] for row in cursor.fetchall()}
         
-        if 'album_artist' in columns:
-            # Column already exists
-            logging.info("✓ album_artist column already exists")
-            conn.close()
-            return True
+        if 'album_artist' not in columns:
+            # Add the album_artist column
+            logging.info("Creating album_artist column...")
+            try:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN album_artist TEXT")
+                conn.commit()
+                logging.info("✓ Successfully added album_artist column to tracks table")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logging.error(f"✗ Failed to add album_artist column: {e}")
+                    conn.close()
+                    raise
         
-        # Add the album_artist column
-        logging.info("Creating album_artist column...")
+        # Populate album_artist with artist data where it's NULL
+        logging.info("Populating album_artist column from artist data...")
         try:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN album_artist TEXT")
+            cursor.execute("UPDATE tracks SET album_artist = artist WHERE album_artist IS NULL")
+            rows_updated = cursor.rowcount
             conn.commit()
-            logging.info("✓ Successfully added album_artist column to tracks table")
-            conn.close()
-            return True
-        except sqlite3.OperationalError as e:
-            if "duplicate column name" in str(e).lower():
-                # Column was added by another process
-                logging.info("✓ album_artist column exists (added by another process)")
-                conn.close()
-                return True
-            logging.error(f"✗ Failed to add album_artist column: {e}")
+            logging.info(f"✓ Populated album_artist for {rows_updated} rows")
+        except Exception as e:
+            logging.error(f"✗ Failed to populate album_artist column: {e}")
             conn.close()
             raise
+        
+        logging.info("✓ album_artist migration complete")
+        conn.close()
+        return True
+        
     except Exception as e:
         logging.error(f"✗ Error ensuring album_artist column exists: {e}", exc_info=True)
         # Don't fail app startup, but log the error
