@@ -727,6 +727,54 @@ def _scan_missing_musicbrainz_releases(artist_name: str, verbose: bool = False):
                 pass
 
 
+def get_navidrome_library_stats(artist_map: dict) -> dict:
+    """
+    Calculate total albums and tracks available from Navidrome.
+    
+    Args:
+        artist_map: Artist map from build_artist_index()
+        
+    Returns:
+        Dict with 'total_albums' and 'total_tracks' counts from Navidrome
+    """
+    try:
+        total_albums = sum(info.get("album_count", 0) for info in artist_map.values())
+        total_tracks = 0
+        
+        # Count total tracks by fetching each album
+        for artist_name, artist_info in artist_map.items():
+            artist_id = artist_info.get("id")
+            if not artist_id:
+                continue
+            
+            try:
+                albums = fetch_artist_albums(artist_id)
+                for album in albums:
+                    album_id = album.get("id")
+                    if not album_id:
+                        continue
+                    
+                    try:
+                        album_data = fetch_album_tracks(album_id)
+                        tracks = album_data.get("tracks", [])
+                        total_tracks += len(tracks)
+                    except Exception as e:
+                        log_debug(f"Failed to fetch tracks for album {album.get('name')}: {e}")
+                        continue
+            except Exception as e:
+                log_debug(f"Failed to fetch albums for artist {artist_name}: {e}")
+                continue
+        
+        log_debug(f"Navidrome stats: {total_albums} albums, {total_tracks} songs")
+        return {
+            "total_albums": total_albums,
+            "total_tracks": total_tracks
+        }
+    except Exception as e:
+        log_debug(f"Failed to get Navidrome library stats: {e}", exc_info=True)
+        return {"total_albums": 0, "total_tracks": 0}
+
+
 def get_database_library_stats() -> dict:
     """
     Get library statistics from the local database.
@@ -736,7 +784,7 @@ def get_database_library_stats() -> dict:
     on the album column.
     
     Returns:
-        Dict with 'total_albums' and 'total_songs' counts from the database
+        Dict with 'total_albums' and 'total_tracks' counts from the database
     """
     try:
         conn = get_db_connection()
@@ -748,18 +796,18 @@ def get_database_library_stats() -> dict:
         
         # Count total songs/tracks
         cursor.execute("SELECT COUNT(*) FROM tracks")
-        total_songs = cursor.fetchone()[0] or 0
+        total_tracks = cursor.fetchone()[0] or 0
         
         conn.close()
         
-        log_debug(f"Database stats: {total_albums} albums, {total_songs} songs")
+        log_debug(f"Database stats: {total_albums} albums, {total_tracks} songs")
         return {
             "total_albums": total_albums,
-            "total_songs": total_songs
+            "total_tracks": total_tracks
         }
     except Exception as e:
         log_debug(f"Failed to get database library stats: {e}", exc_info=True)
-        return {"total_albums": 0, "total_songs": 0}
+        return {"total_albums": 0, "total_tracks": 0}
 
 
 def scan_library_to_db(verbose: bool = False, force: bool = False):
@@ -804,32 +852,43 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     
     # Optimization: Check if library totals match before scanning each album
     # Skip individual album checks if force=False and totals match
-    # Note: This is a best-effort optimization that checks if album counts match.
-    # In rare edge cases (e.g., albums deleted and added with same total count),
-    # the database may be slightly out of sync. Use --force to bypass this check.
+    # Note: This optimization checks both album and track counts.
+    # If either count differs, the scan will proceed to update.
+    # Use --force to bypass this check and always scan.
     if not force:
-        log_info("Checking if library is already up-to-date...")
+        log_info("Checking if library is already up-to-date (comparing album and track counts)...")
         log_debug("Getting library stats from Navidrome and database")
         
-        # Get Navidrome stats from the artist index we just built
-        navidrome_album_count = sum(info.get("album_count", 0) for info in artist_map_local.values())
+        # Get Navidrome stats
+        nav_stats = get_navidrome_library_stats(artist_map_local)
+        navidrome_album_count = nav_stats.get("total_albums", 0)
+        navidrome_track_count = nav_stats.get("total_tracks", 0)
         
         # Get database stats
         db_stats = get_database_library_stats()
         db_album_count = db_stats.get("total_albums", 0)
-        db_song_count = db_stats.get("total_songs", 0)
+        db_track_count = db_stats.get("total_tracks", 0)
         
-        log_info(f"Navidrome: {navidrome_album_count} albums")
-        log_info(f"Database: {db_album_count} albums, {db_song_count} songs")
-        log_debug(f"Library comparison - Navidrome albums: {navidrome_album_count}, DB albums: {db_album_count}, DB songs: {db_song_count}")
+        log_info(f"Navidrome: {navidrome_album_count} albums, {navidrome_track_count} songs")
+        log_info(f"Database: {db_album_count} albums, {db_track_count} songs")
+        log_debug(f"Library comparison - Albums: Nav={navidrome_album_count} vs DB={db_album_count}, Tracks: Nav={navidrome_track_count} vs DB={db_track_count}")
         
-        # If album counts match and we have songs in the database, skip the scan
-        if navidrome_album_count > 0 and navidrome_album_count == db_album_count and db_song_count > 0:
+        # Skip scan only if BOTH album and track counts match
+        if (navidrome_album_count > 0 and navidrome_track_count > 0 and
+            navidrome_album_count == db_album_count and 
+            navidrome_track_count == db_track_count):
             log_unified("Navidrome Import Scan - Library already up-to-date, skipping scan")
-            log_info(f"Library is already up-to-date ({db_album_count} albums, {db_song_count} songs)")
+            log_info(f"Library is already up-to-date ({db_album_count} albums, {db_track_count} songs)")
             log_info("Use --force to re-import all tracks")
-            log_debug("Early exit: album counts match, skipping detailed scan")
+            log_debug("Early exit: both album and track counts match, skipping detailed scan")
             return
+        
+        # If counts don't match, log which count(s) differ
+        if navidrome_album_count != db_album_count:
+            log_info(f"Album count mismatch: Navidrome has {navidrome_album_count}, database has {db_album_count}")
+        if navidrome_track_count != db_track_count:
+            log_info(f"Track count mismatch: Navidrome has {navidrome_track_count}, database has {db_track_count}")
+        log_info("Proceeding with full library scan to sync differences")
 
     # Cache existing track IDs to avoid re-writing cached rows unless force=True
     existing_track_ids: set[str] = set()
