@@ -627,11 +627,8 @@ let currentPlaylistData = null;
 // TAB SWITCHING FUNCTIONALITY
 // ===============================
 function switchTab(tabName) {
-  console.log('switchTab called with:', tabName);
-  
   // Hide all sections
   document.querySelectorAll('.tab-section').forEach(section => {
-    console.log('Hiding section:', section.id);
     section.style.display = 'none';
   });
   
@@ -641,7 +638,6 @@ function switchTab(tabName) {
   });
   
   // Show selected section
-  console.log('Showing tab:', tabName);
   const sectionMap = {
     'browse': ['browseSection', 'browseTab'],
     'spotify': ['spotifySection', 'spotifyTab'],
@@ -655,16 +651,11 @@ function switchTab(tabName) {
     const section = document.getElementById(sectionId);
     const tab = document.getElementById(tabId);
     
-    console.log('Section element:', section);
-    console.log('Tab element:', tab);
-    
     if (section) {
       section.style.display = 'block';
-      console.log('Set display to block for:', sectionId);
     }
     if (tab) {
       tab.classList.add('active');
-      console.log('Added active class to:', tabId);
     }
   }
 }
@@ -677,10 +668,14 @@ document.addEventListener('DOMContentLoaded', function() {
   // Initialize first tab
   switchTab('browse');
   
-  // Load initial data
+  // Load initial data for all tabs
   loadNavidromePlaylists();
   loadPlaylistList();
   loadSmartPlaylists();
+  
+  // Initialize Spotify, Last.fm, and ListenBrainz data
+  // These don't auto-load but may need setup
+  console.log('Initialization complete');
 });
 
 async function loadNavidromePlaylists() {
