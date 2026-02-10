@@ -242,22 +242,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
 
             cached_ids_for_album = existing_album_tracks.get(album_name, set())
 
-            # Skip album only if it's already cached AND doesn't need re-import due to missing fields
+            # Note: Always import tracks from Navidrome (the source of truth for your library).
+            # Don't skip based on cached count - Navidrome is authoritative.
+            # The save_to_db() function handles deduplication via content matching,
+            # so we won't get duplicates even if tracks were partially imported before.
+            # This ensures popularity scan always has complete track data to work with.
             album_needs_reimport = album_name in albums_needing_reimport
-            if not force and not album_needs_reimport and tracks and len(cached_ids_for_album) >= len(tracks):
-                # Unified log: Note when album is skipped
-                log_unified(f"Navidrome Import Scan - Skipped {album_name} (already cached)")
-                
-                # Info log: More details
-                log_info(f"Skipping cached album: {album_name} ({len(cached_ids_for_album)} tracks already in database)")
-                
-                # Debug log: Technical details
-                log_debug(f"Album skip decision - Album: {album_name}, Cached tracks: {len(cached_ids_for_album)}, Navidrome tracks: {len(tracks)}, Force: {force}, Needs reimport: {album_needs_reimport}")
-                
-                # Still log skipped albums to scan history
-                log_album_scan(artist_name, album_name, 'navidrome', len(cached_ids_for_album), 'skipped')
-                continue
-
             if album_needs_reimport:
                 log_info(f"Re-importing album with missing fields: {album_name}")
                 log_debug(f"Album flagged for reimport: {album_name}")
