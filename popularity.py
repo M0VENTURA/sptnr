@@ -1693,13 +1693,14 @@ def popularity_scan(
                         from api_clients.discogs import DiscogsClient
                         
                         # Get Discogs client if available
-                        discogs_config = cfg.get("api_integrations", {}).get("discogs", {})
+                        discogs_config = config.get("api_integrations", {}).get("discogs", {})
                         if discogs_config.get("enabled") and discogs_config.get("personal_token"):
                             try:
                                 discogs_client = DiscogsClient(token=discogs_config.get("personal_token"))
                                 discogs_artist_id = _run_with_timeout(
                                     discogs_client.get_artist_id,
                                     12,  # 12 second timeout for Discogs artist lookup
+                                    f"Discogs artist ID lookup timed out after 12s",
                                     artist
                                 )
                                 
@@ -1726,6 +1727,7 @@ def popularity_scan(
                             artist_country = _run_with_timeout(
                                 get_artist_country,
                                 12,  # 12 second timeout for country lookup
+                                f"Artist country lookup timed out after 12s",
                                 artist,
                                 enabled=True
                             )
