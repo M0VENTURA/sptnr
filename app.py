@@ -1182,7 +1182,8 @@ def dashboard():
 @app.route("/artists")
 def artists():
     """List all album artists (not track artists). Only show albums where they are the album artist.
-    Exception: Various Artists shows all compilation albums and their tracks."""
+    Exception: Various Artists shows all compilation albums and their tracks.
+    Filter: Only show artists with at least 1 album or EP (excludes artists with only 0 albums/EPs)."""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -1196,16 +1197,14 @@ def artists():
     """)
     total_stats = cursor.fetchone()
     
-    # Filter artists to show only:
-    # - Albums where they are the album_artist (excluding compilations for non-Various Artists)
-    # - Tracks by the artist
-    # - Singles by the artist
-    # Exception: Various Artists shows all compilation albums and their tracks
+    # Filter artists to show only those with at least one album or EP
+    # Simply count distinct albums and filter out artists with 0 albums
+    # This removes the UNION ALL that was adding artists from artist_stats with 0 content
     try:
         cursor.execute("""
             SELECT 
                 COALESCE(album_artist, artist) as display_name,
-                artist as link_artist,
+                COALESCE(album_artist, artist) as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
@@ -1213,19 +1212,7 @@ def artists():
             FROM tracks
             WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
             GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
-            
-            UNION ALL
-            
-            SELECT
-                artist_name as display_name,
-                artist_name as link_artist,
-                0 as album_count,
-                0 as track_count,
-                0 as single_count,
-                last_updated
-            FROM artist_stats
-            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
-            
+            HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
     except:
@@ -1241,19 +1228,7 @@ def artists():
             FROM tracks
             WHERE artist IS NOT NULL AND artist != ''
             GROUP BY artist COLLATE NOCASE
-            
-            UNION ALL
-            
-            SELECT
-                artist_name as display_name,
-                artist_name as link_artist,
-                0 as album_count,
-                0 as track_count,
-                0 as single_count,
-                last_updated
-            FROM artist_stats
-            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL)
-            
+            HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
     artists_data = cursor.fetchall()
@@ -1377,7 +1352,7 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
-        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        # Query by COALESCE(album_artist, artist) to match how artists are listed
         cursor.execute("""
             SELECT 
                 album,
@@ -1389,14 +1364,14 @@ def artist_detail(name):
                 MAX(spotify_album_type) as album_type,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
-        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        # Query by COALESCE(album_artist, artist) to match how artists are listed
         cursor.execute("""
             SELECT 
                 COUNT(*) as track_count,
@@ -1413,7 +1388,7 @@ def artist_detail(name):
                 MAX(discogs_artist_id) as discogs_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
         """, (name,))
         
         artist_stats = cursor.fetchone()
@@ -1428,7 +1403,7 @@ def artist_detail(name):
         missing_releases_data = cursor.fetchall()
         
         # Get compilation albums where this artist is featured (Various Artists, etc.)
-        # Query by regular artist column
+        # Query by artist column for compilations where they're a track artist but not album artist
         cursor.execute("""
             SELECT 
                 album,
@@ -3257,13 +3232,19 @@ def album_detail(artist, album):
         conn = get_db()
         cursor = conn.cursor()
         
-        cursor.execute("""
-            SELECT *
-            FROM tracks
-            WHERE artist = ? AND album = ?
-            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
-        """, (artist, album))
-        tracks_data = cursor.fetchall()
+        # Query by COALESCE(album_artist, artist) to match how albums are grouped
+        # Try both COALESCE and plain artist for backwards compatibility
+        tracks_data = None
+        for artist_clause in ["COALESCE(album_artist, artist)", "artist"]:
+            cursor.execute(f"""
+                SELECT *
+                FROM tracks
+                WHERE {artist_clause} = ? AND album = ?
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+            """, (artist, album))
+            tracks_data = cursor.fetchall()
+            if tracks_data:
+                break
         
         if not tracks_data:
             return render_template("album.html",
@@ -3293,10 +3274,10 @@ def album_detail(artist, album):
                     MAX(spotify_artist_id) as spotify_artist_id,
                     MAX(discogs_artist_id) as discogs_artist_id
                 FROM tracks
-                WHERE artist = ? AND album = ?
+                WHERE COALESCE(album_artist, artist) = ? AND album = ?
             """, (artist, album))
         except:
-            # Fallback for databases without beets columns
+            # Fallback for databases without beets columns or album_artist column
             cursor.execute("""
                 SELECT 
                     COUNT(*) as track_count,
@@ -3313,7 +3294,7 @@ def album_detail(artist, album):
                     NULL as spotify_artist_id,
                     NULL as discogs_artist_id
                 FROM tracks
-                WHERE artist = ? AND album = ?
+                WHERE COALESCE(album_artist, artist) = ? AND album = ?
             """, (artist, album))
         album_data = cursor.fetchone()
         
@@ -3336,7 +3317,7 @@ def album_detail(artist, album):
         cursor.execute("""
             SELECT COUNT(*) as singles_count
             FROM tracks
-            WHERE artist = ? AND album = ? AND is_single = 1
+            WHERE COALESCE(album_artist, artist) = ? AND album = ? AND is_single = 1
         """, (artist, album))
         singles_row = cursor.fetchone()
         album_data['singles_count'] = singles_row['singles_count'] if singles_row else 0
@@ -3344,7 +3325,7 @@ def album_detail(artist, album):
         # Aggregate genres from tracks in this album - use navidrome_genres which comes from Navidrome
         cursor.execute("""
             SELECT DISTINCT navidrome_genres FROM tracks
-            WHERE artist = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
+            WHERE COALESCE(album_artist, artist) = ? AND album = ? AND navidrome_genres IS NOT NULL AND navidrome_genres != ''
         """, (artist, album))
         genre_rows = cursor.fetchall()
         album_genres = set()
@@ -3674,7 +3655,16 @@ def album_edit(artist, album):
         
         # Execute update
         if update_fields:
-            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE artist = ? AND album = ?"
+            # Validate that update_fields only contains safe column assignments
+            # All field assignments should be in the format "column_name = ?"
+            allowed_columns = {'album', 'artist', 'year', 'spotify_album_type', 'beets_album_mbid', 'genres'}
+            for field in update_fields:
+                column_name = field.split('=')[0].strip()
+                if column_name not in allowed_columns:
+                    flash(f"Invalid column name in update: {column_name}", "danger")
+                    return redirect(url_for("album_detail", artist=artist, album=album))
+            
+            sql = f"UPDATE tracks SET {', '.join(update_fields)} WHERE COALESCE(album_artist, artist) = ? AND album = ?"
             cursor.execute(sql, update_values)
             rows_updated = cursor.rowcount
             conn.commit()
@@ -3684,7 +3674,7 @@ def album_edit(artist, album):
                 from beets_integration import update_track_metadata_with_beets
                 
                 # Get all track IDs for this album
-                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE artist = ? AND album = ?", 
+                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE COALESCE(album_artist, artist) = ? AND album = ?", 
                              (album_artist, album_title))
                 tracks = cursor.fetchall()
                 
@@ -7482,7 +7472,7 @@ def api_album_art(artist, album):
             cursor = conn.cursor()
             cursor.execute("""
                 SELECT cover_art_url FROM tracks 
-                WHERE artist = ? AND album = ? 
+                WHERE COALESCE(album_artist, artist) = ? AND album = ? 
                 AND cover_art_url IS NOT NULL 
                 LIMIT 1
             """, (artist, album))
