@@ -411,7 +411,7 @@
         </div>
       <div class="card-body">
         <p class="text-muted mb-4">
-          Get popular music recommendations from Last.fm based on global listening trends.
+          Get music recommendations from Last.fm based on your personal listening history when a Last.fm username is configured. If no username is configured, shows global trending recommendations.
         </p>
 
         <!-- Recommendation Type Selection -->
@@ -419,11 +419,11 @@
           <div class="col-md-6">
             <label for="lfmRecType" class="form-label">Recommendation Type</label>
             <select id="lfmRecType" class="form-select">
-              <option value="tracks">Top Tracks (Global)</option>
-              <option value="artists">Top Artists (Global)</option>
-              <option value="albums">Top Albums (Global)</option>
+              <option value="tracks">Your Top Tracks</option>
+              <option value="artists">Your Top Artists</option>
+              <option value="albums">Your Top Albums</option>
             </select>
-            <small class="text-muted">Based on Last.fm's geo.getTop* methods</small>
+            <small class="text-muted">When a Last.fm username is configured, shows your personal top picks. Otherwise shows global trends.</small>
           </div>
           <div class="col-md-6 d-flex align-items-end">
             <button class="btn btn-primary w-100" onclick="loadLastfmRecommendations()">
@@ -664,6 +664,10 @@ let currentPlaylistId = null;
 let currentPlaylistData = null;
 
 document.addEventListener('DOMContentLoaded', function() {
+  // Initialize first tab
+  switchTab('browse');
+  
+  // Load initial data
   loadNavidromePlaylists();
   loadPlaylistList();
   loadSmartPlaylists();
