@@ -1759,6 +1759,19 @@ def popularity_scan(
                 log_info(f"Spotify artist ID lookup failed for {artist}: {e}")
                 log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
             
+            # Load Discogs token ONCE before album loop (needed for both popularity scan and singles detection)
+            discogs_token = os.environ.get("DISCOGS_TOKEN", "")
+            if not discogs_token:
+                try:
+                    config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+                    with open(config_path, 'r') as f:
+                        config = yaml.safe_load(f)
+                    discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
+                    if discogs_token:
+                        log_debug(f"Loaded Discogs token from config.yaml for use in metadata extraction")
+                except Exception as e:
+                    log_debug(f"Could not load Discogs token from config: {e}")
+            
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
@@ -1849,7 +1862,7 @@ def popularity_scan(
                                     cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
                                 
                                     # Add to batch update with cached scores (genres remain unchanged when using cache)
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, track_id))
+                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, None, None, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
@@ -2099,6 +2112,8 @@ def popularity_scan(
                         # Collect genre sources from available APIs
                         spotify_genres_json = None
                         lastfm_tags_json = None
+                        discogs_genres_json = None
+                        musicbrainz_genres_json = None
                         
                         # Extract Spotify genres from artist metadata (saved by fetch_comprehensive_metadata)
                         try:
@@ -2120,6 +2135,36 @@ def popularity_scan(
                                         log_debug(f'Last.fm tags extracted for: {title} - {len(tag_names)} tags')
                         except Exception as e:
                             log_debug(f'Failed to extract Last.fm tags: {e}')
+                        
+                        # Extract Discogs genres (requires Discogs release ID or search)
+                        if HAVE_DISCOGS and discogs_token:
+                            try:
+                                discogs_release_id = row_get(track, 'discogs_release_id')
+                                if discogs_release_id:
+                                    # Try to get genres directly from release
+                                    log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
+                                    discogs_client = DiscogsClient(token=discogs_token)
+                                    # Search for release by ID to get genres
+                                    discogs_genres = discogs_client.get_genres(title, artist)
+                                    if discogs_genres:
+                                        discogs_genres_json = json.dumps(discogs_genres)
+                                        log_debug(f'Discogs genres extracted for: {title} - {len(discogs_genres)} genres')
+                            except Exception as e:
+                                log_debug(f'Failed to extract Discogs genres: {e}')
+                        
+                        # Extract MusicBrainz genres (from recording metadata)
+                        if HAVE_MUSICBRAINZ:
+                            try:
+                                track_mbid = row_get(track, 'mbid')
+                                if track_mbid:
+                                    log_debug(f'Fetching MusicBrainz genres for MBID: {track_mbid}')
+                                    mb_client = MusicBrainzClient()
+                                    mb_genres = mb_client.get_genres(title, artist)
+                                    if mb_genres:
+                                        musicbrainz_genres_json = json.dumps(mb_genres)
+                                        log_debug(f'MusicBrainz genres extracted for: {title} - {len(mb_genres)} genres')
+                            except Exception as e:
+                                log_debug(f'Failed to extract MusicBrainz genres: {e}')
 
                         # Calculate weighted popularity score
                         # Only include sources that have data (score > 0)
@@ -2145,7 +2190,7 @@ def popularity_scan(
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -2173,7 +2218,7 @@ def popularity_scan(
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if track_updates and not singles_only:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ?, discogs_genres = ?, musicbrainz_genres = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
@@ -2188,19 +2233,6 @@ def popularity_scan(
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
                 singles_detected = 0
-                
-                # Load Discogs token from config.yaml if not in environment
-                discogs_token = os.environ.get("DISCOGS_TOKEN", "")
-                if not discogs_token:
-                    try:
-                        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
-                        with open(config_path, 'r') as f:
-                            config = yaml.safe_load(f)
-                        discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token", "")
-                        if discogs_token:
-                            log_debug(f"Loaded Discogs token from config.yaml")
-                    except Exception as e:
-                        log_debug(f"Could not load Discogs token from config: {e}")
                 
                 # Log which sources are available for single detection
                 sources_available = []
