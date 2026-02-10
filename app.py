@@ -1182,7 +1182,8 @@ def dashboard():
 @app.route("/artists")
 def artists():
     """List all album artists (not track artists). Only show albums where they are the album artist.
-    Exception: Various Artists shows all compilation albums and their tracks."""
+    Exception: Various Artists shows all compilation albums and their tracks.
+    Filter: Only show artists with at least 1 album or EP (excludes artists with only 0 albums/EPs)."""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -1196,16 +1197,14 @@ def artists():
     """)
     total_stats = cursor.fetchone()
     
-    # Filter artists to show only:
-    # - Albums where they are the album_artist (excluding compilations for non-Various Artists)
-    # - Tracks by the artist
-    # - Singles by the artist
-    # Exception: Various Artists shows all compilation albums and their tracks
+    # Filter artists to show only those with at least one album or EP
+    # Simply count distinct albums and filter out artists with 0 albums
+    # This removes the UNION ALL that was adding artists from artist_stats with 0 content
     try:
         cursor.execute("""
             SELECT 
                 COALESCE(album_artist, artist) as display_name,
-                artist as link_artist,
+                COALESCE(album_artist, artist) as link_artist,
                 COUNT(DISTINCT album) as album_count,
                 COUNT(*) as track_count,
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as single_count,
@@ -1213,19 +1212,7 @@ def artists():
             FROM tracks
             WHERE COALESCE(album_artist, artist) IS NOT NULL AND COALESCE(album_artist, artist) != ''
             GROUP BY COALESCE(album_artist, artist) COLLATE NOCASE
-            
-            UNION ALL
-            
-            SELECT
-                artist_name as display_name,
-                artist_name as link_artist,
-                0 as album_count,
-                0 as track_count,
-                0 as single_count,
-                last_updated
-            FROM artist_stats
-            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(COALESCE(album_artist, artist)) FROM tracks WHERE COALESCE(album_artist, artist) IS NOT NULL)
-            
+            HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
     except:
@@ -1241,19 +1228,7 @@ def artists():
             FROM tracks
             WHERE artist IS NOT NULL AND artist != ''
             GROUP BY artist COLLATE NOCASE
-            
-            UNION ALL
-            
-            SELECT
-                artist_name as display_name,
-                artist_name as link_artist,
-                0 as album_count,
-                0 as track_count,
-                0 as single_count,
-                last_updated
-            FROM artist_stats
-            WHERE LOWER(artist_name) NOT IN (SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL)
-            
+            HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
     artists_data = cursor.fetchall()
@@ -1377,7 +1352,7 @@ def artist_detail(name):
         cursor = conn.cursor()
         
         # Get albums for this artist with type information
-        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        # Query by COALESCE(album_artist, artist) to match how artists are listed
         cursor.execute("""
             SELECT 
                 album,
@@ -1389,14 +1364,14 @@ def artist_detail(name):
                 MAX(spotify_album_type) as album_type,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
         albums_data = cursor.fetchall()
         
         # Get artist stats with additional metrics
-        # Query by regular artist column (not album_artist) since that's what's passed in the URL
+        # Query by COALESCE(album_artist, artist) to match how artists are listed
         cursor.execute("""
             SELECT 
                 COUNT(*) as track_count,
@@ -1413,7 +1388,7 @@ def artist_detail(name):
                 MAX(discogs_artist_id) as discogs_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
-            WHERE artist = ?
+            WHERE COALESCE(album_artist, artist) = ?
         """, (name,))
         
         artist_stats = cursor.fetchone()
@@ -1428,7 +1403,7 @@ def artist_detail(name):
         missing_releases_data = cursor.fetchall()
         
         # Get compilation albums where this artist is featured (Various Artists, etc.)
-        # Query by regular artist column
+        # Query by artist column for compilations where they're a track artist but not album artist
         cursor.execute("""
             SELECT 
                 album,
