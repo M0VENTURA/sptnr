@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from db_utils import get_db_connection
+from db_utils import get_db_connection, ensure_album_artist_column
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -137,6 +137,9 @@ def log_verbose(msg):
         log_debug(f"[VERBOSE] {msg}")
 
 app = Flask(__name__)
+
+# Ensure album_artist column exists in database on startup
+ensure_album_artist_column()
 
 # --- Unified Log API ---
 @app.route("/api/unified-log")
