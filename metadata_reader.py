@@ -30,6 +30,14 @@ MP3_FIELDS = {
     'language': 'TLAN',
 }
 
+# MusicBrainz-specific TXXX frame tags (ID3v2 user-defined text frames)
+# These follow Navidrome's mapping conventions: https://github.com/navidrome/navidrome/blob/master/resources/mappings.yaml
+MB_TXXX_FIELDS = {
+    'musicbrainz_album_release_country': 'MUSICBRAINZ ALBUM RELEASE COUNTRY',  # Release country (2-letter code or full name)
+    'musicbrainz_album_status': 'MUSICBRAINZ ALBUM STATUS',                    # Release status (Official, Promotion, Bootleg, etc.)
+    'musicbrainz_album_type': 'MUSICBRAINZ ALBUM TYPE',                        # Release type (Album, EP, Single, etc.)
+}
+
 
 def extract_album_art_from_mp3(file_path):
     """
@@ -56,6 +64,105 @@ def extract_album_art_from_mp3(file_path):
         pass
     
     return None
+
+
+def write_musicbrainz_tags_to_mp3(file_path, release_country=None, release_status=None, release_type=None):
+    """
+    Write MusicBrainz tags to MP3 file using TXXX (user-defined text frames).
+    
+    Args:
+        file_path: Path to MP3 file
+        release_country: Release country code or name (e.g., 'US', 'United States')
+        release_status: Release status (e.g., 'Official', 'Promotion', 'Bootleg')
+        release_type: Release type (e.g., 'Album', 'EP', 'Single')
+        
+    Returns:
+        bool: True if successfully written, False otherwise
+    """
+    if not file_path or not os.path.exists(file_path):
+        return False
+    
+    try:
+        from mutagen.id3 import ID3, TXXX
+        from mutagen.mp3 import MP3
+        
+        audio = MP3(file_path, ID3=ID3)
+        
+        # Create ID3 tags if they don't exist
+        if audio.tags is None:
+            audio.add_tags()
+        
+        # Write release country
+        if release_country:
+            audio.tags.add(TXXX(
+                encoding=3,
+                desc='MUSICBRAINZ ALBUM RELEASE COUNTRY',
+                text=[release_country]
+            ))
+        
+        # Write release status
+        if release_status:
+            audio.tags.add(TXXX(
+                encoding=3,
+                desc='MUSICBRAINZ ALBUM STATUS',
+                text=[release_status]
+            ))
+        
+        # Write release type
+        if release_type:
+            audio.tags.add(TXXX(
+                encoding=3,
+                desc='MUSICBRAINZ ALBUM TYPE',
+                text=[release_type]
+            ))
+        
+        # Save changes
+        audio.save()
+        return True
+        
+    except Exception as e:
+        return False
+
+
+def read_musicbrainz_tags_from_mp3(file_path):
+    """
+    Read MusicBrainz TXXX tags from MP3 file.
+    
+    Args:
+        file_path: Path to MP3 file
+        
+    Returns:
+        dict: Dictionary with release_country, release_status, release_type
+    """
+    result = {
+        'release_country': None,
+        'release_status': None,
+        'release_type': None
+    }
+    
+    if not file_path or not os.path.exists(file_path):
+        return result
+    
+    try:
+        audio = ID3(file_path)
+        
+        # Look for TXXX frames with MusicBrainz tags
+        for key in audio.keys():
+            if key.startswith('TXXX'):
+                frame = audio[key]
+                desc = frame.desc.upper() if hasattr(frame, 'desc') else ''
+                
+                if 'MUSICBRAINZ ALBUM RELEASE COUNTRY' in desc:
+                    result['release_country'] = frame.text[0] if frame.text else None
+                elif 'MUSICBRAINZ ALBUM STATUS' in desc:
+                    result['release_status'] = frame.text[0] if frame.text else None
+                elif 'MUSICBRAINZ ALBUM TYPE' in desc:
+                    result['release_type'] = frame.text[0] if frame.text else None
+    
+    except Exception as e:
+        pass
+    
+    return result
 
 
 def read_mp3_metadata(file_path):
