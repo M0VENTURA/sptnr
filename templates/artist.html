@@ -349,7 +349,7 @@
   {% set total_discovered_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', False)|list|length %}
   {% set total_missing_compilations = albums_by_category.compilation|selectattr('is_missing', 'equalto', True)|list|length %}
   
-  <div class="card mb-4">
+  <div class="card mb-4" id="albums-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-vinyl-fill"></i> Albums
@@ -358,9 +358,16 @@
           <span class="badge bg-warning text-dark">{{ total_missing_albums }} missing</span>
         {% endif %}
       </h5>
-      <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
-        <i class="bi bi-flag"></i> Check for Missing
-      </button>
+      <div class="d-flex gap-2">
+        {% if total_missing_albums > 0 %}
+          <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('albums')" title="Show/hide missing albums" data-show="false">
+            <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+          </button>
+        {% endif %}
+        <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases('{{ artist_name }}')" title="Check MusicBrainz for missing releases">
+          <i class="bi bi-flag"></i> Check for Missing
+        </button>
+      </div>
     </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0">
@@ -375,7 +382,7 @@
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="albums-tbody">
           {% if albums_by_category.album|length > 0 %}
             {% for album in albums_by_category.album %}
               {{ render_album_row(album, artist_name, album.is_missing) }}
@@ -393,7 +400,7 @@
   </div>
 
   <!-- EPs Section -->
-  <div class="card mb-4">
+  <div class="card mb-4" id="eps-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-disc"></i> EPs
@@ -402,6 +409,11 @@
           <span class="badge bg-warning text-dark">{{ total_missing_eps }} missing</span>
         {% endif %}
       </h5>
+      {% if total_missing_eps > 0 %}
+        <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('eps')" title="Show/hide missing EPs" data-show="false">
+          <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+        </button>
+      {% endif %}
     </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0">
@@ -416,7 +428,7 @@
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="eps-tbody">
           {% if albums_by_category.ep|length > 0 %}
             {% for album in albums_by_category.ep %}
               {{ render_album_row(album, artist_name, album.is_missing) }}
@@ -434,7 +446,7 @@
   </div>
 
   <!-- Singles Section -->
-  <div class="card mb-4">
+  <div class="card mb-4" id="singles-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-music-note-beamed"></i> Singles
@@ -443,6 +455,11 @@
           <span class="badge bg-warning text-dark">{{ total_missing_singles }} missing</span>
         {% endif %}
       </h5>
+      {% if total_missing_singles > 0 %}
+        <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('singles')" title="Show/hide missing singles" data-show="false">
+          <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+        </button>
+      {% endif %}
     </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0">
@@ -457,7 +474,7 @@
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="singles-tbody">
           {% if albums_by_category.single|length > 0 %}
             {% for album in albums_by_category.single %}
               {{ render_album_row(album, artist_name, album.is_missing) }}
@@ -475,7 +492,7 @@
   </div>
 
   <!-- Compilations Section -->
-  <div class="card mb-4">
+  <div class="card mb-4" id="compilations-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <div>
         <h5 class="card-title mb-0">
@@ -487,6 +504,11 @@
         </h5>
         <p class="text-muted small mb-0 mt-1">Albums where this artist is featured (Various Artists, soundtracks, tributes, etc.)</p>
       </div>
+      {% if total_missing_compilations > 0 %}
+        <button class="btn btn-sm btn-outline-secondary toggle-missing-btn" onclick="toggleMissing('compilations')" title="Show/hide missing compilations" data-show="false">
+          <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
+        </button>
+      {% endif %}
     </div>
     <div class="table-responsive">
       <table class="table table-hover mb-0">
@@ -501,7 +523,7 @@
             <th class="text-center" style="width: 150px;">Actions</th>
           </tr>
         </thead>
-        <tbody>
+        <tbody class="compilations-tbody">
           {% if albums_by_category.compilation|length > 0 %}
             {% for album in albums_by_category.compilation %}
               {{ render_album_row(album, artist_name, album.is_missing) }}
@@ -1761,6 +1783,66 @@ function saveArtistIds() {
     })
     .catch(err => alert('❌ Network error: ' + err.message));
 }
+
+// Toggle missing albums visibility
+function toggleMissing(category) {
+  const section = document.getElementById(category + '-section');
+  if (!section) return;
+  
+  const tbody = section.querySelector('.' + category + '-tbody');
+  const button = section.querySelector('.toggle-missing-btn');
+  if (!tbody || !button) return;
+  
+  const isShowing = button.getAttribute('data-show') === 'true';
+  const missingRows = tbody.querySelectorAll('tr[data-status="missing"]');
+  
+  if (isShowing) {
+    // Hide missing
+    missingRows.forEach(row => row.style.display = 'none');
+    button.setAttribute('data-show', 'false');
+    button.innerHTML = '<i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>';
+  } else {
+    // Show missing
+    missingRows.forEach(row => row.style.display = '');
+    button.setAttribute('data-show', 'true');
+    button.innerHTML = '<i class="bi bi-eye"></i> <span class="d-none d-sm-inline">Hide Missing</span>';
+  }
+  
+  // Save preference to localStorage
+  localStorage.setItem('showMissing-' + category, !isShowing);
+}
+
+// Initialize toggle states on page load
+function initializeMissingToggle() {
+  const categories = ['albums', 'eps', 'singles', 'compilations'];
+  categories.forEach(category => {
+    const section = document.getElementById(category + '-section');
+    if (!section) return;
+    
+    const tbody = section.querySelector('.' + category + '-tbody');
+    const button = section.querySelector('.toggle-missing-btn');
+    if (!tbody || !button) return;
+    
+    // Load preference from localStorage (default is false = hidden)
+    const showMissing = localStorage.getItem('showMissing-' + category) === 'true';
+    const missingRows = tbody.querySelectorAll('tr[data-status="missing"]');
+    
+    if (!showMissing) {
+      // Hide by default
+      missingRows.forEach(row => row.style.display = 'none');
+      button.setAttribute('data-show', 'false');
+      button.innerHTML = '<i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>';
+    } else {
+      // Show if saved preference is true
+      missingRows.forEach(row => row.style.display = '');
+      button.setAttribute('data-show', 'true');
+      button.innerHTML = '<i class="bi bi-eye"></i> <span class="d-none d-sm-inline">Hide Missing</span>';
+    }
+  });
+}
+
+// Initialize on page load
+document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 </script>
 <style>
 /* Dark theme improvements for artist page */

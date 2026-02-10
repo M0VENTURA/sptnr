@@ -600,6 +600,7 @@ def determine_final_status(
     album_is_underperforming: bool = False,
     is_artist_level_standout: bool = False,
     discogs_video_confirmed: bool = False,
+    lastfm_single_confirmed: bool = False,
     popularity: float = 0.0,
     album_mean: float = 0.0,
     has_metadata: bool = False
@@ -617,16 +618,17 @@ def determine_final_status(
     - Spotify confirms (strict)
     - MusicBrainz confirms (strict, release_group.type == "Single")
     - Discogs video confirms
-    - Z-score >= 0.5 (album) OR >= 1.0 (artist) with metadata confirmation
+    - Last.fm album has 1-3 tracks (single indicator)
+    - Z-score >= 0.5 (album) OR >= 1.0 (artist) WITH metadata confirmation (required)
     
     LOW-CONFIDENCE:
-    - album_z >= 0.2 AND >= 3 versions (when z-score enabled, no metadata required)
+    - album_z >= 0.2 AND >= 3 versions WITH metadata confirmation (required)
     
     NOT A SINGLE:
     - None of the above
     
-    Z-score can ONLY produce medium or low confidence, NEVER high confidence.
-    Z-score MUST require metadata confirmation for medium confidence.
+    Z-score inference REQUIRES metadata to be valid.
+    Popularity outliers alone CANNOT be marked as singles.
     
     Args:
         discogs_confirmed: Whether Discogs confirms this is a single
@@ -638,6 +640,7 @@ def determine_final_status(
         album_is_underperforming: Whether album is underperforming vs artist median
         is_artist_level_standout: Whether track exceeds artist median popularity
         discogs_video_confirmed: Whether Discogs confirms this has a music video
+        lastfm_single_confirmed: Whether Last.fm confirms album has 1-3 tracks (single indicator)
         popularity: Track popularity score
         album_mean: Album mean popularity
         has_metadata: Whether track has any metadata sources
@@ -671,6 +674,10 @@ def determine_final_status(
     if discogs_video_confirmed:
         medium_confidence_count += 1
     
+    # Last.fm album track count (1-3 tracks = single indicator)
+    if lastfm_single_confirmed:
+        medium_confidence_count += 1
+    
     # DETERMINE FINAL STATUS:
     # Mark as high confidence if: 1+ high sources
     if high_confidence_count >= 1:
@@ -680,17 +687,17 @@ def determine_final_status(
     if medium_confidence_count >= 1:
         return 'medium'
     
-    # Z-score can ONLY produce medium confidence, NEVER high confidence
-    # Z-score does NOT require metadata (metadata is just a bonus indicator)
+    # Z-score inference for confidence ONLY - requires metadata to be valid
+    # Per problem statement: popularity outliers alone cannot be singles
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     
-    if use_zscore_detection:
-        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (no metadata required)
+    if use_zscore_detection and has_metadata:
+        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (ONLY with metadata)
         if album_z >= 0.5 or artist_z >= 1.0:
             return 'medium'
         
-        # Low confidence: album_z >= 0.2 AND >= 3 versions (no metadata required)
+        # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
         if album_z >= 0.2 and spotify_version_count >= 3:
             return 'low'
     
@@ -808,6 +815,7 @@ def detect_single_enhanced(
     spotify_results: Optional[List[Dict]] = None,
     discogs_client=None,
     musicbrainz_client=None,
+    lastfm_client=None,
     verbose: bool = False,
     album_type: Optional[str] = None,
     album_is_underperforming: bool = False,
@@ -820,7 +828,7 @@ def detect_single_enhanced(
     1. PREPROCESSING - Calculate album/artist stats, exclude trailing parenthesis tracks
     2. ARTIST-LEVEL SANITY FILTER - Skip if popularity < artist_mean AND no explicit metadata
     3. HIGH CONFIDENCE DETECTION - Popularity standout OR Discogs
-    4. MEDIUM CONFIDENCE DETECTION - Z-score+metadata, Spotify, MusicBrainz, Discogs video, version count, popularity outlier
+    4. MEDIUM CONFIDENCE DETECTION - Z-score+metadata, Spotify, MusicBrainz, Discogs video, Last.fm album track count, version count
     5. LIVE TRACK HANDLING - Require metadata for exact live version
     6. FINAL CONFIDENCE CLASSIFICATION - Based on source counts
     7. STAR RATING - HIGH=5★, MEDIUM with 2+ sources=5★, else baseline
@@ -837,6 +845,7 @@ def detect_single_enhanced(
         spotify_results: Cached Spotify search results
         discogs_client: Discogs API client
         musicbrainz_client: MusicBrainz API client
+        lastfm_client: Last.fm API client (optional)
         verbose: Enable verbose logging
         album_type: Spotify album type (for compilation detection)
         album_is_underperforming: Whether the album is underperforming vs artist median
@@ -1164,6 +1173,33 @@ def detect_single_enhanced(
                 log_info(f"   ⓘ Discogs client is disabled")
                 log_debug(f"   Discogs: Client is disabled in configuration")
     
+    # STAGE 4.6: Last.fm Album Track Count Check (MEDIUM CONFIDENCE)
+    # Singles on Last.fm typically have 1-3 tracks on the album
+    lastfm_single_confirmed = False
+    if lastfm_client:
+        if discogs_confirmed or spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed:
+            log_debug(f"[LASTFM] SKIPPED - Already have metadata confirmation")
+            lastfm_single_confirmed = False
+        else:
+            try:
+                log_debug(f"[LASTFM] Checking album track count: {album} by {artist}")
+                album_track_count_lastfm = lastfm_client.get_album_track_count(artist, album)
+                
+                # Singles on Last.fm typically have 1-3 tracks
+                if 1 <= album_track_count_lastfm <= 3:
+                    result['single_sources'].append('lastfm_album_type')
+                    result['single_sources_used'].append('lastfm_album_type')
+                    lastfm_single_confirmed = True
+                    log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) (single indicator)")
+                else:
+                    log_debug(f"[LASTFM] Track count: {album_track_count_lastfm} (not in single range 1-3)")
+                    lastfm_single_confirmed = False
+            except Exception as e:
+                log_debug(f"[LASTFM] Error checking album track count: {e}")
+                lastfm_single_confirmed = False
+    else:
+        log_debug(f"[LASTFM] Client not available")
+    
     # STAGE 5: Popularity-Based Inference (including version count)
     # Calculate album-level z-score
     album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
@@ -1269,6 +1305,7 @@ def detect_single_enhanced(
         album_is_underperforming,
         is_artist_level_standout,
         discogs_video_confirmed,
+        lastfm_single_confirmed,
         popularity,
         album_mean,
         has_metadata
