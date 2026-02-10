@@ -298,6 +298,65 @@
   </div>
   </div><!-- END browseSection -->
 
+  <!-- Smart Playlists Section -->
+  <div id="smartSection" class="tab-section" style="display: none;">
+    <div class="mb-4">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-sliders"></i> Smart Playlists
+          </h5>
+        </div>
+      <div class="card-body">
+        <p class="text-muted mb-4">
+          Smart playlists automatically update based on rules. Select an existing smart playlist to view or manage it.
+        </p>
+
+        <!-- Smart Playlist Selection -->
+        <div class="row g-3 mb-4">
+          <div class="col-md-6">
+            <label for="smartPlaylistDropdown" class="form-label">Available Smart Playlists</label>
+            <select id="smartPlaylistDropdown" class="form-select">
+              <option value="">Select a smart playlist...</option>
+            </select>
+            <small class="text-muted">Auto-updating playlists from Navidrome</small>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button class="btn btn-primary w-100" onclick="loadSmartPlaylistDetail()">
+              <i class="bi bi-folder-open"></i> Load Details
+            </button>
+          </div>
+        </div>
+
+        <!-- Smart Playlist Details -->
+        <div id="smartPlaylistDetails" style="display: none;">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <h5 class="mb-0">
+                <i class="bi bi-music-note-beamed"></i> <span id="smartPlaylistName">Smart Playlist</span>
+              </h5>
+              <button class="btn btn-sm btn-outline-secondary" onclick="refreshSmartPlaylistDetail()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+              </button>
+            </div>
+            <div class="card-body">
+              <div id="smartPlaylistMetadata" class="mb-3">
+                <!-- Metadata will be inserted here -->
+              </div>
+              <div id="smartPlaylistTracks" style="max-height: 400px; overflow-y: auto;">
+                <!-- Track list will be inserted here -->
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div id="smartPlaylistEmpty" class="alert alert-info">
+          <i class="bi bi-info-circle"></i> Select a smart playlist to view or manage it
+        </div>
+      </div>
+    </div>
+  </div><!-- END smartSection -->
+
   <!-- Spotify Playlist Import Section -->
   <div id="spotifySection" class="tab-section" style="display: none;">
     <div class="mb-4">
@@ -584,8 +643,7 @@ function switchTab(tabName) {
       document.getElementById('spotifyTab').classList.add('active');
       break;
     case 'smart':
-      // Smart playlists section could show Last.fm/ListenBrainz, or we can create dedicated smart generators
-      document.getElementById('lastfmSection').style.display = 'block';
+      document.getElementById('smartSection').style.display = 'block';
       document.getElementById('smartTab').classList.add('active');
       break;
     case 'lastfm':
@@ -607,6 +665,8 @@ let currentPlaylistData = null;
 
 document.addEventListener('DOMContentLoaded', function() {
   loadNavidromePlaylists();
+  loadPlaylistList();
+  loadSmartPlaylists();
 });
 
 async function loadNavidromePlaylists() {
@@ -617,26 +677,35 @@ async function loadNavidromePlaylists() {
     const regularSelect = document.getElementById('regularPlaylistSelect');
     smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
     regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
-    (data.smart || []).forEach(pl => {
-      const opt = document.createElement('option');
-      opt.value = pl.id;
-      opt.textContent = pl.name;
-      smartSelect.appendChild(opt);
-    });
-    (data.regular || []).forEach(pl => {
-      const opt = document.createElement('option');
-      opt.value = pl.id;
-      opt.textContent = pl.name;
-      regularSelect.appendChild(opt);
-    });
+    
+    if (data.smart && data.smart.length > 0) {
+      data.smart.forEach(pl => {
+        const opt = document.createElement('option');
+        opt.value = pl.id;
+        opt.textContent = pl.name;
+        smartSelect.appendChild(opt);
+      });
+    }
+    if (data.regular && data.regular.length > 0) {
+      data.regular.forEach(pl => {
+        const opt = document.createElement('option');
+        opt.value = pl.id;
+        opt.textContent = pl.name;
+        regularSelect.appendChild(opt);
+      });
+    }
+    if ((!data.smart || data.smart.length === 0) && (!data.regular || data.regular.length === 0)) {
+      console.warn('No playlists found in Navidrome');
+    }
   } catch (e) {
     console.error('Failed to load Navidrome playlists:', e);
+    document.getElementById('smartPlaylistSelect').innerHTML = '<option value="">Error loading playlists</option>';
+    document.getElementById('regularPlaylistSelect').innerHTML = '<option value="">Error loading playlists</option>';
   }
 }
 
 document.getElementById('smartPlaylistSelect').addEventListener('change', function() {
   if (this.value) {
-    // Clear the other dropdown
     document.getElementById('regularPlaylistSelect').value = '';
     loadNavidromePlaylistDetail(this.value, 'smart');
   }
@@ -644,7 +713,6 @@ document.getElementById('smartPlaylistSelect').addEventListener('change', functi
 
 document.getElementById('regularPlaylistSelect').addEventListener('change', function() {
   if (this.value) {
-    // Clear the other dropdown
     document.getElementById('smartPlaylistSelect').value = '';
     loadNavidromePlaylistDetail(this.value, 'regular');
   }
@@ -756,11 +824,6 @@ function refreshPlaylistDetails() {
 let currentPlaylistData = null;
 let selectedReplacements = {};
 
-// Load playlists on page init
-document.addEventListener('DOMContentLoaded', function() {
-  loadPlaylistList();
-});
-
 async function loadPlaylistList() {
   try {
     const response = await fetch('/api/playlist/list');
@@ -771,7 +834,6 @@ async function loadPlaylistList() {
       data.playlists.forEach(playlist => {
         const option = document.createElement('option');
         option.value = playlist.path;
-        // Show type and song count in dropdown
         let typeLabel = '';
         if (playlist.type === 'smart' || playlist.type === 'smart-local') typeLabel = ' (Smart)';
         option.textContent = `${playlist.name || playlist.path}${typeLabel} [${playlist.songCount || 0}]`;
@@ -1081,7 +1143,6 @@ async function createCustomPlaylist(event) {
   }
 }
 
-// Utility function
 function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
@@ -1089,8 +1150,120 @@ function escapeHtml(text) {
 }
 
 // =============================================================================
+// SMART PLAYLISTS
+// =============================================================================
+
+let currentSmartPlaylistId = null;
+let currentSmartPlaylistData = null;
+
+async function loadSmartPlaylists() {
+  try {
+    const response = await fetch('/api/navidrome/playlists');
+    const data = await response.json();
+    const select = document.getElementById('smartPlaylistDropdown');
+    select.innerHTML = '<option value="">Select a smart playlist...</option>';
+    
+    if (data.smart && data.smart.length > 0) {
+      data.smart.forEach(playlist => {
+        const option = document.createElement('option');
+        option.value = playlist.id;
+        option.textContent = playlist.name;
+        select.appendChild(option);
+      });
+    } else {
+      select.innerHTML = '<option value="">No smart playlists found</option>';
+    }
+  } catch (error) {
+    console.error('Error loading smart playlists:', error);
+    document.getElementById('smartPlaylistDropdown').innerHTML = '<option value="">Error loading smart playlists</option>';
+  }
+}
+
+async function loadSmartPlaylistDetail() {
+  const playlistId = document.getElementById('smartPlaylistDropdown').value;
+  if (!playlistId) {
+    alert('Please select a smart playlist');
+    return;
+  }
+
+  try {
+    const response = await fetch(`/api/navidrome/playlist/${playlistId}`);
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load playlist');
+    }
+    
+    currentSmartPlaylistId = playlistId;
+    currentSmartPlaylistData = data;
+    displaySmartPlaylistDetails(data);
+  } catch (error) {
+    console.error('Error loading smart playlist details:', error);
+    alert('Failed to load playlist: ' + error.message);
+  }
+}
+
+function displaySmartPlaylistDetails(data) {
+  const detailsSection = document.getElementById('smartPlaylistDetails');
+  const nameEl = document.getElementById('smartPlaylistName');
+  const metadataEl = document.getElementById('smartPlaylistMetadata');
+  const tracksEl = document.getElementById('smartPlaylistTracks');
+  
+  // Set playlist name
+  nameEl.textContent = data.name || 'Unknown Smart Playlist';
+  
+  // Build metadata
+  let metadataHtml = '<div class="row g-3">';
+  metadataHtml += `<div class="col-md-3"><strong>Tracks:</strong> ${data.songCount || 0}</div>`;
+  if (data.duration) {
+    const hours = Math.floor(data.duration / 3600);
+    const minutes = Math.floor((data.duration % 3600) / 60);
+    metadataHtml += `<div class="col-md-3"><strong>Duration:</strong> ${hours}h ${minutes}m</div>`;
+  }
+  if (data.owner) {
+    metadataHtml += `<div class="col-md-3"><strong>Owner:</strong> ${escapeHtml(data.owner)}</div>`;
+  }
+  if (data.comment) {
+    metadataHtml += `<div class="col-12"><strong>Description:</strong> ${escapeHtml(data.comment)}</div>`;
+  }
+  metadataHtml += '</div>';
+  metadataEl.innerHTML = metadataHtml;
+  
+  // Build track list
+  if (data.tracks && data.tracks.length > 0) {
+    let tracksHtml = '<h6 class="mb-2">Tracks</h6>';
+    data.tracks.forEach((track, idx) => {
+      tracksHtml += `
+        <div class="d-flex justify-content-between align-items-center py-2 border-bottom">
+          <div style="flex: 1;">
+            <strong>${escapeHtml(track.title || 'Unknown Track')}</strong><br>
+            <small class="text-muted">${escapeHtml(track.artist || 'Unknown Artist')} ${track.album ? '· ' + escapeHtml(track.album) : ''}</small>
+          </div>
+          ${track.duration ? `<small class="text-muted">${formatDuration(track.duration)}</small>` : ''}
+        </div>
+      `;
+    });
+    tracksEl.innerHTML = tracksHtml;
+  } else {
+    tracksEl.innerHTML = '<p class="text-muted text-center py-3">No tracks in this playlist</p>';
+  }
+  
+  // Show the details section
+  document.getElementById('smartPlaylistEmpty').style.display = 'none';
+  detailsSection.style.display = 'block';
+  detailsSection.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+}
+
+function refreshSmartPlaylistDetail() {
+  if (currentSmartPlaylistId) {
+    loadSmartPlaylistDetail();
+  }
+}
+
+// =============================================================================
 // SPOTIFY PLAYLIST IMPORT
 // =============================================================================
+
 
 let spotifyPlaylistsData = [];
 
@@ -1459,14 +1632,19 @@ async function searchMissingTracksOnSoulseek() {
 .nav-pills .nav-link {
   cursor: pointer;
   transition: all 0.2s ease;
+  border: 1px solid transparent;
+  padding: 0.5rem 1rem;
 }
 
 .nav-pills .nav-link:hover {
-  background-color: var(--bs-nav-pills-link-hover-bg, #e9ecef);
+  background-color: #e9ecef;
+  border-color: #dee2e6;
 }
 
 .nav-pills .nav-link.active {
-  background-color: var(--bs-nav-pills-link-active-bg, #0d6efd);
+  background-color: #0d6efd;
+  border-color: #0d6efd;
+  color: white;
 }
 
 .track-row {
@@ -1518,6 +1696,10 @@ async function searchMissingTracksOnSoulseek() {
 @media (prefers-color-scheme: dark) {
   .bg-light {
     background-color: var(--secondary-bg) !important;
+  }
+
+  .nav-pills .nav-link:hover {
+    background-color: #495057;
   }
 }
 </style>
