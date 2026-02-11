@@ -506,6 +506,71 @@ class LastFmClient:
             logger.debug(f"Failed to check title track for '{album}' by '{artist}': {e}")
             return False
     
+    def check_track_as_single(self, artist: str, track_title: str) -> bool:
+        """
+        Check if a track exists as a single/album release on Last.fm.
+        
+        This method searches for an album with the same name as the track,
+        which would indicate the track was released as a single.
+        
+        Args:
+            artist: Artist name
+            track_title: Track title to check
+            
+        Returns:
+            True if an album/single with the track's name exists on Last.fm, False otherwise
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping single lookup.")
+            return False
+        
+        # Search for an album with the same name as the track
+        params = {
+            "method": "album.getInfo",
+            "artist": artist,
+            "album": track_title,  # Use track title as album name
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            # If we get an album response (not an error), the track exists as a single/album
+            if "album" in data:
+                album_data = data["album"]
+                album_name = album_data.get("name", "")
+                
+                # Normalize for comparison
+                normalized_album = album_name.lower().strip()
+                normalized_track = track_title.lower().strip()
+                
+                # Check if the album name matches the track title
+                if normalized_album == normalized_track:
+                    logger.debug(f"Found single/album '{album_name}' matching track '{track_title}'")
+                    return True
+            
+            return False
+        except HTTPError as e:
+            # 404 or other HTTP errors mean the single doesn't exist
+            status_code = e.response.status_code if e.response else 'unknown'
+            if status_code == 404:
+                logger.debug(f"No single found for '{track_title}' by '{artist}' (404)")
+            else:
+                logger.debug(f"HTTP error {status_code} checking single for '{track_title}' by '{artist}': {e}")
+            return False
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error checking single for '{track_title}' by '{artist}': {e}")
+            return False
+        except Timeout as e:
+            logger.debug(f"Timeout checking single for '{track_title}' by '{artist}': {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to check single for '{track_title}' by '{artist}': {e}")
+            return False
+    
     def get_recommendations(self) -> dict:
         """
         Fetch personalized recommendations from Last.fm for the current user.
