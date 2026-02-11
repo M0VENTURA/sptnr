@@ -606,6 +606,17 @@ def get_spotify_client() -> SpotifyClient | None:
     return _spotify_client if _spotify_enabled else None
 
 
+def get_lastfm_client() -> LastFmClient | None:
+    """
+    Get the configured Last.fm client.
+    
+    Returns:
+        LastFmClient instance or None if not configured
+    """
+    _ensure_clients_from_config()
+    return _lastfm_client
+
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -626,4 +637,5 @@ __all__ = [
     "update_artist_id_for_artist",
     "fetch_comprehensive_metadata",
     "get_spotify_client",
+    "get_lastfm_client",
 ]
