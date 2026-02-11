@@ -1541,6 +1541,8 @@ def popularity_scan(
         cursor = conn.cursor()
 
         # Load strict matching configuration from config.yaml
+        # Initialize config to empty dict to ensure it's always defined
+        config = {}
         strict_spotify_matching = False
         duration_tolerance_sec = 2
         album_skip_days = 7  # Default value
@@ -1719,9 +1721,9 @@ def popularity_scan(
                             
                             # Get Discogs client if available
                             discogs_config = config.get("api_integrations", {}).get("discogs", {})
-                            if discogs_config.get("enabled") and discogs_config.get("personal_token"):
+                            if discogs_config.get("enabled") and discogs_config.get("token"):
                                 try:
-                                    discogs_client = DiscogsClient(token=discogs_config.get("personal_token"))
+                                    discogs_client = DiscogsClient(token=discogs_config.get("token"))
                                     discogs_artist_id = _run_with_timeout(
                                         discogs_client.get_artist_id,
                                         12,  # 12 second timeout for Discogs artist lookup
