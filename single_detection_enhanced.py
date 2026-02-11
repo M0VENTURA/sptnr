@@ -1262,6 +1262,7 @@ def detect_single_enhanced(
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
     radio_edit_found = False
+    musicbrainz_confirmed = False
     if spotify_results:
         log_debug(f"[SPOTIFY] Checking {len(spotify_results)} Spotify results for single")
         norm_title = normalize_title_strict(title)
