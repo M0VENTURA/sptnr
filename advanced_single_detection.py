@@ -570,7 +570,7 @@ def batch_update_advanced_singles(
     cursor = conn.cursor()
     
     # Build query with filters
-    where_clauses = []
+    where_clauses = ["single_manual_override IS NULL OR single_manual_override = 0"]  # Skip manually overridden singles
     params = []
     
     if artist:

@@ -142,6 +142,9 @@
                             <input type="checkbox" class="form-check-input" id="is_single" name="is_single" {% if track.is_single == 1 %}checked{% endif %}>
                             <label class="form-check-label" for="is_single">
                                 <i class="bi bi-single-music"></i> Is Single
+                                {% if track.single_manual_override == 1 %}
+                                <span class="badge bg-warning text-dark ms-2" title="Manually set - single detection scan will skip this track">Manual</span>
+                                {% endif %}
                             </label>
                         </div>
                         

@@ -36,6 +36,7 @@ required_columns = {
     "file_path": "TEXT",
     "is_single": "BOOLEAN",
     "single_confidence": "TEXT",
+    "single_manual_override": "INTEGER",     # ✅ 1 if user manually set is_single (skip auto-detection)
     "last_scanned": "TEXT",
     "mbid": "TEXT",
     "suggested_mbid": "TEXT",

@@ -4271,7 +4271,7 @@ def track_edit(track_id):
             SET title = ?, artist = ?, album = ?, stars = ?, is_single = ?, single_confidence = ?,
                 mbid = ?, suggested_mbid = ?, suggested_mbid_confidence = ?,
                 genres = ?, year = ?, album_artist = ?, composer = ?, 
-                track_number = ?, disc_number = ?, comment = ?
+                track_number = ?, disc_number = ?, comment = ?, single_manual_override = 1
             WHERE id = ?
         """, (title, artist, album, stars, is_single, single_confidence, mbid, suggested_mbid, 
               suggested_mbid_confidence, genres, year, album_artist, composer, 
@@ -4332,6 +4332,42 @@ def track_edit(track_id):
         conn.close()
     
     return redirect(url_for("track_detail", track_id=track_id))
+
+
+@app.route("/api/track/<track_id>/toggle-manual-single", methods=["POST"])
+def api_toggle_manual_single(track_id):
+    """Toggle single_manual_override flag for a track (prevents auto-detection from overwriting)"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get current value
+        cursor.execute("SELECT single_manual_override FROM tracks WHERE id = ?", (track_id,))
+        result = cursor.fetchone()
+        
+        if not result:
+            return jsonify({"error": "Track not found"}), 404
+        
+        current_value = result[0] or 0
+        new_value = 1 - current_value  # Toggle between 0 and 1
+        
+        # Update
+        cursor.execute(
+            "UPDATE tracks SET single_manual_override = ? WHERE id = ?",
+            (new_value, track_id)
+        )
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "single_manual_override": new_value,
+            "message": f"Single manual override {'enabled' if new_value else 'disabled'} - single detection scan will {'skip' if new_value else 'process'} this track"
+        })
+    except Exception as e:
+        logging.error(f"Error toggling manual single flag: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/scan/start", methods=["POST"])
