@@ -1381,82 +1381,116 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     - musicbrainz_release_group_ids (JSON array)
     - single_detection_last_updated (timestamp)
     """
-    cursor = conn.cursor()
+    import time
     
-    # Check if new columns exist in schema
-    cursor.execute("PRAGMA table_info(tracks)")
-    columns = {row[1] for row in cursor.fetchall()}
-    has_album_z = 'album_z_score' in columns
-    has_artist_z = 'artist_z_score' in columns
+    max_retries = 5
+    retry_count = 0
+    base_delay = 0.1  # Start with 100ms
     
-    # Get z_score values with defaults
-    z_score = result.get('z_score', 0.0)
-    album_z_score = result.get('album_z_score', z_score)
-    artist_z_score = result.get('artist_z_score', 0.0)
-    
-    # Update with new columns if they exist
-    if has_album_z and has_artist_z:
-        cursor.execute("""
-            UPDATE tracks
-            SET single_status = ?,
-                single_confidence_score = ?,
-                single_sources_used = ?,
-                z_score = ?,
-                album_z_score = ?,
-                artist_z_score = ?,
-                spotify_version_count = ?,
-                discogs_release_ids = ?,
-                musicbrainz_release_group_ids = ?,
-                single_detection_last_updated = ?,
-                is_single = ?,
-                single_confidence = ?,
-                single_sources = ?
-            WHERE id = ?
-        """, (
-            result['single_status'],
-            result['single_confidence_score'],
-            json.dumps(result['single_sources_used']),
-            z_score,
-            album_z_score,
-            artist_z_score,
-            result['spotify_version_count'],
-            json.dumps(result.get('discogs_release_ids', [])),
-            json.dumps(result.get('musicbrainz_release_group_ids', [])),
-            result['single_detection_last_updated'],
-            1 if result['is_single'] else 0,
-            result['single_confidence'],
-            json.dumps(result['single_sources']),
-            track_id
-        ))
-    else:
-        # Fallback to old schema without new z-score columns
-        cursor.execute("""
-            UPDATE tracks
-            SET single_status = ?,
-                single_confidence_score = ?,
-                single_sources_used = ?,
-                z_score = ?,
-                spotify_version_count = ?,
-                discogs_release_ids = ?,
-                musicbrainz_release_group_ids = ?,
-                single_detection_last_updated = ?,
-                is_single = ?,
-                single_confidence = ?,
-                single_sources = ?
-            WHERE id = ?
-        """, (
-            result['single_status'],
-            result['single_confidence_score'],
-            json.dumps(result['single_sources_used']),
-            z_score,
-            result['spotify_version_count'],
-            json.dumps(result.get('discogs_release_ids', [])),
-            json.dumps(result.get('musicbrainz_release_group_ids', [])),
-            result['single_detection_last_updated'],
-            1 if result['is_single'] else 0,
-            result['single_confidence'],
-            json.dumps(result['single_sources']),
-            track_id
-        ))
-    
-    conn.commit()
+    while retry_count < max_retries:
+        try:
+            cursor = conn.cursor()
+            
+            # Set busy timeout to 10 seconds to help with concurrent access
+            conn.execute("PRAGMA busy_timeout = 10000")
+            
+            # Check if new columns exist in schema
+            cursor.execute("PRAGMA table_info(tracks)")
+            columns = {row[1] for row in cursor.fetchall()}
+            has_album_z = 'album_z_score' in columns
+            has_artist_z = 'artist_z_score' in columns
+            
+            # Get z_score values with defaults
+            z_score = result.get('z_score', 0.0)
+            album_z_score = result.get('album_z_score', z_score)
+            artist_z_score = result.get('artist_z_score', 0.0)
+            
+            # Update with new columns if they exist
+            if has_album_z and has_artist_z:
+                cursor.execute("""
+                    UPDATE tracks
+                    SET single_status = ?,
+                        single_confidence_score = ?,
+                        single_sources_used = ?,
+                        z_score = ?,
+                        album_z_score = ?,
+                        artist_z_score = ?,
+                        spotify_version_count = ?,
+                        discogs_release_ids = ?,
+                        musicbrainz_release_group_ids = ?,
+                        single_detection_last_updated = ?,
+                        is_single = ?,
+                        single_confidence = ?,
+                        single_sources = ?
+                    WHERE id = ?
+                """, (
+                    result['single_status'],
+                    result['single_confidence_score'],
+                    json.dumps(result['single_sources_used']),
+                    z_score,
+                    album_z_score,
+                    artist_z_score,
+                    result['spotify_version_count'],
+                    json.dumps(result.get('discogs_release_ids', [])),
+                    json.dumps(result.get('musicbrainz_release_group_ids', [])),
+                    result['single_detection_last_updated'],
+                    1 if result['is_single'] else 0,
+                    result['single_confidence'],
+                    json.dumps(result['single_sources']),
+                    track_id
+                ))
+            else:
+                # Fallback to old schema without new z-score columns
+                cursor.execute("""
+                    UPDATE tracks
+                    SET single_status = ?,
+                        single_confidence_score = ?,
+                        single_sources_used = ?,
+                        z_score = ?,
+                        spotify_version_count = ?,
+                        discogs_release_ids = ?,
+                        musicbrainz_release_group_ids = ?,
+                        single_detection_last_updated = ?,
+                        is_single = ?,
+                        single_confidence = ?,
+                        single_sources = ?
+                    WHERE id = ?
+                """, (
+                    result['single_status'],
+                    result['single_confidence_score'],
+                    json.dumps(result['single_sources_used']),
+                    z_score,
+                    result['spotify_version_count'],
+                    json.dumps(result.get('discogs_release_ids', [])),
+                    json.dumps(result.get('musicbrainz_release_group_ids', [])),
+                    result['single_detection_last_updated'],
+                    1 if result['is_single'] else 0,
+                    result['single_confidence'],
+                    json.dumps(result['single_sources']),
+                    track_id
+                ))
+            
+            conn.commit()
+            return  # Success - exit retry loop
+            
+        except Exception as e:
+            error_msg = str(e).lower()
+            
+            # Check if it's a database lock error
+            if 'database is locked' in error_msg or 'locked' in error_msg:
+                retry_count += 1
+                if retry_count >= max_retries:
+                    # Final attempt failed - re-raise the exception
+                    raise
+                
+                # Calculate exponential backoff with jitter
+                delay = base_delay * (2 ** (retry_count - 1))
+                # Add small random jitter to avoid thundering herd
+                import random
+                delay += random.uniform(0, delay * 0.1)
+                
+                log_debug(f"Database locked, retrying in {delay:.3f}s (attempt {retry_count}/{max_retries})")
+                time.sleep(delay)
+            else:
+                # Not a lock error - don't retry, just raise
+                raise
