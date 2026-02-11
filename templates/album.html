@@ -438,15 +438,32 @@
     </div>
     
     <div class="card">
-        <div class="card-header">
+        <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks
             </h5>
+            <div class="d-flex gap-2" id="bulkActionsToolbar" style="display: none;">
+                <button class="btn btn-sm btn-outline-secondary" onclick="selectAllTracks()">
+                    <i class="bi bi-check2-square"></i> Select All
+                </button>
+                <button class="btn btn-sm btn-outline-secondary" onclick="clearAllTracks()">
+                    <i class="bi bi-square"></i> Clear
+                </button>
+                <button class="btn btn-sm btn-info" onclick="openBulkGenreTaggerModal()">
+                    <i class="bi bi-tags"></i> <span id="selectedCount">0</span> Add Tags
+                </button>
+                <button class="btn btn-sm btn-danger" onclick="confirmBulkDeleteTracks()">
+                    <i class="bi bi-trash"></i> Delete Selected
+                </button>
+            </div>
         </div>
         <div class="table-responsive">
             <table class="table table-hover mb-0">
                 <thead class="d-none d-md-table-header-group">
                     <tr>
+                        <th style="width: 2rem;">
+                            <input type="checkbox" class="form-check-input" id="selectAllCheckbox" onchange="toggleSelectAll(this)">
+                        </th>
                         <th style="width: 3rem;" title="Track Number">#</th>
                         <th>Track Title</th>
                         <th class="d-none d-lg-table-cell" style="width: 10rem;" title="Track Artist (if different from album artist)">Artist</th>
@@ -463,8 +480,8 @@
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary">
-                                <!-- Colspan = 9 columns: #, Title, Artist, Duration, Rating, Single, Confidence, File Location, Actions -->
-                                <td colspan="9" style="padding: 0.75rem 0.5rem;">
+                                <!-- Colspan = 10 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Confidence, File Location, Actions -->
+                                <td colspan="10" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
                                     </strong>
@@ -473,15 +490,19 @@
                             {% for track in disc_num[1] %}
                             <tr class="d-flex flex-column d-md-table-row">
                                 <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
-                                    <div class="d-flex justify-content-between align-items-center">
+                                    <div class="d-flex justify-content-between align-items-center gap-2">
+                                        <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
                                         <strong>{{ track.track_number or loop.index }}</strong>
-                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                        <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset flex-grow-1">
                                             {{ track.title }}
                                             {% if track.artist and track.artist != artist_name %}
                                             <small class="text-muted">— {{ track.artist }}</small>
                                             {% endif %}
                                         </a>
                                     </div>
+                                </td>
+                                <td class="d-none d-md-table-cell">
+                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
                                 </td>
                                 <td class="d-none d-md-table-cell text-muted">
                                     {{ track.track_number or loop.index }}
@@ -560,15 +581,19 @@
                         {% for track in tracks %}
                         <tr class="d-flex flex-column d-md-table-row">
                             <td class="d-md-none" style="padding: 0.5rem 0; border: none;">
-                                <div class="d-flex justify-content-between align-items-center">
+                                <div class="d-flex justify-content-between align-items-center gap-2">
+                                    <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
                                     <strong>{{ loop.index }}</strong>
-                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset">
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="text-reset flex-grow-1">
                                         {{ track.title }}
                                         {% if track.artist and track.artist != artist_name %}
                                         <small class="text-muted">— {{ track.artist }}</small>
                                         {% endif %}
                                     </a>
                                 </div>
+                            </td>
+                            <td class="d-none d-md-table-cell">
+                                <input type="checkbox" class="form-check-input track-checkbox" data-track-id="{{ track.id }}" onchange="updateBulkActionsUI()">
                             </td>
                             <td class="d-none d-md-table-cell text-muted">
                                 {{ loop.index }}
@@ -714,6 +739,42 @@
     background-color: var(--primary-bg) !important;
 }
 </style>
+
+<!-- Bulk Genre Tagger Modal -->
+<div class="modal fade" id="bulkGenreTaggerModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Add Genre Tags to Selected Tracks</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p class="text-muted">Add genre tags to <strong id="selectedCountModal">0</strong> selected track(s).</p>
+                <div class="mb-3">
+                    <label for="bulkGenreInput" class="form-label">Genre Tags (comma-separated)</label>
+                    <input type="text" class="form-control" id="bulkGenreInput" placeholder="e.g., Alternative, Rock, Indie">
+                    <div class="form-text">These genres will be added to the MP3 file metadata and database.</div>
+                </div>
+                <div class="mb-3">
+                    <label class="form-label">Suggested Tags:</label>
+                    <div class="d-flex flex-wrap gap-2">
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Live')">Live</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Acoustic')">Acoustic</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Remix')">Remix</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Edit')">Edit</button>
+                        <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenreTag('Unplugged')">Unplugged</button>
+                    </div>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="applyBulkGenreTags()">
+                    <i class="bi bi-check-circle"></i> Add Tags
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
 
 <!-- Album Metadata Lookup Modal -->
 <div class="modal fade" id="albumLookupModal" tabindex="-1" aria-hidden="true">
@@ -1461,6 +1522,162 @@
             }
         })
         .catch(err => alert('❌ Network error: ' + err.message));
+    }
+    
+    // ============================================================================
+    // BULK TRACK OPERATIONS
+    // ============================================================================
+    
+    function updateBulkActionsUI() {
+        const checkboxes = document.querySelectorAll('.track-checkbox:checked');
+        const toolbar = document.getElementById('bulkActionsToolbar');
+        const countSpan = document.getElementById('selectedCount');
+        
+        if (checkboxes.length > 0) {
+            toolbar.style.display = 'flex';
+            countSpan.textContent = checkboxes.length;
+        } else {
+            toolbar.style.display = 'none';
+        }
+    }
+    
+    function toggleSelectAll(checkbox) {
+        const allCheckboxes = document.querySelectorAll('.track-checkbox');
+        allCheckboxes.forEach(cb => {
+            cb.checked = checkbox.checked;
+        });
+        updateBulkActionsUI();
+    }
+    
+    function selectAllTracks() {
+        document.querySelectorAll('.track-checkbox').forEach(cb => cb.checked = true);
+        document.getElementById('selectAllCheckbox').checked = true;
+        updateBulkActionsUI();
+    }
+    
+    function clearAllTracks() {
+        document.querySelectorAll('.track-checkbox').forEach(cb => cb.checked = false);
+        document.getElementById('selectAllCheckbox').checked = false;
+        updateBulkActionsUI();
+    }
+    
+    function getSelectedTracks() {
+        const checkboxes = document.querySelectorAll('.track-checkbox:checked');
+        return Array.from(checkboxes).map(cb => cb.dataset.trackId);
+    }
+    
+    function openBulkGenreTaggerModal() {
+        const selectedCount = document.querySelectorAll('.track-checkbox:checked').length;
+        document.getElementById('selectedCountModal').textContent = selectedCount;
+        document.getElementById('bulkGenreInput').value = '';
+        const modal = new bootstrap.Modal(document.getElementById('bulkGenreTaggerModal'));
+        modal.show();
+    }
+    
+    function addGenreTag(tag) {
+        const input = document.getElementById('bulkGenreInput');
+        const current = input.value.trim();
+        if (current) {
+            input.value = current + ', ' + tag;
+        } else {
+            input.value = tag;
+        }
+    }
+    
+    function applyBulkGenreTags() {
+        const genresInput = document.getElementById('bulkGenreInput').value.trim();
+        if (!genresInput) {
+            alert('Please enter at least one genre tag');
+            return;
+        }
+        
+        const trackIds = getSelectedTracks();
+        if (trackIds.length === 0) {
+            alert('Please select at least one track');
+            return;
+        }
+        
+        const genres = genresInput.split(',').map(g => g.trim());
+        const btn = event.target.closest('button');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Adding...';
+        
+        fetch('/api/album/bulk-tag', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                track_ids: trackIds,
+                genres: genres,
+                artist: '{{ artist_name }}',
+                album: '{{ album_name }}'
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ Added genre tags to ${data.updated_count} track(s)`);
+                bootstrap.Modal.getInstance(document.getElementById('bulkGenreTaggerModal')).hide();
+                clearAllTracks();
+                // Optionally reload page to show updated genres
+                setTimeout(() => location.reload(), 1000);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to add tags'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        });
+    }
+    
+    function confirmBulkDeleteTracks() {
+        const trackIds = getSelectedTracks();
+        if (trackIds.length === 0) {
+            alert('Please select at least one track');
+            return;
+        }
+        
+        const message = `Delete ${trackIds.length} track(s)?\n\nThis will:\n- Delete the MP3 file(s) from disk\n- Remove from database\n\nThis action cannot be undone.`;
+        
+        if (!confirm(message)) return;
+        
+        if (!confirm('⚠️ Are you absolutely sure? This will permanently delete the MP3 files.')) return;
+        
+        const btn = event.target.closest('button');
+        const originalText = btn.innerHTML;
+        btn.disabled = true;
+        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Deleting...';
+        
+        fetch('/api/album/bulk-delete', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                track_ids: trackIds,
+                artist: '{{ artist_name }}',
+                album: '{{ album_name }}'
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert(`✅ Deleted ${data.deleted_count} track(s) and removed from database`);
+                // Reload page to show updated tracks
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to delete tracks'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        })
+        .finally(() => {
+            btn.disabled = false;
+            btn.innerHTML = originalText;
+        });
     }
 </script>
 {% endblock %}

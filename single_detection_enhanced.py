@@ -153,6 +153,114 @@ def check_high_confidence_dynamic(
 
 
 # ============================================================================
+# Live/Acoustic Detection for Genre Tagging
+# ============================================================================
+
+def detect_live_or_acoustic_recording(
+    title: str,
+    album: str,
+    genres: str = "",
+    spotify_results: Optional[List[Dict]] = None
+) -> List[str]:
+    """
+    Detect if a track is a live or acoustic recording based on title, album, or genres.
+    Returns a list of applicable tags: ['Live'], ['Acoustic'], ['Unplugged'], etc.
+    
+    Used during import to automatically tag tracks with live/acoustic versions.
+    
+    Args:
+        title: Track title
+        album: Album name
+        genres: Comma-separated string of current genres
+        spotify_results: Optional Spotify search results for additional context
+        
+    Returns:
+        List of detected tags (e.g., ['Live'], ['Acoustic', 'Unplugged'])
+    """
+    tags = []
+    
+    # Combine all text for pattern matching
+    all_text = f"{title} {album} {genres}".lower()
+    
+    # Patterns for live performance
+    live_patterns = [
+        r'\blive\b',
+        r'\bconcert\b',
+        r'\bperforman[cs]e\b',
+        r'\bfrom\s+(?:the\s+)?(?:live\s+)?(?:concert|show|session)',
+        r'(?:live\s+)?(?:at|from)\s+(?:.*?)?(?:festival|arena|hall|theater|theatre|venue|hotel|studio|sessions?)',
+        r'\(live',
+        r'\[live'
+    ]
+    
+    for pattern in live_patterns:
+        if re.search(pattern, all_text):
+            tags.append('Live')
+            break
+    
+    # Patterns for acoustic
+    acoustic_patterns = [
+        r'\bacoustic\b',
+        r'\bunplugged\b',
+        r'\bstripped\b',
+        r'\bac\b',  # Common abbreviation
+    ]
+    
+    for pattern in acoustic_patterns:
+        if re.search(pattern, all_text):
+            if 'Acoustic' not in tags:
+                tags.append('Acoustic')
+            if 'Unplugged' in all_text and 'Unplugged' not in tags:
+                tags.append('Unplugged')
+            break
+    
+    # Check Spotify results for explicit metadata
+    if spotify_results:
+        for result in spotify_results:
+            name_lower = result.get('name', '').lower()
+            if 'live' in name_lower and 'Live' not in tags:
+                tags.append('Live')
+            if ('acoustic' in name_lower or 'unplugged' in name_lower) and 'Acoustic' not in tags:
+                tags.append('Acoustic')
+            # Check if album is marked as live
+            album_data = result.get('album', {})
+            if album_data and 'live' in album_data.get('name', '').lower() and 'Live' not in tags:
+                tags.append('Live')
+    
+    return tags
+
+
+def should_exclude_from_single_detection(genres: str, is_live_release: bool = False) -> bool:
+    """
+    Determine if a track should be excluded from single detection based on its genre tags.
+    
+    Rules:
+    - If track has 'live' or 'acoustic' genre tags AND the release is NOT marked as live
+    - Then exclude from single detection
+    
+    Args:
+        genres: Comma-separated string of genres for the track
+        is_live_release: Whether the album itself is a live release
+        
+    Returns:
+        True if track should be excluded from single detection, False otherwise
+    """
+    if not genres or is_live_release:
+        return False
+    
+    genre_list = [g.strip() for g in genres.split(',')]
+    genre_list_lower = [g.lower() for g in genre_list]
+    
+    exclude_tags = ['live', 'acoustic', 'unplugged']
+    
+    for tag in exclude_tags:
+        if tag in genre_list_lower:
+            return True
+    
+    return False
+
+
+# ============================================================================
 # Stage 6: Strict Version Matching Rules
 # ============================================================================
 
@@ -1622,6 +1730,18 @@ def detect_single_enhanced(
     result['single_status'] = final_status
     result['single_confidence'] = final_status
     result['is_single'] = final_status in ('high', 'medium')
+    
+    # ===== EXCLUSION: Check for live/acoustic recordings =====
+    # If the track has live/acoustic genre tags, exclude it from single detection
+    # UNLESS the album itself is marked as a live release
+    if result['is_single'] and not is_live_version_strict(title, album):
+        current_genres = result.get('genres', '')
+        if should_exclude_from_single_detection(current_genres, is_live_release=False):
+            log_debug(f"[EXCLUDE] Track has live/acoustic tag(s) - excluding from single detection: {title}")
+            result['is_single'] = False
+            result['single_status'] = 'none'
+            result['single_confidence'] = 'none'
+            result['single_confidence_score'] = 0.0
     
     log_debug(f"[RESULT] is_single set to: {result['is_single']} (status: {final_status})")
     

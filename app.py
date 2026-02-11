@@ -2902,6 +2902,126 @@ def api_album_update_ids():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/album/bulk-delete", methods=["POST"])
+def api_album_bulk_delete():
+    """Delete multiple tracks and their MP3 files"""
+    try:
+        data = request.get_json()
+        track_ids = data.get("track_ids", [])
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not track_ids:
+            return jsonify({"error": "No tracks selected"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        deleted_count = 0
+        
+        for track_id in track_ids:
+            try:
+                # Get file path
+                cursor.execute("""
+                    SELECT beets_path, file_path FROM tracks WHERE id = ?
+                """, (track_id,))
+                result = cursor.fetchone()
+                
+                if result:
+                    # Try beets_path first, then file_path
+                    file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                    
+                    # Delete MP3 file if it exists
+                    if file_path and os.path.exists(file_path):
+                        try:
+                            os.remove(file_path)
+                            logging.info(f"[DELETE] Deleted MP3 file: {file_path}")
+                        except Exception as e:
+                            logging.warning(f"[DELETE] Failed to delete MP3: {file_path} - {e}")
+                    
+                    # Delete from database
+                    cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+                    deleted_count += 1
+                    logging.info(f"[DELETE] Deleted track {track_id} from database")
+            except Exception as e:
+                logging.error(f"[DELETE] Error deleting track {track_id}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "deleted_count": deleted_count,
+            "message": f"Deleted {deleted_count} track(s) and file(s)"
+        })
+    except Exception as e:
+        logging.error(f"[DELETE] Error in bulk delete: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/album/bulk-tag", methods=["POST"])
+def api_album_bulk_tag():
+    """Add genre tags to multiple tracks"""
+    try:
+        data = request.get_json()
+        track_ids = data.get("track_ids", [])
+        genres = data.get("genres", [])
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not track_ids:
+            return jsonify({"error": "No tracks selected"}), 400
+        
+        if not genres:
+            return jsonify({"error": "No genres provided"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        updated_count = 0
+        genre_str = ", ".join(genres)
+        
+        for track_id in track_ids:
+            try:
+                # Get current genres
+                cursor.execute("SELECT genres FROM tracks WHERE id = ?", (track_id,))
+                result = cursor.fetchone()
+                
+                if result:
+                    current_genres = row_get(result, 'genres') or ''
+                    # Parse existing genres
+                    existing = set(g.strip() for g in current_genres.split(',') if g.strip())
+                    # Add new genres
+                    existing.update(genres)
+                    # Join back
+                    new_genres = ', '.join(sorted(existing))
+                    
+                    # Update database
+                    cursor.execute("""
+                        UPDATE tracks SET genres = ? WHERE id = ?
+                    """, (new_genres, track_id))
+                    
+                    updated_count += 1
+                    logging.info(f"[TAG] Added genres to track {track_id}: {new_genres}")
+            except Exception as e:
+                logging.error(f"[TAG] Error tagging track {track_id}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "updated_count": updated_count,
+            "genres": genres,
+            "message": f"Added {len(genres)} genre(s) to {updated_count} track(s)"
+        })
+    except Exception as e:
+        logging.error(f"[TAG] Error in bulk tag: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 
 
 @app.route("/api/album/search-art")
