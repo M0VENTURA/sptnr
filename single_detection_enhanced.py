@@ -973,7 +973,31 @@ def detect_single_enhanced(
                 log_debug(f"[DISCOGS] ✓ CONFIRMED as single")
                 log_info(f"   ✓ Discogs confirms single: {title}")
                 log_debug(f"   Discogs result: Single confirmed for '{title}'")
-                # NOTE: Don't return early - continue to check other sources
+                
+                # Per problem statement: Discogs = HIGH confidence, skip other checks
+                result['single_status'] = 'high'
+                result['single_confidence'] = 'high'
+                result['is_single'] = True
+                result['single_confidence_score'] = 1.0
+                
+                # Still calculate both z-scores for logging purposes
+                album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                result['z_score'] = album_z  # Backward compatibility
+                result['album_z_score'] = album_z
+                
+                # Get artist statistics and calculate artist z-score
+                artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+                artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                result['artist_z_score'] = artist_z
+                
+                # Add final debug summary
+                if verbose:
+                    log_debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
+                    log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+                    log_debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
+                
+                log_debug(f"[DETECT] ✓ RETURNING EARLY - Discogs confirmed as single")
+                return result
             else:
                 log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
                 log_info(f"   ⓘ Discogs does not confirm single: {title}")
