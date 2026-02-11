@@ -326,18 +326,18 @@ class LastFmClient:
     
     def get_track_info(self, artist: str, title: str) -> dict:
         """
-        Fetch track playcount and metadata from Last.fm.
+        Fetch track listeners, playcount, and metadata from Last.fm.
         
         Args:
             artist: Artist name
             title: Track title
             
         Returns:
-            Dict with 'track_play' and other metadata including 'toptags'
+            Dict with 'track_play', 'listeners', and other metadata including 'toptags'
         """
         if not self.api_key:
             logger.warning("Last.fm API key missing. Skipping lookup.")
-            return {"track_play": 0}
+            return {"track_play": 0, "listeners": 0}
         
         # Note: requests library automatically handles URL encoding of params dict
         # Special characters like '+' in artist names (e.g., "+44") are properly encoded
@@ -354,24 +354,26 @@ class LastFmClient:
             res.raise_for_status()
             data = res.json().get("track", {})
             track_play = int(data.get("playcount", 0))
+            listeners = int(data.get("listeners", 0))
             toptags = data.get("toptags", {})
             return {
                 "track_play": track_play,
+                "listeners": listeners,
                 "toptags": toptags
             }
         except (ConnectionError, ConnectionResetError) as e:
             logger.error(f"Connection error fetching track '{title}' by '{artist}': {e} - retrying may help")
-            return {"track_play": 0, "toptags": {}}
+            return {"track_play": 0, "listeners": 0, "toptags": {}}
         except Timeout as e:
             logger.error(f"Timeout fetching track '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "toptags": {}}
+            return {"track_play": 0, "listeners": 0, "toptags": {}}
         except HTTPError as e:
             status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
             logger.error(f"HTTP error {status_code} fetching track '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "toptags": {}}
+            return {"track_play": 0, "listeners": 0, "toptags": {}}
         except Exception as e:
             logger.error(f"Failed to fetch Last.fm info for '{title}' by '{artist}': {e}")
-            return {"track_play": 0, "toptags": {}}
+            return {"track_play": 0, "listeners": 0, "toptags": {}}
     
     def get_album_track_count(self, artist: str, album: str) -> int:
         """

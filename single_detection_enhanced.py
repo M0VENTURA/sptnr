@@ -893,56 +893,75 @@ def determine_final_status(
     # RULE 1: Discogs confirms exact track version as single
     if discogs_confirmed:
         high_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 high: Discogs confirmed")
     
     # RULE 2: popularity >= album_mean + 6 AND has_metadata
     if has_metadata and popularity >= (album_mean + 6):
         high_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 high: Popularity check (pop={popularity:.1f} >= album_mean+6={album_mean+6:.1f})")
     
     # MEDIUM-CONFIDENCE SOURCES:
     # Spotify confirms
     if spotify_confirmed:
         medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: Spotify confirmed")
     
     # MusicBrainz confirms
     if musicbrainz_confirmed:
         medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: MusicBrainz confirmed")
     
     # Discogs music video confirms
     if discogs_video_confirmed:
         medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: Discogs video confirmed")
     
     # Last.fm album track count (1-3 tracks = single indicator)
     if lastfm_single_confirmed:
         medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: Last.fm single confirmed")
     
     # Radio Edit found in Spotify search results (single indicator)
     if radio_edit_found:
         medium_confidence_count += 1
+        log_debug(f"[CONFIDENCE] +1 medium: Radio Edit found")
+    
+    log_debug(f"[CONFIDENCE] Source counts: high={high_confidence_count}, medium={medium_confidence_count}")
+    log_debug(f"[CONFIDENCE] Metadata flags: discogs={discogs_confirmed}, spotify={spotify_confirmed}, mb={musicbrainz_confirmed}, video={discogs_video_confirmed}, lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}")
     
     # DETERMINE FINAL STATUS:
     # Mark as high confidence if: 1+ high sources OR 2+ medium sources
     if high_confidence_count >= 1 or medium_confidence_count >= 2:
+        log_debug(f"[CONFIDENCE] → RETURNING 'high' (high_count={high_confidence_count} >= 1 OR medium_count={medium_confidence_count} >= 2)")
         return 'high'
     
     # Mark as medium confidence if: 1+ medium sources (Spotify, MusicBrainz, or Discogs video)
     if medium_confidence_count >= 1:
+        log_debug(f"[CONFIDENCE] → RETURNING 'medium' (medium_count={medium_confidence_count} >= 1)")
         return 'medium'
     
     # Z-score inference for confidence ONLY - requires metadata to be valid
     # Per problem statement: popularity outliers alone cannot be singles
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
+    log_debug(f"[CONFIDENCE] Z-score path: use_zscore_detection={use_zscore_detection} (album_underperforming={album_is_underperforming}, artist_standout={is_artist_level_standout})")
     
     if use_zscore_detection and has_metadata:
+        log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
         # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (ONLY with metadata)
         if album_z >= 0.5 or artist_z >= 1.0:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.0)")
             return 'medium'
         
         # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
         if album_z >= 0.2 and spotify_version_count >= 3:
+            log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
             return 'low'
+    else:
+        log_debug(f"[CONFIDENCE] Z-score path skipped (use_zscore_detection={use_zscore_detection}, has_metadata={has_metadata})")
     
     # No confidence indicators
+    log_debug(f"[CONFIDENCE] → RETURNING 'none' (no confidence indicators found)")
     return 'none'
 
 
@@ -1726,6 +1745,7 @@ def detect_single_enhanced(
     
     log_debug(f"[FINAL_DECISION] Sources found: {result['single_sources']}")
     log_debug(f"[FINAL_DECISION] Has metadata: {has_metadata}, discogs: {discogs_confirmed}, spotify: {spotify_confirmed}, mb: {musicbrainz_confirmed}, video: {discogs_video_confirmed}")
+    log_debug(f"[FINAL_DECISION] Additional params: lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}, album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={version_count_value}")
     
     final_status = determine_final_status(
         discogs_confirmed,

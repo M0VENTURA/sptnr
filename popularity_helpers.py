@@ -176,47 +176,50 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     return _lastfm_client.get_track_info(artist, title)
 
 
-def calculate_lastfm_popularity_score(playcount: int, artist_max_playcount: int = 0) -> float:
+def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:
     """
-    Calculate a normalized Last.fm popularity score (0-100) from playcount.
+    Calculate a normalized Last.fm popularity score (0-100) from listener count.
     
-    Uses logarithmic normalization to avoid capping at 100 for songs with 10,000+ plays.
+    Uses logarithmic normalization. Listeners are typically 10-100x smaller than playcount,
+    so scaling is adjusted accordingly.
     
     Algorithm:
-    1. If artist_max_playcount is provided, normalize relative to artist (0-100 scale)
+    1. If artist_max_listeners is provided, normalize relative to artist (0-100 scale)
     2. Otherwise, use global logarithmic scale:
+       - log10(100) = 2.0 → 25 points
+       - log10(1000) = 3.0 → 37.5 points
        - log10(10000) = 4.0 → 50 points
-       - log10(100000) = 5.0 → 62.5 points  
+       - log10(100000) = 5.0 → 62.5 points
        - log10(1000000) = 6.0 → 75 points
        - log10(10000000) = 7.0 → 87.5 points
        
     Args:
-        playcount: Last.fm playcount for the track
-        artist_max_playcount: Optional maximum playcount for the artist (for artist-relative scoring)
+        listeners: Last.fm unique listener count for the track
+        artist_max_listeners: Optional maximum listener count for the artist (for artist-relative scoring)
         
     Returns:
         Popularity score (0-100)
     """
-    if playcount <= 0:
+    if listeners <= 0:
         return 0.0
     
     # Artist-relative scoring (preferred when available)
-    if artist_max_playcount > 0:
+    if artist_max_listeners > 0:
         # Linear scale relative to artist's most popular track
         # Cap at 100 if track exceeds artist max (shouldn't happen in practice)
-        return min(100.0, (playcount / artist_max_playcount) * 100.0)
+        return min(100.0, (listeners / artist_max_listeners) * 100.0)
     
     # Global logarithmic scaling
     # Use log base 10, scaled to 0-100 range
-    # Formula: score = 12.5 * log10(playcount)
+    # Formula: score = 12.5 * log10(listeners)
     # This gives:
-    #   100 plays    → 25 points
-    #   1,000 plays  → 37.5 points
-    #   10,000 plays → 50 points
-    #   100,000 plays → 62.5 points
-    #   1,000,000 plays → 75 points
-    #   10,000,000 plays → 87.5 points
-    score = 12.5 * math.log10(playcount)
+    #   10 listeners    → 12.5 points
+    #   100 listeners   → 25 points
+    #   1,000 listeners → 37.5 points
+    #   10,000 listeners → 50 points
+    #   100,000 listeners → 62.5 points
+    #   1,000,000 listeners → 75 points
+    score = 12.5 * math.log10(listeners)
     
     # Cap at 100
     return min(100.0, max(0.0, score))

@@ -2083,14 +2083,14 @@ def popularity_scan(
                         lastfm_score = 0
                         skip_lastfm_lookup = skip_spotify_lookup  # Use same filter for Last.fm as Spotify
                     
-                        # Check if we can use cached Last.fm playcount
+                        # Check if we can use cached Last.fm listeners
                         if not skip_lastfm_lookup and not (FORCE_RESCAN or force):
                             if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
-                                cached_playcount = row_get(track, 'lastfm_track_playcount', 0)
-                                if cached_playcount > 0:
-                                    lastfm_score = calculate_lastfm_popularity_score(cached_playcount)
+                                cached_listeners = row_get(track, 'lastfm_track_playcount', 0)
+                                if cached_listeners > 0:
+                                    lastfm_score = calculate_lastfm_popularity_score(cached_listeners)
                                     skip_lastfm_lookup = True
-                                    log_info(f'Using cached Last.fm playcount for: {title} (count: {cached_playcount}, score: {lastfm_score:.1f})')
+                                    log_info(f'Using cached Last.fm listeners for: {title} (count: {cached_listeners}, score: {lastfm_score:.1f})')
                                     log_debug(f'Cached Last.fm data reused for track {track_id}')
                     
                         if not skip_lastfm_lookup:  # Fetch from API if not cached
@@ -2120,14 +2120,14 @@ def popularity_scan(
                                     log_debug(f'Last.fm API request recorded for rate limiting')
                                 
                                     log_debug(f'Last.fm API response: {lastfm_info}')
-                                    if lastfm_info and lastfm_info.get("track_play"):
-                                        playcount = lastfm_info.get("track_play")
-                                        # Use improved logarithmic scoring instead of simple division
-                                        lastfm_score = calculate_lastfm_popularity_score(playcount)
-                                        log_info(f'Last.fm play count: {playcount} (score: {lastfm_score:.1f})')
-                                        log_debug(f'Last.fm scoring - playcount: {playcount}, calculated score: {lastfm_score}')
+                                    if lastfm_info and lastfm_info.get("listeners"):
+                                        listeners = lastfm_info.get("listeners")
+                                        # Use improved logarithmic scoring based on total listeners
+                                        lastfm_score = calculate_lastfm_popularity_score(listeners)
+                                        log_info(f'Last.fm listeners: {listeners} (score: {lastfm_score:.1f})')
+                                        log_debug(f'Last.fm scoring - listeners: {listeners}, calculated score: {lastfm_score}')
                                     else:
-                                        log_info(f'No Last.fm play count found for: {title}')
+                                        log_info(f'No Last.fm listeners data found for: {title}')
                             except TimeoutError as e:
                                 log_info(f"Last.fm lookup timed out for {artist} - {title}")
                                 log_debug(f"Timeout error: {e}")
