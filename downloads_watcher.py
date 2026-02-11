@@ -127,6 +127,197 @@ def organize_file(file_path, metadata):
             'error': str(e)
         }
 
+def track_exists_in_library(artist, album, title):
+    """Check if a track with same artist/album/title exists in library (case-insensitive)"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id FROM tracks 
+            WHERE LOWER(COALESCE(album_artist, artist)) = LOWER(?) 
+            AND LOWER(album) = LOWER(?)
+            AND LOWER(title) = LOWER(?)
+            LIMIT 1
+        """, (artist.strip(), album.strip(), title.strip()))
+        
+        exists = cursor.fetchone() is not None
+        conn.close()
+        return exists
+    except Exception as e:
+        logger.error(f"Error checking if track exists: {e}")
+        return False
+
+def queue_incomplete_download(file_path, metadata):
+    """Queue an incomplete download for retry"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        artist = metadata.get('artist', 'Unknown')
+        album = metadata.get('album', 'Unknown')
+        title = metadata.get('title', os.path.basename(file_path))
+        
+        # Check if already exists in library
+        exists_in_library = 1 if track_exists_in_library(artist, album, title) else 0
+        
+        cursor.execute("""
+            INSERT OR REPLACE INTO download_queue (
+                file_path, filename, artist, album, title, duration,
+                status, exists_in_library, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            file_path,
+            os.path.basename(file_path),
+            artist,
+            album,
+            title,
+            metadata.get('duration', 0),
+            'exists_in_library' if exists_in_library else 'incomplete',
+            exists_in_library,
+            datetime.now().isoformat(),
+            datetime.now().isoformat()
+        ))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Queued incomplete download: {artist} - {title} (exists_in_library: {exists_in_library})")
+        return True
+    except sqlite3.IntegrityError:
+        logger.info(f"File {file_path} already in queue")
+        return False
+    except Exception as e:
+        logger.error(f"Error queuing download: {e}")
+        return False
+
+def get_download_queue(status=None, limit=50):
+    """Get files from download queue"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        if status:
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                WHERE status = ?
+                ORDER BY created_at ASC
+                LIMIT ?
+            """, (status, limit))
+        else:
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                ORDER BY created_at ASC
+                LIMIT ?
+            """, (limit,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error getting download queue: {e}")
+        return []
+
+def get_retry_queue(limit=50):
+    """Get files queued for retry"""
+    try:
+        from datetime import datetime as dt, timedelta
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        now = dt.now().isoformat()
+        
+        cursor.execute("""
+            SELECT * FROM download_queue 
+            WHERE status = 'incomplete'
+            AND (next_retry_at IS NULL OR next_retry_at <= ?)
+            AND retry_count < max_retries
+            ORDER BY next_retry_at ASC, created_at ASC
+            LIMIT ?
+        """, (now, limit))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        return [dict(row) for row in rows]
+    except Exception as e:
+        logger.error(f"Error getting retry queue: {e}")
+        return []
+
+def mark_download_as_failed(file_path, failure_reason):
+    """Mark a download as failed and schedule retry"""
+    try:
+        from datetime import datetime as dt, timedelta
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        next_retry = (dt.now() + timedelta(minutes=10)).isoformat()  # Retry in 10 minutes
+        
+        cursor.execute("""
+            UPDATE download_queue 
+            SET status = 'incomplete',
+                retry_count = retry_count + 1,
+                failure_reason = ?,
+                last_retry_at = ?,
+                next_retry_at = ?,
+                updated_at = ?
+            WHERE file_path = ?
+        """, (
+            failure_reason,
+            dt.now().isoformat(),
+            next_retry,
+            dt.now().isoformat(),
+            file_path
+        ))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Marked as failed with retry scheduled: {file_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking download as failed: {e}")
+        return False
+
+def mark_download_as_successful(file_path):
+    """Mark a download as successfully processed and remove from queue"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            DELETE FROM download_queue WHERE file_path = ?
+        """, (file_path,))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Removed from queue (successfully processed): {file_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking download as successful: {e}")
+        return False
+
+def mark_download_exists_in_library(file_path):
+    """Mark a download as already existing in library"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            UPDATE download_queue 
+            SET status = 'exists_in_library',
+                exists_in_library = 1,
+                updated_at = ?
+            WHERE file_path = ?
+        """, (datetime.now().isoformat(), file_path))
+        
+        conn.commit()
+        conn.close()
+        logger.info(f"Marked as exists_in_library: {file_path}")
+        return True
+    except Exception as e:
+        logger.error(f"Error marking as exists in library: {e}")
+        return False
+
 def add_to_database(file_info, metadata):
     """Add organized file to database"""
     try:

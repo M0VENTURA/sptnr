@@ -18,7 +18,7 @@
             <div class="d-flex gap-3">
                 <!-- Album Art -->
                 <div class="position-relative">
-                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name, album=album_name) }}" 
+                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name|urlencode, album=album_name|urlencode) }}" 
                          alt="{{ album_name }}" 
                          class="img-thumbnail" 
                          style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"

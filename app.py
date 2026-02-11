@@ -7756,10 +7756,23 @@ def api_downloads_process_one():
         if not file_path or not os.path.exists(file_path):
             return jsonify({"error": "File not found"}), 400
         
-        from downloads_watcher import extract_mp3_metadata, organize_file, add_to_database
+        from downloads_watcher import extract_mp3_metadata, organize_file, add_to_database, track_exists_in_library, queue_incomplete_download, mark_download_exists_in_library
         
         # Extract metadata
         metadata = extract_mp3_metadata(file_path)
+        
+        # Check if already exists in library
+        artist = metadata.get('artist', 'Unknown')
+        album = metadata.get('album', 'Unknown')
+        title = metadata.get('title', os.path.basename(file_path))
+        
+        if track_exists_in_library(artist, album, title):
+            mark_download_exists_in_library(file_path)
+            return jsonify({
+                "success": False,
+                "exists_in_library": True,
+                "error": "This track already exists in your library"
+            }), 400
         
         # Organize file
         file_info = organize_file(file_path, metadata)
@@ -7775,10 +7788,166 @@ def api_downloads_process_one():
                 "target_path": file_info.get('target_path')
             })
         else:
+            # Queue for retry if processing failed
+            queue_incomplete_download(file_path, metadata)
             return jsonify({
                 "success": False,
+                "queued_for_retry": True,
                 "error": file_info.get('error', 'Unknown error')
             }), 400
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/downloads/queue", methods=["GET"])
+def api_downloads_get_queue():
+    """Get files in download queue"""
+    try:
+        from downloads_watcher import get_download_queue
+        
+        status = request.args.get('status')
+        limit = int(request.args.get('limit', 50))
+        
+        queue = get_download_queue(status=status, limit=limit)
+        
+        return jsonify({
+            "count": len(queue),
+            "queue": queue
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/downloads/retry-queue", methods=["GET"])
+def api_downloads_get_retry_queue():
+    """Get files queued for retry (ready to retry now)"""
+    try:
+        from downloads_watcher import get_retry_queue
+        
+        limit = int(request.args.get('limit', 50))
+        queue = get_retry_queue(limit=limit)
+        
+        return jsonify({
+            "count": len(queue),
+            "queue": queue
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
+def api_downloads_manage_queue_item(queue_id):
+    """Manage a queue item (mark as failed, successful, or delete)"""
+    try:
+        from downloads_watcher import mark_download_as_failed, mark_download_as_successful
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        data = request.get_json()
+        action = data.get('action', 'delete')  # delete, retry, fail
+        
+        cursor.execute("SELECT file_path FROM download_queue WHERE id = ?", (queue_id,))
+        row = cursor.fetchone()
+        
+        if not row:
+            return jsonify({"error": "Queue item not found"}), 404
+        
+        file_path = row[0]
+        
+        if action == 'delete':
+            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+        elif action == 'successful':
+            mark_download_as_successful(file_path)
+        elif action == 'fail':
+            failure_reason = data.get('reason', 'Manual mark as failed')
+            mark_download_as_failed(file_path, failure_reason)
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({"success": True, "action": action})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/downloads/process-retry", methods=["POST"])
+def api_downloads_process_retry():
+    """Process files from retry queue"""
+    try:
+        from downloads_watcher import extract_mp3_metadata, organize_file, add_to_database, get_retry_queue, mark_download_as_successful, mark_download_as_failed, track_exists_in_library
+        
+        queue = get_retry_queue(limit=100)
+        results = {
+            "total": len(queue),
+            "processed": 0,
+            "successful": 0,
+            "failed": 0,
+            "exists_in_library": 0,
+            "results": []
+        }
+        
+        for item in queue:
+            file_path = item['file_path']
+            
+            if not os.path.exists(file_path):
+                results["results"].append({
+                    "file_path": file_path,
+                    "status": "error",
+                    "reason": "File no longer exists"
+                })
+                continue
+            
+            try:
+                metadata = extract_mp3_metadata(file_path)
+                artist = metadata.get('artist', 'Unknown')
+                album = metadata.get('album', 'Unknown')
+                title = metadata.get('title', os.path.basename(file_path))
+                
+                # Check if now exists in library
+                if track_exists_in_library(artist, album, title):
+                    results["exists_in_library"] += 1
+                    results["results"].append({
+                        "file_path": file_path,
+                        "status": "exists_in_library",
+                        "artist": artist,
+                        "album": album,
+                        "title": title
+                    })
+                    continue
+                
+                # Try to organize
+                file_info = organize_file(file_path, metadata)
+                
+                if file_info.get('success'):
+                    add_to_database(file_info, metadata)
+                    mark_download_as_successful(file_path)
+                    results["successful"] += 1
+                    results["results"].append({
+                        "file_path": file_path,
+                        "status": "success",
+                        "target_path": file_info.get('target_path')
+                    })
+                else:
+                    # Retry again
+                    mark_download_as_failed(file_path, file_info.get('error', 'Unknown error'))
+                    results["failed"] += 1
+                    results["results"].append({
+                        "file_path": file_path,
+                        "status": "retry_scheduled",
+                        "reason": file_info.get('error', 'Unknown error')
+                    })
+                
+                results["processed"] += 1
+            except Exception as e:
+                mark_download_as_failed(file_path, str(e))
+                results["failed"] += 1
+                results["results"].append({
+                    "file_path": file_path,
+                    "status": "error",
+                    "reason": str(e)
+                })
+        
+        return jsonify(results)
     except Exception as e:
         return jsonify({"error": str(e)}), 400
 

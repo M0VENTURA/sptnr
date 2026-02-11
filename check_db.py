@@ -548,6 +548,28 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure download_queue table exists (for tracking incomplete/failed downloads with retry logic)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS download_queue (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            file_path TEXT NOT NULL UNIQUE,
+            filename TEXT NOT NULL,
+            artist TEXT,
+            album TEXT,
+            title TEXT,
+            duration REAL,
+            status TEXT DEFAULT 'incomplete',
+            retry_count INTEGER DEFAULT 0,
+            max_retries INTEGER DEFAULT 3,
+            failure_reason TEXT,
+            exists_in_library INTEGER DEFAULT 0,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            last_retry_at TIMESTAMP,
+            next_retry_at TIMESTAMP
+        );
+    """)
+
     # ✅ Create indexes for faster lookups
     indexes = [
         ("idx_artist_stats_name", "artist_stats(artist_name)"),
@@ -568,6 +590,10 @@ def update_schema(db_path):
         ("idx_managed_downloads_created", "managed_downloads(created_at DESC)"),
         ("idx_slskd_search_results_download", "slskd_search_results(download_id)"),
         ("idx_slskd_search_results_selected", "slskd_search_results(selected)"),
+        # Download queue indexes
+        ("idx_download_queue_status", "download_queue(status)"),
+        ("idx_download_queue_next_retry", "download_queue(next_retry_at)"),
+        ("idx_download_queue_exists_in_library", "download_queue(exists_in_library)"),
         # Per-user love indexes
         ("idx_user_loved_tracks_user", "user_loved_tracks(user_id)"),
         ("idx_user_loved_tracks_track", "user_loved_tracks(track_id)"),
