@@ -1383,10 +1383,14 @@ def detect_single_enhanced(
                     log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
                     
                     # Get artist MBID if available (for more accurate lookup)
+                    # Check both beets_artist_mbid (from Beets import) and musicbrainz_artist_id (from scan)
                     artist_mbid = None
                     try:
                         cursor = conn.cursor()
-                        cursor.execute("SELECT beets_artist_mbid FROM tracks WHERE artist = ? AND beets_artist_mbid IS NOT NULL LIMIT 1", (artist,))
+                        cursor.execute(
+                            "SELECT COALESCE(beets_artist_mbid, musicbrainz_artist_id) as artist_mbid FROM tracks WHERE artist = ? AND (beets_artist_mbid IS NOT NULL OR musicbrainz_artist_id IS NOT NULL) LIMIT 1", 
+                            (artist,)
+                        )
                         row = cursor.fetchone()
                         if row:
                             artist_mbid = row[0]
