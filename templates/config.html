@@ -54,7 +54,7 @@
       <div class="d-flex justify-content-between align-items-center">
         <div>
           <h5 class="mb-0"><i class="bi bi-people-fill"></i> Music Users</h5>
-          <small class="text-muted">Configure Navidrome, Spotify, and ListenBrainz for each user</small>
+          <small class="text-muted">Configure Navidrome, Spotify, and Last.fm for each user</small>
         </div>
         <button type="button" class="btn btn-sm btn-outline-primary" onclick="addNewUser()">
           <i class="bi bi-plus-circle"></i> Add Another User
@@ -120,19 +120,14 @@
               </div>
             </div>
             
-            <!-- ListenBrainz Configuration -->
+            <!-- Last.fm Configuration -->
             <div class="mb-3">
-              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm & ListenBrainz</h6>
+              <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm</h6>
               <div class="row g-2">
                 <div class="col-12">
                   <label class="form-label form-label-sm">Last.fm Username</label>
                   <input type="text" class="form-control form-control-sm user-lastfm-username" placeholder="lastfm_username" value="{{ user.get('lastfm_username', '') }}">
                   <small class="form-text text-muted">Your Last.fm username (for personalized recommendations)</small>
-                </div>
-                <div class="col-12">
-                  <label class="form-label form-label-sm">ListenBrainz User Token</label>
-                  <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token" value="{{ user.get('listenbrainz_user_token', '') }}">
-                  <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
                 </div>
               </div>
             </div>
@@ -571,20 +566,6 @@
           </div>
         </div>
 
-        <!-- ListenBrainz -->
-        <div class="col-12 border-bottom pb-3">
-          <div class="d-flex justify-content-between align-items-start">
-            <div class="flex-grow-1">
-              <h6 class="mb-1"><i class="bi bi-database-fill"></i> ListenBrainz (Optional)</h6>
-              <small class="text-muted d-block mb-2">Community music database for metadata and recommendations. Public API, no key required for basic use.</small>
-              <small class="form-text text-muted"><strong>Setup:</strong> Optional - generate user token at <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a> for personal data</small>
-            </div>
-            <div class="form-check form-switch">
-              <input class="form-check-input" type="checkbox" id="listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
-            </div>
-          </div>
-        </div>
-
         <!-- Discogs -->
         <div class="col-12 border-bottom pb-3">
           <div class="d-flex justify-content-between align-items-start">
@@ -827,8 +808,7 @@ function buildConfigObject() {
       spotify_username: card.querySelector('.user-spotify-username').value,
       spotify_client_id: card.querySelector('.user-spotify-id').value,
       spotify_client_secret: card.querySelector('.user-spotify-secret').value,
-      lastfm_username: card.querySelector('.user-lastfm-username').value,
-      listenbrainz_user_token: card.querySelector('.user-listenbrainz-token').value
+      lastfm_username: card.querySelector('.user-lastfm-username').value
     };
     // Only add user if it has at least username and Navidrome URL
     if (user.user && user.base_url) {
@@ -877,9 +857,7 @@ function buildConfigObject() {
         api_key: getValue('lastfm_api_key', ''),
         username: getValue('lastfm_username', '')
       },
-      listenbrainz: {
-        enabled: getChecked('listenbrainz_enabled', false)
-      },
+
       discogs: {
         enabled: getChecked('discogs_enabled', false),
         token: getValue('discogs_token', '')
@@ -1051,19 +1029,14 @@ function addNewUser() {
       </div>
     </div>
     
-    <!-- ListenBrainz Configuration -->
+    <!-- Last.fm Configuration -->
     <div class="mb-3">
-      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm & ListenBrainz</h6>
+      <h6 class="text-info mb-2"><i class="bi bi-database-fill"></i> Last.fm</h6>
       <div class="row g-2">
         <div class="col-12">
           <label class="form-label form-label-sm">Last.fm Username</label>
           <input type="text" class="form-control form-control-sm user-lastfm-username" placeholder="lastfm_username">
           <small class="form-text text-muted">Your Last.fm username (for personalized recommendations)</small>
-        </div>
-        <div class="col-12">
-          <label class="form-label form-label-sm">ListenBrainz User Token</label>
-          <input type="password" class="form-control form-control-sm user-listenbrainz-token" placeholder="listenbrainz_user_token">
-          <small class="form-text text-muted">Get your token from <a href="https://listenbrainz.org/settings/profile/" target="_blank">ListenBrainz Settings</a></small>
         </div>
       </div>
     </div>
