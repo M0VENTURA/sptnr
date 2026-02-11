@@ -1592,9 +1592,12 @@ def _normalize_release_title(text: str) -> str:
     return " ".join(text.split())
 
 
-def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict]:
+def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100, artist_mbid: str | None = None) -> list[dict]:
     """
     Fetch release-groups from MusicBrainz for an artist with retry logic and pagination.
+    
+    If artist_mbid is provided, uses direct MBID lookup (more accurate).
+    Otherwise uses text search by artist name.
     
     Handles SSL errors, timeouts, and other network issues with exponential backoff.
     Implements pagination to fetch all releases (not just first 100).
@@ -1604,8 +1607,15 @@ def _fetch_musicbrainz_releases(artist_name: str, limit: int = 100) -> list[dict
     
     headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
     releases: list[dict] = []
-    query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
     url = "https://musicbrainz.org/ws/2/release-group"
+    
+    # Use artist MBID for lookup if available (more accurate than text search)
+    if artist_mbid:
+        query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+        logging.debug(f"MusicBrainz: Using artist MBID lookup for {artist_name} ({artist_mbid})")
+    else:
+        query = f'artist:"{artist_name}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+        logging.debug(f"MusicBrainz: Using text search for {artist_name}")
     
     # Retry with exponential backoff
     max_retries = 3
@@ -1690,15 +1700,33 @@ def api_artist_missing_releases():
 
     conn = get_db()
     cursor = conn.cursor()
+    
+    # Get artist MBID if available for more accurate MusicBrainz lookup
+    artist_mbid = None
+    try:
+        cursor.execute("""
+            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?
+        """, (artist,))
+        row = cursor.fetchone()
+        if row and row[0]:
+            artist_mbid = row[0]
+    except:
+        pass
+    
     cursor.execute("""
         SELECT DISTINCT album FROM tracks WHERE artist = ?
     """, (artist,))
     existing_albums = [row[0] for row in cursor.fetchall()]
+    cursor.execute("""
+        SELECT release_id FROM missing_releases WHERE artist = ?
+    """, (artist,))
+    existing_missing = {row[0] for row in cursor.fetchall()}
     conn.close()
 
     existing_norm = {_normalize_release_title(a) for a in existing_albums if a}
 
-    mb_releases = _fetch_musicbrainz_releases(artist)
+    # Use artist MBID for accurate lookup when available
+    mb_releases = _fetch_musicbrainz_releases(artist, artist_mbid=artist_mbid)
     missing = []
     for rg in mb_releases:
         norm_title = _normalize_release_title(rg.get("title"))
@@ -2246,6 +2274,63 @@ def api_cached_missing_releases():
         
     except Exception as e:
         logging.error(f"[MISSING_RELEASES] Error fetching cached data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/cleanup-false-positive-missing", methods=["POST"])
+def api_cleanup_false_positive_missing():
+    """Remove false positives from missing_releases that actually exist in database."""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    
+    if not artist:
+        return jsonify({"error": "Artist is required"}), 400
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all existing albums
+        cursor.execute("""
+            SELECT DISTINCT album FROM tracks WHERE artist = ?
+        """, (artist,))
+        existing_albums = {_normalize_release_title(row[0]) for row in cursor.fetchall() if row[0]}
+        
+        # Get all missing releases
+        cursor.execute("""
+            SELECT release_id, title FROM missing_releases WHERE artist = ?
+        """, (artist,))
+        missing_releases = cursor.fetchall()
+        
+        # Find false positives (items in missing_releases that exist in database)
+        false_positives = []
+        for release_id, title in missing_releases:
+            norm_title = _normalize_release_title(title)
+            if norm_title in existing_albums:
+                false_positives.append(release_id)
+        
+        # Remove false positives
+        removed_count = 0
+        for release_id in false_positives:
+            cursor.execute("""
+                DELETE FROM missing_releases WHERE release_id = ?
+            """, (release_id,))
+            removed_count += 1
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"[CLEANUP] Removed {removed_count} false positive missing releases for {artist}")
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "removed_count": removed_count,
+            "false_positives": false_positives
+        })
+        
+    except Exception as e:
+        logging.error(f"[CLEANUP] Error removing false positives: {e}")
         return jsonify({"error": str(e)}), 500
 
 
@@ -7401,6 +7486,41 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
     return None
 
 
+def _save_album_art_to_db(artist_name: str, album_name: str, image_data: bytes, source: str = "unknown", mime_type: str = "image/jpeg") -> bool:
+    """
+    Save album art image data to the local database.
+    
+    Args:
+        artist_name: Artist name
+        album_name: Album name
+        image_data: Binary image data
+        source: Source of the image (e.g., 'musicbrainz', 'spotify', 'navidrome')
+        mime_type: MIME type of the image
+        
+    Returns:
+        True if saved successfully, False otherwise
+    """
+    try:
+        if not image_data or len(image_data) == 0:
+            return False
+            
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO album_art 
+            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (artist_name, album_name, image_data, mime_type, source))
+        conn.commit()
+        conn.close()
+        
+        logging.debug(f"Saved album art to database for {artist_name} - {album_name} from {source}")
+        return True
+    except Exception as e:
+        logging.debug(f"Failed to save album art to database: {e}")
+        return False
+
+
 def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | None:
     """
     Fetch album art from iTunes/Apple Music API.
@@ -7470,36 +7590,32 @@ def album_art_placeholder():
 
 @app.route("/api/album-art/<path:artist>/<path:album>")
 def api_album_art(artist, album):
-    """Get album art from custom table, database, Navidrome, MusicBrainz, or Discogs"""
+    """Get album art from local database, Navidrome, MusicBrainz, or Discogs"""
     try:
         from urllib.parse import unquote
         artist = unquote(artist)
         album = unquote(album)
         
-        # 0. First, check custom album_art table
+        # 0. First, check local album_art table for stored images
         try:
             conn = get_db()
             cursor = conn.cursor()
             cursor.execute("""
-                SELECT image_url FROM album_art 
+                SELECT image_data, image_mime_type FROM album_art 
                 WHERE artist_name = ? AND album_name = ?
             """, (artist, album))
             result = cursor.fetchone()
             conn.close()
             
             if result and result[0]:
-                custom_url = result[0]
-                try:
-                    resp = requests.get(custom_url, timeout=5)
-                    if resp.status_code == 200:
-                        return send_file(
-                            io.BytesIO(resp.content),
-                            mimetype='image/jpeg'
-                        )
-                except:
-                    pass  # Fall through to other methods
-        except:
-            pass
+                image_data = result[0]
+                mime_type = result[1] or 'image/jpeg'
+                return send_file(
+                    io.BytesIO(image_data),
+                    mimetype=mime_type
+                )
+        except Exception as e:
+            logging.debug(f"Error fetching local album art: {e}")
         
         # 1. Check if we have cover_art_url or spotify_album_art_url in database
         try:
@@ -7543,6 +7659,8 @@ def api_album_art(artist, album):
                 try:
                     resp = requests.get(cover_art_url, timeout=5)
                     if resp.status_code == 200:
+                        # Save to database for future access
+                        _save_album_art_to_db(artist, album, resp.content, source="musicbrainz")
                         return send_file(
                             io.BytesIO(resp.content),
                             mimetype='image/jpeg'
@@ -7611,6 +7729,8 @@ def api_album_art(artist, album):
                                         }
                                         cover_resp = session.get(cover_url, params=cover_params, timeout=5)
                                         if cover_resp.status_code == 200:
+                                            # Save to database for future access
+                                            _save_album_art_to_db(artist, album, cover_resp.content, source="navidrome")
                                             return send_file(
                                                 io.BytesIO(cover_resp.content),
                                                 mimetype='image/jpeg'
@@ -7625,6 +7745,7 @@ def api_album_art(artist, album):
         # 3. Try MusicBrainz
         art_bytes = _fetch_album_art_from_musicbrainz(artist, album)
         if art_bytes:
+            _save_album_art_to_db(artist, album, art_bytes, source="musicbrainz")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'
@@ -7633,6 +7754,7 @@ def api_album_art(artist, album):
         # 4. Try iTunes/Apple Music
         art_bytes = _fetch_album_art_from_itunes(artist, album)
         if art_bytes:
+            _save_album_art_to_db(artist, album, art_bytes, source="itunes")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'
@@ -7641,6 +7763,7 @@ def api_album_art(artist, album):
         # 5. Fallback to Discogs
         art_bytes = _fetch_album_art_from_discogs(artist, album)
         if art_bytes:
+            _save_album_art_to_db(artist, album, art_bytes, source="discogs")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'

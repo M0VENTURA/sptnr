@@ -1151,6 +1151,22 @@ function renderFeaturesWeights(features, weights) {
         scan_worker_threads: 'Number of parallel worker threads to use for scanning (higher = faster, but more CPU).',
         spotify_prefetch_timeout: 'Timeout (in seconds) for Spotify data prefetching during scans.'
       }
+    },
+    {
+      heading: 'Single Detection Sources',
+      description: 'Configure the confidence level for each single detection source. When a source is set to HIGH, detection will stop searching once that source confirms a track is a single.',
+      keys: [
+        'source_discogs_confidence', 'source_spotify_confidence', 'source_musicbrainz_confidence',
+        'source_discogs_video_confidence', 'source_lastfm_confidence', 'source_radio_edit_confidence'
+      ],
+      explanations: {
+        source_discogs_confidence: 'Confidence level for Discogs single detection. Default: high (stops search when confirmed). Set to "low" or "medium" to continue checking other sources.',
+        source_spotify_confidence: 'Confidence level for Spotify single detection. Default: medium. Set to "high" to skip remaining sources when Spotify confirms.',
+        source_musicbrainz_confidence: 'Confidence level for MusicBrainz single detection. Default: medium. Set to "high" to skip remaining sources when MusicBrainz confirms.',
+        source_discogs_video_confidence: 'Confidence level for Discogs music video detection. Default: medium. Set to "high" to skip Last.fm/z-score when video confirms.',
+        source_lastfm_confidence: 'Confidence level for Last.fm single detection. Default: medium. Set to "high" to skip z-score inference when Last.fm confirms.',
+        source_radio_edit_confidence: 'Confidence level for Radio Edit detection from Spotify. Default: medium. Set to "high" to treat radio edits as high confidence singles.'
+      }
     }
   ];
 
@@ -1185,7 +1201,16 @@ function renderFeaturesWeights(features, weights) {
           html += `<div class="text-muted small mb-1">${group.explanations[key]}</div>`;
         }
         const value = features[key];
-        if (typeof value === 'boolean') {
+        
+        // Handle source confidence fields with dropdown
+        if (key.startsWith('source_') && key.endsWith('_confidence')) {
+          const currentValue = value || 'medium';
+          html += `<select class="form-select feature-field" name="feature_${key}">
+            <option value="low"${currentValue === 'low' ? ' selected' : ''}>Low</option>
+            <option value="medium"${currentValue === 'medium' ? ' selected' : ''}>Medium</option>
+            <option value="high"${currentValue === 'high' ? ' selected' : ''}>High</option>
+          </select>`;
+        } else if (typeof value === 'boolean') {
           html += `<select class="form-select feature-field" name="feature_${key}"><option value="true"${value ? ' selected' : ''}>True</option><option value="false"${!value ? ' selected' : ''}>False</option></select>`;
         } else if (typeof value === 'number') {
           html += `<input type="number" step="any" class="form-control feature-field" name="feature_${key}" value="${value}">`;

@@ -396,6 +396,7 @@ def update_schema(db_path):
         CREATE TABLE IF NOT EXISTS missing_releases (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             artist TEXT NOT NULL,
+            artist_mbid TEXT,
             release_id TEXT NOT NULL,
             title TEXT NOT NULL,
             primary_type TEXT,
@@ -407,6 +408,32 @@ def update_schema(db_path):
         );
     """)
 
+    # ✅ Ensure album_art table exists for storing downloaded album artwork
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS album_art (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist_name TEXT NOT NULL,
+            album_name TEXT NOT NULL,
+            image_data BLOB,
+            image_mime_type TEXT DEFAULT 'image/jpeg',
+            source TEXT,
+            downloaded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(artist_name, album_name)
+        );
+    """)
+
+    # ✅ Add artist_mbid column to missing_releases if it doesn't exist
+    cursor.execute("PRAGMA table_info(missing_releases);") 
+    missing_releases_columns = [row[1] for row in cursor.fetchall()]
+    if 'artist_mbid' not in missing_releases_columns:
+        try:
+            cursor.execute("ALTER TABLE missing_releases ADD COLUMN artist_mbid TEXT;")
+            print("✅ Added artist_mbid column to missing_releases table")
+        except sqlite3.OperationalError as e:
+            if "duplicate column name" not in str(e).lower():
+                raise
+
+    # ✅ Ensure album_art table has required indexes
     # ✅ Ensure managed_downloads table exists
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS managed_downloads (

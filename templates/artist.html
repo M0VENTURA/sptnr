@@ -1693,6 +1693,7 @@ function openEditArtistIdsModal() {
   const artistName = '{{ artist_name }}';
   const spotifyId = document.getElementById('spotifyArtistId').value;
   const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
+  const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
   
   const modalHtml = `
     <div class="modal fade" id="editArtistIdsModal" tabindex="-1">
@@ -1719,7 +1720,7 @@ function openEditArtistIdsModal() {
             </div>
             <div class="mb-3">
               <label for="editDiscogsArtistId" class="form-label">Discogs Artist ID</label>
-              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml((function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })())}" placeholder="e.g., 123456">
+              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml(discogsId)}" placeholder="e.g., 123456">
               <div class="form-text">
                 <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search Discogs</a> to find the artist ID
               </div>
@@ -1727,7 +1728,7 @@ function openEditArtistIdsModal() {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
+            <button type="button" id="saveArtistIdsBtn" class="btn btn-primary">
               <i class="bi bi-save"></i> Save Changes
             </button>
           </div>
@@ -1741,6 +1742,16 @@ function openEditArtistIdsModal() {
   if (existingModal) existingModal.remove();
   
   document.body.insertAdjacentHTML('beforeend', modalHtml);
+  
+  // Attach event listener to save button using proper event delegation
+  const saveBtn = document.getElementById('saveArtistIdsBtn');
+  if (saveBtn) {
+    saveBtn.addEventListener('click', function(e) {
+      e.preventDefault();
+      saveArtistIds();
+    });
+  }
+  
   const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
   modal.show();
 }
@@ -1757,7 +1768,7 @@ function saveArtistIds() {
     body: JSON.stringify({
       artist: artistName,
       spotify_artist_id: spotifyId,
-      lastfm_artist_mbid: musicbrainzId,  // Set both fields to same value for backwards compatibility
+      lastfm_artist_mbid: musicbrainzId,
       musicbrainz_artist_id: musicbrainzId,
       discogs_artist_id: discogsId
     })
@@ -1765,23 +1776,25 @@ function saveArtistIds() {
     .then(r => r.json())
     .then(data => {
       if (data.success) {
-        // Update the readonly fields
         document.getElementById('spotifyArtistId').value = spotifyId;
         document.getElementById('musicbrainzArtistId').value = musicbrainzId;
         if (document.getElementById('discogsArtistId')) {
           document.getElementById('discogsArtistId').value = discogsId;
         }
         
-        bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'))?.hide();
-        alert('✅ Artist IDs updated successfully!');
+        const modalInstance = bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'));
+        if (modalInstance) modalInstance.hide();
         
-        // Reload page to update links
+        alert('✅ Artist IDs updated successfully!');
         setTimeout(() => location.reload(), 1000);
       } else {
         alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
       }
     })
-    .catch(err => alert('❌ Network error: ' + err.message));
+    .catch(err => {
+      console.error('Error:', err);
+      alert('❌ Network error: ' + err.message);
+    });
 }
 
 // Toggle missing albums visibility
