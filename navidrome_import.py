@@ -194,6 +194,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         total_albums = len(albums)
         tracks_imported = 0
         albums_scanned = 0
+        imported_track_ids = set()  # Track which tracks were imported from Navidrome
         
         for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
@@ -343,6 +344,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 log_debug(f"Saving track to DB - ID: {track_id}, Title: {td['title']}, Track#: {td['track_number']}, Duration: {td['duration']}s")
                 
                 save_to_db(td)
+                imported_track_ids.add(track_id)  # Track this as successfully imported
                 album_tracks_processed += 1
                 tracks_imported += 1
 
@@ -371,6 +373,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         # Debug log: Technical summary
         log_debug(f"Artist scan complete - Name: {artist_name}, Albums scanned: {albums_scanned}, Tracks imported: {tracks_imported}, Force: {force}")
         
+        # Cleanup: Remove orphaned tracks (missing from Navidrome AND missing physical files)
+        try:
+            tracks_removed = _cleanup_orphaned_tracks(artist_name, imported_track_ids)
+            if tracks_removed > 0:
+                log_unified(f"Navidrome Import Scan - Cleanup: Removed {tracks_removed} orphaned tracks for {artist_name}")
+                log_info(f"Cleanup: Removed {tracks_removed} orphaned tracks (missing from Navidrome + physical files deleted) for artist: {artist_name}")
+                log_debug(f"Orphaned tracks cleanup complete - Artist: {artist_name}, Tracks removed: {tracks_removed}")
+        except Exception as e:
+            log_debug(f"Orphaned tracks cleanup failed for {artist_name}: {e}", exc_info=True)
+        
         # Fetch artist biography and images after successful import
         try:
             _fetch_artist_metadata(artist_name, verbose=verbose)
@@ -395,6 +407,75 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         # Debug log: Full error with stack trace
         log_debug(f"scan_artist_to_db failed for {artist_name}: {e}", exc_info=True)
         raise
+
+
+def _cleanup_orphaned_tracks(artist_name: str, imported_track_ids: set) -> int:
+    """
+    Remove tracks from database that are:
+    1. Not in the current Navidrome import (missing from Navidrome)
+    2. AND have physical file paths that no longer exist
+    
+    This prevents stale database entries for deleted files while preserving
+    any manually added or locally-only tracks.
+    
+    Args:
+        artist_name: Name of the artist
+        imported_track_ids: Set of track IDs that were successfully imported from Navidrome
+        
+    Returns:
+        Number of tracks deleted
+    """
+    import os
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get all tracks for this artist that were NOT imported just now
+        # This finds tracks that are missing from the current Navidrome scan
+        cursor.execute("""
+            SELECT id, title, file_path, album FROM tracks 
+            WHERE artist = ? AND id NOT IN ({})
+        """.format(','.join('?' * len(imported_track_ids)) if imported_track_ids else 'SELECT 1 WHERE 0'),
+        (artist_name, *imported_track_ids) if imported_track_ids else (artist_name,))
+        
+        missing_tracks = cursor.fetchall()
+        tracks_removed = 0
+        
+        for row in missing_tracks:
+            track_id = row[0]
+            title = row[1]
+            file_path = row[2]
+            album = row[3]
+            
+            # Check if the physical file exists
+            file_exists = False
+            if file_path:
+                try:
+                    file_exists = os.path.exists(file_path)
+                except Exception as e:
+                    log_debug(f"Error checking file path for track {track_id}: {e}")
+                    file_exists = False  # If we can't check, assume it doesn't exist
+            
+            # Only delete if file doesn't exist AND we have a file path to check
+            if file_path and not file_exists:
+                try:
+                    cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
+                    tracks_removed += 1
+                    log_info(f"Cleanup: Deleted orphaned track '{title}' (Album: {album}) - file not found: {file_path}")
+                    log_debug(f"Deleted orphaned track ID: {track_id}, file path was: {file_path}")
+                except Exception as e:
+                    log_debug(f"Failed to delete orphaned track {track_id}: {e}")
+        
+        conn.commit()
+        conn.close()
+        
+        log_debug(f"Orphaned track cleanup: {tracks_removed} tracks deleted for artist {artist_name}")
+        return tracks_removed
+        
+    except Exception as e:
+        log_debug(f"Error during orphaned track cleanup for {artist_name}: {e}", exc_info=True)
+        return 0
 
 
 def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
