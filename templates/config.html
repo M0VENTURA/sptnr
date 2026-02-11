@@ -587,7 +587,7 @@
         </div>
 
         <!-- MusicBrainz -->
-        <div class="col-12">
+        <div class="col-12 border-bottom pb-3">
           <div class="d-flex justify-content-between align-items-start">
             <div class="flex-grow-1">
               <h6 class="mb-1"><i class="bi bi-music-note-list"></i> MusicBrainz (Built-In)</h6>
@@ -595,6 +595,72 @@
             </div>
             <div class="form-check form-switch">
               <input class="form-check-input" type="checkbox" id="musicbrainz_enabled" {% if config.get('api_integrations', {}).get('musicbrainz', {}).get('enabled') %}checked{% endif %} disabled>
+            </div>
+          </div>
+        </div>
+
+        <!-- Source Confidence Settings -->
+        <div class="col-12">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1"><i class="bi bi-sliders"></i> Single Detection Confidence Levels</h6>
+              <small class="text-muted d-block mb-2">Control how much weight each detection source has when marking tracks as singles.</small>
+            </div>
+          </div>
+          <div class="row g-3 mt-2">
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Discogs Confidence</label>
+              <select class="form-select form-select-sm" id="source_discogs_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_discogs_confidence', 'high') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Best for comprehensive release database</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Spotify Confidence</label>
+              <select class="form-select form-select-sm" id="source_spotify_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_spotify_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Reliable streaming platform data</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">MusicBrainz Confidence</label>
+              <select class="form-select form-select-sm" id="source_musicbrainz_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_musicbrainz_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Community-driven metadata</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Discogs Video Confidence</label>
+              <select class="form-select form-select-sm" id="source_discogs_video_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_discogs_video_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Official music video indicator</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Last.fm Confidence</label>
+              <select class="form-select form-select-sm" id="source_lastfm_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_lastfm_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">User listening history</small>
+            </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Radio Edit Confidence</label>
+              <select class="form-select form-select-sm" id="source_radio_edit_confidence">
+                <option value="high" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'high' %}selected{% endif %}>High</option>
+                <option value="medium" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'medium' %}selected{% endif %}>Medium</option>
+                <option value="low" {% if config.get('features', {}).get('source_radio_edit_confidence', 'medium') == 'low' %}selected{% endif %}>Low</option>
+              </select>
+              <small class="form-text text-muted">Spotify radio edit indicator</small>
             </div>
           </div>
         </div>
@@ -843,7 +909,13 @@ function buildConfigObject() {
       retry_scheduler: {
         interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
         auto_start: getChecked('retry_scheduler_enabled', true)
-      }
+      },
+      source_discogs_confidence: getValue('source_discogs_confidence', 'high'),
+      source_spotify_confidence: getValue('source_spotify_confidence', 'medium'),
+      source_musicbrainz_confidence: getValue('source_musicbrainz_confidence', 'medium'),
+      source_discogs_video_confidence: getValue('source_discogs_video_confidence', 'medium'),
+      source_lastfm_confidence: getValue('source_lastfm_confidence', 'medium'),
+      source_radio_edit_confidence: getValue('source_radio_edit_confidence', 'medium')
     },
     api_integrations: {
       spotify: {
