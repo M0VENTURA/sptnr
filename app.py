@@ -486,7 +486,11 @@ def setup():
                     "web_url": "http://localhost:5030",
                     "api_key": ""
                 },
-                "downloads": {"folder": "/downloads/Music"},
+                "downloads": {
+                    "folder": "/downloads/Music",
+                    "incomplete_folder": "/downloads/Soulseek/Incomplete",
+                    "monitor_incomplete": True
+                },
                 "weights": weights,
                 "database": {"path": "/database/sptnr.db", "vacuum_on_start": False},
                 "logging": {"level": "INFO", "file": "/config/app.log", "console": True},
@@ -7627,44 +7631,91 @@ def api_album_art(artist, album):
 
 @app.route("/api/downloads/scan")
 def api_downloads_scan():
-    """Scan downloads folder and return pending files"""
+    """Scan downloads folder and return pending files (both completed and incomplete)"""
     try:
         cfg, _ = _read_yaml(CONFIG_PATH)
-        downloads_dir = cfg.get("downloads", {}).get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
-        
-        if not os.path.exists(downloads_dir):
-            return jsonify({"error": "Downloads folder not found", "files": []})
+        downloads_config = cfg.get("downloads", {})
+        downloads_dir = downloads_config.get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
+        incomplete_dir = downloads_config.get("incomplete_folder", "/downloads/Soulseek/Incomplete")
+        monitor_incomplete = downloads_config.get("monitor_incomplete", True)
         
         files = []
-        for filename in os.listdir(downloads_dir):
-            if not filename.lower().endswith('.mp3'):
-                continue
-            
-            file_path = os.path.join(downloads_dir, filename)
-            if not os.path.isfile(file_path):
-                continue
-            
-            try:
-                metadata = read_mp3_metadata(file_path)
-                files.append({
-                    'filename': filename,
-                    'path': file_path,
-                    'size': os.path.getsize(file_path),
-                    'artist': metadata.get('artist', 'Unknown'),
-                    'album': metadata.get('album', 'Unknown'),
-                    'title': metadata.get('title', filename),
-                    'year': metadata.get('year', metadata.get('date', '')),
-                    'track': metadata.get('track', ''),
-                    'genre': metadata.get('genre', ''),
-                    'duration': metadata.get('duration', 0)
-                })
-            except Exception as e:
-                files.append({
-                    'filename': filename,
-                    'path': file_path,
-                    'size': os.path.getsize(file_path),
-                    'error': str(e)
-                })
+        
+        # Scan completed downloads
+        if os.path.exists(downloads_dir):
+            for filename in os.listdir(downloads_dir):
+                if not filename.lower().endswith('.mp3'):
+                    continue
+                
+                file_path = os.path.join(downloads_dir, filename)
+                if not os.path.isfile(file_path):
+                    continue
+                
+                try:
+                    metadata = read_mp3_metadata(file_path)
+                    files.append({
+                        'filename': filename,
+                        'path': file_path,
+                        'size': os.path.getsize(file_path),
+                        'artist': metadata.get('artist', 'Unknown'),
+                        'album': metadata.get('album', 'Unknown'),
+                        'title': metadata.get('title', filename),
+                        'year': metadata.get('year', metadata.get('date', '')),
+                        'track': metadata.get('track', ''),
+                        'genre': metadata.get('genre', ''),
+                        'duration': metadata.get('duration', 0),
+                        'status': 'completed'
+                    })
+                except Exception as e:
+                    files.append({
+                        'filename': filename,
+                        'path': file_path,
+                        'size': os.path.getsize(file_path),
+                        'error': str(e),
+                        'status': 'completed'
+                    })
+        
+        # Scan incomplete downloads if enabled
+        if monitor_incomplete and os.path.exists(incomplete_dir):
+            for foldername in os.listdir(incomplete_dir):
+                folder_path = os.path.join(incomplete_dir, foldername)
+                if not os.path.isdir(folder_path):
+                    continue
+                
+                # Look for .mp3 files in the incomplete folder
+                for filename in os.listdir(folder_path):
+                    if not filename.lower().endswith('.mp3'):
+                        continue
+                    
+                    file_path = os.path.join(folder_path, filename)
+                    if not os.path.isfile(file_path):
+                        continue
+                    
+                    try:
+                        metadata = read_mp3_metadata(file_path)
+                        files.append({
+                            'filename': filename,
+                            'path': file_path,
+                            'size': os.path.getsize(file_path),
+                            'artist': metadata.get('artist', 'Unknown'),
+                            'album': metadata.get('album', 'Unknown'),
+                            'title': metadata.get('title', filename),
+                            'year': metadata.get('year', metadata.get('date', '')),
+                            'track': metadata.get('track', ''),
+                            'genre': metadata.get('genre', ''),
+                            'duration': metadata.get('duration', 0),
+                            'status': 'incomplete',
+                            'parent_folder': foldername
+                        })
+                    except Exception as e:
+                        files.append({
+                            'filename': filename,
+                            'path': file_path,
+                            'size': os.path.getsize(file_path),
+                            'error': str(e),
+                            'status': 'incomplete',
+                            'parent_folder': foldername
+                        })
         
         return jsonify({
             "count": len(files),

@@ -8,7 +8,7 @@
         <h1 class="h3 mb-1">
             <i class="bi bi-download"></i> Downloads Manager
         </h1>
-        <p class="text-muted mb-0">Automatically organize MP3 files from {{ downloads_dir }} and add to your music library</p>
+        <p class="text-muted mb-0">Monitor and organize MP3 files from <code style="background: rgba(0,0,0,0.1); padding: 2px 6px; border-radius: 3px;">{{ downloads_dir }}</code> and <code style="background: rgba(0,0,0,0.1); padding: 2px 6px; border-radius: 3px;">\downloads\Soulseek\Incomplete</code></p>
     </div>
 
     <!-- Information Card -->
@@ -24,7 +24,7 @@
                     <div class="text-center">
                         <div style="font-size: 2rem; margin-bottom: 0.5rem;">📂</div>
                         <strong>1. Drop MP3s</strong>
-                        <p class="text-muted small mt-1">Place MP3 files in <code>{{ downloads_dir }}</code></p>
+                        <p class="text-muted small mt-1">Files in <code>\downloads\Soulseek\</code> (completed or incomplete)</p>
                     </div>
                 </div>
                 <div class="col-md-3">
@@ -48,6 +48,9 @@
                         <p class="text-muted small mt-1">Moves to /Music with proper structure</p>
                     </div>
                 </div>
+            </div>
+            <div class="alert alert-info mt-3 mb-0">
+                <strong>Note:</strong> Files marked as "⏳ In Progress" are still downloading to <code>\downloads\Soulseek\Incomplete</code> and cannot be processed yet. They will be available for processing once the download completes.
             </div>
         </div>
     </div>
@@ -115,6 +118,7 @@
                             <th>Title</th>
                             <th class="text-center">Size</th>
                             <th class="text-center">Duration</th>
+                            <th class="text-center">Status</th>
                             <th class="text-center">Action</th>
                         </tr>
                     </thead>
@@ -280,12 +284,21 @@
             
             if (file.error) {
                 row.innerHTML = `
-                    <td colspan="7">
+                    <td colspan="8">
                         <strong>${escapeHtml(file.filename)}</strong>
                         <div class="text-danger small"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(file.error)}</div>
                     </td>
                 `;
             } else {
+                const isIncomplete = file.status === 'incomplete';
+                const statusBadgeClass = isIncomplete ? 'bg-warning' : 'bg-success';
+                const statusText = isIncomplete ? '⏳ In Progress' : '✓ Ready';
+                const isDisabled = isIncomplete;
+                const buttonClass = isDisabled ? 'btn-secondary disabled' : 'btn-success';
+                const buttonText = isDisabled ? 
+                    '<i class="bi bi-hourglass-split"></i> Incomplete' : 
+                    '<i class="bi bi-arrow-right-circle"></i> Process';
+                
                 row.innerHTML = `
                     <td>
                         <code style="font-size: 0.85rem;">${escapeHtml(file.filename)}</code>
@@ -296,8 +309,11 @@
                     <td class="text-center">${formatBytes(file.size)}</td>
                     <td class="text-center">${formatDuration(file.duration)}</td>
                     <td class="text-center">
-                        <button class="btn btn-sm btn-success" onclick="processOneFile('${escapeHtml(file.path)}')">
-                            <i class="bi bi-arrow-right-circle"></i> Process
+                        <span class="badge ${statusBadgeClass}">${statusText}</span>
+                    </td>
+                    <td class="text-center">
+                        <button class="btn btn-sm ${buttonClass}" onclick="processOneFile('${escapeHtml(file.path)}')" ${isDisabled ? 'disabled' : ''}>
+                            ${buttonText}
                         </button>
                     </td>
                 `;
@@ -310,6 +326,13 @@
         if (!confirm('Process this file and move to /Music?')) return;
 
         const btn = event.target.closest('button');
+        
+        // Check if button is disabled (incomplete file)
+        if (btn.disabled) {
+            alert('This file is still downloading. Please wait for it to complete.');
+            return;
+        }
+
         btn.disabled = true;
         const originalHtml = btn.innerHTML;
         btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Processing...';
