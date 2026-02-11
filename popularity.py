@@ -1575,7 +1575,7 @@ def popularity_scan(
         
         sql = f"""
             SELECT id, artist, title, album, isrc, duration, spotify_album_type, track_number, mbid, year,
-                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score
+                   spotify_popularity, lastfm_track_playcount, last_spotify_lookup, popularity_score, album_artist
             FROM tracks
             {('WHERE ' + ' AND '.join(sql_conditions)) if sql_conditions else ''}
             ORDER BY artist, album, title
@@ -1592,11 +1592,25 @@ def popularity_scan(
             log_info("No tracks found for popularity scan. Exiting.")
             return
 
-        # Group tracks by artist and album
+        # Group tracks by album_artist and album
+        # For compilation albums, album_artist is "Various Artists", so all tracks group together
+        # Each track still uses its individual track["artist"] field for API lookups
         from collections import defaultdict
         artist_album_tracks = defaultdict(lambda: defaultdict(list))
+        
         for track in tracks:
-            artist_album_tracks[track["artist"]][track["album"]].append(track)
+            # Get album_artist, fall back to artist if not set
+            album_artist = track.get('album_artist', '') if isinstance(track, dict) else (
+                track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
+            )
+            
+            # Use album_artist for grouping (or fall back to artist)
+            grouping_artist = album_artist if album_artist else track["artist"]
+            album_name = track["album"]
+            
+            artist_album_tracks[grouping_artist][album_name].append(track)
+            
+            log_debug(f"Track grouping: grouping_artist={grouping_artist}, album_artist={album_artist}, track_artist={track['artist']}, title={track['title']}")
 
         # Handle resume logic
         resume_hit = False if resume_from else True
@@ -1645,122 +1659,130 @@ def popularity_scan(
                     continue
             
             log_unified(f"Popularity Scan - Scanning Artist {artist} ({len(albums)} album(s))")
-            log_debug(f"Processing artist: {artist} with {len(albums)} albums")
+            log_debug(f"Processing artist/album group: {artist} with {len(albums)} albums")
             
             # Get Spotify artist ID once per artist (before album loop)
+            # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
             spotify_artist_id = None
-            try:
-                # First, try to get cached artist ID from database
-                cursor.execute("""
-                    SELECT spotify_artist_id 
-                    FROM tracks 
-                    WHERE artist = ? AND spotify_artist_id IS NOT NULL 
-                    LIMIT 1
-                """, (artist,))
-                row = cursor.fetchone()
-                
-                if row and row[0]:
-                    spotify_artist_id = row[0]
-                    log_info(f'Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
-                    log_debug(f'Cached Spotify artist ID: {spotify_artist_id}')
-                else:
-                    log_info(f'Looking up Spotify artist ID for: {artist}')
-                    rate_limiter = get_rate_limiter()
-                    can_proceed, reason = rate_limiter.check_spotify_limit()
-                    if not can_proceed:
-                        log_debug(f'Spotify rate limit check failed: {reason}')
-                        if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
-                            log_info(f'Skipping Spotify artist ID lookup for {artist} due to rate limits')
-                    else:
-                        spotify_artist_id = _run_with_timeout(
-                            get_spotify_artist_id, 
-                            API_CALL_TIMEOUT, 
-                            f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
-                            artist
-                        )
-                        # Record API request for rate limiting
-                        rate_limiter.record_spotify_request()
-                        log_debug(f'Spotify API call recorded for rate limiting')
-                        
-                if spotify_artist_id:
-                    log_info(f'Spotify artist ID found: {spotify_artist_id}')
-                    log_debug(f'Updating all tracks for artist {artist} with Spotify artist ID: {spotify_artist_id}')
-                    # Batch update all tracks for this artist with the artist ID
-                    update_artist_id_for_artist(artist, spotify_artist_id)
+            is_compilation_group = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack')
+            
+            if not is_compilation_group:
+                # Lookup Spotify artist ID for non-compilation artists
+                try:
+                    # First, try to get cached artist ID from database
+                    cursor.execute("""
+                        SELECT spotify_artist_id 
+                        FROM tracks 
+                        WHERE artist = ? AND spotify_artist_id IS NOT NULL 
+                        LIMIT 1
+                    """, (artist,))
+                    row = cursor.fetchone()
                     
-                    # Fetch and update Discogs artist ID from Discogs API during popularity scan
-                    try:
-                        from popularity_helpers import update_discogs_artist_id_for_artist
-                        from api_clients.discogs import DiscogsClient
+                    if row and row[0]:
+                        spotify_artist_id = row[0]
+                        log_info(f'Using cached Spotify artist ID for {artist}: {spotify_artist_id}')
+                        log_debug(f'Cached Spotify artist ID: {spotify_artist_id}')
+                    else:
+                        log_info(f'Looking up Spotify artist ID for: {artist}')
+                        rate_limiter = get_rate_limiter()
+                        can_proceed, reason = rate_limiter.check_spotify_limit()
+                        if not can_proceed:
+                            log_debug(f'Spotify rate limit check failed: {reason}')
+                            if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
+                                log_info(f'Skipping Spotify artist ID lookup for {artist} due to rate limits')
+                        else:
+                            spotify_artist_id = _run_with_timeout(
+                                get_spotify_artist_id, 
+                                API_CALL_TIMEOUT, 
+                                f"Spotify artist ID lookup timed out after {API_CALL_TIMEOUT}s",
+                                artist
+                            )
+                            # Record API request for rate limiting
+                            rate_limiter.record_spotify_request()
+                            log_debug(f'Spotify API call recorded for rate limiting')
+                            
+                    if spotify_artist_id:
+                        log_info(f'Spotify artist ID found: {spotify_artist_id}')
+                        log_debug(f'Updating all tracks for artist {artist} with Spotify artist ID: {spotify_artist_id}')
+                        # Batch update all tracks for this artist with the artist ID
+                        update_artist_id_for_artist(artist, spotify_artist_id)
                         
-                        # Get Discogs client if available
-                        discogs_config = config.get("api_integrations", {}).get("discogs", {})
-                        if discogs_config.get("enabled") and discogs_config.get("personal_token"):
-                            try:
-                                discogs_client = DiscogsClient(token=discogs_config.get("personal_token"))
-                                discogs_artist_id = _run_with_timeout(
-                                    discogs_client.get_artist_id,
-                                    12,  # 12 second timeout for Discogs artist lookup
-                                    f"Discogs artist ID lookup timed out after 12s",
-                                    artist
+                        # Fetch and update Discogs artist ID from Discogs API during popularity scan
+                        try:
+                            from popularity_helpers import update_discogs_artist_id_for_artist
+                            from api_clients.discogs import DiscogsClient
+                            
+                            # Get Discogs client if available
+                            discogs_config = config.get("api_integrations", {}).get("discogs", {})
+                            if discogs_config.get("enabled") and discogs_config.get("personal_token"):
+                                try:
+                                    discogs_client = DiscogsClient(token=discogs_config.get("personal_token"))
+                                    discogs_artist_id = _run_with_timeout(
+                                        discogs_client.get_artist_id,
+                                        12,  # 12 second timeout for Discogs artist lookup
+                                        f"Discogs artist ID lookup timed out after 12s",
+                                        artist
+                                    )
+                                    
+                                    if discogs_artist_id:
+                                        log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
+                                        # Update all tracks for this artist
+                                        update_discogs_artist_id_for_artist(artist, discogs_artist_id)
+                                        log_debug(f'Updated artist Discogs ID in database: {artist} -> {discogs_artist_id}')
+                                    else:
+                                        log_debug(f'No Discogs artist ID found for artist: {artist}')
+                                except TimeoutError as e:
+                                    log_debug(f"Discogs artist ID lookup timed out for {artist}: {e}")
+                                except Exception as e:
+                                    log_debug(f"Discogs artist ID lookup failed for {artist}: {e}")
+                            else:
+                                log_debug(f"Discogs not enabled or token missing for artist: {artist}")
+                        except Exception as e:
+                            log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
+                        
+                        # Fetch and update artist country from MusicBrainz during popularity scan
+                        try:
+                            if HAVE_MUSICBRAINZ:
+                                log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
+                                artist_country = _run_with_timeout(
+                                    get_artist_country,
+                                    12,  # 12 second timeout for country lookup
+                                    f"Artist country lookup timed out after 12s",
+                                    artist,
+                                    enabled=True
                                 )
                                 
-                                if discogs_artist_id:
-                                    log_info(f'Discogs artist ID found: {artist} -> {discogs_artist_id}')
-                                    # Update all tracks for this artist
-                                    update_discogs_artist_id_for_artist(artist, discogs_artist_id)
-                                    log_debug(f'Updated artist Discogs ID in database: {artist} -> {discogs_artist_id}')
+                                if artist_country:
+                                    log_info(f'Artist country found: {artist} -> {artist_country}')
+                                    # Update or insert artist entry using UPSERT
+                                    cursor.execute("""
+                                        INSERT INTO artists (id, name, country) 
+                                        VALUES (?, ?, ?)
+                                        ON CONFLICT(id) DO UPDATE SET country = excluded.country
+                                    """, (artist, artist, artist_country))
+                                    
+                                    # Update tracks table with artist country
+                                    cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
+                                                 (artist_country, artist))
+                                    conn.commit()
+                                    log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
                                 else:
-                                    log_debug(f'No Discogs artist ID found for artist: {artist}')
-                            except TimeoutError as e:
-                                log_debug(f"Discogs artist ID lookup timed out for {artist}: {e}")
-                            except Exception as e:
-                                log_debug(f"Discogs artist ID lookup failed for {artist}: {e}")
-                        else:
-                            log_debug(f"Discogs not enabled or token missing for artist: {artist}")
-                    except Exception as e:
-                        log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
-                    
-                    # Fetch and update artist country from MusicBrainz during popularity scan
-                    try:
-                        if HAVE_MUSICBRAINZ:
-                            log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
-                            artist_country = _run_with_timeout(
-                                get_artist_country,
-                                12,  # 12 second timeout for country lookup
-                                f"Artist country lookup timed out after 12s",
-                                artist,
-                                enabled=True
-                            )
-                            
-                            if artist_country:
-                                log_info(f'Artist country found: {artist} -> {artist_country}')
-                                # Update or insert artist entry using UPSERT
-                                cursor.execute("""
-                                    INSERT INTO artists (id, name, country) 
-                                    VALUES (?, ?, ?)
-                                    ON CONFLICT(id) DO UPDATE SET country = excluded.country
-                                """, (artist, artist, artist_country))
-                                
-                                # Update tracks table with artist country
-                                cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
-                                             (artist_country, artist))
-                                conn.commit()
-                                log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
-                            else:
-                                log_debug(f'No country information found for artist: {artist}')
-                    except TimeoutError as e:
-                        log_debug(f"Artist country lookup timed out for {artist}: {e}")
-                    except Exception as e:
-                        log_debug(f"Artist country lookup failed for {artist}: {e}")
-                else:
-                    log_info(f'No Spotify artist ID found for: {artist}')
-            except TimeoutError as e:
-                log_info(f"Spotify artist ID lookup timed out for {artist}")
-                log_debug(f"Timeout error: {e}")
-            except Exception as e:
-                log_info(f"Spotify artist ID lookup failed for {artist}: {e}")
-                log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
+                                    log_debug(f'No country information found for artist: {artist}')
+                        except TimeoutError as e:
+                            log_debug(f"Artist country lookup timed out for {artist}: {e}")
+                        except Exception as e:
+                            log_debug(f"Artist country lookup failed for {artist}: {e}")
+                    else:
+                        log_info(f'No Spotify artist ID found for: {artist}')
+                except TimeoutError as e:
+                    log_info(f"Spotify artist ID lookup timed out for {artist}")
+                    log_debug(f"Timeout error: {e}")
+                except Exception as e:
+                    log_info(f"Spotify artist ID lookup failed for {artist}: {e}")
+                    log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
+            else:
+                log_info(f"Skipping Spotify/Discogs/MusicBrainz lookups for compilation album group: {artist}")
+            
             
             # Load Discogs token ONCE before album loop (needed for both popularity scan and singles detection)
             discogs_token = os.environ.get("DISCOGS_TOKEN", "")
@@ -1845,9 +1867,10 @@ def popularity_scan(
                     for track in album_tracks:
                         track_id = track["id"]
                         title = track["title"]
+                        track_artist = track["artist"]
 
                         log_info(f'Processing track: "{title}" (Track ID: {track_id})')
-                        log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {artist}')
+                        log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {track_artist}')
 
                     # Check if we can use the complete cached popularity_score
                     # This avoids all API calls if the final score is still valid
@@ -2267,24 +2290,16 @@ def popularity_scan(
                 # the core album and is not skewed by bonus tracks.
                 album_is_underperforming = False
                 if artist_stats['track_count'] > MIN_TRACKS_FOR_ARTIST_COMPARISON:
-                    # Get album popularities for median calculation
-                    cursor.execute("""
-                        SELECT popularity_score, title, album
-                        FROM tracks 
-                        WHERE artist = ? AND album = ? AND popularity_score > 0
-                    """, (artist, album))
-                    rows = cursor.fetchall()
-                    log_debug(f"Retrieved {len(rows)} tracks for album median calculation")
-                    
-                    # Filter out live/remix/alternate tracks before calculating album median
+                    # Use tracks already loaded in album_tracks instead of querying by artist
+                    # This works for both regular artists and compilation albums
                     album_pops = []
-                    for row in rows:
-                        popularity_score = row[0]
-                        title = row[1] if row[1] else ""
-                        album_name = row[2] if row[2] else ""
+                    for track in album_tracks:
+                        popularity_score = row_get(track, 'popularity_score', 0)
+                        title = row_get(track, 'title', '')
+                        album_name = row_get(track, 'album', '')
                         
                         # Exclude live/remix/alternate versions from album median calculation
-                        if not should_exclude_track_from_stats(title, album_name):
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
                             album_pops.append(popularity_score)
                     
                     if album_pops and artist_median > 0:
@@ -2347,9 +2362,11 @@ def popularity_scan(
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     
                     # Use the centralized single detection function with advanced parameters
+                    # Use track's individual artist, not the grouping artist
+                    track_artist = track["artist"]
                     detection_result = detect_single_for_track(
                         title=title,
-                        artist=artist,
+                        artist=track_artist,
                         album_track_count=album_track_count,
                         spotify_results_cache=spotify_results_cache,
                         verbose=verbose,  # Pass function parameter, not module constant
