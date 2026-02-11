@@ -12,6 +12,7 @@ import json
 import logging
 import sqlite3
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from api_clients.spotify import SpotifyClient
@@ -69,7 +70,7 @@ class SpotifyMetadataFetcher:
             return True
         
         try:
-            # Fetch track metadata
+            # Fetch track metadata first (needed to get IDs for other calls)
             track_meta = self.client.get_track_metadata(track_id)
             if not track_meta:
                 logger.warning(f"Failed to fetch track metadata for {track_id}")
@@ -82,18 +83,37 @@ class SpotifyMetadataFetcher:
             if artists:
                 artist_id = artists[0].get("id")
             
-            # Fetch audio features
-            audio_features = self.client.get_audio_features(track_id)
-            
-            # Fetch artist metadata
+            # Fetch audio features, artist metadata, and album metadata in parallel
+            # to reduce total API call time from ~122s (4 sequential) to ~61s (1 + max(3 parallel))
+            audio_features = None
             artist_metadata = None
-            if artist_id:
-                artist_metadata = self.client.get_artist_metadata(artist_id)
-            
-            # Fetch album metadata
             album_metadata = None
-            if album_id:
-                album_metadata = self.client.get_album_metadata(album_id)
+            
+            with ThreadPoolExecutor(max_workers=3) as executor:
+                # Submit all three API calls concurrently
+                future_to_key = {}
+                
+                future_to_key[executor.submit(self.client.get_audio_features, track_id)] = 'audio'
+                
+                if artist_id:
+                    future_to_key[executor.submit(self.client.get_artist_metadata, artist_id)] = 'artist'
+                
+                if album_id:
+                    future_to_key[executor.submit(self.client.get_album_metadata, album_id)] = 'album'
+                
+                # Collect results as they complete (most efficient)
+                for future in as_completed(future_to_key.keys()):
+                    key = future_to_key[future]
+                    try:
+                        result = future.result(timeout=35)  # Individual call timeout
+                        if key == 'audio':
+                            audio_features = result
+                        elif key == 'artist':
+                            artist_metadata = result
+                        elif key == 'album':
+                            album_metadata = result
+                    except Exception as e:
+                        logger.warning(f"Failed to fetch {key} metadata for {track_id}: {e}")
             
             # Process and store metadata
             self._store_track_metadata(

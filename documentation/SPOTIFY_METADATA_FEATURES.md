@@ -223,10 +223,14 @@ When the popularity scanner runs, it now:
 
 ### Performance Optimization
 
+- **Parallel API calls** - Audio features, artist metadata, and album metadata are fetched concurrently
 - **Batch API requests** - Audio features are fetched in batches of up to 100 tracks
 - **Caching** - Previously fetched metadata is reused
 - **Rate limiting** - Built-in retry logic prevents API throttling
 - **Selective updates** - Only tracks needing refresh are processed
+- **Timeout management** - Dedicated 90-second timeout for comprehensive metadata fetching (vs. 30s for single API calls)
+
+With parallel fetching, the time to fetch comprehensive metadata is reduced from ~122 seconds (4 sequential calls) to ~61 seconds (1 initial call + max of 3 parallel calls).
 
 ---
 

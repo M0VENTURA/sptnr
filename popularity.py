@@ -737,6 +737,11 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
 # Timeout configuration for API calls (in seconds)
 API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 
+# Comprehensive metadata timeout (allows for parallel API calls)
+# With parallel fetching: track_meta (~30.5s) + max(audio, artist, album) (~30.5s) = ~61s
+# Setting to 90s provides buffer for retries and network latency
+COMPREHENSIVE_METADATA_TIMEOUT = int(os.environ.get("COMPREHENSIVE_METADATA_TIMEOUT", "90"))
+
 # Discogs API rate limiting constants
 _DISCOGS_LAST_REQUEST_TIME = 0
 _DISCOGS_MIN_INTERVAL = 0.35
@@ -2040,8 +2045,8 @@ def popularity_scan(
                                             log_debug(f"Fetching comprehensive metadata for track ID: {spotify_track_id}")
                                             metadata_fetched = _run_with_timeout(
                                                 fetch_comprehensive_metadata,
-                                                API_CALL_TIMEOUT,
-                                                f"Comprehensive metadata fetch timed out after {API_CALL_TIMEOUT}s",
+                                                COMPREHENSIVE_METADATA_TIMEOUT,
+                                                f"Comprehensive metadata fetch timed out after {COMPREHENSIVE_METADATA_TIMEOUT}s",
                                                 db_track_id=track_id,
                                                 spotify_track_id=spotify_track_id,
                                                 force_refresh=force
