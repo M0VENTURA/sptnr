@@ -929,6 +929,7 @@ from popularity_helpers import (
     calculate_lastfm_popularity_score,
     score_by_age,
     update_artist_id_for_artist,
+    get_lastfm_client,
     SPOTIFY_WEIGHT,
     LASTFM_WEIGHT,
     AGE_WEIGHT,
@@ -1176,6 +1177,9 @@ def detect_single_for_track(
             if HAVE_MUSICBRAINZ:
                 musicbrainz_client = _get_timeout_safe_musicbrainz_client()
             
+            # Get Last.fm client
+            lastfm_client = get_lastfm_client()
+            
             # Run enhanced detection
             result = detect_single_enhanced(
                 conn=conn,
@@ -1189,6 +1193,7 @@ def detect_single_for_track(
                 spotify_results=spotify_search_results,
                 discogs_client=discogs_client,
                 musicbrainz_client=musicbrainz_client,
+                lastfm_client=lastfm_client,
                 verbose=verbose,
                 album_type=album_type,
                 album_is_underperforming=album_is_underperforming,
