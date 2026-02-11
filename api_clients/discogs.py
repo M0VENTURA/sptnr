@@ -520,7 +520,14 @@ class DiscogsClient:
                     continue
                 
                 mtitle = (tracks[best_idx].get("title", "") or "").lower()
+                
+                # Skip if marked as live or remix and not in appropriate context
                 if ("live" in mtitle or "remix" in mtitle) and not allow_live_ctx:
+                    continue
+                
+                # Skip if marked as B-side (B-sides are not primary singles)
+                if any(bside_marker in mtitle for bside_marker in ["b-side", "b side", "bside", "(b)", "- b)"]):
+                    logger.debug(f"Discogs: Skipping B-side track '{tracks[best_idx].get('title', '')}' for '{artist}'")
                     continue
                 
                 # Strong path 1: explicit Single in formats
