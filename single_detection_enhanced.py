@@ -972,7 +972,8 @@ def check_has_explicit_metadata(
     discogs_client=None,
     musicbrainz_client=None,
     artist: str = "",
-    duration: Optional[float] = None
+    duration: Optional[float] = None,
+    artist_mbid: Optional[str] = None
 ) -> bool:
     """
     Check if track has ANY explicit metadata from external sources.
@@ -1016,7 +1017,7 @@ def check_has_explicit_metadata(
     # Check MusicBrainz
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         try:
-            if musicbrainz_client.is_single(title, artist):
+            if musicbrainz_client.is_single(title, artist, artist_mbid=artist_mbid):
                 return True
         except Exception:
             pass  # Fail gracefully
@@ -1030,7 +1031,8 @@ def check_metadata_for_live_version(
     discogs_client=None,
     musicbrainz_client=None,
     artist: str = "",
-    duration: Optional[float] = None
+    duration: Optional[float] = None,
+    artist_mbid: Optional[str] = None
 ) -> bool:
     """
     Check if there's metadata for the EXACT live version of this track.
@@ -1041,7 +1043,7 @@ def check_metadata_for_live_version(
     # For now, use same logic as has_explicit_metadata
     # In a more sophisticated implementation, we would check if the metadata
     # specifically mentions "live" in the release title
-    return check_has_explicit_metadata(title, spotify_results, discogs_client, musicbrainz_client, artist, duration)
+    return check_has_explicit_metadata(title, spotify_results, discogs_client, musicbrainz_client, artist, duration, artist_mbid)
 
 
 def detect_single_enhanced(
@@ -1380,8 +1382,20 @@ def detect_single_enhanced(
                     log_info(f"   Checking MusicBrainz for single: {title}")
                     log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
                     
-                    # Use existing is_single method
-                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist)
+                    # Get artist MBID if available (for more accurate lookup)
+                    artist_mbid = None
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute("SELECT beets_artist_mbid FROM tracks WHERE artist = ? AND beets_artist_mbid IS NOT NULL LIMIT 1", (artist,))
+                        row = cursor.fetchone()
+                        if row:
+                            artist_mbid = row[0]
+                            log_debug(f"[MUSICBRAINZ] Found artist MBID for '{artist}': {artist_mbid}")
+                    except Exception as e:
+                        log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
+                    
+                    # Use is_single method with artist MBID (preferred) and fallback to name-based search
+                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist, artist_mbid=artist_mbid)
                     if musicbrainz_confirmed:
                         result['single_sources'].append('musicbrainz')
                         result['single_sources_used'].append('musicbrainz')

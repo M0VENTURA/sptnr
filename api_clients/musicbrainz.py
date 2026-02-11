@@ -234,22 +234,41 @@ class MusicBrainzClient:
             self.session.mount("http://", HTTPAdapter(max_retries=retry_strategy))
             self.session.mount("https://", ssl_adapter)
     
-    def is_single(self, title: str, artist: str) -> bool:
+    def is_single(self, title: str, artist: str, artist_mbid: str = None) -> bool:
         """
-        Query MusicBrainz release-group by title+artist and check primary-type=Single.
+        Query MusicBrainz to check if a track is a single.
+        
+        Two-stage approach:
+        1. If artist_mbid is available, query by MBID (more accurate, avoids disambiguation)
+        2. Fall back to title+artist name search (for cases without MBID)
         
         Also verifies that the version matches (e.g., doesn't match a studio single
         when checking a live version).
         
         Args:
             title: Track title
-            artist: Artist name
+            artist: Artist name (used as fallback if MBID not available)
+            artist_mbid: Optional MusicBrainz artist ID (preferred for accuracy)
             
         Returns:
             True if release-group type is Single AND version matches
         """
         if not self.enabled:
             return False
+        
+        # Stage 1: Try MBID-based lookup if available (more accurate)
+        if artist_mbid:
+            try:
+                result = self.is_single_by_artist_mbid(title, artist_mbid)
+                if result:
+                    logger.debug(f"MusicBrainz single detection: Found via artist MBID for '{title}'")
+                    return True
+                # If MBID lookup found no match, fall through to name-based search
+                logger.debug(f"MusicBrainz single detection: MBID query returned no match for '{title}', trying name-based search")
+            except Exception as e:
+                logger.debug(f"MusicBrainz MBID lookup failed for '{title}': {e}, falling back to name-based search")
+        
+        # Stage 2: Fall back to name-based search (reliable fallback)
         
         # Extract version information from the track title
         base_title, track_versions = _extract_version_info(title)
@@ -336,6 +355,91 @@ class MusicBrainzClient:
                     return False
             except Exception as e:
                 logger.warning(f"MusicBrainz is_single unexpected error for '{title}' by '{artist}': {e}")
+                return False
+    
+    def is_single_by_artist_mbid(self, title: str, artist_mbid: str) -> bool:
+        """
+        Query MusicBrainz release-groups by artist MBID to find singles.
+        
+        This is more comprehensive than name-based search as it queries all releases
+        by that specific artist, avoiding disambiguation and name variation issues.
+        
+        Args:
+            title: Track title
+            artist_mbid: MusicBrainz artist ID
+            
+        Returns:
+            True if a matching single is found for this title by the artist
+        """
+        if not self.enabled or not artist_mbid:
+            return False
+        
+        # Extract version information from the track title
+        base_title, track_versions = _extract_version_info(title)
+        
+        max_retries = 3
+        retry_delay = 1.0
+        for attempt in range(max_retries):
+            try:
+                # Use rate limiter to enforce proper delays between requests
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    # Fallback to simple delay if rate limiter not available
+                    time.sleep(1.0)
+                
+                # Query release-groups by artist MBID
+                # This returns all release groups by this artist
+                params = {
+                    "artist": artist_mbid,
+                    "primarytype": "Single",
+                    "fmt": "json",
+                    "limit": 50  # Get more results per page for comprehensive search
+                }
+                
+                if attempt == 0:
+                    logger.debug(f"MusicBrainz is_single_by_artist_mbid: artist={artist_mbid}, looking for '{title}'")
+                
+                res = self.session.get(
+                    f"{self.base_url}release-group/",
+                    params=params,
+                    headers=self.headers,
+                    timeout=(5, 10)  # (connect_timeout, read_timeout)
+                )
+                
+                res.raise_for_status()
+                rgs = res.json().get("release-groups", [])
+                
+                logger.debug(f"MusicBrainz found {len(rgs)} singles by artist {artist_mbid}")
+                
+                # Check if any result matches the track title
+                for rg in rgs:
+                    rg_title = rg.get("title", "")
+                    rg_base_title, rg_versions = _extract_version_info(rg_title)
+                    
+                    # Match if:
+                    # 1. Base titles match exactly (case-insensitive)
+                    # 2. AND version keywords match (both live, both acoustic, or both studio)
+                    if base_title.lower() == rg_base_title.lower() and track_versions == rg_versions:
+                        logger.debug(f"MusicBrainz single by MBID: '{title}' matched '{rg_title}' (artist MBID: {artist_mbid})")
+                        return True
+                
+                # No matching single found
+                logger.debug(f"MusicBrainz: No matching single found for '{title}' using artist MBID: {artist_mbid}")
+                return False
+                
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                error_type = type(e).__name__
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz is_single_by_artist_mbid attempt {attempt+1}/{max_retries} failed: {error_type}, retrying in {retry_delay}s...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.info(f"MusicBrainz is_single_by_artist_mbid unavailable for '{title}' (MBID: {artist_mbid}) after {max_retries} attempts: {error_type}")
+                    return False
+            except Exception as e:
+                logger.warning(f"MusicBrainz is_single_by_artist_mbid error for '{title}' (artist MBID: {artist_mbid}): {e}")
                 return False
     
     def get_genres(self, title: str, artist: str) -> list[str]:
