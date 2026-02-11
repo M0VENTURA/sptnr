@@ -1858,6 +1858,51 @@ def popularity_scan(
                 # Initialize unconditionally for both singles_only and normal mode
                 spotify_results_cache = {}
                 
+                # Collect Last.fm data for all album tracks for z-score normalization
+                # This enables us to calculate z-scores relative to the album
+                album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
+                if not singles_only:
+                    log_info(f'Pre-fetching Last.fm data for all tracks in album "{album}" for z-score normalization')
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        title = track["title"]
+                        track_artist = track["artist"]
+                        
+                        # Skip if already have cached data
+                        cached_lastfm = row_get(track, 'lastfm_track_playcount', 0)
+                        if cached_lastfm > 0:
+                            album_lastfm_data[track_id] = {
+                                "listeners": cached_lastfm,  # Note: now stores listeners not playcount
+                                "playcount": 0  # Will be fetched if needed
+                            }
+                            log_debug(f'Using cached Last.fm listeners for {title}: {cached_lastfm}')
+                            continue
+                        
+                        # Fetch from Last.fm API if not cached
+                        try:
+                            rate_limiter = get_rate_limiter()
+                            can_proceed, reason = rate_limiter.check_lastfm_limit()
+                            if can_proceed:
+                                lastfm_info = _run_with_timeout(
+                                    get_lastfm_track_info,
+                                    API_CALL_TIMEOUT,
+                                    f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
+                                    track_artist, title
+                                )
+                                rate_limiter.record_lastfm_request()
+                                
+                                if lastfm_info:
+                                    listeners = lastfm_info.get("listeners", 0)
+                                    playcount = lastfm_info.get("track_play", 0)
+                                    album_lastfm_data[track_id] = {
+                                        "listeners": listeners,
+                                        "playcount": playcount
+                                    }
+                                    log_debug(f'Fetched Last.fm data for {title}: listeners={listeners}, playcount={playcount}')
+                        except Exception as e:
+                            log_debug(f'Failed to fetch Last.fm data for {title}: {e}')
+                            album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
+                
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only:
                     # Batch updates for this album (commit once at end instead of per-track)
@@ -2088,9 +2133,24 @@ def popularity_scan(
                             if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
                                 cached_listeners = row_get(track, 'lastfm_track_playcount', 0)
                                 if cached_listeners > 0:
-                                    lastfm_score = calculate_lastfm_popularity_score(cached_listeners)
+                                    # Use z-score calculation for cached data too
+                                    album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
+                                    album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
+                                    
+                                    if album_listeners_list and album_playcounts_list:
+                                        from popularity_helpers import calculate_lastfm_zscore_popularity
+                                        lastfm_score = calculate_lastfm_zscore_popularity(
+                                            cached_listeners, 0,  # We don't have cached playcount for old data
+                                            album_listeners_list,
+                                            album_playcounts_list
+                                        )
+                                        log_info(f'Using cached Last.fm listeners with z-score for: {title} (listeners: {cached_listeners}, score: {lastfm_score:.1f})')
+                                    else:
+                                        # Fallback to simple logarithmic scoring if not enough album data
+                                        lastfm_score = calculate_lastfm_popularity_score(cached_listeners)
+                                        log_info(f'Using cached Last.fm listeners for: {title} (count: {cached_listeners}, score: {lastfm_score:.1f}, fallback mode)')
+                                    
                                     skip_lastfm_lookup = True
-                                    log_info(f'Using cached Last.fm listeners for: {title} (count: {cached_listeners}, score: {lastfm_score:.1f})')
                                     log_debug(f'Cached Last.fm data reused for track {track_id}')
                     
                         if not skip_lastfm_lookup:  # Fetch from API if not cached
@@ -2122,10 +2182,33 @@ def popularity_scan(
                                     log_debug(f'Last.fm API response: {lastfm_info}')
                                     if lastfm_info and lastfm_info.get("listeners"):
                                         listeners = lastfm_info.get("listeners")
-                                        # Use improved logarithmic scoring based on total listeners
-                                        lastfm_score = calculate_lastfm_popularity_score(listeners)
-                                        log_info(f'Last.fm listeners: {listeners} (score: {lastfm_score:.1f})')
-                                        log_debug(f'Last.fm scoring - listeners: {listeners}, calculated score: {lastfm_score}')
+                                        playcount = lastfm_info.get("track_play", 0)
+                                        
+                                        # Store in album_lastfm_data for z-score calculation
+                                        album_lastfm_data[track_id] = {
+                                            "listeners": listeners,
+                                            "playcount": playcount
+                                        }
+                                        
+                                        # Collect all album listener and playcount data for z-score
+                                        album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
+                                        album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
+                                        
+                                        # Calculate z-score based popularity
+                                        if album_listeners_list and album_playcounts_list:
+                                            from popularity_helpers import calculate_lastfm_zscore_popularity
+                                            lastfm_score = calculate_lastfm_zscore_popularity(
+                                                listeners, playcount,
+                                                album_listeners_list,
+                                                album_playcounts_list
+                                            )
+                                            log_info(f'Last.fm z-score popularity: {lastfm_score:.1f} (listeners={listeners}, playcount={playcount}, album_tracks={len(album_listeners_list)})')
+                                            log_debug(f'Last.fm z-score data - listeners: {listeners}, playcount: {playcount}, album_mean_listeners: {sum(album_listeners_list)/len(album_listeners_list) if album_listeners_list else 0:.0f}')
+                                        else:
+                                            # Fallback to simple logarithmic scoring if not enough album data
+                                            lastfm_score = calculate_lastfm_popularity_score(listeners)
+                                            log_info(f'Last.fm listeners (fallback): {listeners} (score: {lastfm_score:.1f})')
+                                            log_debug(f'Not enough album data for z-score, using fallback logarithmic scoring')
                                     else:
                                         log_info(f'No Last.fm listeners data found for: {title}')
                             except TimeoutError as e:

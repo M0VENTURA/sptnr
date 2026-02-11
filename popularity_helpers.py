@@ -10,9 +10,10 @@ import math
 import logging
 import json
 import time
-from typing import Any, Tuple
+from typing import Any, Tuple, List, Dict
 from datetime import datetime
 from collections import defaultdict
+from statistics import mean, stdev
 
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
@@ -223,6 +224,80 @@ def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int 
     
     # Cap at 100
     return min(100.0, max(0.0, score))
+
+
+def calculate_lastfm_zscore_popularity(
+    listeners: int,
+    playcount: int,
+    album_listeners: List[int],
+    album_playcounts: List[int]
+) -> float:
+    """
+    Calculate Last.fm popularity score using z-score normalization that combines
+    both listeners and scrobbles (playcount), normalized by album.
+    
+    This method is more robust than single-metric scoring as it:
+    - Uses both unique listeners (reach) and play count (engagement)
+    - Normalizes within album context (z-scores) to account for album-level popularity
+    - Combines metrics to balance reach vs. engagement
+    
+    Algorithm:
+    1. Calculate z-score for listeners within album: (listeners - mean_listeners) / stdev_listeners
+    2. Calculate z-score for playcount within album: (playcount - mean_playcount) / stdev_playcount  
+    3. Average the two z-scores: (z_listeners + z_playcount) / 2
+    4. Convert averaged z-score to 0-100 scale
+    
+    Args:
+        listeners: Track's unique listener count on Last.fm
+        playcount: Track's scrobble count on Last.fm
+        album_listeners: List of all track listener counts in the album
+        album_playcounts: List of all track scrobble counts in the album
+        
+    Returns:
+        Popularity score (0-100) normalized to album context
+    """
+    if listeners <= 0 or playcount <= 0:
+        return 0.0
+    
+    # Need at least 2 tracks to calculate meaningful z-scores
+    if len(album_listeners) < 2 or len(album_playcounts) < 2:
+        return 0.0
+    
+    try:
+        # Calculate z-scores for listeners
+        listeners_mean = mean(album_listeners)
+        listeners_stdev = stdev(album_listeners)
+        
+        if listeners_stdev > 0:
+            z_listeners = (listeners - listeners_mean) / listeners_stdev
+        else:
+            z_listeners = 0.0
+        
+        # Calculate z-scores for playcounts
+        playcount_mean = mean(album_playcounts)
+        playcount_stdev = stdev(album_playcounts)
+        
+        if playcount_stdev > 0:
+            z_playcount = (playcount - playcount_mean) / playcount_stdev
+        else:
+            z_playcount = 0.0
+        
+        # Average the two z-scores (equal weight for reach and engagement)
+        average_zscore = (z_listeners + z_playcount) / 2.0
+        
+        # Convert z-score to 0-100 scale
+        # Z-scores typically range from -3 to +3, so we normalize:
+        # z_score of 0 (album average) → 50
+        # z_score of +1 (1 stdev above) → 66.7 (50 + 16.7)
+        # z_score of +2 (2 stdev above) → 83.3 (50 + 33.3) 
+        # z_score of -1 (1 stdev below) → 33.3 (50 - 16.7)
+        # Formula: 50 + (z_score * 16.7)
+        
+        score = 50.0 + (average_zscore * 16.7)
+        return min(100.0, max(0.0, score))
+        
+    except (ValueError, ZeroDivisionError):
+        return 0.0
 
 
 def score_by_age(playcount: Any, release_str: str):
