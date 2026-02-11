@@ -68,6 +68,8 @@ required_columns = {
     "disc_number": "INTEGER",               # Disc number for multi-disc albums
     "year": "INTEGER",                      # Release year
     "album_artist": "TEXT",                 # Album artist (may differ from track artist)
+    "albumartist": "TEXT",                  # Navidrome albumartist field (raw from metadata)
+    "albumartistsort": "TEXT",              # Album artist sort name
     "bpm": "INTEGER",                       # Beats per minute
     "bitrate": "INTEGER",                   # Audio bitrate in kbps
     "sample_rate": "INTEGER",               # Sample rate in Hz
@@ -75,6 +77,37 @@ required_columns = {
     "composer": "TEXT",                     # Composer/songwriter
     "comment": "TEXT",                      # Comment field from file
     "lyrics": "TEXT",                       # Song lyrics if embedded
+    # ✅ Additional Navidrome metadata fields
+    "arranger": "TEXT",                     # Track arranger
+    "artists": "TEXT",                      # JSON array of artist names
+    "artistsort": "TEXT",                   # Artist sort name
+    "asin": "TEXT",                         # Amazon Standard Identification Number
+    "barcode": "TEXT",                      # Album barcode (UPC/EAN)
+    "catalognumber": "TEXT",                # Catalog number
+    "label": "TEXT",                        # Record label
+    "media": "TEXT",                        # Release media type (CD, Vinyl, Digital, etc.)
+    "mixer": "TEXT",                        # Audio engineer/mixer
+    "performer": "TEXT",                    # JSON array of performer credits
+    "producer": "TEXT",                     # JSON array of producer names
+    "releasecountry": "TEXT",               # Release country code
+    "releasestatus": "TEXT",                # Release status (official, bootleg, etc.)
+    "releasetype": "TEXT",                  # Release type (album, single, EP, etc.)
+    "script": "TEXT",                       # Script code (e.g., Latn, Cyrl)
+    "work": "TEXT",                         # Musical work name
+    "writer": "TEXT",                       # JSON array of songwriter/writer names
+    # ✅ MusicBrainz relationship IDs
+    "musicbrainz_albumartistid": "TEXT",    # MusicBrainz album artist ID
+    "musicbrainz_albumid": "TEXT",          # MusicBrainz album/release ID
+    "musicbrainz_albumstatus": "TEXT",      # Release status from MusicBrainz
+    "musicbrainz_albumtype": "TEXT",        # Release type from MusicBrainz
+    "musicbrainz_releasegroupid": "TEXT",   # MusicBrainz release group ID
+    "musicbrainz_releasetrackid": "TEXT",   # MusicBrainz release track ID
+    "musicbrainz_workid": "TEXT",           # MusicBrainz work ID
+    # ✅ Date fields with more granularity
+    "originaldate": "TEXT",                 # Original release date (YYYY-MM-DD)
+    "originalyear": "INTEGER",              # Original release year
+    "totaldiscs": "INTEGER",                # Total number of discs
+    "tracktotal": "INTEGER",                # Total number of tracks on the album
     "cover_art_url": "TEXT",                # Album cover art URL from MusicBrainz
     # ✅ Genre fields from multiple sources
     "beets_genre": "TEXT",                  # Genre from beets metadata

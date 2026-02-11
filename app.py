@@ -3021,6 +3021,192 @@ def api_album_bulk_tag():
         return jsonify({"error": str(e)}), 500
 
 
+# ============================================================================
+# NAVIDROME METADATA TAG MANAGEMENT ENDPOINTS
+# ============================================================================
+
+@app.route("/api/tags/track/<track_id>", methods=["GET"])
+def api_get_track_tags(track_id):
+    """Get all editable metadata tags for a track"""
+    try:
+        from tag_manager import get_track_tags
+        
+        tags = get_track_tags(track_id)
+        if not tags:
+            return jsonify({"error": "Track not found"}), 404
+        
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "tags": tags
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error getting track tags: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tags/track/<track_id>", methods=["POST"])
+def api_update_track_tags(track_id):
+    """Update metadata tags for a single track"""
+    try:
+        from tag_manager import update_track_tags, sync_track_tags_to_file
+        
+        data = request.get_json()
+        tag_updates = data.get("tags", {})
+        sync_to_file = data.get("sync_to_file", False)
+        
+        if not tag_updates:
+            return jsonify({"error": "No tags to update"}), 400
+        
+        # Update database
+        success = update_track_tags(track_id, tag_updates)
+        if not success:
+            return jsonify({"error": "Failed to update tags"}), 500
+        
+        # Optionally sync back to audio file
+        file_synced = False
+        if sync_to_file:
+            file_synced = sync_track_tags_to_file(track_id)
+        
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "updated_fields": len(tag_updates),
+            "file_synced": file_synced,
+            "message": f"Updated {len(tag_updates)} field(s) for track {track_id}"
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error updating track tags: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tags/album/<path:album>/<path:artist>", methods=["GET"])
+def api_get_album_tags(album, artist):
+    """Get album-level metadata tags"""
+    try:
+        from urllib.parse import unquote
+        from tag_manager import get_album_tags, check_field_conflicts
+        
+        album = unquote(album)
+        artist = unquote(artist)
+        
+        tags = get_album_tags(album, artist)
+        if not tags:
+            return jsonify({"error": "Album not found"}), 404
+        
+        # Check for conflicts
+        conflicts = check_field_conflicts(album, artist)
+        
+        return jsonify({
+            "success": True,
+            "album": album,
+            "artist": artist,
+            "tags": tags,
+            "conflicts": conflicts if conflicts else None
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error getting album tags: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tags/album/<path:album>/<path:artist>", methods=["POST"])
+def api_update_album_tags(album, artist):
+    """Update metadata tags for all tracks in an album"""
+    try:
+        from urllib.parse import unquote
+        from tag_manager import update_album_tags, sync_track_tags_to_file
+        
+        album = unquote(album)
+        artist = unquote(artist)
+        
+        data = request.get_json()
+        tag_updates = data.get("tags", {})
+        selected_track_ids = data.get("track_ids", None)  # None = all tracks
+        sync_to_files = data.get("sync_to_files", False)
+        
+        if not tag_updates:
+            return jsonify({"error": "No tags to update"}), 400
+        
+        # Update database
+        updated_count = update_album_tags(album, artist, tag_updates, selected_track_ids)
+        
+        if updated_count == 0:
+            return jsonify({"error": "No tracks updated"}), 500
+        
+        # Optionally sync back to audio files
+        synced_count = 0
+        if sync_to_files:
+            # Get track IDs to sync
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            if selected_track_ids:
+                placeholders = ", ".join(["?" for _ in selected_track_ids])
+                cursor.execute(f"SELECT id FROM tracks WHERE album = ? AND artist = ? AND id IN ({placeholders})",
+                              [album, artist] + selected_track_ids)
+            else:
+                cursor.execute("SELECT id FROM tracks WHERE album = ? AND artist = ?", (album, artist))
+            
+            track_ids = [row[0] for row in cursor.fetchall()]
+            conn.close()
+            
+            for track_id in track_ids:
+                if sync_track_tags_to_file(track_id):
+                    synced_count += 1
+        
+        return jsonify({
+            "success": True,
+            "album": album,
+            "artist": artist,
+            "updated_count": updated_count,
+            "synced_count": synced_count,
+            "message": f"Updated {updated_count} track(s), synced {synced_count} file(s)"
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error updating album tags: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tags/album/<path:album>/<path:artist>/conflicts", methods=["GET"])
+def api_check_tag_conflicts(album, artist):
+    """Check for conflicting metadata values in an album"""
+    try:
+        from urllib.parse import unquote
+        from tag_manager import check_field_conflicts
+        
+        album = unquote(album)
+        artist = unquote(artist)
+        
+        conflicts = check_field_conflicts(album, artist)
+        
+        return jsonify({
+            "success": True,
+            "album": album,
+            "artist": artist,
+            "has_conflicts": bool(conflicts),
+            "conflicts": conflicts if conflicts else {}
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error checking tag conflicts: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/tags/sync/<track_id>", methods=["POST"])
+def api_sync_track_to_file(track_id):
+    """Sync database tags back to the audio file"""
+    try:
+        from tag_manager import sync_track_tags_to_file
+        
+        success = sync_track_tags_to_file(track_id)
+        
+        return jsonify({
+            "success": success,
+            "track_id": track_id,
+            "message": "Tags synced to file" if success else "Failed to sync tags to file"
+        })
+    except Exception as e:
+        logging.error(f"[TAGS] Error syncing track tags: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/album/search-art")
