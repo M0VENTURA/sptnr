@@ -1129,6 +1129,30 @@ def detect_single_enhanced(
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
         musicbrainz_confirmed = False
     
+    # Early return if 2+ secondary sources confirm (HIGH confidence)
+    secondary_sources_confirmed = sum([spotify_confirmed, musicbrainz_confirmed])
+    if secondary_sources_confirmed >= 2:
+        result['single_status'] = 'high'
+        result['single_confidence'] = 'high'
+        result['is_single'] = True
+        result['single_confidence_score'] = 1.0
+        
+        # Calculate z-scores for logging
+        album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+        result['z_score'] = album_z
+        result['album_z_score'] = album_z
+        artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+        artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+        result['artist_z_score'] = artist_z
+        
+        if verbose:
+            log_debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
+            log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
+            log_debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
+        
+        log_debug(f"[DETECT] ✓ RETURNING EARLY - {secondary_sources_confirmed} secondary sources confirmed (high confidence)")
+        return result
+    
     # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE) - ALSO SKIPPABLE
     discogs_video_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
