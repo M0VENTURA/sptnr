@@ -550,7 +550,7 @@ class BeetsAutoImporter:
                         UPDATE tracks SET
                             beets_mbid = ?,
                             beets_album_mbid = ?,
-                            beets_artist_mbid = ?,
+                            musicbrainz_artist_id = ?,
                             beets_album_artist = ?,
                             beets_year = ?,
                             beets_import_date = ?,

@@ -1397,10 +1397,9 @@ def artist_detail(name):
                 SUM(COALESCE(duration, 0)) as total_duration,
                 MIN(year) as earliest_year,
                 MAX(year) as latest_year,
-                MAX(beets_artist_mbid) as beets_artist_mbid,
+                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
                 MAX(spotify_artist_id) as spotify_artist_id,
                 MAX(lastfm_artist_mbid) as lastfm_artist_mbid,
-                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
                 MAX(discogs_artist_id) as discogs_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
@@ -2369,11 +2368,11 @@ def api_artist_bio():
             logging.debug(f"artist_metadata table query failed: {e}")
         
         # Get artist MBID from database for MusicBrainz lookup
-        cursor.execute("SELECT beets_artist_mbid FROM tracks WHERE artist = ? AND beets_artist_mbid IS NOT NULL LIMIT 1", (artist_name,))
+        cursor.execute("SELECT musicbrainz_artist_id FROM tracks WHERE artist = ? AND musicbrainz_artist_id IS NOT NULL LIMIT 1", (artist_name,))
         row = cursor.fetchone()
         conn.close()
         
-        artist_mbid = row['beets_artist_mbid'] if row else None
+        artist_mbid = row['musicbrainz_artist_id'] if row else None
         bio = ""
         source = "Unknown"
         mbid_newly_found = False
@@ -2588,10 +2587,10 @@ def api_artist_image():
         cursor = conn.cursor()
         cursor.execute("""
             SELECT 
-                COALESCE(musicbrainz_artist_id, lastfm_artist_mbid, beets_artist_mbid) as artist_mbid
+                COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid
             FROM tracks 
             WHERE artist = ? 
-            AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL OR beets_artist_mbid IS NOT NULL)
+            AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL)
             LIMIT 1
         """, (artist_name,))
         result = cursor.fetchone()
@@ -4006,7 +4005,7 @@ def track_detail(track_id):
         
         # Ensure beets columns exist (for backward compatibility)
         beets_columns = ['beets_mbid', 'beets_similarity', 'beets_album_mbid', 
-                        'beets_artist_mbid', 'beets_album_artist', 'beets_year',
+                        'beets_album_artist', 'beets_year',
                         'beets_import_date', 'beets_path', 'album_folder']
         for col in beets_columns:
             if col not in track:

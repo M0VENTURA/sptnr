@@ -86,7 +86,6 @@ required_columns = {
     "beets_mbid": "TEXT",                     # MusicBrainz ID from beets
     "beets_similarity": "REAL",               # Beets match similarity (0-1)
     "beets_album_mbid": "TEXT",               # Album MBID from beets
-    "beets_artist_mbid": "TEXT",              # Artist MBID from beets
     "beets_album_artist": "TEXT",             # Album artist from beets
     # ✅ Per-source single detection results (cached to avoid repeated API calls)
     "source_discogs_single": "INTEGER",       # 1 if Discogs API returned explicit single

@@ -411,12 +411,12 @@
                             </div>
                         </div>
                         {% endif %}
-                        {% if track.beets_artist_mbid %}
+                        {% if track.musicbrainz_artist_id %}
                         <div class="metadata-row">
                             <div class="metadata-label">MusicBrainz Artist</div>
                             <div class="metadata-value">
-                                <a href="https://musicbrainz.org/artist/{{ track.beets_artist_mbid }}" target="_blank" class="text-primary text-decoration-none">
-                                    {{ track.beets_artist_mbid[:8] }}...
+                                <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary text-decoration-none">
+                                    {{ track.musicbrainz_artist_id[:8] }}...
                                     <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
                                 </a>
                             </div>

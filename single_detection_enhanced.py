@@ -1388,7 +1388,7 @@ def detect_single_enhanced(
                     try:
                         cursor = conn.cursor()
                         cursor.execute(
-                            "SELECT COALESCE(beets_artist_mbid, musicbrainz_artist_id) as artist_mbid FROM tracks WHERE artist = ? AND (beets_artist_mbid IS NOT NULL OR musicbrainz_artist_id IS NOT NULL) LIMIT 1", 
+                            "SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = ? AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
                             (artist,)
                         )
                         row = cursor.fetchone()

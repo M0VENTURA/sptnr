@@ -404,7 +404,7 @@ plugins:
                 SELECT 
                     beets_mbid,
                     beets_album_mbid,
-                    beets_artist_mbid,
+                    musicbrainz_artist_id,
                     beets_similarity,
                     beets_album_artist,
                     beets_year,
@@ -422,7 +422,7 @@ plugins:
                     "success": True,
                     "mbid": row['beets_mbid'],
                     "album_mbid": row['beets_album_mbid'],
-                    "artist_mbid": row['beets_artist_mbid'],
+                    "artist_mbid": row['musicbrainz_artist_id'],
                     "similarity": row['beets_similarity'],
                     "album_artist": row['beets_album_artist'],
                     "year": row['beets_year'],

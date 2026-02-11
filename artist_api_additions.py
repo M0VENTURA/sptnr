@@ -26,11 +26,11 @@ def api_artist_bio():
         # First, get artist MBID from database
         conn = get_db()
         cursor = conn.cursor()
-        cursor.execute("SELECT beets_artist_mbid FROM tracks WHERE artist = ? AND beets_artist_mbid IS NOT NULL LIMIT 1", (artist_name,))
+        cursor.execute("SELECT musicbrainz_artist_id FROM tracks WHERE artist = ? AND musicbrainz_artist_id IS NOT NULL LIMIT 1", (artist_name,))
         row = cursor.fetchone()
         conn.close()
         
-        artist_mbid = row['beets_artist_mbid'] if row else None
+        artist_mbid = row['musicbrainz_artist_id'] if row else None
         
         if not artist_mbid:
             # Try to search for artist on MusicBrainz

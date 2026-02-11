@@ -101,7 +101,7 @@ def debug_artist_albums(artist_name):
                 COUNT(DISTINCT album) as album_count,
                 AVG(stars) as avg_stars,
                 SUM(CASE WHEN stars = 5 THEN 1 ELSE 0 END) as five_star_count,
-                MAX(beets_artist_mbid) as beets_artist_mbid,
+                MAX(musicbrainz_artist_id) as musicbrainz_artist_id,
                 MAX(spotify_artist_id) as spotify_artist_id,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
