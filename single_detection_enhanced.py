@@ -603,7 +603,8 @@ def determine_final_status(
     lastfm_single_confirmed: bool = False,
     popularity: float = 0.0,
     album_mean: float = 0.0,
-    has_metadata: bool = False
+    has_metadata: bool = False,
+    radio_edit_found: bool = False
 ) -> str:
     """
     Final single status based on source detection and z-score analysis.
@@ -619,6 +620,7 @@ def determine_final_status(
     - MusicBrainz confirms (strict, release_group.type == "Single")
     - Discogs video confirms
     - Last.fm album has 1-3 tracks (single indicator)
+    - Radio Edit found in Spotify search results
     - Z-score >= 0.5 (album) OR >= 1.0 (artist) WITH metadata confirmation (required)
     
     LOW-CONFIDENCE:
@@ -644,6 +646,7 @@ def determine_final_status(
         popularity: Track popularity score
         album_mean: Album mean popularity
         has_metadata: Whether track has any metadata sources
+        radio_edit_found: Whether a Radio Edit version was found in Spotify search results
         
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
@@ -676,6 +679,10 @@ def determine_final_status(
     
     # Last.fm album track count (1-3 tracks = single indicator)
     if lastfm_single_confirmed:
+        medium_confidence_count += 1
+    
+    # Radio Edit found in Spotify search results (single indicator)
+    if radio_edit_found:
         medium_confidence_count += 1
     
     # DETERMINE FINAL STATUS:
@@ -1020,6 +1027,7 @@ def detect_single_enhanced(
     
     # STAGE 3: Spotify (Secondary Source)
     spotify_confirmed = False
+    radio_edit_found = False
     if spotify_results:
         log_debug(f"[SPOTIFY] Checking {len(spotify_results)} Spotify results for single")
         norm_title = normalize_title_strict(title)
@@ -1030,6 +1038,16 @@ def detect_single_enhanced(
             album_name = album_info.get('name', '')
             
             log_debug(f"[SPOTIFY] Checking result: '{result_title}' (type: {album_type_check}, album: '{album_name}')")
+            
+            # Check for "Radio Edit" in title (medium confidence indicator for singles)
+            # This handles cases like "Song Name - Radio Edit" or "Song Name (Radio Edit)"
+            if re.search(r'[-\s\(]radio\s+edit', result_title, re.IGNORECASE):
+                # Verify base title matches by removing the radio edit suffix
+                base_title = re.sub(r'\s*[-\(]\s*radio\s+edit.*$', '', result_title, flags=re.IGNORECASE).strip()
+                if normalize_title_strict(base_title) == norm_title:
+                    radio_edit_found = True
+                    log_debug(f"[SPOTIFY] ✓ Radio Edit found: '{result_title}' (medium confidence indicator)")
+                    # Don't break, continue checking for exact matches
             
             # Check title match
             if normalize_title_strict(result_title) != norm_title:
@@ -1055,6 +1073,10 @@ def detect_single_enhanced(
             result['single_sources'].append('spotify')
             result['single_sources_used'].append('spotify')
             log_debug(f"[SPOTIFY] Spotify confirmed single for {title}")
+        elif radio_edit_found:
+            result['single_sources'].append('radio_edit')
+            result['single_sources_used'].append('radio_edit')
+            log_debug(f"[SPOTIFY] Radio Edit detected for {title} (medium confidence)")
         else:
             log_debug(f"[SPOTIFY] ✗ NOT confirmed - No single/EP matches found")
     else:
@@ -1351,7 +1373,8 @@ def detect_single_enhanced(
         lastfm_single_confirmed,
         popularity,
         album_mean,
-        has_metadata
+        has_metadata,
+        radio_edit_found
     )
     
     log_debug(f"[FINAL_DECISION] Final status determined: {final_status}")
