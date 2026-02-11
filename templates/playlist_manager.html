@@ -1649,30 +1649,6 @@ async function createPlaylistFromListenBrainz() {
   }
 }
 </script>
-{% endblock %}
-    
-    if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to create playlist');
-    }
-    
-    alert('✅ Playlist created successfully!');
-  } catch (error) {
-    console.error('Error creating playlist:', error);
-    alert('❌ Error: ' + error.message);
-  }
-}
-
-async function searchMissingTracksOnSoulseek() {
-  if (!lbRecommendationsData || !lbRecommendationsData.missing_tracks) {
-    alert('No missing tracks to search for');
-    return;
-  }
-  
-  alert('Soulseek search functionality coming soon!\n\nMissing ' + lbRecommendationsData.missing_tracks.length + ' tracks.');
-  // TODO: Implement batch search on Soulseek for missing tracks
-}
-</script>
 
 <style>
 /* Tab Section Styling */
