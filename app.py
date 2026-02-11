@@ -7501,21 +7501,45 @@ def api_album_art(artist, album):
         except:
             pass
         
-        # 1. Check if we have cover_art_url in database
+        # 1. Check if we have cover_art_url or spotify_album_art_url in database
         try:
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT cover_art_url FROM tracks 
-                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
-                AND cover_art_url IS NOT NULL 
-                LIMIT 1
-            """, (artist, album))
-            result = cursor.fetchone()
+            
+            # Try multiple strategies to find the album
+            cover_art_url = None
+            
+            # Strategy 1: Try matching by album_artist first
+            try:
+                cursor.execute("""
+                    SELECT cover_art_url, spotify_album_art_url FROM tracks 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
+                    LIMIT 1
+                """, (artist, album))
+                result = cursor.fetchone()
+                if result:
+                    # Prefer cover_art_url, fall back to spotify_album_art_url
+                    cover_art_url = result[0] if result[0] else result[1]
+            except:
+                pass
+            
+            # Strategy 2: If not found, try matching by artist alone (for backwards compat)
+            if not cover_art_url:
+                try:
+                    cursor.execute("""
+                        SELECT cover_art_url, spotify_album_art_url FROM tracks 
+                        WHERE artist = ? AND album = ? 
+                        LIMIT 1
+                    """, (artist, album))
+                    result = cursor.fetchone()
+                    if result:
+                        cover_art_url = result[0] if result[0] else result[1]
+                except:
+                    pass
+            
             conn.close()
             
-            if result and result[0]:
-                cover_art_url = result[0]
+            if cover_art_url:
                 try:
                     resp = requests.get(cover_art_url, timeout=5)
                     if resp.status_code == 200:
@@ -7523,12 +7547,13 @@ def api_album_art(artist, album):
                             io.BytesIO(resp.content),
                             mimetype='image/jpeg'
                         )
-                except:
+                except Exception as e:
+                    logging.debug(f"Failed to fetch cover_art_url from database: {e}")
                     pass  # Fall through to other methods
-        except:
-            pass
+        except Exception as e:
+            logging.debug(f"Error checking database for album art: {e}")
         
-        # 2. Try to get from Navidrome
+        # 2. Try to get from Navidrome (more robust search with artist name)
         try:
             cfg, _ = _read_yaml(CONFIG_PATH)
             nav_users = cfg.get("navidrome_users", [])
@@ -7546,37 +7571,54 @@ def api_album_art(artist, album):
                 if base_url:
                     session = create_retry_session(retries=2, backoff=0.2, status_forcelist=(429, 500, 502, 503, 504))
                     search_url = f"{base_url}/rest/search3.view"
-                    params = {
-                        'u': username,
-                        'p': password,
-                        'c': 'sptnr',
-                        'album': album,
-                        'v': '1.12.0',
-                        'f': 'json'
-                    }
                     
-                    resp = session.get(search_url, params=params, timeout=5)
-                    if resp.status_code == 200:
-                        data = resp.json()
-                        albums = data.get('subsonic-response', {}).get('searchResult3', {}).get('album', [])
-                        if albums:
-                            album_id = albums[0].get('id')
-                            if album_id:
-                                # Get cover art
-                                cover_url = f"{base_url}/rest/getCoverArt.view"
-                                cover_params = {
-                                    'u': username,
-                                    'p': password,
-                                    'c': 'sptnr',
-                                    'id': album_id,
-                                    'size': '300'
-                                }
-                                cover_resp = session.get(cover_url, params=cover_params, timeout=5)
-                                if cover_resp.status_code == 200:
-                                    return send_file(
-                                        io.BytesIO(cover_resp.content),
-                                        mimetype='image/jpeg'
-                                    )
+                    # Try multiple search strategies
+                    search_queries = [
+                        (artist, album),  # Both artist and album
+                        (album, None)      # Album only
+                    ]
+                    
+                    for search_artist, search_album in search_queries:
+                        params = {
+                            'u': username,
+                            'p': password,
+                            'c': 'sptnr',
+                            'v': '1.12.0',
+                            'f': 'json'
+                        }
+                        
+                        if search_artist and search_album:
+                            params['query'] = f"{search_artist} {search_album}"
+                        else:
+                            params['album'] = search_album or album
+                        
+                        try:
+                            resp = session.get(search_url, params=params, timeout=5)
+                            if resp.status_code == 200:
+                                data = resp.json()
+                                albums = data.get('subsonic-response', {}).get('searchResult3', {}).get('album', [])
+                                if albums:
+                                    album_id = albums[0].get('id')
+                                    if album_id:
+                                        # Get cover art
+                                        cover_url = f"{base_url}/rest/getCoverArt.view"
+                                        cover_params = {
+                                            'u': username,
+                                            'p': password,
+                                            'c': 'sptnr',
+                                            'id': album_id,
+                                            'size': '300'
+                                        }
+                                        cover_resp = session.get(cover_url, params=cover_params, timeout=5)
+                                        if cover_resp.status_code == 200:
+                                            return send_file(
+                                                io.BytesIO(cover_resp.content),
+                                                mimetype='image/jpeg'
+                                            )
+                                    break  # Found album, don't try again
+                        except Exception as e:
+                            logging.debug(f"Navidrome search attempt failed: {e}")
+                            continue
         except Exception as e:
             logging.debug(f"Navidrome cover art fetch failed: {e}")
         
@@ -7608,27 +7650,50 @@ def api_album_art(artist, album):
         try:
             from metadata_reader import extract_album_art_from_mp3
             
-            # Get a track file path from this album
+            # Get a track file path from this album (try multiple strategies)
             conn = get_db()
             cursor = conn.cursor()
-            cursor.execute("""
-                SELECT beets_path, file_path FROM tracks 
-                WHERE artist = ? AND album = ? 
-                AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
-                LIMIT 1
-            """, (artist, album))
-            result = cursor.fetchone()
+            
+            file_path = None
+            
+            # Strategy 1: Try matching by album_artist
+            try:
+                cursor.execute("""
+                    SELECT beets_path, file_path FROM tracks 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
+                    AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                    LIMIT 1
+                """, (artist, album))
+                result = cursor.fetchone()
+                if result:
+                    file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+            except:
+                pass
+            
+            # Strategy 2: Try matching by artist alone
+            if not file_path:
+                try:
+                    cursor.execute("""
+                        SELECT beets_path, file_path FROM tracks 
+                        WHERE artist = ? AND album = ? 
+                        AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                        LIMIT 1
+                    """, (artist, album))
+                    result = cursor.fetchone()
+                    if result:
+                        file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                except:
+                    pass
+            
             conn.close()
             
-            if result:
-                file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
-                if file_path and os.path.exists(file_path):
-                    art_data = extract_album_art_from_mp3(file_path)
-                    if art_data:
-                        return send_file(
-                            io.BytesIO(art_data),
-                            mimetype='image/jpeg'
-                        )
+            if file_path and os.path.exists(file_path):
+                art_data = extract_album_art_from_mp3(file_path)
+                if art_data:
+                    return send_file(
+                        io.BytesIO(art_data),
+                        mimetype='image/jpeg'
+                    )
         except Exception as e:
             logging.debug(f"Failed to extract album art from MP3: {e}")
         
