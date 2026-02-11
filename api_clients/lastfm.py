@@ -431,6 +431,81 @@ class LastFmClient:
             logger.debug(f"Failed to fetch Last.fm album info for '{album}' by '{artist}': {e}")
             return 0
     
+    def has_title_track(self, artist: str, album: str) -> bool:
+        """
+        Check if the album has a title track (track name matching album name).
+        
+        Used for single detection: singles released as EPs often have a title track
+        
+        Args:
+            artist: Artist name
+            album: Album name
+            
+        Returns:
+            True if album has a track with the same name as the album, False otherwise
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping album lookup.")
+            return False
+        
+        params = {
+            "method": "album.getInfo",
+            "artist": artist,
+            "album": album,
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json().get("album", {})
+            
+            # Get album name from response (might be normalized)
+            album_name = data.get("name", album)
+            
+            # Normalize album name for comparison (case-insensitive, strip whitespace)
+            normalized_album = album_name.lower().strip()
+            
+            # Last.fm returns tracks as a list or dict depending on context
+            tracks = data.get("tracks", {})
+            track_list = []
+            
+            if isinstance(tracks, dict):
+                # If it's a dict, it might have 'track' key with list or single item
+                track_data = tracks.get("track", [])
+                if isinstance(track_data, dict):
+                    # Single track
+                    track_list = [track_data]
+                elif isinstance(track_data, list):
+                    track_list = track_data
+            elif isinstance(tracks, list):
+                track_list = tracks
+            
+            # Check if any track name matches the album name
+            for track in track_list:
+                if isinstance(track, dict):
+                    track_name = track.get("name", "")
+                    normalized_track = track_name.lower().strip()
+                    if normalized_track == normalized_album:
+                        logger.debug(f"Found title track '{track_name}' matching album '{album_name}'")
+                        return True
+            
+            return False
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error checking title track for '{album}' by '{artist}': {e}")
+            return False
+        except Timeout as e:
+            logger.debug(f"Timeout checking title track for '{album}' by '{artist}': {e}")
+            return False
+        except HTTPError as e:
+            status_code = e.response.status_code if e.response else 'unknown'
+            logger.debug(f"HTTP error {status_code} checking title track for '{album}' by '{artist}': {e}")
+            return False
+        except Exception as e:
+            logger.debug(f"Failed to check title track for '{album}' by '{artist}': {e}")
+            return False
+    
     def get_recommendations(self) -> dict:
         """
         Fetch personalized recommendations from Last.fm for the current user.
