@@ -44,6 +44,13 @@ from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
 from helpers import create_retry_session
 
 try:
+    from metadata_reader import write_genre_to_audio_file
+except ImportError:
+    def write_genre_to_audio_file(file_path, genres):
+        """Fallback if metadata_reader not available"""
+        return False
+
+try:
     from scan_history import log_album_scan
     _scan_history_available = True
 except ImportError as e:
@@ -53,11 +60,15 @@ except ImportError as e:
         logging.debug(f"log_album_scan called but scan_history not available: {args}")
 
 try:
-    from helpers import detect_live_album
+    from helpers import detect_live_album, detect_christmas_song
 except ImportError:
     def detect_live_album(album_name):
         """Fallback if helpers module not available"""
         return {"is_live": False, "is_unplugged": False}
+    
+    def detect_christmas_song(track_title, album_title):
+        """Fallback if helpers module not available"""
+        return False
 
 try:
     from single_detector import get_current_single_detection
@@ -283,6 +294,21 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 navidrome_genre = t.get("genre", "")
                 navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
                 
+                # Detect Christmas songs and add Christmas genre
+                track_title = t.get("title", "")
+                is_christmas = detect_christmas_song(track_title, album_name)
+                if is_christmas:
+                    # Add Christmas to genre if not already present
+                    if navidrome_genre and "christmas" not in navidrome_genre.lower():
+                        # Append to existing genre
+                        navidrome_genre = f"{navidrome_genre}, Christmas"
+                        navidrome_genre_list.append("Christmas")
+                    elif not navidrome_genre:
+                        # Set Christmas as the genre
+                        navidrome_genre = "Christmas"
+                        navidrome_genre_list = ["Christmas"]
+                    log_debug(f"Detected Christmas song: {track_title} - Genre updated to: {navidrome_genre}")
+                
                 # Get file path from Navidrome track data
                 # Navidrome provides 'path' field which is the file path relative to music folder
                 navidrome_path = t.get("path", "")
@@ -293,7 +319,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 td = {
                     "id": track_id,
-                    "title": t.get("title", ""),
+                    "title": track_title,
                     "album": album_name,
                     "artist": t.get("artist", artist_name),
                     "score": 0.0,
@@ -301,7 +327,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre
+                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre (including Christmas if detected)
                     "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
                     "navidrome_genre": navidrome_genre,  # Also store in single genre field
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
@@ -378,6 +404,17 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 save_to_db(td)
                 imported_track_ids.add(track_id)  # Track this as successfully imported
+                
+                # If track is Christmas and has a file path, update the genre tag in the audio file
+                if is_christmas and navidrome_path:
+                    try:
+                        if write_genre_to_audio_file(navidrome_path, navidrome_genre):
+                            log_debug(f"Updated genre tags in audio file for Christmas song: {track_title}")
+                        else:
+                            log_debug(f"Failed to update genre tags in audio file for: {track_title}")
+                    except Exception as e:
+                        log_debug(f"Error writing genre tags to audio file {navidrome_path}: {e}")
+                
                 album_tracks_processed += 1
                 tracks_imported += 1
 

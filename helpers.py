@@ -118,6 +118,57 @@ def detect_live_album(album_title: str) -> dict:
     return {"is_live": is_live, "is_unplugged": is_unplugged}
 
 
+def detect_christmas_song(track_title: str, album_title: str) -> bool:
+    """
+    Detect if a song is a Christmas song based on its title or album title.
+    
+    Args:
+        track_title: Track title to analyze
+        album_title: Album title to analyze
+        
+    Returns:
+        True if detected as a Christmas song, False otherwise
+    """
+    if not track_title and not album_title:
+        return False
+    
+    # Combine both titles for checking
+    combined = f"{track_title or ''} {album_title or ''}".lower()
+    
+    # Christmas-related keywords (comprehensive list)
+    christmas_patterns = [
+        r'\bchristmas\b',
+        r'\bxmas\b',
+        r'\bx-mas\b',
+        r'\bholiday',  # "holiday" or "holidays"
+        r'\bnoel\b',
+        r'\bsanta\b',
+        r'\bsleigh\b',
+        r'\bjingle\b',
+        r'\bsilent night\b',
+        r'\bholy night\b',
+        r'\bwinter wonderland\b',
+        r'\bwhite christmas\b',
+        r'\bjingle bells\b',
+        r'\blast christmas\b',
+        r'\bmariah carey christmas\b',  # Common Christmas album
+        r'\bchristmas album\b',
+        r'\bchristmas collection\b',
+        r'\bchristmas carols\b',
+        r'\bxmas album\b',
+        r'\byule\b',
+        r'\byuletide\b',
+        r'\bfestive\b',
+        r'\badvent\b',
+        r'\breindeer\b',
+        r'\bingles\b',  # "jingles"
+        r'\bchristmastime\b',
+    ]
+    
+    # Check if any pattern matches
+    return any(re.search(pattern, combined) for pattern in christmas_patterns)
+
+
 def create_retry_session(user_agent: str | None = None, retries: int = 5, backoff: float = 1.2,
                          status_forcelist: tuple = (429, 500, 502, 503, 504),
                          allowed_methods: tuple = ("GET", "POST"),

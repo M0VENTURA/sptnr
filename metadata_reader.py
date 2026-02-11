@@ -336,3 +336,107 @@ def get_track_metadata_from_db(track_id, db_path="/database/sptnr.db"):
     return {}
 
 
+def write_genre_to_mp3(file_path, genres):
+    """
+    Write or append genre tag to MP3 file.
+    
+    Args:
+        file_path: Path to MP3 file
+        genres: Genre string or list of genres (e.g., "Pop, Christmas" or ["Pop", "Christmas"])
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not file_path or not os.path.exists(file_path):
+        return False
+    
+    try:
+        from mutagen.id3 import ID3, TCON
+        from mutagen.mp3 import MP3
+        
+        # Convert genres to list if string
+        if isinstance(genres, str):
+            genre_list = [g.strip() for g in genres.split(',') if g.strip()]
+        else:
+            genre_list = genres if isinstance(genres, list) else [genres]
+        
+        # Load the MP3 file
+        audio = MP3(file_path, ID3=ID3)
+        
+        # Create ID3 tags if they don't exist
+        if audio.tags is None:
+            audio.add_tags()
+        
+        # Set Genre tag (TCON frame in ID3v2)
+        # This will replace any existing genres with the new list
+        audio.tags['TCON'] = TCON(encoding=3, text=genre_list)
+        
+        # Save changes
+        audio.save()
+        return True
+        
+    except Exception as e:
+        return False
+
+
+def write_genre_to_flac(file_path, genres):
+    """
+    Write or append genre tag to FLAC file.
+    
+    Args:
+        file_path: Path to FLAC file
+        genres: Genre string or list of genres (e.g., "Pop, Christmas" or ["Pop", "Christmas"])
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not file_path or not os.path.exists(file_path):
+        return False
+    
+    try:
+        from mutagen.flac import FLAC
+        
+        # Convert genres to list if string
+        if isinstance(genres, str):
+            genre_list = [g.strip() for g in genres.split(',') if g.strip()]
+        else:
+            genre_list = genres if isinstance(genres, list) else [genres]
+        
+        # Load the FLAC file
+        audio = FLAC(file_path)
+        
+        # Set Genre tag (Vorbis comment)
+        audio['genre'] = genre_list
+        
+        # Save changes
+        audio.save()
+        return True
+        
+    except Exception as e:
+        return False
+
+
+def write_genre_to_audio_file(file_path, genres):
+    """
+    Write genre tag to audio file (MP3 or FLAC).
+    
+    Args:
+        file_path: Path to audio file
+        genres: Genre string or list of genres (e.g., "Pop, Christmas" or ["Pop", "Christmas"])
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    if not file_path:
+        return False
+    
+    file_ext = Path(file_path).suffix.lower()
+    
+    if file_ext == '.mp3':
+        return write_genre_to_mp3(file_path, genres)
+    elif file_ext in ['.flac', '.fla']:
+        return write_genre_to_flac(file_path, genres)
+    else:
+        return False
+
+
