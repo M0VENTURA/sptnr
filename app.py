@@ -7756,7 +7756,13 @@ def api_lastfm_recommendations():
                 username = user_cfg.get("lastfm_username", "")
         
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key, username=username or None)
+        
+        # Pass database connection to filter out existing albums
+        def get_db_for_lastfm():
+            """Helper to get DB connection for Last.fm filtering"""
+            return get_db_connection()
+        
+        recommendations = get_lastfm_recommendations(api_key, username=username or None, db_connection=get_db_for_lastfm)
         
         # Check which albums/artists/tracks are already in collection
         existing_albums = set()
@@ -7871,7 +7877,13 @@ def api_lastfm_create_playlist():
         
         # Get recommendations with username to personalize results
         from api_clients.lastfm import get_lastfm_recommendations
-        recommendations = get_lastfm_recommendations(api_key, username=username)
+        
+        # Pass database connection to filter out existing albums
+        def get_db_for_lastfm():
+            """Helper to get DB connection for Last.fm filtering"""
+            return get_db_connection()
+        
+        recommendations = get_lastfm_recommendations(api_key, username=username, db_connection=get_db_for_lastfm)
         
         if not recommendations:
             return jsonify({"error": "No recommendations found"}), 404

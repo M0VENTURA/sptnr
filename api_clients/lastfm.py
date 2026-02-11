@@ -4,6 +4,7 @@ import json
 import time
 import os
 from pathlib import Path
+from requests.exceptions import ConnectionError, Timeout, RequestException, HTTPError
 from . import session
 
 logger = logging.getLogger(__name__)
@@ -95,6 +96,11 @@ def retry_with_backoff(func, max_retries: int = 3, backoff_factor: float = 1.5,
     Retry a function with exponential backoff.
     
     Inspired by DiscoveryLastFM's robust retry logic.
+    Handles specific connection errors gracefully:
+    - ConnectionError: Network connectivity issues
+    - Timeout: Request timeout
+    - HTTPError with 429: Rate limit exceeded
+    - Other errors: Retryable transient failures
     """
     import random
     
@@ -104,12 +110,78 @@ def retry_with_backoff(func, max_retries: int = 3, backoff_factor: float = 1.5,
             time.sleep(rate_limit_delay)
             
             result = func()
+            
+            # Check for 429 (rate limit) status code
+            if hasattr(result, 'status_code') and result.status_code == 429:
+                if attempt == max_retries - 1:
+                    logger.error(f"Rate limited (429) - max retries exceeded after {attempt + 1} attempts")
+                    result.raise_for_status()
+                
+                # Extract retry-after header if available
+                retry_after = result.headers.get('Retry-After')
+                if retry_after:
+                    try:
+                        wait_time = float(retry_after)
+                        logger.warning(f"Rate limited (429) - waiting {wait_time}s as per Retry-After header")
+                        time.sleep(wait_time)
+                    except ValueError:
+                        # Fall back to exponential backoff if header is not a number
+                        wait_time = (backoff_factor ** attempt) * 2  # Longer backoff for rate limits
+                        logger.warning(f"Rate limited (429) - exponential backoff for {wait_time:.2f}s")
+                        time.sleep(wait_time)
+                else:
+                    # No Retry-After header, use exponential backoff
+                    wait_time = (backoff_factor ** attempt) * 2
+                    logger.warning(f"Rate limited (429) - exponential backoff for {wait_time:.2f}s")
+                    time.sleep(wait_time)
+                continue
+            
             return result
-        except Exception as e:
+        except (ConnectionError, ConnectionResetError) as e:
             if attempt == max_retries - 1:
+                logger.error(f"Connection error after {attempt + 1} attempts: {e}")
                 raise
             
-            # Exponential backoff with jitter
+            wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
+            logger.warning(f"Connection error (attempt {attempt + 1}/{max_retries}), retrying after {wait_time:.2f}s: {e}")
+            time.sleep(wait_time)
+        except Timeout as e:
+            if attempt == max_retries - 1:
+                logger.error(f"Request timeout after {attempt + 1} attempts: {e}")
+                raise
+            
+            wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
+            logger.warning(f"Request timeout (attempt {attempt + 1}/{max_retries}), retrying after {wait_time:.2f}s: {e}")
+            time.sleep(wait_time)
+        except HTTPError as e:
+            # Only retry on 5xx server errors, not on 4xx client errors
+            if hasattr(e.response, 'status_code') and e.response.status_code >= 500:
+                if attempt == max_retries - 1:
+                    logger.error(f"Server error {e.response.status_code} after {attempt + 1} attempts: {e}")
+                    raise
+                
+                wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
+                logger.warning(f"Server error {e.response.status_code} (attempt {attempt + 1}/{max_retries}), retrying after {wait_time:.2f}s")
+                time.sleep(wait_time)
+            else:
+                # Non-retryable client error
+                logger.error(f"Non-retryable error {e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'}: {e}")
+                raise
+        except RequestException as e:
+            # Catch other request-related exceptions (includes connection errors and timeouts)
+            if attempt == max_retries - 1:
+                logger.error(f"Request error after {attempt + 1} attempts: {e}")
+                raise
+            
+            wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
+            logger.warning(f"Request error (attempt {attempt + 1}/{max_retries}), retrying after {wait_time:.2f}s: {e}")
+            time.sleep(wait_time)
+        except Exception as e:
+            # Generic exception handler for unexpected errors
+            if attempt == max_retries - 1:
+                logger.error(f"Unexpected error after {attempt + 1} attempts: {e}")
+                raise
+            
             wait_time = (backoff_factor ** attempt) + random.uniform(0, 1)
             logger.debug(f"Retry attempt {attempt + 1}/{max_retries} after {wait_time:.2f}s: {e}")
             time.sleep(wait_time)
@@ -121,7 +193,7 @@ def retry_with_backoff(func, max_retries: int = 3, backoff_factor: float = 1.5,
 class LastFmClient:
     """Last.fm API wrapper with enhanced discovery features from DiscoveryLastFM."""
     
-    def __init__(self, api_key: str, username: str = None, http_session=None):
+    def __init__(self, api_key: str, username: str = None, http_session=None, db_connection=None):
         """
         Initialize Last.fm client.
         
@@ -129,12 +201,14 @@ class LastFmClient:
             api_key: Last.fm API key
             username: Last.fm username for personalized recommendations (optional)
             http_session: Optional requests.Session (uses shared if not provided)
+            db_connection: Optional database connection for filtering existing albums (callable or connection object)
         """
         self.api_key = api_key
         self.username = username
         self.session = http_session or session
         self.base_url = "https://ws.audioscrobbler.com/2.0/"
         self.cache = RecommendationCache()
+        self.db_connection = db_connection  # Function to get DB connection or actual connection
         
         # Try to import MusicBrainz client for album filtering
         try:
@@ -143,6 +217,49 @@ class LastFmClient:
         except Exception as e:
             logger.debug(f"MusicBrainz client not available for album filtering: {e}")
             self.mb_client = None
+    
+    def _album_exists(self, artist: str, album: str) -> bool:
+        """
+        Check if an album already exists in the user's database.
+        
+        Args:
+            artist: Artist name
+            album: Album name
+            
+        Returns:
+            True if album exists in database, False otherwise
+        """
+        if not self.db_connection:
+            return False  # If no DB connection provided, assume album doesn't exist
+        
+        try:
+            # If db_connection is callable, call it to get a connection
+            if callable(self.db_connection):
+                conn = self.db_connection()
+            else:
+                conn = self.db_connection
+            
+            cursor = conn.cursor()
+            
+            # Query for album matching both artist and album name (case-insensitive)
+            cursor.execute(
+                "SELECT 1 FROM tracks WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?) LIMIT 1",
+                (artist, album)
+            )
+            
+            result = cursor.fetchone()
+            
+            # Close connection if it was callable (we created a new one)
+            if callable(self.db_connection):
+                try:
+                    conn.close()
+                except:
+                    pass
+            
+            return result is not None
+        except Exception as e:
+            logger.debug(f"Error checking if album exists in database: {e}")
+            return False  # If error, assume album doesn't exist (permissive)
     
     def _is_studio_album(self, artist: str, album: str) -> bool:
         """
@@ -216,8 +333,18 @@ class LastFmClient:
                 "track_play": track_play,
                 "toptags": toptags
             }
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching track '{title}' by '{artist}': {e} - retrying may help")
+            return {"track_play": 0, "toptags": {}}
+        except Timeout as e:
+            logger.error(f"Timeout fetching track '{title}' by '{artist}': {e}")
+            return {"track_play": 0, "toptags": {}}
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching track '{title}' by '{artist}': {e}")
+            return {"track_play": 0, "toptags": {}}
         except Exception as e:
-            logger.error(f"Last.fm fetch failed for '{title}' by '{artist}': {e}")
+            logger.error(f"Failed to fetch Last.fm info for '{title}' by '{artist}': {e}")
             return {"track_play": 0, "toptags": {}}
     
     def get_album_track_count(self, artist: str, album: str) -> int:
@@ -264,8 +391,18 @@ class LastFmClient:
                 return len(tracks)
             
             return 0
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error fetching album '{album}' by '{artist}': {e}")
+            return 0
+        except Timeout as e:
+            logger.debug(f"Timeout fetching album '{album}' by '{artist}': {e}")
+            return 0
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.debug(f"HTTP error {status_code} fetching album '{album}' by '{artist}': {e}")
+            return 0
         except Exception as e:
-            logger.debug(f"Last.fm album lookup failed for '{album}' by '{artist}': {e}")
+            logger.debug(f"Failed to fetch Last.fm album info for '{album}' by '{artist}': {e}")
             return 0
     
     def get_recommendations(self) -> dict:
@@ -273,11 +410,12 @@ class LastFmClient:
         Fetch personalized recommendations from Last.fm for the current user.
         
         Features (inspired by DiscoveryLastFM):
-        - Caching to avoid duplicate API calls
+        - Caching to avoid duplicate API calls (skipped if DB filtering is active)
         - Retry logic with exponential backoff  
         - Rate limiting between requests
         - Minimum play count filtering
         - Studio album filtering (via MusicBrainz)
+        - Database filtering to exclude existing albums
         
         Returns:
             Dict with 'artists', 'albums', and 'tracks' keys containing recommendations
@@ -286,12 +424,16 @@ class LastFmClient:
             logger.warning("Last.fm API key missing. Skipping recommendations.")
             return {"artists": [], "albums": [], "tracks": []}
         
-        # Check cache first
-        cache_key = f"recommendations_{self.username or 'global'}"
-        cached_result = self.cache.get(cache_key)
-        if cached_result:
-            logger.info(f"Using cached recommendations for {self.username or 'global'}")
-            return cached_result
+        # Skip cache if we're doing database filtering (recommendations change when library changes)
+        use_cache = not self.db_connection
+        cache_key = f"recommendations_{self.username or 'global'}" if use_cache else None
+        
+        # Check cache first (only if not using DB filtering)
+        if use_cache and cache_key:
+            cached_result = self.cache.get(cache_key)
+            if cached_result:
+                logger.info(f"Using cached recommendations for {self.username or 'global'}")
+                return cached_result
         
         try:
             recommendations = {
@@ -300,9 +442,21 @@ class LastFmClient:
                 "tracks": self._get_recommended_tracks()
             }
             
-            # Cache the result
-            self.cache.set(cache_key, recommendations)
+            # Cache the result (only if not using DB filtering)
+            if use_cache and cache_key:
+                self.cache.set(cache_key, recommendations)
+            
             return recommendations
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching Last.fm recommendations: {e} - may indicate network issues")
+            return {"artists": [], "albums": [], "tracks": []}
+        except Timeout as e:
+            logger.error(f"Timeout fetching Last.fm recommendations: {e}")
+            return {"artists": [], "albums": [], "tracks": []}
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching Last.fm recommendations: {e}")
+            return {"artists": [], "albums": [], "tracks": []}
         except Exception as e:
             logger.error(f"Failed to fetch Last.fm recommendations: {e}")
             return {"artists": [], "albums": [], "tracks": []}
@@ -431,8 +585,18 @@ class LastFmClient:
             
             logger.info(f"Found {len(recommended_artists)} recommended artists (after filtering)")
             return list(recommended_artists.values())[:20]
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching recommended artists: {e} - may indicate network issues")
+            return []
+        except Timeout as e:
+            logger.error(f"Timeout fetching recommended artists: {e}")
+            return []
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching recommended artists: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Failed to fetch recommended artists: {e}")
+            logger.error(f"Failed to fetch Last.fm recommended artists: {e}")
             return []
     
     def _get_recommended_albums(self) -> list:
@@ -567,6 +731,11 @@ class LastFmClient:
                                         if album_key in recommended_albums:
                                             continue
                                         
+                                        # ENHANCED: Check if album already exists in user's database
+                                        if self._album_exists(similar_artist_name, album_name):
+                                            logger.debug(f"Filtering out existing album: {album_name} by {similar_artist_name}")
+                                            continue
+                                        
                                         # ENHANCED: Filter to studio albums only using MusicBrainz
                                         if not self._is_studio_album(similar_artist_name, album_name):
                                             logger.debug(f"Filtering non-studio album: {album_name} by {similar_artist_name}")
@@ -597,8 +766,18 @@ class LastFmClient:
             
             logger.info(f"Found {len(recommended_albums)} recommended studio albums (after filtering)")
             return list(recommended_albums.values())[:12]
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching recommended albums: {e} - may indicate network issues")
+            return []
+        except Timeout as e:
+            logger.error(f"Timeout fetching recommended albums: {e}")
+            return []
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching recommended albums: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Failed to fetch recommended albums: {e}")
+            logger.error(f"Failed to fetch Last.fm recommended albums: {e}")
             return []
     
     def _get_recommended_tracks(self) -> list:
@@ -775,7 +954,7 @@ def get_lastfm_track_info(artist: str, title: str, api_key: str = "") -> dict:
     """Backward-compatible wrapper."""
     client = _get_lastfm_client(api_key)
     return client.get_track_info(artist, title)
-def get_lastfm_recommendations(api_key: str, username: str | None = None) -> dict:
+def get_lastfm_recommendations(api_key: str, username: str | None = None, db_connection=None) -> dict:
     """Fetch Last.fm recommendations."""
-    client = LastFmClient(api_key, username=username)
+    client = LastFmClient(api_key, username=username, db_connection=db_connection)
     return client.get_recommendations()
