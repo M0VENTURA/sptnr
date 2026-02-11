@@ -1578,8 +1578,10 @@ def popularity_scan(
         sql_params = []
         
         if artist_filter:
-            sql_conditions.append("artist = ?")
-            sql_params.append(artist_filter)
+            # Check both artist and album_artist fields to handle compilation albums
+            # (e.g., Various Artists albums where album_artist = "Various Artists" but artist = track artist)
+            sql_conditions.append("(artist = ? OR album_artist = ?)")
+            sql_params.extend([artist_filter, artist_filter])
         
         if album_filter and artist_filter:
             sql_conditions.append("album = ?")
