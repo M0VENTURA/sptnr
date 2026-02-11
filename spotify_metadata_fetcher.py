@@ -91,18 +91,19 @@ class SpotifyMetadataFetcher:
             
             with ThreadPoolExecutor(max_workers=3) as executor:
                 # Submit all three API calls concurrently
-                futures = {}
+                future_to_key = {}
                 
-                futures['audio'] = executor.submit(self.client.get_audio_features, track_id)
+                future_to_key[executor.submit(self.client.get_audio_features, track_id)] = 'audio'
                 
                 if artist_id:
-                    futures['artist'] = executor.submit(self.client.get_artist_metadata, artist_id)
+                    future_to_key[executor.submit(self.client.get_artist_metadata, artist_id)] = 'artist'
                 
                 if album_id:
-                    futures['album'] = executor.submit(self.client.get_album_metadata, album_id)
+                    future_to_key[executor.submit(self.client.get_album_metadata, album_id)] = 'album'
                 
-                # Collect results as they complete
-                for key, future in futures.items():
+                # Collect results as they complete (most efficient)
+                for future in as_completed(future_to_key.keys()):
+                    key = future_to_key[future]
                     try:
                         result = future.result(timeout=35)  # Individual call timeout
                         if key == 'audio':
