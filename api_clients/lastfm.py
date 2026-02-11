@@ -499,7 +499,7 @@ class LastFmClient:
             logger.debug(f"Timeout checking title track for '{album}' by '{artist}': {e}")
             return False
         except HTTPError as e:
-            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            status_code = e.response.status_code if e.response else 'unknown'
             logger.debug(f"HTTP error {status_code} checking title track for '{album}' by '{artist}': {e}")
             return False
         except Exception as e:
