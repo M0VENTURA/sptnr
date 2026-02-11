@@ -941,13 +941,17 @@ def detect_single_enhanced(
     # ALBUM-LEVEL POPULARITY FILTER
     # Reject single detection if track popularity is below album mean
     # This prevents album tracks with separate single releases from being incorrectly marked
+    album_filter_passed = True
     if album_mean > 0 and popularity > 0 and popularity < album_mean:
-        log_debug(f"[ALBUM_FILTER] ✗ REJECTED - Album-level popularity filter: pop={popularity:.1f} < album_mean={album_mean:.1f}")
+        log_debug(f"[ALBUM_FILTER] ✗ Album-level popularity filter: pop={popularity:.1f} < album_mean={album_mean:.1f}")
         if verbose:
-            log_debug(f"Album-level popularity filter: Rejecting {title} (pop={popularity:.1f} < album_mean={album_mean:.1f})")
-        return result
+            log_debug(f"Album-level popularity filter: Track {title} (pop={popularity:.1f} < album_mean={album_mean:.1f})")
+        album_filter_passed = False
+    else:
+        log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, mean={album_mean:.1f})")
     
-    log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, mean={album_mean:.1f})")
+    # NOTE: We DON'T return early here anymore - we check all sources regardless of filters
+    # Filters only affect whether it's marked as a single, not whether we detect it
     
     # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
@@ -969,31 +973,7 @@ def detect_single_enhanced(
                 log_debug(f"[DISCOGS] ✓ CONFIRMED as single")
                 log_info(f"   ✓ Discogs confirms single: {title}")
                 log_debug(f"   Discogs result: Single confirmed for '{title}'")
-                
-                # Per problem statement: Discogs = HIGH confidence, skip other checks
-                result['single_status'] = 'high'
-                result['single_confidence'] = 'high'
-                result['is_single'] = True
-                result['single_confidence_score'] = 1.0
-                
-                # Still calculate both z-scores for logging purposes
-                album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-                result['z_score'] = album_z  # Backward compatibility
-                result['album_z_score'] = album_z
-                
-                # Get artist statistics and calculate artist z-score
-                artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
-                artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-                result['artist_z_score'] = artist_z
-                
-                # Add final debug summary
-                if verbose:
-                    log_debug(f"[DEBUG] Z-scores for {title}: album_z={album_z:.2f}, artist_z={artist_z:.2f}")
-                    log_debug(f"[DEBUG] Single detection sources for {title}: {result['single_sources']}")
-                    log_debug(f"[DEBUG] Final single status for {title}: {result['single_confidence']}")
-                
-                log_debug(f"[DETECT] ✓ RETURNING EARLY - Discogs confirmed as single")
-                return result
+                # NOTE: Don't return early - continue to check other sources
             else:
                 log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
                 log_info(f"   ⓘ Discogs does not confirm single: {title}")
