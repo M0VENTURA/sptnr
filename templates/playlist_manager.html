@@ -1634,6 +1634,23 @@ async function createPlaylistFromListenBrainz() {
       })
     });
     
+    const result = await response.json();
+    
+    if (result.success) {
+      alert(`Playlist "${playlistName}" created successfully!`);
+      switchTab('browse');
+      await loadPlaylistList();
+    } else {
+      alert('Error creating playlist: ' + (result.error || 'Unknown error'));
+    }
+  } catch (error) {
+    console.error('Error creating playlist:', error);
+    alert('Error: ' + error.message);
+  }
+}
+</script>
+{% endblock %}
+    
     if (!response.ok) {
       const error = await response.json();
       throw new Error(error.error || 'Failed to create playlist');
