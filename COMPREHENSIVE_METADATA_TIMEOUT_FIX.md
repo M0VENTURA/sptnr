@@ -46,15 +46,16 @@ track_meta = self.client.get_track_metadata(track_id)
 
 # Then fetch the other 3 calls in parallel using ThreadPoolExecutor
 with ThreadPoolExecutor(max_workers=3) as executor:
-    futures = {}
-    futures['audio'] = executor.submit(self.client.get_audio_features, track_id)
+    future_to_key = {}
+    future_to_key[executor.submit(self.client.get_audio_features, track_id)] = 'audio'
     if artist_id:
-        futures['artist'] = executor.submit(self.client.get_artist_metadata, artist_id)
+        future_to_key[executor.submit(self.client.get_artist_metadata, artist_id)] = 'artist'
     if album_id:
-        futures['album'] = executor.submit(self.client.get_album_metadata, album_id)
+        future_to_key[executor.submit(self.client.get_album_metadata, album_id)] = 'album'
     
-    # Collect results with timeout
-    for key, future in futures.items():
+    # Collect results as they complete (most efficient)
+    for future in as_completed(future_to_key.keys()):
+        key = future_to_key[future]
         result = future.result(timeout=35)
         # ... store results
 ```
