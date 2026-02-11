@@ -125,6 +125,95 @@ def get_watcher_settings() -> Dict[str, Any]:
     }
 
 
+def get_retry_scheduler_settings() -> Dict[str, Any]:
+    """
+    Get download retry scheduler settings from config.yaml.
+    
+    Returns:
+        Dict with retry scheduler settings or defaults
+    """
+    config = load_config()
+    retry_scheduler = config.get("features", {}).get("retry_scheduler", {})
+    return {
+        "interval_seconds": int(retry_scheduler.get("interval_seconds", 60)),
+        "auto_start": bool(retry_scheduler.get("auto_start", True)),
+    }
+
+
+def update_retry_scheduler_settings(settings: Dict[str, Any]) -> bool:
+    """
+    Update download retry scheduler settings in config.yaml.
+    
+    Args:
+        settings: Dict with retry scheduler settings to update
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        config = load_config()
+        
+        # Ensure nested dicts exist
+        if "features" not in config:
+            config["features"] = {}
+        if "retry_scheduler" not in config["features"]:
+            config["features"]["retry_scheduler"] = {}
+        
+        # Update settings
+        config["features"]["retry_scheduler"].update(settings)
+        
+        # Save config
+        return save_config(config)
+    except Exception:
+        return False
+
+
+def get_download_retry_settings() -> Dict[str, Any]:
+    """
+    Get download retry settings from config.yaml.
+    
+    Returns:
+        Dict with retry settings or defaults
+    """
+    config = load_config()
+    retry = config.get("downloads", {}).get("retry", {})
+    return {
+        "enabled": bool(retry.get("enabled", True)),
+        "max_retries": int(retry.get("max_retries", 3)),
+        "retry_interval_minutes": int(retry.get("retry_interval_minutes", 10)),
+        "auto_scheduler_enabled": bool(retry.get("auto_scheduler_enabled", True)),
+        "auto_scheduler_interval_minutes": int(retry.get("auto_scheduler_interval_minutes", 10)),
+    }
+
+
+def update_download_retry_settings(settings: Dict[str, Any]) -> bool:
+    """
+    Update download retry settings in config.yaml.
+    
+    Args:
+        settings: Dict with retry settings to update
+        
+    Returns:
+        True if successful, False otherwise
+    """
+    try:
+        config = load_config()
+        
+        # Ensure nested dicts exist
+        if "downloads" not in config:
+            config["downloads"] = {}
+        if "retry" not in config["downloads"]:
+            config["downloads"]["retry"] = {}
+        
+        # Update settings
+        config["downloads"]["retry"].update(settings)
+        
+        # Save config
+        return save_config(config)
+    except Exception:
+        return False
+
+
 def save_config(config_data: Dict[str, Any]) -> bool:
     """
     Save configuration to config.yaml.

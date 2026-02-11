@@ -263,40 +263,66 @@ class LastFmClient:
     
     def _is_studio_album(self, artist: str, album: str) -> bool:
         """
-        Filter to only include studio albums (exclude compilations, live, EPs).
+        Filter to only include studio albums (exclude compilations, live, EPs, singles).
+        
+        Checks:
+        1. Album type (must be "Album")
+        2. Secondary types (excludes compilation, live, remix, ep)
+        3. Track count (must have >3 tracks to exclude singles/EPs)
         
         Uses MusicBrainz if available, otherwise returns True for albums to be permissive.
+        
+        Args:
+            artist: Artist name
+            album: Album name
+            
+        Returns:
+            True if album meets criteria (studio album with >3 tracks), False otherwise
         """
         if not self.mb_client:
-            return True  # If MB not available, include album
+            return True  # If MB not available, include album (permissive)
         
         try:
             # Query MusicBrainz for release info
             releases = self.mb_client.search_releases(f'artist:"{artist}" AND release:"{album}"')
             
             if not releases:
-                return True  # If not found, include it
+                return True  # If not found, include it (permissive)
             
             # Check the first result
             first_release = releases[0] if isinstance(releases, list) else releases
             album_type = (first_release.get("primaryType") or "").lower()
             secondary_types = [t.lower() for t in (first_release.get("secondaryTypes") or [])]
             
-            # Only accept Studio albums
+            # Check 1: Only accept Studio albums
             if album_type != "album":
                 logger.debug(f"Filtering out {album} by {artist}: type={album_type}")
                 return False
             
-            # Exclude compilations, live, remix albums
+            # Check 2: Exclude compilations, live, remix albums, EPs
             excluded = {"compilation", "live", "remix", "ep"}
             if any(t in excluded for t in secondary_types):
                 logger.debug(f"Filtering out {album} by {artist}: secondary_types={secondary_types}")
                 return False
             
+            # Check 3: Filter by track count - must have >3 tracks (exclude singles)
+            # Get media list and count tracks
+            media = first_release.get("media", [])
+            total_tracks = 0
+            for disc in media:
+                tracks = disc.get("tracks", [])
+                total_tracks += len(tracks)
+            
+            if total_tracks <= 3:
+                logger.debug(f"Filtering out {album} by {artist}: only {total_tracks} tracks (≤3 = single/EP)")
+                return False
+            
+            logger.debug(f"Accepted album {album} by {artist}: {total_tracks} tracks")
             return True
         except Exception as e:
             logger.debug(f"MusicBrainz filtering failed for {album}/{artist}: {e}")
             return True  # If error, include it (permissive)
+    
     
     def get_track_info(self, artist: str, title: str) -> dict:
         """

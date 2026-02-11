@@ -39,6 +39,7 @@
         <a href="#bookmarks" class="btn btn-sm btn-outline-primary">Bookmarks</a>
         <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Watcher</a>
+        <a href="#retry-scheduler" class="btn btn-sm btn-outline-primary">Retry Scheduler</a>
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>
         <a href="#beets" class="btn btn-sm btn-outline-primary">Beets</a>
         <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
@@ -269,6 +270,59 @@
             </label>
           </div>
         </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Retry Scheduler Settings -->
+  <div class="card shadow-sm mb-3" id="retry-scheduler">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <h5 class="mb-0"><i class="bi bi-arrow-repeat"></i> Download Retry Scheduler</h5>
+      <small class="text-muted">Automatically retry failed downloads at configured intervals</small>
+    </div>
+    <div class="card-body">
+      <div class="row g-3 mb-4">
+        <!-- Scheduler Interval -->
+        <div class="col-12 col-md-6">
+          <label class="form-label">Retry Interval (seconds)</label>
+          <input type="number" class="form-control" id="retry_scheduler_interval" placeholder="60" value="{{ config.get('features', {}).get('retry_scheduler', {}).get('interval_seconds', 60) }}" min="10" max="7200">
+          <div class="form-text">How often to check and retry failed downloads (10-7200 seconds)</div>
+        </div>
+
+        <!-- Enable/Disable Scheduler -->
+        <div class="col-12 col-md-6">
+          <label class="form-label">Scheduler Status</label>
+          <div class="input-group">
+            <button class="btn btn-outline-success" type="button" id="startSchedulerBtn" onclick="startRetryScheduler()">
+              <i class="bi bi-play-fill"></i> Start
+            </button>
+            <button class="btn btn-outline-danger" type="button" id="stopSchedulerBtn" onclick="stopRetryScheduler()" disabled>
+              <i class="bi bi-stop-fill"></i> Stop
+            </button>
+            <span class="input-group-text" id="schedulerStatusIndicator">
+              <i class="bi bi-circle-fill text-muted" id="schedulerStatusIcon" title="Stopped"></i>
+              <span id="schedulerStatusText" class="ms-2">Stopped</span>
+            </span>
+          </div>
+        </div>
+
+        <!-- Auto-Start Toggle -->
+        <div class="col-12">
+          <div class="form-check form-switch mb-2">
+            <input class="form-check-input" type="checkbox" id="retry_scheduler_enabled" {% if config.get('features', {}).get('retry_scheduler', {}).get('auto_start', True) %}checked{% endif %}>
+            <label class="form-check-label" for="retry_scheduler_enabled">
+              <strong>Auto-Start on Boot</strong>
+              <small class="d-block text-muted">Start the retry scheduler automatically when the application boots</small>
+            </label>
+          </div>
+        </div>
+      </div>
+
+      <!-- Status Card -->
+      <div class="alert alert-info">
+        <small>
+          <strong>Current Status:</strong> <span id="schedulerStatusDetail">Checking...</span>
+        </small>
       </div>
     </div>
   </div>
@@ -804,6 +858,12 @@ function buildConfigObject() {
       auto_import_enabled: getChecked('watcher_auto_import', true),
       auto_popularity_scan: getChecked('watcher_auto_popularity', true),
       downloads_watcher_enabled: getChecked('watcher_downloads_enabled', true)
+    },
+    features: {
+      retry_scheduler: {
+        interval_seconds: parseInt(getValue('retry_scheduler_interval', '60')) || 60,
+        auto_start: getChecked('retry_scheduler_enabled', true)
+      }
     },
     api_integrations: {
       spotify: {
@@ -1762,6 +1822,124 @@ document.addEventListener('DOMContentLoaded', function() {
       });
     });
   }
+});
+
+// ============================================================================
+// RETRY SCHEDULER FUNCTIONS
+// ============================================================================
+
+function getRetrySchedulerStatus() {
+  fetch('/api/downloads/scheduler/status')
+    .then(r => r.json())
+    .then(data => {
+      const statusIcon = document.getElementById('schedulerStatusIcon');
+      const statusText = document.getElementById('schedulerStatusText');
+      const statusDetail = document.getElementById('schedulerStatusDetail');
+      const startBtn = document.getElementById('startSchedulerBtn');
+      const stopBtn = document.getElementById('stopSchedulerBtn');
+      
+      const isRunning = data.running || false;
+      
+      if (statusIcon) {
+        statusIcon.className = isRunning 
+          ? 'bi bi-circle-fill text-success' 
+          : 'bi bi-circle-fill text-muted';
+        statusIcon.title = isRunning ? 'Running' : 'Stopped';
+      }
+      
+      if (statusText) {
+        statusText.textContent = isRunning ? 'Running' : 'Stopped';
+      }
+      
+      if (statusDetail) {
+        statusDetail.innerHTML = isRunning 
+          ? '<span class="badge bg-success"><i class="bi bi-play-circle"></i> Running</span> - Retry scheduler is actively monitoring and retrying failed downloads every configured interval.'
+          : '<span class="badge bg-secondary"><i class="bi bi-stop-circle"></i> Stopped</span> - Retry scheduler is not running. Click "Start" to begin automatic retry management.';
+      }
+      
+      if (startBtn) startBtn.disabled = isRunning;
+      if (stopBtn) stopBtn.disabled = !isRunning;
+    })
+    .catch(e => {
+      console.error('Error getting scheduler status:', e);
+      const statusDetail = document.getElementById('schedulerStatusDetail');
+      if (statusDetail) {
+        statusDetail.textContent = 'Unable to load status';
+      }
+    });
+}
+
+function startRetryScheduler() {
+  const btn = document.getElementById('startSchedulerBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Starting...';
+  }
+  
+  fetch('/api/downloads/scheduler/start', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      showToast('Retry scheduler started', 'success');
+      setTimeout(getRetrySchedulerStatus, 500);
+    } else {
+      showToast('Error: ' + (data.error || 'Failed to start scheduler'), 'danger');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
+      }
+    }
+  })
+  .catch(e => {
+    showToast('Network error: ' + e.message, 'danger');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-fill"></i> Start';
+    }
+  });
+}
+
+function stopRetryScheduler() {
+  const btn = document.getElementById('stopSchedulerBtn');
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Stopping...';
+  }
+  
+  fetch('/api/downloads/scheduler/stop', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+  .then(r => r.json())
+  .then(data => {
+    if (data.success) {
+      showToast('Retry scheduler stopped', 'warning');
+      setTimeout(getRetrySchedulerStatus, 500);
+    } else {
+      showToast('Error: ' + (data.error || 'Failed to stop scheduler'), 'danger');
+      if (btn) {
+        btn.disabled = false;
+        btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
+      }
+    }
+  })
+  .catch(e => {
+    showToast('Network error: ' + e.message, 'danger');
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-stop-fill"></i> Stop';
+    }
+  });
+}
+
+// Load scheduler status on page load
+document.addEventListener('DOMContentLoaded', function() {
+  getRetrySchedulerStatus();
+  // Refresh status every 5 seconds
+  setInterval(getRetrySchedulerStatus, 5000);
 });
 </script>
 {% endblock %}

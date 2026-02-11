@@ -294,7 +294,6 @@
         </div>
       </div>
     </div>
-  </div>
   </div><!-- END browseSection -->
 
   <!-- Smart Playlists Section -->
@@ -1344,7 +1343,7 @@ async function loadSpotifyPlaylists() {
           <div class="d-flex justify-content-between align-items-start">
             <div style="flex: 1;">
               <strong class="d-block">${escapeHtml(playlist.name || 'Untitled')}</strong>
-              <small class="text-muted">${playlist.tracks?.total || 0} tracks</small>
+              <small class="text-muted">${playlist.track_count || playlist.tracks?.total || 0} tracks</small>
               ${playlist.description ? `<br><small class="text-secondary">${escapeHtml(playlist.description)}</small>` : ''}
             </div>
             <button class="btn btn-sm btn-primary" onclick="importSpotifyPlaylist(${idx})" title="Import this playlist">
@@ -1369,7 +1368,7 @@ async function importSpotifyPlaylist(index) {
   const playlist = spotifyPlaylistsData[index];
   if (!playlist) return;
   
-  const playlistUrl = playlist.external_urls?.spotify || playlist.uri || '';
+  const playlistUrl = playlist.external_url || playlist.external_urls?.spotify || playlist.uri || '';
   const playlistName = prompt('Enter name for imported playlist:', playlist.name);
   
   if (!playlistName) return;

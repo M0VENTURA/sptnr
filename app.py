@@ -594,6 +594,14 @@ scan_process_singles = None  # Singles detection process
 scan_process_missing_releases = None  # Missing releases scan process
 scan_lock = threading.Lock()
 
+# Retry scheduler management
+retry_scheduler = {
+    "thread": None,
+    "running": False,
+    "stop_event": None  # threading.Event to signal thread to stop
+}
+retry_scheduler_lock = threading.Lock()
+
 # Optional auto-import toggle placeholder (will be set after config functions are defined)
 AUTO_BOOT_ND_IMPORT = None
 
@@ -6995,7 +7003,10 @@ def qbit_search():
         stop_url = f"{web_url}/api/v2/search/stop"
         session.post(stop_url, data={"id": search_id})
         
-        return jsonify({"results": results})
+        # Sort results by most seeders first (descending)
+        results_sorted = sorted(results, key=lambda x: int(x.get("nbSeeders", 0)), reverse=True)
+        
+        return jsonify({"results": results_sorted})
         
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -7952,6 +7963,148 @@ def api_downloads_process_retry():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/downloads/scheduler/start", methods=["POST"])
+def api_downloads_scheduler_start():
+    """Start the download retry scheduler"""
+    try:
+        global retry_scheduler
+        from download_retry_manager import run_retry_manager
+        import time as time_module
+        
+        with retry_scheduler_lock:
+            # Check if already running
+            if retry_scheduler.get("running"):
+                return jsonify({
+                    "success": False,
+                    "error": "Scheduler is already running"
+                }), 400
+            
+            # Check if thread is still alive
+            thread = retry_scheduler.get("thread")
+            if thread and hasattr(thread, 'is_alive') and thread.is_alive():
+                retry_scheduler["running"] = True
+                return jsonify({
+                    "success": True,
+                    "message": "Scheduler thread already running"
+                })
+            
+            # Create stop event for the new thread
+            retry_scheduler["stop_event"] = threading.Event()
+            
+            def retry_scheduler_worker():
+                """Worker function for retry scheduler thread"""
+                try:
+                    cfg, _ = _read_yaml(CONFIG_PATH)
+                    navidrome_config = cfg.get("navidrome", {})
+                    navidrome_url = navidrome_config.get("url", "http://localhost:4533")
+                    navidrome_token = navidrome_config.get("token", "")
+                    
+                    # Get scheduler config
+                    scheduler_config = cfg.get("features", {}).get("retry_scheduler", {})
+                    interval = scheduler_config.get("interval_seconds", 60)
+                    
+                    logging.info(f"[RETRY_SCHEDULER] Started with interval: {interval}s")
+                    
+                    while not retry_scheduler["stop_event"].is_set():
+                        try:
+                            stats = run_retry_manager(DB_PATH, navidrome_url, navidrome_token)
+                            if stats["retried"] > 0 or stats["completed"] > 0 or stats["failed"] > 0:
+                                logging.info(f"[RETRY_SCHEDULER] Retried: {stats['retried']}, Completed: {stats['completed']}, Failed: {stats['failed']}")
+                        except Exception as e:
+                            logging.error(f"[RETRY_SCHEDULER] Error: {e}")
+                        
+                        # Wait with stop event check
+                        if retry_scheduler["stop_event"].wait(timeout=interval):
+                            # Stop event was set
+                            break
+                    
+                    logging.info("[RETRY_SCHEDULER] Stopped")
+                except Exception as e:
+                    logging.error(f"[RETRY_SCHEDULER] Worker error: {e}")
+                finally:
+                    with retry_scheduler_lock:
+                        retry_scheduler["running"] = False
+            
+            # Start the thread
+            thread = threading.Thread(target=retry_scheduler_worker, daemon=True)
+            thread.start()
+            retry_scheduler["thread"] = thread
+            retry_scheduler["running"] = True
+            
+            return jsonify({
+                "success": True,
+                "message": "Retry scheduler started"
+            })
+    except Exception as e:
+        logging.error(f"Error starting retry scheduler: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/downloads/scheduler/stop", methods=["POST"])
+def api_downloads_scheduler_stop():
+    """Stop the download retry scheduler"""
+    try:
+        global retry_scheduler
+        
+        with retry_scheduler_lock:
+            if not retry_scheduler.get("running"):
+                return jsonify({
+                    "success": False,
+                    "error": "Scheduler is not running"
+                }), 400
+            
+            # Signal the thread to stop
+            stop_event = retry_scheduler.get("stop_event")
+            if stop_event:
+                stop_event.set()
+            
+            # Give thread time to stop gracefully
+            thread = retry_scheduler.get("thread")
+            if thread and hasattr(thread, 'is_alive') and thread.is_alive():
+                time.sleep(2)  # Give thread 2 seconds to stop
+            
+            retry_scheduler["running"] = False
+            
+            return jsonify({
+                "success": True,
+                "message": "Retry scheduler stopped"
+            })
+    except Exception as e:
+        logging.error(f"Error stopping retry scheduler: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/downloads/scheduler/status", methods=["GET"])
+def api_downloads_scheduler_status():
+    """Get retry scheduler status"""
+    try:
+        global retry_scheduler
+        
+        with retry_scheduler_lock:
+            thread = retry_scheduler.get("thread")
+            is_alive = False
+            if thread and hasattr(thread, 'is_alive'):
+                is_alive = thread.is_alive()
+            
+            return jsonify({
+                "running": retry_scheduler.get("running", False),
+                "thread_alive": is_alive,
+                "status": "running" if retry_scheduler.get("running") else "stopped"
+            })
+    except Exception as e:
+        logging.error(f"Error getting retry scheduler status: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/lastfm/recommendations", methods=["GET"])
 def api_lastfm_recommendations():
     """Get Last.fm recommendations with collection status"""
@@ -7989,37 +8142,52 @@ def api_lastfm_recommendations():
         existing_artists = set()
         existing_tracks = set()
         
+        # Helper function to normalize names (same as used in filtering below)
+        import unicodedata
+        def normalize_name(name):
+            """Normalize name for consistent comparison"""
+            if not name:
+                return ""
+            # Lowercase
+            normalized = name.lower().strip()
+            # Normalize unicode (decompose accents, etc.)
+            normalized = unicodedata.normalize('NFD', normalized)
+            normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+            # Remove extra spaces
+            normalized = ' '.join(normalized.split())
+            return normalized
+        
         try:
             conn = get_db()
             cursor = conn.cursor()
             
             # Get all albums in collection for quick lookup
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
+            cursor.execute("SELECT DISTINCT artist, album FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
             for row in cursor.fetchall():
                 artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
                 album = row[1] if isinstance(row, tuple) else row.get('album', '')
                 if artist and album:
-                    # Normalize: lowercase, strip, remove extra spaces
-                    artist_norm = ' '.join(artist.split())
-                    album_norm = ' '.join(album.split())
+                    # Normalize: lowercase, unicode normalization, strip, remove extra spaces
+                    artist_norm = normalize_name(artist)
+                    album_norm = normalize_name(album)
                     existing_albums.add((artist_norm, album_norm))
             
             # Get all artists in collection
-            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL")
+            cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL")
             for row in cursor.fetchall():
                 artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
                 if artist:
-                    artist_norm = ' '.join(artist.split())
+                    artist_norm = normalize_name(artist)
                     existing_artists.add(artist_norm)
             
             # Get all tracks in collection
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(title) FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
+            cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
             for row in cursor.fetchall():
                 artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
                 title = row[1] if isinstance(row, tuple) else row.get('title', '')
                 if artist and title:
-                    artist_norm = ' '.join(artist.split())
-                    title_norm = ' '.join(title.split())
+                    artist_norm = normalize_name(artist)
+                    title_norm = normalize_name(title)
                     existing_tracks.add((artist_norm, title_norm))
             
             conn.close()
@@ -8035,30 +8203,54 @@ def api_lastfm_recommendations():
             "tracks": []
         }
         
+        # Helper function to normalize artist/album/track names for comparison
+        def normalize_name(name):
+            """Normalize name for consistent comparison"""
+            import unicodedata
+            if not name:
+                return ""
+            # Lowercase
+            normalized = name.lower().strip()
+            # Normalize unicode (decompose accents, etc.)
+            normalized = unicodedata.normalize('NFD', normalized)
+            normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+            # Remove extra spaces
+            normalized = ' '.join(normalized.split())
+            return normalized
+        
         # Filter artists - only include those NOT in collection
         for artist in recommendations.get("artists", []):
-            artist_key = artist.get("name", "").lower().strip()
-            artist_norm = ' '.join(artist_key.split())
-            if artist_norm not in existing_artists:
+            artist_name = artist.get("name", "")
+            artist_norm = normalize_name(artist_name)
+            if artist_norm and artist_norm not in existing_artists:
                 filtered_recommendations["artists"].append(artist)
+                logging.debug(f"Including artist: {artist_name} (normalized: {artist_norm})")
+            elif artist_norm:
+                logging.debug(f"Filtering out artist (already in collection): {artist_name}")
         
         # Filter albums - only include those NOT in collection
         for album in recommendations.get("albums", []):
-            artist_key = album.get("artist", "").lower().strip()
-            album_key = album.get("name", "").lower().strip()
-            artist_norm = ' '.join(artist_key.split())
-            album_norm = ' '.join(album_key.split())
-            if (artist_norm, album_norm) not in existing_albums:
+            artist_name = album.get("artist", "")
+            album_name = album.get("name", "")
+            artist_norm = normalize_name(artist_name)
+            album_norm = normalize_name(album_name)
+            if (artist_norm, album_norm) and (artist_norm, album_norm) not in existing_albums:
                 filtered_recommendations["albums"].append(album)
+                logging.debug(f"Including album: {album_name} by {artist_name}")
+            elif (artist_norm, album_norm):
+                logging.debug(f"Filtering out album (already in collection): {album_name} by {artist_name}")
         
         # Filter tracks - only include those NOT in collection
         for track in recommendations.get("tracks", []):
-            artist_key = track.get("artist", "").lower().strip()
-            title_key = track.get("name", "").lower().strip()
-            artist_norm = ' '.join(artist_key.split())
-            title_norm = ' '.join(title_key.split())
-            if (artist_norm, title_norm) not in existing_tracks:
+            artist_name = track.get("artist", "")
+            title_name = track.get("name", "")
+            artist_norm = normalize_name(artist_name)
+            title_norm = normalize_name(title_name)
+            if (artist_norm, title_norm) and (artist_norm, title_norm) not in existing_tracks:
                 filtered_recommendations["tracks"].append(track)
+                logging.debug(f"Including track: {title_name} by {artist_name}")
+            elif (artist_norm, title_norm):
+                logging.debug(f"Filtering out track (already in collection): {title_name} by {artist_name}")
         
         return jsonify({"recommendations": filtered_recommendations})
     except Exception as e:
@@ -10518,26 +10710,46 @@ if __name__ == "__main__":
             # Wait for Flask to start
             time_module.sleep(5)
             
-            # Run retry manager every 60 seconds
-            while True:
-                try:
-                    cfg, _ = _read_yaml(CONFIG_PATH)
-                    navidrome_config = cfg.get("navidrome", {})
-                    navidrome_url = navidrome_config.get("url", "http://localhost:4533")
-                    navidrome_token = navidrome_config.get("token", "")
-                    
-                    stats = run_retry_manager(DB_PATH, navidrome_url, navidrome_token)
-                    if stats["retried"] > 0 or stats["completed"] > 0:
-                        logging.info(f"[RETRY_MGR] Retried: {stats['retried']}, Completed: {stats['completed']}, Failed: {stats['failed']}")
-                except Exception as e:
-                    logging.error(f"[RETRY_MGR] Error in retry manager: {e}")
+            try:
+                cfg, _ = _read_yaml(CONFIG_PATH)
+                # Get scheduler config
+                scheduler_config = cfg.get("features", {}).get("retry_scheduler", {})
+                interval = scheduler_config.get("interval_seconds", 60)
                 
-                # Sleep for 60 seconds before next check
-                time_module.sleep(60)
+                navidrome_config = cfg.get("navidrome", {})
+                navidrome_url = navidrome_config.get("url", "http://localhost:4533")
+                navidrome_token = navidrome_config.get("token", "")
+                
+                logging.info(f"[RETRY_SCHEDULER] Started with interval: {interval}s")
+                
+                while not retry_scheduler.get("stop_event", threading.Event()).is_set():
+                    try:
+                        stats = run_retry_manager(DB_PATH, navidrome_url, navidrome_token)
+                        if stats["retried"] > 0 or stats["completed"] > 0:
+                            logging.info(f"[RETRY_SCHEDULER] Retried: {stats['retried']}, Completed: {stats['completed']}, Failed: {stats['failed']}")
+                    except Exception as e:
+                        logging.error(f"[RETRY_SCHEDULER] Error: {e}")
+                    
+                    # Wait with stop event check
+                    if retry_scheduler.get("stop_event", threading.Event()).wait(timeout=interval):
+                        # Stop event was set
+                        break
+                
+                logging.info("[RETRY_SCHEDULER] Stopped")
+            except Exception as e:
+                logging.error(f"[RETRY_SCHEDULER] Worker error: {e}")
+            finally:
+                with retry_scheduler_lock:
+                    retry_scheduler["running"] = False
         
         print("Starting Download Retry Manager...")
+        retry_scheduler["stop_event"] = threading.Event()
         retry_thread = threading.Thread(target=start_retry_manager, daemon=True)
         retry_thread.start()
+        
+        with retry_scheduler_lock:
+            retry_scheduler["thread"] = retry_thread
+            retry_scheduler["running"] = True
     except Exception as e:
         logging.warning(f"Could not start Download Retry Manager: {e}")
     
