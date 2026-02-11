@@ -1238,8 +1238,8 @@ def detect_single_enhanced(
                 track_is_single = lastfm_client.check_track_as_single(artist, title)
                 
                 if track_is_single:
-                    result['single_sources'].append('lastfm_album_type')
-                    result['single_sources_used'].append('lastfm_album_type')
+                    result['single_sources'].append('lastfm_track_title')
+                    result['single_sources_used'].append('lastfm_track_title')
                     lastfm_single_confirmed = True
                     log_debug(f"[LASTFM] ✓ CONFIRMED - Track '{title}' exists as single/album on Last.fm")
                 else:
