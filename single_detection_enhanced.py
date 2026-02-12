@@ -1819,17 +1819,19 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     - single_detection_last_updated (timestamp)
     """
     import time
+    import random
     
-    max_retries = 5
+    max_retries = 3
     retry_count = 0
-    base_delay = 0.1  # Start with 100ms
+    base_delay = 0.5  # Start with 500ms
     
     while retry_count < max_retries:
+        cursor = None
         try:
-            cursor = conn.cursor()
+            # Ensure proper timeout handling on the connection itself
+            conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
             
-            # Set busy timeout to 10 seconds to help with concurrent access
-            conn.execute("PRAGMA busy_timeout = 10000")
+            cursor = conn.cursor()
             
             # Check if new columns exist in schema
             cursor.execute("PRAGMA table_info(tracks)")
@@ -1911,22 +1913,35 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
             return  # Success - exit retry loop
             
         except Exception as e:
+            # Rollback on error to unlock the database
+            try:
+                conn.rollback()
+            except:
+                pass
+            
+            # Close cursor if it's open
+            if cursor:
+                try:
+                    cursor.close()
+                except:
+                    pass
+            
             error_msg = str(e).lower()
             
             # Check if it's a database lock error
             if 'database is locked' in error_msg or 'locked' in error_msg:
                 retry_count += 1
                 if retry_count >= max_retries:
-                    # Final attempt failed - re-raise the exception
+                    # Final attempt failed - log and give up
+                    log_debug(f"Database lock timeout after {max_retries} retries for track {track_id}")
                     raise
                 
                 # Calculate exponential backoff with jitter
                 delay = base_delay * (2 ** (retry_count - 1))
-                # Add small random jitter to avoid thundering herd
-                import random
+                # Add random jitter to avoid thundering herd
                 delay += random.uniform(0, delay * 0.1)
                 
-                log_debug(f"Database locked, retrying in {delay:.3f}s (attempt {retry_count}/{max_retries})")
+                log_debug(f"Database locked writing single detection for track {track_id}, retrying in {delay:.3f}s (attempt {retry_count}/{max_retries})")
                 time.sleep(delay)
             else:
                 # Not a lock error - don't retry, just raise

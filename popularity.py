@@ -960,8 +960,9 @@ if __name__ == "__main__":
 
 def get_db_connection():
     """Get database connection with WAL mode and extended timeout for concurrent access"""
-    conn = sqlite3.connect(DB_PATH, timeout=60.0)
+    conn = sqlite3.connect(DB_PATH, timeout=120.0)
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
     conn.row_factory = sqlite3.Row
     return conn
 
