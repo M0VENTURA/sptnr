@@ -2493,7 +2493,6 @@ def popularity_scan(
                                         can_proceed = True  # Successfully waited, can proceed now
                                     else:
                                         log_info(f'Skipping Last.fm lookup for {title} due to rate limits')
-                                        can_proceed = False  # Mark as failed after waiting
                             
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
