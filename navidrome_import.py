@@ -234,6 +234,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             
             # Debug logging for technical details
             log_debug(f"Album details - ID: {album_id}, Name: {album_name}, Artist: {artist_name}, Index: {alb_idx}/{total_albums}")
+            log_debug(f"[ALBUM_ART] Starting import for album '{album_name}' - Cover art will be populated during popularity scan")
             
             # Detect if this is a live/unplugged album
             album_context = detect_live_album(album_name)
@@ -401,6 +402,13 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 # Debug log: Track data being saved
                 log_debug(f"Saving track to DB - ID: {track_id}, Title: {td['title']}, Track#: {td['track_number']}, Duration: {td['duration']}s")
+                # Debug log: Album art status
+                cover_url = td.get('spotify_album_art_url', '')
+                if cover_url:
+                    log_debug(f"Album art found for {track_title}: {cover_url}")
+                else:
+                    log_debug(f"No album art URL set for {track_title} - spotify_album_art_url is empty (will be populated by popularity scanner)")
+                    log_debug(f"  Note: spotify_album_art_url should be filled by popularity.py or manual metadata enrichment")
                 
                 save_to_db(td)
                 imported_track_ids.add(track_id)  # Track this as successfully imported
@@ -428,6 +436,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 # Debug log: Technical details
                 log_debug(f"Album scan complete - Artist: {artist_name}, Album: {album_name}, Tracks: {album_tracks_processed}, Total tracks imported so far: {tracks_imported}")
+                log_debug(f"[ALBUM_ART] Album import complete for '{album_name}' - {album_tracks_processed} tracks imported. Album art will be fetched during next popularity scan from Spotify API.")
                 
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
             

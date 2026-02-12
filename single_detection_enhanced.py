@@ -1390,9 +1390,10 @@ def detect_single_enhanced(
             temp_artist_mean, temp_artist_stddev, _ = calculate_artist_stats(conn, artist)
             temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
             
-            # If z-scores already qualify for medium confidence, skip MusicBrainz
-            if temp_album_z >= 0.5 or temp_artist_z >= 1.0:
-                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have medium confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
+            # Only skip MusicBrainz if we already have HIGH confidence (z-scores indicate album/artist standout)
+            # Medium confidence is not sufficient - allow MusicBrainz to run and add source confirmation
+            if temp_album_z >= 2.0 or temp_artist_z >= 2.0:
+                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
                 musicbrainz_confirmed = False
             else:
                 # Need to call MusicBrainz
