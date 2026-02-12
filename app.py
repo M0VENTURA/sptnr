@@ -3744,6 +3744,17 @@ def album_detail(artist, album):
                     tracks_by_disc[1] = []
                 tracks_by_disc[1].append(track_dict)
         
+        # Get the actual artist name from the database (from first track)
+        # This ensures the form is populated with the actual database value, not the URL value
+        # which might have encoding issues
+        db_artist_name = artist  # default to URL parameter
+        db_album_name = album    # default to URL parameter
+        if tracks_with_genre_fit:
+            first_track = tracks_with_genre_fit[0]
+            # Use album_artist if available, otherwise use artist
+            db_artist_name = first_track.get('album_artist') or first_track.get('artist') or artist
+            db_album_name = first_track.get('album') or album
+        
         conn.close()
         
         # Get qBittorrent and slskd config
@@ -3752,8 +3763,8 @@ def album_detail(artist, album):
         slskd_config = cfg.get("slskd", {"enabled": False})
         
         return render_template("album.html",
-                             artist_name=artist,
-                             album_name=album,
+                             artist_name=db_artist_name,
+                             album_name=db_album_name,
                              tracks=tracks_with_genre_fit,
                              tracks_by_disc=tracks_by_disc,
                              album_data=album_data,
@@ -3973,6 +3984,10 @@ def album_edit(artist, album):
     album_mbid = request.form.get("album_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
     
+    # Debug logging for character encoding issues
+    logging.info(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
+    logging.info(f"Album edit - URL album: {repr(album)}, form album_title: {repr(album_title)}")
+    
     if not album_title or not album_artist:
         flash("Album title and artist are required", "danger")
         return redirect(url_for("album_detail", artist=artist, album=album))
@@ -3985,8 +4000,13 @@ def album_edit(artist, album):
         update_fields = []
         update_values = []
         
+        # Track if album/artist names changed
+        artist_changed = (album_artist != artist)
+        album_changed = (album_title != album)
+        names_changed = artist_changed or album_changed
+        
         # If album title or artist changed, update those
-        if album_title != album or album_artist != artist:
+        if names_changed:
             update_fields.extend(["album = ?", "artist = ?"])
             update_values.extend([album_title, album_artist])
         
@@ -4076,7 +4096,39 @@ def album_edit(artist, album):
         conn.close()
         
         # Redirect to the (potentially new) album page
-        return redirect(url_for("album_detail", artist=album_artist, album=album_title))
+        # To ensure special characters are preserved, query the database for the actual artist/album names
+        # after the update, rather than relying on potentially corrupted form data
+        try:
+            temp_conn = get_db()
+            temp_cursor = temp_conn.cursor()
+            # Get the actual artist and album names from the database
+            # Use the same COALESCE logic as album_detail to get the correct artist
+            temp_cursor.execute("""
+                SELECT DISTINCT 
+                    COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
+                    album
+                FROM tracks
+                WHERE (COALESCE(NULLIF(album_artist, ''), artist) = ? OR COALESCE(NULLIF(album_artist, ''), artist) = ?)
+                    AND (album = ? OR album = ?)
+                LIMIT 1
+            """, (artist, album_artist, album, album_title))
+            db_row = temp_cursor.fetchone()
+            temp_conn.close()
+            
+            if db_row:
+                redirect_artist = db_row[0] or db_row['effective_artist']
+                redirect_album = db_row[1] or db_row['album']
+            else:
+                # Fallback: use form data if names changed, otherwise use original URL params
+                redirect_artist = album_artist if names_changed else artist
+                redirect_album = album_title if names_changed else album
+        except Exception as e:
+            logging.warning(f"Error querying database for redirect: {e}")
+            # Fallback: use form data if names changed, otherwise use original URL params
+            redirect_artist = album_artist if names_changed else artist
+            redirect_album = album_title if names_changed else album
+        
+        return redirect(url_for("album_detail", artist=redirect_artist, album=redirect_album))
         
     except Exception as e:
         logging.error(f"Error updating album: {e}")
