@@ -314,51 +314,84 @@ class DownloadRetryManager:
     def cleanup_old_retries(self, days: int = 30):
         """
         Clean up old downloads that have exhausted retries.
+        Uses non-blocking deletes to avoid contention with active scans.
         
         Args:
             days: Delete downloads older than this many days with status='error'
         """
-        max_retries = 3
-        for attempt in range(max_retries):
-            try:
-                conn = sqlite3.connect(self.db_path, timeout=120.0)
-                cursor = conn.cursor()
-                
-                # Set WAL mode for better concurrency
-                cursor.execute("PRAGMA query_only = OFF")
-                cursor.execute("PRAGMA journal_mode = WAL")
-                
-                cutoff_date = datetime.now() - timedelta(days=days)
-                
-                cursor.execute("""
-                    DELETE FROM managed_downloads
-                    WHERE status = 'error'
-                    AND retry_count >= max_retries
-                    AND created_at < ?
-                """, (cutoff_date.isoformat(),))
-                
-                deleted = cursor.rowcount
-                if deleted > 0:
-                    logger.info(f"Cleaned up {deleted} old failed downloads")
-                
-                conn.commit()
+        try:
+            # Use a short timeout for cleanup - skip if locked rather than wait
+            # This prevents cleanup from interfering with popularity scans
+            conn = sqlite3.connect(self.db_path, timeout=5.0)
+            cursor = conn.cursor()
+            
+            # Set WAL mode for better concurrency
+            cursor.execute("PRAGMA query_only = OFF")
+            cursor.execute("PRAGMA journal_mode = WAL")
+            
+            cutoff_date = datetime.now() - timedelta(days=days)
+            
+            # Delete in smaller batches to reduce lock duration
+            # First count how many we need to delete
+            cursor.execute("""
+                SELECT COUNT(*) FROM managed_downloads
+                WHERE status = 'error'
+                AND retry_count >= max_retries
+                AND created_at < ?
+            """, (cutoff_date.isoformat(),))
+            
+            total_to_delete = cursor.fetchone()[0]
+            
+            if total_to_delete == 0:
+                logger.debug("No old downloads to clean up")
                 conn.close()
                 return
-                
-            except sqlite3.OperationalError as e:
-                if "database is locked" in str(e):
-                    if attempt < max_retries - 1:
-                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff
-                        logger.debug(f"Database locked during cleanup, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
-                        time.sleep(wait_time)
+            
+            # Delete in batches of 100 to reduce transaction lock duration
+            batch_size = 100
+            batches_deleted = 0
+            
+            for batch in range(0, total_to_delete, batch_size):
+                try:
+                    cursor.execute("""
+                        DELETE FROM managed_downloads
+                        WHERE rowid IN (
+                            SELECT rowid FROM managed_downloads
+                            WHERE status = 'error'
+                            AND retry_count >= max_retries
+                            AND created_at < ?
+                            LIMIT ?
+                        )
+                    """, (cutoff_date.isoformat(), batch_size))
+                    
+                    rows_deleted = cursor.rowcount
+                    if rows_deleted > 0:
+                        conn.commit()
+                        batches_deleted += rows_deleted
+                        logger.debug(f"Cleanup batch: deleted {rows_deleted} records (total: {batches_deleted}/{total_to_delete})")
                     else:
-                        logger.error(f"Error in cleanup: database is locked after {max_retries} retries")
-                else:
-                    logger.error(f"Error in cleanup: {e}")
-                    return
-            except Exception as e:
+                        break
+                        
+                except sqlite3.OperationalError as e:
+                    if "database is locked" in str(e):
+                        # Database is locked (likely by active scan), skip remaining batches
+                        logger.debug(f"Database locked during cleanup batch, skipping remaining deletions")
+                        break
+                    else:
+                        raise
+            
+            if batches_deleted > 0:
+                logger.info(f"Cleaned up {batches_deleted} old failed downloads total")
+            
+            conn.close()
+            
+        except sqlite3.OperationalError as e:
+            if "database is locked" in str(e):
+                logger.debug(f"Cleanup skipped - database is locked (active scan in progress)")
+            else:
                 logger.error(f"Error in cleanup: {e}")
-                return
+        except Exception as e:
+            logger.error(f"Error in cleanup: {e}")
 
 
 def run_retry_manager(db_path: str, navidrome_url: str = None, navidrome_token: str = None) -> Dict:
