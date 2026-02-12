@@ -1060,6 +1060,69 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     except Exception as e:
         log_debug(f"Prefetch existing track IDs failed: {e}", exc_info=True)
 
+    # Get list of artists already in database and their track counts
+    db_artists: dict[str, int] = {}  # artist_name -> track_count
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
+        log_debug("DB Query: SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
+        db_artists = {row[0]: row[1] for row in cursor.fetchall() if row[0]}
+        log_debug(f"Found {len(db_artists)} artists in database with track counts")
+        conn.close()
+    except Exception as e:
+        log_debug(f"Failed to fetch existing artists from database: {e}", exc_info=True)
+
+    # Detect missing artists (in Navidrome but not in database)
+    missing_artists = []
+    artists_with_mismatched_counts = []
+    
+    for artist_name in artist_map_local.keys():
+        if artist_name not in db_artists:
+            missing_artists.append(artist_name)
+            log_info(f"🆕 Missing artist detected: {artist_name}")
+            log_debug(f"Artist '{artist_name}' is in Navidrome but not in database")
+        else:
+            # Get track count from Navidrome for this artist
+            try:
+                artist_id = artist_map_local[artist_name].get("id")
+                if artist_id:
+                    albums = fetch_artist_albums(artist_id)
+                    nav_track_count = 0
+                    for album in albums:
+                        album_id = album.get("id")
+                        if album_id:
+                            try:
+                                album_data = fetch_album_tracks(album_id)
+                                tracks = album_data.get("tracks", [])
+                                nav_track_count += len(tracks)
+                            except Exception as e:
+                                log_debug(f"Failed to fetch tracks for album {album.get('name')}: {e}")
+                                continue
+                    
+                    db_track_count = db_artists[artist_name]
+                    if nav_track_count != db_track_count:
+                        artists_with_mismatched_counts.append({
+                            "name": artist_name,
+                            "navidrome_count": nav_track_count,
+                            "database_count": db_track_count
+                        })
+                        log_info(f"⚠️ Track count mismatch for {artist_name}: Navidrome={nav_track_count}, Database={db_track_count}")
+                        log_debug(f"Artist '{artist_name}' has different track counts: Nav={nav_track_count} vs DB={db_track_count}")
+            except Exception as e:
+                log_debug(f"Failed to get track count for existing artist '{artist_name}': {e}")
+    
+    if missing_artists:
+        log_unified(f"Navidrome Import Scan - Found {len(missing_artists)} missing artists to import")
+        log_info(f"Found {len(missing_artists)} missing artists from Navidrome")
+        log_debug(f"Missing artists: {missing_artists}")
+    
+    if artists_with_mismatched_counts:
+        log_unified(f"Navidrome Import Scan - Found {len(artists_with_mismatched_counts)} artists with mismatched track counts")
+        log_info(f"Found {len(artists_with_mismatched_counts)} artists with different track counts in Navidrome vs database")
+        for artist_info in artists_with_mismatched_counts:
+            log_debug(f"Mismatch: {artist_info['name']} (Nav={artist_info['navidrome_count']} vs DB={artist_info['database_count']})")
+
     total_written = 0
     total_skipped = 0
     total_albums_skipped = 0
@@ -1068,6 +1131,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     
     log_info(f"Starting scan of {total_artists} artists from Navidrome")
     log_debug(f"Total artists to scan: {total_artists}")
+    log_info(f"Missing artists found: {len(missing_artists)}, Artists with mismatched counts: {len(artists_with_mismatched_counts)}")
     
     for name, info in artist_map_local.items():
         artist_count += 1
@@ -1087,12 +1151,20 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             log_debug(f"scan_artist_to_db failed for '{name}': {e}", exc_info=True)
     
     # Info log: Detailed completion summary
+    log_unified(f"Navidrome Import Scan - Complete: {len(missing_artists)} new artists added")
     log_info(f"Navidrome library scan complete")
     log_info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-    log_info(f"Total artists scanned: {total_artists}")
+    log_info(f"Summary:")
+    log_info(f"  - Total artists scanned: {total_artists}")
+    log_info(f"  - Missing artists imported: {len(missing_artists)}")
+    log_info(f"  - Artists with mismatched track counts: {len(artists_with_mismatched_counts)}")
+    if missing_artists:
+        log_info(f"  - Newly imported: {', '.join(missing_artists[:5])}" + (" and more..." if len(missing_artists) > 5 else ""))
+    if artists_with_mismatched_counts:
+        log_info(f"  - Track mismatches detected in: {', '.join([a['name'] for a in artists_with_mismatched_counts[:5]])}" + (" and more..." if len(artists_with_mismatched_counts) > 5 else ""))
     
     # Debug log: Technical summary
-    log_debug(f"Library scan complete - Artists: {total_artists}, Verbose: {verbose}, Force: {force}")
+    log_debug(f"Library scan complete - Artists: {total_artists}, Missing: {len(missing_artists)}, Mismatched: {len(artists_with_mismatched_counts)}, Verbose: {verbose}, Force: {force}")
 
 
 if __name__ == "__main__":
