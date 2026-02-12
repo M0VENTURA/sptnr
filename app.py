@@ -8051,13 +8051,12 @@ def api_album_art(artist, album):
             log_debug(f"Error fetching local album art: {e}")
         
         # 1. Check if we have cover_art_url or spotify_album_art_url in database
+        cover_art_url = None  # Initialize to ensure it's always defined
         try:
             conn = get_db()
             cursor = conn.cursor()
             
             # Try multiple strategies to find the album
-            cover_art_url = None
-            
             # Strategy 1: Try matching by album_artist first
             try:
                 cursor.execute("""
@@ -8107,7 +8106,59 @@ def api_album_art(artist, album):
         except Exception as e:
             log_debug(f"Error checking database for album art: {e}")
         
-        # 2. Try to get from Navidrome (more robust search with artist name)
+        # 1.5 If not found in database, try fetching from MusicBrainz and cache it for available albums
+        if not cover_art_url:
+            try:
+                log_debug(f"Attempting to fetch MusicBrainz releases for: {artist} - {album}")
+                mb_releases = _fetch_musicbrainz_releases(artist)
+                
+                # Find the matching release
+                album_normalized = _normalize_release_title(album)
+                for rg in mb_releases:
+                    rg_normalized = _normalize_release_title(rg.get("title", ""))
+                    if rg_normalized == album_normalized:
+                        mb_cover_url = rg.get("cover_art_url", "")
+                        if mb_cover_url:
+                            log_debug(f"Found MusicBrainz cover art for {artist} - {album}: {mb_cover_url[:50]}...")
+                            # Store the cover_art_url in the database for future use
+                            try:
+                                conn = get_db()
+                                cursor = conn.cursor()
+                                cursor.execute("""
+                                    UPDATE tracks 
+                                    SET cover_art_url = ?
+                                    WHERE (COALESCE(NULLIF(album_artist, ''), artist) = ? OR artist = ?) 
+                                    AND album = ?
+                                """, (mb_cover_url, artist, artist, album))
+                                conn.commit()
+                                conn.close()
+                                log_debug(f"Updated cover_art_url in database for {artist} - {album}")
+                            except Exception as e:
+                                log_debug(f"Failed to store MusicBrainz cover_art_url: {e}")
+                            
+                            cover_art_url = mb_cover_url
+                            break
+            except Exception as e:
+                log_debug(f"Failed to fetch MusicBrainz releases for album art: {e}")
+        
+        # 2. If we found a cover_art_url, try to fetch and cache it
+        if cover_art_url:
+            try:
+                log_debug(f"Attempting to fetch from cover_art_url: {cover_art_url[:50]}...")
+                resp = requests.get(cover_art_url, timeout=5)
+                if resp.status_code == 200:
+                    # Save to database for future access
+                    _save_album_art_to_db(artist, album, resp.content, source="musicbrainz")
+                    return send_file(
+                        io.BytesIO(resp.content),
+                        mimetype='image/jpeg'
+                    )
+                else:
+                    log_debug(f"cover_art_url returned {resp.status_code}")
+            except Exception as e:
+                log_debug(f"Failed to fetch from cover_art_url: {e}")
+        
+        # 3. Try to get from Navidrome (more robust search with artist name)
         try:
             log_debug(f"Attempting Navidrome fetch for: {artist} - {album}")
             cfg, _ = _read_yaml(CONFIG_PATH)
@@ -8190,7 +8241,7 @@ def api_album_art(artist, album):
         except Exception as e:
             log_debug(f"Navidrome cover art fetch failed: {e}")
         
-        # 3. Try MusicBrainz
+        # 4. Try MusicBrainz (as fallback - not cached)
         log_debug(f"Attempting MusicBrainz fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_musicbrainz(artist, album)
         if art_bytes:
@@ -8202,7 +8253,7 @@ def api_album_art(artist, album):
             )
         log_debug(f"MusicBrainz returned no art")
         
-        # 4. Try iTunes/Apple Music
+        # 5. Try iTunes/Apple Music
         log_debug(f"Attempting iTunes fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_itunes(artist, album)
         if art_bytes:
@@ -8214,7 +8265,7 @@ def api_album_art(artist, album):
             )
         log_debug(f"iTunes returned no art")
         
-        # 5. Fallback to Discogs
+        # 6. Fallback to Discogs
         log_debug(f"Attempting Discogs fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_discogs(artist, album)
         if art_bytes:
@@ -8226,7 +8277,7 @@ def api_album_art(artist, album):
             )
         log_debug(f"Discogs returned no art")
         
-        # 6. Try to extract from MP3 file
+        # 7. Try to extract from MP3 file
         try:
             log_debug(f"Attempting to extract album art from MP3 files for: {artist} - {album}")
             from metadata_reader import extract_album_art_from_mp3
@@ -8287,7 +8338,7 @@ def api_album_art(artist, album):
         except Exception as e:
             log_debug(f"Failed to extract album art from MP3: {e}")
         
-        # 7. No art found - return placeholder SVG instead of 404
+        # 8. No art found - return placeholder SVG instead of 404
         log_info(f"No album art found from any source for: {artist} - {album}. Returning placeholder.")
         return _album_art_placeholder_svg()
     except Exception as e:
