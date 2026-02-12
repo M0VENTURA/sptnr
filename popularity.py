@@ -1899,9 +1899,24 @@ def popularity_scan(
                                         "playcount": playcount
                                     }
                                     log_debug(f'Fetched Last.fm data for {title}: listeners={listeners}, playcount={playcount}')
+                                else:
+                                    album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
+                            else:
+                                # Rate limit hit - skip fetch but still add placeholder entry
+                                # This ensures z-score has complete track count even with partial data
+                                album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
+                                log_debug(f'Rate limit reached - skipping Last.fm prefetch for {title} ({reason})')
                         except Exception as e:
                             log_debug(f'Failed to fetch Last.fm data for {title}: {e}')
                             album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
+                    
+                    # Log pre-fetch results
+                    fetched_listeners = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
+                    fetched_tracks = len([data for data in album_lastfm_data.values() if data["listeners"] > 0])
+                    zero_tracks = len([data for data in album_lastfm_data.values() if data["listeners"] == 0])
+                    log_info(f'Pre-fetch complete for album "{album}": {fetched_tracks} tracks with listener data, {zero_tracks} with zero/unavailable data')
+                    if fetched_listeners:
+                        log_debug(f'Album listener stats: min={min(fetched_listeners)}, max={max(fetched_listeners)}, avg={sum(fetched_listeners)/len(fetched_listeners):.0f}')
                 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only:
