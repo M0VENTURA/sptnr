@@ -1911,6 +1911,26 @@ def api_scan_all_missing_releases():
                     with open(progress_file, 'w') as f:
                         json.dump(progress_data, f)
                     
+                    # Look up and save artist MBID if not already saved
+                    # This strengthens MusicBrainz lookups for album type detection
+                    try:
+                        from api_clients.musicbrainz import lookup_and_save_artist_mbid
+                        cursor.execute("""
+                            SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?
+                        """, (artist_name,))
+                        result = cursor.fetchone()
+                        existing_mbid = result[0] if result and result[0] else None
+                        
+                        if not existing_mbid:
+                            # No MBID saved yet, try to look it up from MusicBrainz
+                            mbid = lookup_and_save_artist_mbid(artist_name, conn)
+                            if mbid:
+                                logging.debug(f"[MISSING_RELEASES] Artist MBID saved for {artist_name}: {mbid}")
+                        else:
+                            logging.debug(f"[MISSING_RELEASES] Artist {artist_name} already has MBID: {existing_mbid}")
+                    except Exception as e:
+                        logging.debug(f"[MISSING_RELEASES] Could not look up MBID for {artist_name}: {e}")
+                    
                     # Get existing albums for this artist
                     cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist_name,))
                     existing_albums = [row[0] for row in cursor.fetchall()]

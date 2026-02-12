@@ -2770,10 +2770,12 @@ def popularity_scan(
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
-                # Extract album type from first track's metadata
-                album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', 'unknown')
+                # Get album type from MusicBrainz with Spotify fallback
+                from api_clients.musicbrainz import get_album_type_with_fallback
+                spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
+                album_type, type_source = get_album_type_with_fallback(artist, album, spotify_album_type, enabled=HAVE_MUSICBRAINZ)
                 is_compilation = album_type.lower() == 'compilation' if album_type else False
-                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type}')
+                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
                 singles_detected = 0
                 
                 # Log which sources are available for single detection

@@ -750,3 +750,181 @@ def get_artist_country(artist: str, enabled: bool = True) -> str:
     """Get artist country from MusicBrainz."""
     client = _get_musicbrainz_client(enabled)
     return client.get_artist_country(artist)
+
+
+def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: str = None, enabled: bool = True) -> tuple[str, str]:
+    """
+    Get album type from MusicBrainz with Spotify fallback.
+    
+    Strategy:
+    1. Query MusicBrainz for release group by artist + album title
+    2. Return primary_type and secondary_types (check for "compilation")
+    3. Fall back to Spotify album_type if MusicBrainz doesn't find it
+    4. Still use "song" or track count heuristics as last resort
+    
+    Args:
+        artist: Artist name
+        album: Album title
+        spotify_album_type: Spotify album type (as fallback)
+        enabled: Whether MusicBrainz is enabled
+        
+    Returns:
+        Tuple of (album_type, source) where:
+        - album_type: "album", "single", "ep", "compilation" or "unknown"
+        - source: "musicbrainz", "spotify", or "fallback"
+    """
+    if not enabled:
+        if spotify_album_type:
+            return (spotify_album_type.lower() if spotify_album_type else "unknown", "spotify")
+        return ("unknown", "fallback")
+    
+    try:
+        client = _get_musicbrainz_client(enabled)
+        
+        # Query MusicBrainz for the album
+        # Use rate limiter before request
+        if _rate_limiter:
+            _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+            _rate_limiter.record_musicbrainz_request()
+        else:
+            time.sleep(1.0)
+        
+        # Escape special characters for Lucene query
+        escaped_artist = _escape_lucene_special_chars(artist)
+        escaped_album = _escape_lucene_special_chars(album)
+        
+        params = {
+            "query": f'artist:"{escaped_artist}" AND releasegroup:"{escaped_album}"',
+            "fmt": "json",
+            "limit": 5
+        }
+        
+        res = client.session.get(
+            f"{client.base_url}release-group/",
+            params=params,
+            headers=client.headers,
+            timeout=(5, 10)
+        )
+        res.raise_for_status()
+        
+        release_groups = res.json().get("release-groups", []) or []
+        
+        if release_groups:
+            # Get the best match (first result is usually most relevant)
+            rg = release_groups[0]
+            primary_type = (rg.get("primary-type") or "").lower()
+            secondary_types = [s.lower() for s in (rg.get("secondary-types") or [])]
+            
+            # Check if it's a compilation (either primary or secondary type)
+            if primary_type == "compilation" or "compilation" in secondary_types:
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation")
+                return ("compilation", "musicbrainz")
+            
+            # Return primary type from MusicBrainz
+            if primary_type in ("album", "single", "ep"):
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={primary_type}")
+                return (primary_type, "musicbrainz")
+        
+        # MusicBrainz didn't find this album, fall back to Spotify
+        if spotify_album_type:
+            album_type = spotify_album_type.lower()
+            logger.debug(f"MusicBrainz: No match for '{album}' by '{artist}', using Spotify type: {album_type}")
+            return (album_type, "spotify")
+        
+        logger.debug(f"Album type detection failed for '{album}' by '{artist}' - no MusicBrainz match and no Spotify type")
+        return ("unknown", "fallback")
+        
+    except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+        logger.debug(f"MusicBrainz album type lookup failed for '{album}' by '{artist}': {e}, falling back to Spotify")
+        if spotify_album_type:
+            return (spotify_album_type.lower(), "spotify")
+        return ("unknown", "fallback")
+    except Exception as e:
+        logger.debug(f"Unexpected error getting album type for '{album}' by '{artist}': {e}")
+        if spotify_album_type:
+            return (spotify_album_type.lower(), "spotify")
+        return ("unknown", "fallback")
+
+
+def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
+    """
+    Look up artist MBID from MusicBrainz and save it to database.
+    
+    Uses MusicBrainz to find the artist and get their MBID, then updates
+    all tracks by this artist with the MBID.
+    
+    Args:
+        artist: Artist name
+        db_connection: Database connection
+        
+    Returns:
+        Artist MBID (or empty string if not found)
+    """
+    if not artist:
+        return ""
+    
+    try:
+        client = _get_musicbrainz_client(enabled=True)
+        
+        # Use rate limiter before request
+        if _rate_limiter:
+            _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+            _rate_limiter.record_musicbrainz_request()
+        else:
+            time.sleep(1.0)
+        
+        # Escape special characters for Lucene query
+        escaped_artist = _escape_lucene_special_chars(artist)
+        
+        params = {
+            "query": f'artist:"{escaped_artist}"',
+            "fmt": "json",
+            "limit": 5
+        }
+        
+        res = client.session.get(
+            f"{client.base_url}artist/",
+            params=params,
+            headers=client.headers,
+            timeout=(5, 10)
+        )
+        res.raise_for_status()
+        
+        artists = res.json().get("artists", []) or []
+        
+        if not artists:
+            logger.debug(f"No MusicBrainz match found for artist: {artist}")
+            return ""
+        
+        # Get the best match
+        artist_data = artists[0]
+        mbid = artist_data.get("id", "")
+        
+        if not mbid:
+            logger.debug(f"MusicBrainz returned no MBID for artist: {artist}")
+            return ""
+        
+        logger.info(f"Found MusicBrainz MBID for '{artist}': {mbid}")
+        
+        # Save MBID to database for all tracks by this artist
+        cursor = db_connection.cursor()
+        cursor.execute("""
+            UPDATE tracks 
+            SET musicbrainz_artist_id = ?
+            WHERE artist = ? AND musicbrainz_artist_id IS NULL
+        """, (mbid, artist))
+        db_connection.commit()
+        
+        # Count how many tracks were updated
+        cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND musicbrainz_artist_id = ?", (artist, mbid))
+        updated_count = cursor.fetchone()[0] if cursor.fetchone() else 0
+        logger.info(f"Updated {updated_count} tracks for artist '{artist}' with MBID: {mbid}")
+        
+        return mbid
+        
+    except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+        logger.debug(f"MusicBrainz artist lookup timeout for '{artist}': {e}")
+        return ""
+    except Exception as e:
+        logger.debug(f"Error looking up artist MBID for '{artist}': {e}")
+        return ""
