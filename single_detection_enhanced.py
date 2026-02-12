@@ -1004,7 +1004,8 @@ def check_has_explicit_metadata(
     musicbrainz_client=None,
     artist: str = "",
     duration: Optional[float] = None,
-    artist_mbid: Optional[str] = None
+    artist_mbid: Optional[str] = None,
+    album: str = ""
 ) -> bool:
     """
     Check if track has ANY explicit metadata from external sources.
@@ -1040,7 +1041,7 @@ def check_has_explicit_metadata(
     # Check Discogs
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
-            if discogs_client.is_single(title, artist, album_context={'duration': duration}):
+            if discogs_client.is_single(title, artist, album_context={'duration': duration, 'album_name': album}):
                 return True
         except Exception:
             pass  # Fail gracefully
@@ -1063,7 +1064,8 @@ def check_metadata_for_live_version(
     musicbrainz_client=None,
     artist: str = "",
     duration: Optional[float] = None,
-    artist_mbid: Optional[str] = None
+    artist_mbid: Optional[str] = None,
+    album: str = ""
 ) -> bool:
     """
     Check if there's metadata for the EXACT live version of this track.
@@ -1074,7 +1076,7 @@ def check_metadata_for_live_version(
     # For now, use same logic as has_explicit_metadata
     # In a more sophisticated implementation, we would check if the metadata
     # specifically mentions "live" in the release title
-    return check_has_explicit_metadata(title, spotify_results, discogs_client, musicbrainz_client, artist, duration, artist_mbid)
+    return check_has_explicit_metadata(title, spotify_results, discogs_client, musicbrainz_client, artist, duration, artist_mbid, album)
 
 
 def detect_single_enhanced(
