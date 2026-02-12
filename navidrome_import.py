@@ -295,7 +295,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Navidrome separates multiple genres with "•" character
                 navidrome_genre_raw = t.get("genre", "")
                 navidrome_genre_list = [g.strip() for g in navidrome_genre_raw.split("•") if g.strip()] if navidrome_genre_raw else []
-                # Keep the string representation for backward compatibility
+                # Create comma-separated string for the navidrome_genre field and logging
                 navidrome_genre = ", ".join(navidrome_genre_list) if navidrome_genre_list else ""
                 
                 # Detect Christmas songs and add Christmas genre
