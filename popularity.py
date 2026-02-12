@@ -1475,6 +1475,192 @@ def detect_single_for_track(
     }
 
 
+def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dict:
+    """
+    Pre-fetch Last.fm listener data for all tracks by an artist to enable dynamic weight adjustment.
+    
+    Uses artist-level statistics to identify tracks that are outliers in the artist's catalogue,
+    allowing intelligent weight redistribution during popularity scoring.
+    
+    Example:
+        - Colossus by Borknagar: 43,991 Last.fm listeners
+        - Borknagar average: ~11,000 listeners
+        - Colossus is 3.9 sigma above mean → boost Last.fm weight to 0.45+ (from default 0.3)
+        - This reflects actual user engagement patterns across the artist's catalogue
+    
+    Args:
+        artist_name: Name of the artist
+        conn: Database connection
+        
+    Returns:
+        Dict with keys:
+        - mean: Average Last.fm listeners across artist's tracks
+        - stdev: Standard deviation of Last.fm listeners
+        - min: Minimum listener count
+        - max: Maximum listener count
+        - track_count: Number of tracks analyzed
+        - track_zscores: Dict mapping track_id → z-score for all tracks
+    """
+    try:
+        cursor = conn.cursor()
+        
+        # Get all tracks by artist with Last.fm listener data
+        # Exclude live/remix/alternate versions to avoid skewing stats
+        cursor.execute("""
+            SELECT id, title, album, lastfm_track_playcount
+            FROM tracks
+            WHERE artist = ? AND lastfm_track_playcount > 0 AND is_single = 0 
+                AND album NOT IN (
+                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
+                )
+                AND album NOT IN (
+                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
+                )
+        """, (artist_name, artist_name, artist_name))
+        
+        tracks = cursor.fetchall()
+        
+        if not tracks or len(tracks) < 2:
+            return {
+                'mean': 0,
+                'stdev': 0,
+                'min': 0,
+                'max': 0,
+                'track_count': len(tracks) if tracks else 0,
+                'track_zscores': {}
+            }
+        
+        # Extract listener counts
+        listeners_list = [row[3] for row in tracks if row[3] > 0]
+        
+        if len(listeners_list) < 2:
+            return {
+                'mean': listeners_list[0] if listeners_list else 0,
+                'stdev': 0,
+                'min': listeners_list[0] if listeners_list else 0,
+                'max': listeners_list[0] if listeners_list else 0,
+                'track_count': len(listeners_list),
+                'track_zscores': {}
+            }
+        
+        # Calculate artist-level statistics
+        artist_mean = mean(listeners_list)
+        artist_stdev = stdev(listeners_list)
+        artist_min = min(listeners_list)
+        artist_max = max(listeners_list)
+        
+        # Calculate z-score for each track
+        track_zscores = {}
+        for track_row in tracks:
+            track_id = track_row[0]
+            title = track_row[1]
+            listeners = track_row[3]
+            
+            if artist_stdev > 0:
+                z = (listeners - artist_mean) / artist_stdev
+                track_zscores[track_id] = z
+                # Log tracks that are significant outliers (for debugging)
+                if abs(z) >= 2.0:
+                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f})")
+        
+        return {
+            'mean': artist_mean,
+            'stdev': artist_stdev,
+            'min': artist_min,
+            'max': artist_max,
+            'track_count': len(listeners_list),
+            'track_zscores': track_zscores
+        }
+        
+    except Exception as e:
+        log_debug(f"Error calculating artist Last.fm context: {e}")
+        return {
+            'mean': 0,
+            'stdev': 0,
+            'min': 0,
+            'max': 0,
+            'track_count': 0,
+            'track_zscores': {}
+        }
+
+
+def get_dynamic_weights(
+    spotify_score: float,
+    lastfm_score: float,
+    artist_context: dict,
+    track_lastfm_listeners: int,
+    base_spotify_weight: float = 0.4,
+    base_lastfm_weight: float = 0.3
+) -> tuple:
+    """
+    Calculate dynamically adjusted weights based on artist catalogue context.
+    
+    For tracks that are outliers in their artist's catalogue, boost the weight
+    of the more reliable source signal (e.g., Last.fm for heavily-streamed tracks).
+    
+    Example:
+        - Colossus: Spotify 28, Last.fm 43,991 listeners (z=3.9 above artist mean)
+        - Base weights: Spotify 0.4, Last.fm 0.3
+        - Colossus is extreme outlier → boost Last.fm to 0.5 (indicates real popularity)
+        - Result: Weighted more toward Last.fm's signal
+    
+    Args:
+        spotify_score: Spotify popularity score (0-100)
+        lastfm_score: Last.fm popularity score (0-100)
+        artist_context: Dict from get_artist_lastfm_context()
+        track_lastfm_listeners: Track's Last.fm listener count (raw value)
+        base_spotify_weight: Default Spotify weight (typically 0.4)
+        base_lastfm_weight: Default Last.fm weight (typically 0.3)
+        
+    Returns:
+        Tuple of (adjusted_spotify_weight, adjusted_lastfm_weight)
+    """
+    try:
+        artist_mean = artist_context.get('mean', 0)
+        artist_stdev = artist_context.get('stdev', 0)
+        
+        # If insufficient artist context, return base weights
+        if artist_stdev == 0 or artist_mean == 0:
+            return (base_spotify_weight, base_lastfm_weight)
+        
+        # Calculate z-score for this track relative to artist mean
+        if track_lastfm_listeners > 0:
+            track_zscore = (track_lastfm_listeners - artist_mean) / artist_stdev
+        else:
+            return (base_spotify_weight, base_lastfm_weight)
+        
+        # Boost weight for outliers (tracks significantly above/below artist mean)
+        # z-score magnitude indicates how unusual this track is
+        abs_zscore = abs(track_zscore)
+        
+        if abs_zscore >= 2.0:
+            # Track is 2+ standard deviations from mean (highly unusual in artist's catalogue)
+            if track_lastfm_listeners > artist_mean * 1.5:
+                # Above mean outlier - Last.fm signal is stronger, boost it
+                adjustment = 1.5 - abs(track_zscore) * 0.05  # Cap adjustment at ~1.5x
+                new_lastfm = base_lastfm_weight * adjustment
+                # Redistribute unused weight to Spotify proportionally
+                weight_freed = base_lastfm_weight * (adjustment - 1.0)
+                new_spotify = base_spotify_weight + weight_freed * 0.3
+                log_debug(f"Outlier boost (above mean): Last.fm weight {base_lastfm_weight:.2f} → {new_lastfm:.2f} (z={track_zscore:.2f})")
+                return (max(0.1, new_spotify), min(0.6, new_lastfm))
+            else:
+                # Below mean outlier - Spotify signal relatively more important
+                adjustment = 1.3
+                new_spotify = base_spotify_weight * adjustment
+                weight_freed = base_spotify_weight * (adjustment - 1.0)
+                new_lastfm = base_lastfm_weight + weight_freed * 0.3
+                log_debug(f"Outlier adjustment (below mean): Spotify weight {base_spotify_weight:.2f} → {new_spotify:.2f} (z={track_zscore:.2f})")
+                return (min(0.6, new_spotify), max(0.1, new_lastfm))
+        
+        # Return base weights for normal tracks
+        return (base_spotify_weight, base_lastfm_weight)
+        
+    except Exception as e:
+        log_debug(f"Error calculating dynamic weights: {e}")
+        return (base_spotify_weight, base_lastfm_weight)
+
+
 def popularity_scan(
     verbose: bool = False, 
     resume_from: str = None,
@@ -1674,6 +1860,15 @@ def popularity_scan(
             
             log_unified(f"Popularity Scan - Scanning Artist {artist} ({len(albums)} album(s))")
             log_debug(f"Processing artist/album group: {artist} with {len(albums)} albums")
+            
+            # Pre-fetch artist's Last.fm context for dynamic weight adjustment
+            # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
+            artist_lastfm_context = get_artist_lastfm_context(artist, conn)
+            if artist_lastfm_context['track_count'] > 0:
+                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, mean={artist_lastfm_context['mean']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
+                log_debug(f"Artist catalogue range: {artist_lastfm_context['min']:.0f} - {artist_lastfm_context['max']:.0f} listeners")
+            else:
+                log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
             
             # Get Spotify artist ID once per artist (before album loop)
             # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
@@ -2312,16 +2507,31 @@ def popularity_scan(
                         # Only include sources that have data (score > 0)
                         scores = []
                         weights = []
-                    
+                        
+                        # Calculate dynamic weights based on artist catalogue context
+                        # This boosts Last.fm weight for tracks that are outliers in the artist's catalogue
+                        dynamic_spotify_weight = SPOTIFY_WEIGHT
+                        dynamic_lastfm_weight = LASTFM_WEIGHT
+                        
+                        if artist_lastfm_context and artist_lastfm_context.get('track_count', 0) > 0 and listeners > 0:
+                            dynamic_spotify_weight, dynamic_lastfm_weight = get_dynamic_weights(
+                                spotify_score, lastfm_score,
+                                artist_lastfm_context,
+                                listeners,
+                                SPOTIFY_WEIGHT, LASTFM_WEIGHT
+                            )
+                            if dynamic_spotify_weight != SPOTIFY_WEIGHT or dynamic_lastfm_weight != LASTFM_WEIGHT:
+                                log_info(f"Dynamic weight adjustment for artist context: Spotify {SPOTIFY_WEIGHT:.2f}→{dynamic_spotify_weight:.2f}, Last.fm {LASTFM_WEIGHT:.2f}→{dynamic_lastfm_weight:.2f}")
+                        
                         if spotify_score > 0:
                             scores.append(spotify_score)
-                            weights.append(SPOTIFY_WEIGHT)
-                            log_debug(f'Including Spotify score: {spotify_score} (weight: {SPOTIFY_WEIGHT})')
+                            weights.append(dynamic_spotify_weight)
+                            log_debug(f'Including Spotify score: {spotify_score} (weight: {dynamic_spotify_weight:.2f})')
                     
                         if lastfm_score > 0:
                             scores.append(lastfm_score)
-                            weights.append(LASTFM_WEIGHT)
-                            log_debug(f'Including Last.fm score: {lastfm_score} (weight: {LASTFM_WEIGHT})')
+                            weights.append(dynamic_lastfm_weight)
+                            log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
                     
                         if age_score > 0:
                             scores.append(age_score)
