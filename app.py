@@ -11166,8 +11166,18 @@ def api_playlist_list():
                 },
                 timeout=10
             )
-            auth_data = auth_response.json()
-            if auth_response.status_code != 200 or not auth_data.get("subsonic-response", {}).get("token"):
+            if auth_response.status_code != 200:
+                logging.error(f"Navidrome auth failed with status {auth_response.status_code}: {auth_response.text[:500]}")
+                return jsonify({"error": f"Navidrome authentication failed with status {auth_response.status_code}"}), 200
+            
+            try:
+                auth_data = auth_response.json()
+            except ValueError as json_err:
+                logging.error(f"Navidrome auth response not valid JSON. Status: {auth_response.status_code}, Response: {auth_response.text[:500]}")
+                return jsonify({"error": "Navidrome returned invalid JSON response"}), 200
+            
+            if not auth_data.get("subsonic-response", {}).get("token"):
+                logging.error(f"Navidrome auth response has no token: {auth_data}")
                 return jsonify({"error": "Failed to authenticate with Navidrome"}), 200
             token = auth_data["subsonic-response"]["token"]
         except Exception as e:
@@ -11253,7 +11263,20 @@ def api_playlist_load():
                 params={"u": user, "p": password, "c": "sptnr", "f": "json"},
                 timeout=10
             )
-            token = auth_response.json()["subsonic-response"]["token"]
+            if auth_response.status_code != 200:
+                logging.error(f"Navidrome auth failed with status {auth_response.status_code}: {auth_response.text[:500]}")
+                return jsonify({"error": f"Navidrome authentication failed with status {auth_response.status_code}"}), 200
+            
+            try:
+                auth_data = auth_response.json()
+            except ValueError as json_err:
+                logging.error(f"Navidrome auth response not valid JSON. Status: {auth_response.status_code}, Response: {auth_response.text[:500]}")
+                return jsonify({"error": "Navidrome returned invalid JSON response"}), 200
+            
+            token = auth_data.get("subsonic-response", {}).get("token")
+            if not token:
+                logging.error(f"Navidrome auth response has no token: {auth_data}")
+                return jsonify({"error": "Failed to authenticate with Navidrome"}), 200
         except Exception as e:
             logging.error(f"Navidrome authentication error: {e}")
             return jsonify({"error": f"Navidrome authentication error: {str(e)}"}), 200
