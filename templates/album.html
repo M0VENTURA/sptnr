@@ -1426,8 +1426,8 @@
     }
 
     function openEditAlbumIdsModal() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const spotifyId = document.getElementById('spotifyAlbumId').value;
         const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
         const discogsId = document.getElementById('discogsReleaseId').value;
@@ -1484,8 +1484,8 @@
     }
 
     function saveAlbumIds() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
