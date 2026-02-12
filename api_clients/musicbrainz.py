@@ -850,8 +850,13 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
     """
     Look up artist MBID from MusicBrainz and save it to database.
     
-    Uses MusicBrainz to find the artist and get their MBID, then updates
-    all tracks by this artist with the MBID.
+    Uses intelligent artist selection:
+    - Prefers "Group" type for band/ensemble names
+    - Prefers official artists over disambiguation variants
+    - Uses partial name matching if exact match fails
+    - Logs candidates for debugging
+    
+    Saves MBID to database for all tracks by this artist.
     
     Args:
         artist: Artist name
@@ -879,7 +884,7 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         params = {
             "query": f'artist:"{escaped_artist}"',
             "fmt": "json",
-            "limit": 5
+            "limit": 10  # Get more candidates for better selection
         }
         
         res = client.session.get(
@@ -890,21 +895,77 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         )
         res.raise_for_status()
         
-        artists = res.json().get("artists", []) or []
+        artists_data = res.json().get("artists", []) or []
         
-        if not artists:
-            logger.debug(f"No MusicBrainz match found for artist: {artist}")
+        if not artists_data:
+            logger.debug(f"No MusicBrainz matches found for artist: {artist}")
             return ""
         
-        # Get the best match
-        artist_data = artists[0]
-        mbid = artist_data.get("id", "")
+        logger.debug(f"MusicBrainz found {len(artists_data)} candidates for artist: {artist}")
+        
+        # Score and rank candidates
+        best_candidate = None
+        best_score = -1
+        
+        for candidate in artists_data:
+            score = 0
+            candidate_name = candidate.get("name", "")
+            artist_type = candidate.get("type", "").lower()
+            disambiguation = candidate.get("disambiguation", "").lower()
+            mbid = candidate.get("id", "")
+            
+            # Exact name match: +100 points
+            if candidate_name.lower() == artist.lower():
+                score += 100
+                logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - EXACT MATCH")
+            # Partial/close match: +50 points
+            elif artist.lower() in candidate_name.lower():
+                score += 50
+                logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - PARTIAL MATCH")
+            else:
+                logger.debug(f"  Candidate: {candidate_name} (MBID: {mbid}) - NO MATCH")
+                continue  # Skip if not even a partial match
+            
+            # Prefer "Group" type for bands: +25 points
+            if artist_type == "group":
+                score += 25
+                logger.debug(f"    Type: Group (+25)")
+            elif artist_type == "person":
+                score += 0
+                logger.debug(f"    Type: Person (no bonus)")
+            else:
+                score += 10
+                logger.debug(f"    Type: {artist_type} (+10)")
+            
+            # Penalize disambiguation suffixes (usually indicates alternate artist): -10 points
+            if disambiguation:
+                score -= 10
+                logger.debug(f"    Disambiguation: '{disambiguation}' (-10)")
+            
+            # Prefer active artists (with life-span): +5 points
+            life_span = candidate.get("life-span", {})
+            if life_span and not life_span.get("ended"):
+                score += 5
+                logger.debug(f"    Status: Active (+5)")
+            
+            logger.debug(f"    Total Score: {score}")
+            
+            if score > best_score:
+                best_score = score
+                best_candidate = candidate
+        
+        if not best_candidate or best_score < 0:
+            logger.debug(f"No suitable MusicBrainz match for artist: {artist} (best score: {best_score})")
+            return ""
+        
+        mbid = best_candidate.get("id", "")
+        best_name = best_candidate.get("name", "")
         
         if not mbid:
-            logger.debug(f"MusicBrainz returned no MBID for artist: {artist}")
+            logger.debug(f"Best candidate has no MBID: {best_name}")
             return ""
         
-        logger.info(f"Found MusicBrainz MBID for '{artist}': {mbid}")
+        logger.info(f"Selected MusicBrainz match for '{artist}': '{best_name}' (MBID: {mbid}, score: {best_score})")
         
         # Save MBID to database for all tracks by this artist
         cursor = db_connection.cursor()
@@ -917,7 +978,8 @@ def lookup_and_save_artist_mbid(artist: str, db_connection) -> str:
         
         # Count how many tracks were updated
         cursor.execute("SELECT COUNT(*) FROM tracks WHERE artist = ? AND musicbrainz_artist_id = ?", (artist, mbid))
-        updated_count = cursor.fetchone()[0] if cursor.fetchone() else 0
+        result = cursor.fetchone()
+        updated_count = result[0] if result else 0
         logger.info(f"Updated {updated_count} tracks for artist '{artist}' with MBID: {mbid}")
         
         return mbid
