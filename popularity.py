@@ -1482,11 +1482,13 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
     Uses artist-level statistics to identify tracks that are outliers in the artist's catalogue,
     allowing intelligent weight redistribution during popularity scoring.
     
+    Falls back to Last.fm's top tracks API if database has limited catalogue coverage.
+    
     Example:
         - Colossus by Borknagar: 43,991 Last.fm listeners
         - Borknagar average: ~11,000 listeners
         - Colossus is 3.9 sigma above mean → boost Last.fm weight to 0.45+ (from default 0.3)
-        - This reflects actual user engagement patterns across the artist's catalogue
+        - This reflects actual user engagement patterns across the artist's full catalogue
     
     Args:
         artist_name: Name of the artist
@@ -1500,6 +1502,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         - max: Maximum listener count
         - track_count: Number of tracks analyzed
         - track_zscores: Dict mapping track_id → z-score for all tracks
+        - source: 'database' or 'lastfm_api' indicating data source
     """
     try:
         cursor = conn.cursor()
@@ -1519,37 +1522,68 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         """, (artist_name, artist_name, artist_name))
         
         tracks = cursor.fetchall()
+        listeners_list = [row[3] for row in tracks if row[3] > 0]
         
-        if not tracks or len(tracks) < 2:
+        # If limited database coverage (< 20 tracks), supplement with Last.fm top tracks API
+        min_threshold = 20
+        data_source = 'database'
+        if not listeners_list or len(listeners_list) < min_threshold:
+            log_debug(f"Limited database coverage ({len(listeners_list)} tracks) for {artist_name} - supplementing with Last.fm top tracks API")
+            try:
+                # Import here to avoid circular dependencies
+                from api_clients.lastfm import _get_lastfm_client
+                from config_loader import load_config
+                
+                config = load_config()
+                if config and config.lastfm_api_key:
+                    lastfm_client = _get_lastfm_client(config.lastfm_api_key)
+                    
+                    # Fetch top 50 tracks from Last.fm API
+                    import requests
+                    params = {
+                        "method": "artist.getTopTracks",
+                        "artist": artist_name,
+                        "api_key": config.lastfm_api_key,
+                        "limit": 50,
+                        "format": "json"
+                    }
+                    
+                    response = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
+                    if response.status_code == 200:
+                        data = response.json()
+                        top_tracks = data.get("toptracks", {}).get("track", [])
+                        
+                        # Extract listener counts from API response
+                        for track in top_tracks:
+                            listeners = int(track.get("playcount", 0) or 0)
+                            if listeners > 0:
+                                listeners_list.append(listeners)
+                        
+                        if listeners_list:
+                            log_debug(f"Added {len(top_tracks)} top tracks from Last.fm API for {artist_name}")
+                            data_source = 'lastfm_api'
+            except Exception as e:
+                log_debug(f"Failed to fetch Last.fm top tracks for {artist_name}: {e}")
+                # Continue with database-only data if API fails
+        
+        if not listeners_list or len(listeners_list) < 2:
             return {
                 'mean': 0,
                 'stdev': 0,
                 'min': 0,
                 'max': 0,
-                'track_count': len(tracks) if tracks else 0,
-                'track_zscores': {}
-            }
-        
-        # Extract listener counts
-        listeners_list = [row[3] for row in tracks if row[3] > 0]
-        
-        if len(listeners_list) < 2:
-            return {
-                'mean': listeners_list[0] if listeners_list else 0,
-                'stdev': 0,
-                'min': listeners_list[0] if listeners_list else 0,
-                'max': listeners_list[0] if listeners_list else 0,
-                'track_count': len(listeners_list),
-                'track_zscores': {}
+                'track_count': len(listeners_list) if listeners_list else 0,
+                'track_zscores': {},
+                'source': data_source
             }
         
         # Calculate artist-level statistics
         artist_mean = mean(listeners_list)
-        artist_stdev = stdev(listeners_list)
+        artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
         artist_min = min(listeners_list)
         artist_max = max(listeners_list)
         
-        # Calculate z-score for each track
+        # Calculate z-score for each database track
         track_zscores = {}
         for track_row in tracks:
             track_id = track_row[0]
@@ -1561,7 +1595,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                 track_zscores[track_id] = z
                 # Log tracks that are significant outliers (for debugging)
                 if abs(z) >= 2.0:
-                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f})")
+                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, source={data_source})")
         
         return {
             'mean': artist_mean,
@@ -1569,7 +1603,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'min': artist_min,
             'max': artist_max,
             'track_count': len(listeners_list),
-            'track_zscores': track_zscores
+            'track_zscores': track_zscores,
+            'source': data_source
         }
         
     except Exception as e:
@@ -1580,7 +1615,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'min': 0,
             'max': 0,
             'track_count': 0,
-            'track_zscores': {}
+            'track_zscores': {},
+            'source': 'error'
         }
 
 
