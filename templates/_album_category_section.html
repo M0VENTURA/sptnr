@@ -64,17 +64,17 @@
   <td class="text-center">
     <div class="btn-group btn-group-sm" role="group">
       {% if is_missing %}
-        <button class="btn btn-outline-success" onclick="importRelease('{{ artist_name }}', '{{ album.release_id }}', '{{ album.title }}')" title="Import this release">
+        <button class="btn btn-outline-success" onclick="importRelease({{ artist_name|tojson }}, {{ album.release_id|tojson }}, {{ album.title|tojson }})" title="Import this release">
           <i class="bi bi-download"></i>
         </button>
-        <button class="btn btn-outline-secondary" onclick="openDownloadSearch('{{ artist_name }}', '{{ album.title }}')" title="Search for download">
+        <button class="btn btn-outline-secondary" onclick="openDownloadSearch({{ artist_name|tojson }}, {{ album.title|tojson }})" title="Search for download">
           <i class="bi bi-search"></i>
         </button>
       {% else %}
-        <button class="btn btn-outline-info" onclick="toggleTracklist('{{ artist_name|replace(\"'\", \"\\\\'\" ) }}', '{{ (album.album or album.title)|replace(\"'\", \"\\\\'\" ) }}')" title="Show tracklist" id="toggle-btn-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}">
+        <button class="btn btn-outline-info" onclick="toggleTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})" title="Show tracklist" id="toggle-btn-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}">
           <i class="bi bi-list-ul"></i>
         </button>
-        <button class="btn btn-outline-primary" onclick="lookupMetadata('album', '{{ artist_name }}/{{ album.album }}')" title="Lookup metadata">
+        <button class="btn btn-outline-primary" onclick="lookupMetadata('album', {{ (artist_name + '/' + album.album)|tojson }})" title="Lookup metadata">
           <i class="bi bi-search"></i>
         </button>
         <a class="btn btn-outline-secondary" href="{{ url_for('album_detail', artist=artist_name, album=album.album) }}" title="View album">
@@ -88,7 +88,7 @@
 <tr class="tracklist-row" id="tracklist-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}" style="display: none;">
   <td colspan="7" style="padding: 1rem;">
     <div class="tracklist-container">
-      <button class="btn btn-sm btn-outline-info me-2" onclick="loadTracklist('{{ artist_name }}', '{{ album.album or album.title }}', this)">
+      <button class="btn btn-sm btn-outline-info me-2" onclick="loadTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }}, this)">
         <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
         <i class="bi bi-list-ul"></i> Load Tracklist
       </button>
