@@ -4001,9 +4001,7 @@ def album_edit(artist, album):
         update_values = []
         
         # Track if album/artist names changed
-        artist_changed = (album_artist != artist)
-        album_changed = (album_title != album)
-        names_changed = artist_changed or album_changed
+        names_changed = (album_artist != artist) or (album_title != album)
         
         # If album title or artist changed, update those
         if names_changed:
@@ -4101,23 +4099,23 @@ def album_edit(artist, album):
         try:
             temp_conn = get_db()
             temp_cursor = temp_conn.cursor()
-            # Get the actual artist and album names from the database
+            # Get the actual artist and album names from the database after the update
             # Use the same COALESCE logic as album_detail to get the correct artist
             temp_cursor.execute("""
                 SELECT DISTINCT 
                     COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                     album
                 FROM tracks
-                WHERE (COALESCE(NULLIF(album_artist, ''), artist) = ? OR COALESCE(NULLIF(album_artist, ''), artist) = ?)
-                    AND (album = ? OR album = ?)
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                    AND album = ?
                 LIMIT 1
-            """, (artist, album_artist, album, album_title))
+            """, (album_artist, album_title))
             db_row = temp_cursor.fetchone()
             temp_conn.close()
             
             if db_row:
-                redirect_artist = db_row[0] or db_row['effective_artist']
-                redirect_album = db_row[1] or db_row['album']
+                redirect_artist = db_row[0]
+                redirect_album = db_row[1]
             else:
                 # Fallback: use form data if names changed, otherwise use original URL params
                 redirect_artist = album_artist if names_changed else artist
