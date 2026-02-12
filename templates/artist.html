@@ -983,6 +983,105 @@ function escapeJsString(str) {
             .replace(/\r/g, '\\r');
 }
 
+// ===== Artist IDs Modal Functions (defined early) =====
+function openEditArtistIdsModal() {
+  const artistName = {{ artist_name|tojson }};
+  const spotifyId = document.getElementById('spotifyArtistId').value;
+  const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
+  const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
+  
+  const modalHtml = `
+    <div class="modal fade" id="editArtistIdsModal" tabindex="-1">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist IDs</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="editSpotifyArtistId" class="form-label">Spotify Artist ID</label>
+              <input type="text" class="form-control" id="editSpotifyArtistId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 3TVXtAsR1Inumwj472S9r4">
+              <div class="form-text">
+                <a href="https://open.spotify.com/search/${encodeURIComponent(artistName)}" target="_blank">Search Spotify</a> to find the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
+              <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
+              <div class="form-text">
+                <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> to find the artist ID
+              </div>
+            </div>
+            <div class="mb-3">
+              <label for="editDiscogsArtistId" class="form-label">Discogs Artist ID</label>
+              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml(discogsId)}" placeholder="e.g., 123456">
+              <div class="form-text">
+                <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search Discogs</a> to find the artist ID
+              </div>
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
+              <i class="bi bi-save"></i> Save Changes
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  const existingModal = document.getElementById('editArtistIdsModal');
+  if (existingModal) existingModal.remove();
+  
+  document.body.insertAdjacentHTML('beforeend', modalHtml);
+  
+  const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
+  modal.show();
+}
+
+function saveArtistIds() {
+  const artistName = {{ artist_name|tojson }};
+  const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
+  const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
+  const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
+  
+  fetch('/api/artist/update-ids', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      artist: artistName,
+      spotify_artist_id: spotifyId,
+      lastfm_artist_mbid: musicbrainzId,
+      musicbrainz_artist_id: musicbrainzId,
+      discogs_artist_id: discogsId
+    })
+  })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('spotifyArtistId').value = spotifyId;
+        document.getElementById('musicbrainzArtistId').value = musicbrainzId;
+        if (document.getElementById('discogsArtistId')) {
+          document.getElementById('discogsArtistId').value = discogsId;
+        }
+        
+        const modalInstance = bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'));
+        if (modalInstance) modalInstance.hide();
+        
+        alert('✅ Artist IDs updated successfully!');
+        setTimeout(() => location.reload(), 1000);
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
+      }
+    })
+    .catch(err => {
+      console.error('Error:', err);
+      alert('❌ Network error: ' + err.message);
+    });
+}
+
 // Allow Enter key to trigger search
 document.addEventListener('DOMContentLoaded', function() {
   const qbitSearchInput = document.getElementById('qbitSearchInput');
@@ -1684,105 +1783,6 @@ function applyCountryAsGenre() {
       }
     })
     .catch(err => alert('❌ Network error: ' + err.message));
-}
-
-function openEditArtistIdsModal() {
-  const artistName = {{ artist_name|tojson }};
-  const spotifyId = document.getElementById('spotifyArtistId').value;
-  const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
-  const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
-  
-  const modalHtml = `
-    <div class="modal fade" id="editArtistIdsModal" tabindex="-1">
-      <div class="modal-dialog">
-        <div class="modal-content">
-          <div class="modal-header">
-            <h5 class="modal-title"><i class="bi bi-pencil"></i> Edit Artist IDs</h5>
-            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-          </div>
-          <div class="modal-body">
-            <div class="mb-3">
-              <label for="editSpotifyArtistId" class="form-label">Spotify Artist ID</label>
-              <input type="text" class="form-control" id="editSpotifyArtistId" value="${escapeHtml(spotifyId)}" placeholder="e.g., 3TVXtAsR1Inumwj472S9r4">
-              <div class="form-text">
-                <a href="https://open.spotify.com/search/${encodeURIComponent(artistName)}" target="_blank">Search Spotify</a> to find the artist ID
-              </div>
-            </div>
-            <div class="mb-3">
-              <label for="editMusicbrainzArtistId" class="form-label">MusicBrainz Artist ID</label>
-              <input type="text" class="form-control" id="editMusicbrainzArtistId" value="${escapeHtml(musicbrainzId)}" placeholder="e.g., a74b1b7f-71a5-4011-9441-d0b5e4122711">
-              <div class="form-text">
-                <a href="https://musicbrainz.org/search?query=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search MusicBrainz</a> to find the artist ID
-              </div>
-            </div>
-            <div class="mb-3">
-              <label for="editDiscogsArtistId" class="form-label">Discogs Artist ID</label>
-              <input type="text" class="form-control" id="editDiscogsArtistId" value="${escapeHtml(discogsId)}" placeholder="e.g., 123456">
-              <div class="form-text">
-                <a href="https://www.discogs.com/search/?q=${encodeURIComponent(artistName)}&type=artist" target="_blank">Search Discogs</a> to find the artist ID
-              </div>
-            </div>
-          </div>
-          <div class="modal-footer">
-            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
-              <i class="bi bi-save"></i> Save Changes
-            </button>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  // Remove existing modal if any
-  const existingModal = document.getElementById('editArtistIdsModal');
-  if (existingModal) existingModal.remove();
-  
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-  
-  const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
-  modal.show();
-}
-
-function saveArtistIds() {
-  const artistName = {{ artist_name|tojson }};
-  const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
-  const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
-  const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
-  
-  fetch('/api/artist/update-ids', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      artist: artistName,
-      spotify_artist_id: spotifyId,
-      lastfm_artist_mbid: musicbrainzId,
-      musicbrainz_artist_id: musicbrainzId,
-      discogs_artist_id: discogsId
-    })
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.success) {
-        document.getElementById('spotifyArtistId').value = spotifyId;
-        document.getElementById('musicbrainzArtistId').value = musicbrainzId;
-        if (document.getElementById('discogsArtistId')) {
-          document.getElementById('discogsArtistId').value = discogsId;
-        }
-        
-        const modalInstance = bootstrap.Modal.getInstance(document.getElementById('editArtistIdsModal'));
-        if (modalInstance) modalInstance.hide();
-        
-        alert('✅ Artist IDs updated successfully!');
-        setTimeout(() => location.reload(), 1000);
-      } else {
-        alert('❌ Error: ' + (data.error || 'Failed to update IDs'));
-      }
-    })
-    .catch(err => {
-      console.error('Error:', err);
-      alert('❌ Network error: ' + err.message);
-    });
 }
 
 // Toggle tracklist visibility
