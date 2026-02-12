@@ -253,6 +253,29 @@ class SpotifyMetadataFetcher:
         except (ValueError, TypeError):
             return True
     
+    def _extract_album_art_url(self, album_metadata: Optional[dict]) -> Optional[str]:
+        """
+        Extract album art URL from Spotify album metadata.
+        
+        Spotify returns images in descending order of size (largest first).
+        We use the largest available image for best quality.
+        
+        Args:
+            album_metadata: Album metadata dict from Spotify
+            
+        Returns:
+            URL to album art image or None if not found
+        """
+        if not album_metadata:
+            return None
+        
+        images = album_metadata.get("images", [])
+        if images and len(images) > 0:
+            # Return the first (largest) image URL
+            return images[0].get("url")
+        
+        return None
+    
     def _store_track_metadata(
         self,
         db_track_id: str,
@@ -308,6 +331,7 @@ class SpotifyMetadataFetcher:
             
             # Album metadata from album endpoint
             "spotify_album_label": album_metadata.get("label") if album_metadata else None,
+            "spotify_album_art_url": self._extract_album_art_url(album_metadata),
             
             # Artist metadata
             "spotify_artist": ", ".join(artist_names),
