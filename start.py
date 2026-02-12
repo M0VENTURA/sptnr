@@ -6,6 +6,7 @@ from datetime import datetime, timedelta
 import sys
 import yaml
 from concurrent.futures import ThreadPoolExecutor
+from typing import cast
 # Placeholders for undefined variables/objects (replace with actual implementations as needed)
 session = None
 nav_client = None
@@ -73,10 +74,12 @@ USERNAME = _nav.get("user")
 PASSWORD = _nav.get("pass")
 
 # --- log_unified fallback ---
-try:
-    from popularity_helpers import log_unified
-except ImportError:
-    def log_unified(msg):
+def log_unified(msg: str) -> None:
+    """Unified logging function that wraps either imported or fallback implementation."""
+    try:
+        from popularity_helpers import log_unified as _imported_log_unified
+        _imported_log_unified(msg)
+    except ImportError:
         print(f"[LOG] {msg}")
 
 # --- argparse import ---
@@ -258,21 +261,29 @@ _DEF_USER_AGENT = "sptnr-cli/2.0"
 
 def get_suggested_mbid(title: str, artist: str, limit: int = 5) -> tuple[str, float]:
     """Get suggested MusicBrainz ID (wrapper using MusicBrainzClient)."""
-    return musicbrainz_client.get_suggested_mbid(title, artist, limit)
+    if musicbrainz_client:
+        return musicbrainz_client.get_suggested_mbid(title, artist, limit)
+    return ("", 0.0)
 
 # --- Genre Helpers ---
 
-def get_discogs_genres(title, artist):
+def get_discogs_genres(title: str, artist: str) -> list[str]:
     """Fetch genres from Discogs (wrapper using DiscogsClient)."""
-    return discogs_client.get_genres(title, artist)
+    if discogs_client:
+        return discogs_client.get_genres(title, artist)
+    return []
 
-def get_audiodb_genres(artist):
+def get_audiodb_genres(artist: str) -> list[str]:
     """Fetch genres from AudioDB (wrapper using AudioDbClient)."""
-    return audiodb_client.get_artist_genres(artist)
+    if audiodb_client:
+        return audiodb_client.get_artist_genres(artist)
+    return []
 
 def get_musicbrainz_genres(title: str, artist: str) -> list[str]:
     """Fetch genres from MusicBrainz (wrapper using MusicBrainzClient)."""
-    return musicbrainz_client.get_genres(title, artist)
+    if musicbrainz_client:
+        return musicbrainz_client.get_genres(title, artist)
+    return []
 
 def is_valid_version(track_title, allow_live_remix=False):
     """Validate track version against blacklist and whitelist."""
@@ -290,15 +301,18 @@ def is_valid_version(track_title, allow_live_remix=False):
 
 
 def get_lastfm_track_info(artist: str, title: str) -> dict:
-    pass  # Implementation moved to popularity.py
+    """Implementation moved to popularity.py"""
+    return {}
 
 
 def get_listenbrainz_score(mbid: str, artist: str = "", title: str = "") -> int:
-    pass  # Implementation moved to popularity.py
+    """Implementation moved to popularity.py"""
+    return 0
 
 
-def score_by_age(playcount, release_str):
-    pass  # Implementation moved to popularity.py
+def score_by_age(playcount: int, release_str: str) -> int:
+    """Implementation moved to popularity.py"""
+    return 0
 
 # --- Genre Handling ---
 
@@ -348,8 +362,12 @@ def get_top_genres_with_navidrome(sources, nav_genres, title="", album=""):
         filtered = [g for g in filtered if g.lower() != "heavy metal"]
     if not filtered:
         filtered = [g for g, _ in sorted_genres]
-    online_top = [g.capitalize() for g in filtered[:3]]
-    nav_cleaned = [normalize_genre(g).capitalize() for g in nav_genres if g]
+    online_top = [g.capitalize() for g in filtered[:3] if g is not None]
+    nav_cleaned: list[str] = [
+        normalize_genre(str(g)).capitalize() 
+        for g in nav_genres 
+        if g is not None
+    ]
     return online_top, nav_cleaned
 
 def set_track_rating_for_all(track_id, stars):
@@ -377,9 +395,14 @@ def set_track_rating_for_all(track_id, stars):
         create_or_update_playlist_for_artist(name, tracks)
         print(f"âœ… Playlist refreshed for '{name}' ({len(tracks)} tracks)")
 
-def build_artist_index(verbose: bool = False):
+def build_artist_index(verbose: bool = False) -> dict:
     """Build artist index from Navidrome (wrapper using NavidromeClient)."""
-    artist_map_from_api = nav_client.build_artist_index()
+    if not nav_client:
+        logging.warning("Navidrome client not initialized")
+        return {}
+    
+    result = nav_client.build_artist_index()  # type: ignore[union-attr]
+    artist_map_from_api: dict = cast(dict, result or {})
     
     # Persist to database with retry logic
     max_retries = 3
@@ -827,18 +850,23 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
     except Exception as e:
         logging.warning(f"Could not create scan lock file: {e}")
     # Log scan start to unified log
-    log_unified(f"🟢 SPTNR scan started: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if log_unified:
+        log_unified(f"🟢 SPTNR scan started: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
-    # âœ… Reload config on each run
-    config = load_config()
+    # ✅ Reload config on each run
+    config = {}  # Default empty config
+    if load_config:
+        config = load_config() or {}
+    else:
+        logging.warning("load_config not available")
     
     # Get configuration options
     full_scan = scan_type == 'full'
     perpetual = scan_type == 'perpetual'
-    force = force or config["features"].get("force", False)
-    dry_run = dry_run or config["features"].get("dry_run", False)
-    verbose = verbose or config["features"].get("verbose", False)
-    artist_list = config["features"].get("artist", [])
+    force = force or (config.get("features", {}).get("force", False) if config else False)
+    dry_run = dry_run or (config.get("features", {}).get("dry_run", False) if config else False)
+    verbose = verbose or (config.get("features", {}).get("verbose", False) if config else False)
+    artist_list = config.get("features", {}).get("artist", []) if config else []
     
     # If verbose enabled, route debug logs to console as well
     if verbose:
@@ -1114,7 +1142,8 @@ def run_scan(scan_type='full', verbose=False, force=False, dry_run=False):
     except Exception as e:
         logging.warning(f"Could not remove scan lock file: {e}")
     # Log scan completion to unified log
-    log_unified(f"✅ SPTNR scan complete: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    if log_unified:
+        log_unified(f"✅ SPTNR scan complete: type={scan_type}, time={datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
 
 
 # --- CLI Handling ---

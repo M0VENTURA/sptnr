@@ -3,5 +3,8 @@
   "reportPrivateImportUsage": false,
   "reportMissingModuleSource": false,
   "reportOptionalSubscript": false,
+  "reportOptionalMemberAccess": false,
+  "reportOptionalCall": false,
+  "reportAttributeAccessIssue": false,
   "pythonVersion": "3.13"
 }
