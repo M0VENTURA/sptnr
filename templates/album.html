@@ -1023,8 +1023,8 @@
     }
 
     function openAlbumArtModal() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         
         const modalHtml = `
             <div class="modal fade" id="albumArtModal" tabindex="-1">
@@ -1158,8 +1158,8 @@
     let selectedGenres = new Set();
 
     function fetchGenreRecommendations() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const btn = document.getElementById('fetchGenresBtn');
         const container = document.getElementById('recommendedGenres');
         const section = document.getElementById('recommendedGenresSection');
@@ -1268,8 +1268,8 @@
             return;
         }
         
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const genresArray = Array.from(selectedGenres);
         
         if (!confirm(`Apply genres [${genresArray.join(', ')}] to all MP3 files in this album?`)) {
@@ -1426,8 +1426,8 @@
     }
 
     function openEditAlbumIdsModal() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const spotifyId = document.getElementById('spotifyAlbumId').value;
         const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
         const discogsId = document.getElementById('discogsReleaseId').value;
@@ -1484,8 +1484,8 @@
     }
 
     function saveAlbumIds() {
-        const artistName = '{{ artist_name|safe }}';
-        const albumName = '{{ album_name|safe }}';
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
         const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
