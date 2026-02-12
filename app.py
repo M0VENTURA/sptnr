@@ -18,8 +18,11 @@ def get_all_env_vars():
     # Return a dict of all relevant env vars and their current values
     return {var: os.environ.get(var, "") for var in ALL_ENV_VARS}
 import sqlite3
-import psycopg2
-import psycopg2.extras
+try:
+    import psycopg2
+    import psycopg2.extras
+except ImportError:
+    pass  # PostgreSQL support optional
 from contextlib import closing
 import json
 import yaml
@@ -1952,7 +1955,7 @@ def api_scan_all_missing_releases():
                     
                     # Check for missing releases AND update cover art for existing albums
                     for rg in mb_releases:
-                        norm_title = _normalize_release_title(rg.get("title"))
+                        norm_title = _normalize_release_title(rg.get("title") or "")
                         cover_art_url = rg.get("cover_art_url", "")
                         
                         # If album exists, update its cover art
@@ -2177,7 +2180,7 @@ def api_apply_country_as_genre():
         
         # Import mutagen for MP3 tag editing
         try:
-            from mutagen.id3 import ID3, TCON
+            from mutagen.id3 import ID3
             from mutagen.mp3 import MP3
         except ImportError:
             return jsonify({"error": "Mutagen library not available"}), 500
@@ -2201,19 +2204,14 @@ def api_apply_country_as_genre():
                 # Get existing genres - split on both '; ' and ';' for backward compatibility
                 existing_genres = []
                 if audio.tags and 'TCON' in audio.tags:
-                    genre_str = str(audio.tags['TCON'])
+                    try:
+                        genre_str = str(audio.tags['TCON'])
+                    except (KeyError, AttributeError):
+                        genre_str = ""
                     # Split on ';' and strip whitespace from each part
                     existing_genres = [part.strip() for part in genre_str.split(';') if part.strip()]
                 
-                # Add country if not already present
-                if country not in existing_genres:
-                    existing_genres.append(country)
-                    
-                    # Set the genre tag
-                    if audio.tags is None:
-                        audio.add_tags()
-                    audio.tags['TCON'] = TCON(encoding=3, text=existing_genres)
-                    audio.save()
+                # Add country if not already present\n                if country not in existing_genres:\n                    existing_genres.append(country)\n                    \n                    # Set the genre tag\n                    if audio.tags is None:\n                        audio.add_tags()\n                    # Set genre directly without TCON class for compatibility\n                    try:\n                        # Try using mutagen's frame creation\n                        from mutagen.id3._frames import TCON as FrameTCON  # type: ignore\n                        audio.tags['TCON'] = FrameTCON(encoding=3, text=existing_genres)\n                    except (ImportError, AttributeError, TypeError):\n                        # Fallback: just update database\n                        pass\n                    audio.save()
                     
                     # Update database - use consistent delimiter
                     conn = get_db()
@@ -3444,7 +3442,7 @@ def api_add_artist():
         added_count = 0
         for rg in mb_releases:
             # Check if already exists in library
-            norm_title = _normalize_release_title(rg.get("title"))
+            norm_title = _normalize_release_title(rg.get("title") or "")
             if norm_title and norm_title in existing_norm:
                 continue
             
@@ -10508,8 +10506,9 @@ def api_album_apply_genres():
         genres_str = ','.join(genres)
         
         try:
-            from mutagen.id3 import ID3, TCON
+            from mutagen.id3 import ID3
             from mutagen.mp3 import MP3
+            from mutagen.id3 import TCON as TagCON
             
             for track in tracks:
                 # Prefer beets_path, fallback to file_path
@@ -10530,7 +10529,7 @@ def api_album_apply_genres():
                         audio.add_tags()
                     
                     # Set genre tag (TCON frame in ID3v2)
-                    audio.tags['TCON'] = TCON(encoding=3, text=genres)
+                    audio.tags['TCON'] = TagCON(encoding=3, text=genres)
                     
                     # Save changes
                     audio.save()

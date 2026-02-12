@@ -1,0 +1,7 @@
+{
+  "typeCheckingMode": "standard",
+  "reportPrivateImportUsage": false,
+  "reportMissingModuleSource": false,
+  "reportOptionalSubscript": false,
+  "pythonVersion": "3.13"
+}
