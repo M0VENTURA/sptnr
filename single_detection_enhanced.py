@@ -1243,7 +1243,8 @@ def detect_single_enhanced(
             # Use existing is_single method
             discogs_confirmed = discogs_client.is_single(title, artist, album_context={
                 'duration': duration,
-                'is_special_edition': is_special_edition
+                'is_special_edition': is_special_edition,
+                'album_name': album
             })
             if discogs_confirmed:
                 result['single_sources'].append('discogs')

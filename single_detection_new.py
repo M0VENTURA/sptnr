@@ -308,7 +308,10 @@ def detect_single_new(
         try:
             log_unified(f"   Checking Discogs for single: {title}")
             
-            if discogs_client.is_single(title, artist_name, album_context={'duration': track.get('duration')}):
+            if discogs_client.is_single(title, artist_name, album_context={
+                'duration': track.get('duration'),
+                'album_name': track.get('album')
+            }):
                 high_conf_sources.add('discogs')
                 log_unified(f"   ✓ Discogs confirms single: {title}")
             else:
