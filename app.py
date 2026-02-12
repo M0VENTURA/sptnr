@@ -8986,157 +8986,340 @@ def api_downloads_scheduler_status():
         }), 500
 
 
-@app.route("/api/lastfm/recommendations", methods=["GET"])
-def api_lastfm_recommendations():
-    """Get Last.fm recommendations with collection status"""
+# ===== Last.fm Scheduler/Sync Endpoints =====
+
+@app.route("/api/lastfm/sync/status", methods=["GET"])
+def api_lastfm_sync_status():
+    """Get Last.fm sync status and next scheduled sync"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
-        lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+        conn = get_db()
+        cursor = conn.cursor()
         
-        if not lastfm_config.get("enabled"):
-            return jsonify({"error": "Last.fm not enabled"}), 400
+        current_user = session.get("username", "default_user")
         
-        api_key = lastfm_config.get("api_key", "")
-        if not api_key:
-            return jsonify({"error": "Last.fm API key not configured"}), 400
+        # Get scheduler config
+        cursor.execute("""
+            SELECT enabled, sync_time, last_sync, next_sync 
+            FROM lastfm_scheduler_config 
+            WHERE username = ?
+        """, (current_user,))
         
-        # Get username from current user's navidrome settings (per-user configuration)
-        current_user = session.get("username")
-        username = None
-        if current_user:
-            navidrome_users = cfg.get("navidrome_users", [])
-            user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
-            if user_cfg:
-                username = user_cfg.get("lastfm_username", "")
+        config = cursor.fetchone()
+        conn.close()
         
-        from api_clients.lastfm import get_lastfm_recommendations
+        if config:
+            return jsonify({
+                "enabled": config[0],
+                "sync_time": config[1],
+                "last_sync": config[2],
+                "next_sync": config[3]
+            })
+        else:
+            # Return default config if not found
+            return jsonify({
+                "enabled": False,
+                "sync_time": "01:00",
+                "last_sync": None,
+                "next_sync": None
+            })
+    except Exception as e:
+        logging.error(f"Error getting Last.fm sync status: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/lastfm/sync/now", methods=["POST"])
+def api_lastfm_sync_now():
+    """Manually trigger Last.fm recommendations sync"""
+    from api_clients.lastfm import get_lastfm_recommendations
+    from datetime import datetime
+    import unicodedata
+    
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+    
+    if not lastfm_config.get("enabled"):
+        return jsonify({"error": "Last.fm not enabled"}), 400
+    
+    api_key = lastfm_config.get("api_key", "")
+    if not api_key:
+        return jsonify({"error": "Last.fm API key not configured"}), 400
+    
+    current_user = session.get("username")
+    username = None
+    if current_user:
+        navidrome_users = cfg.get("navidrome_users", [])
+        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if user_cfg:
+            username = user_cfg.get("lastfm_username", "")
+    
+    # Fetch fresh recommendations from Last.fm
+    recommendations = get_lastfm_recommendations(api_key, username=username)
+    
+    if not recommendations:
+        return jsonify({"error": "Failed to fetch recommendations"}), 500
+    
+    # Helper function to normalize names
+    def normalize_name(name):
+        if not name:
+            return ""
+        normalized = name.lower().strip()
+        normalized = unicodedata.normalize('NFD', normalized)
+        normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        normalized = ' '.join(normalized.split())
+        return normalized
+    
+    # Get existing collection items
+    existing_albums = set()
+    existing_artists = set()
+    existing_tracks = set()
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
         
-        # Pass database connection to filter out existing albums
-        def get_db_for_lastfm():
-            """Helper to get DB connection for Last.fm filtering"""
-            return get_db_connection()
+        cursor.execute("SELECT DISTINCT artist, album FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
+        for row in cursor.fetchall():
+            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+            album = row[1] if isinstance(row, tuple) else row.get('album', '')
+            if artist and album:
+                artist_norm = normalize_name(artist)
+                album_norm = normalize_name(album)
+                existing_albums.add((artist_norm, album_norm))
         
-        recommendations = get_lastfm_recommendations(api_key, username=username or None, db_connection=get_db_for_lastfm)
+        cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL")
+        for row in cursor.fetchall():
+            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+            if artist:
+                artist_norm = normalize_name(artist)
+                existing_artists.add(artist_norm)
         
-        # Check which albums/artists/tracks are already in collection
-        existing_albums = set()
-        existing_artists = set()
-        existing_tracks = set()
+        cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
+        for row in cursor.fetchall():
+            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+            title = row[1] if isinstance(row, tuple) else row.get('title', '')
+            if artist and title:
+                artist_norm = normalize_name(artist)
+                title_norm = normalize_name(title)
+                existing_tracks.add((artist_norm, title_norm))
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Failed to check collection status: {e}")
+    
+    # Store recommendations in database
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    artists_count = 0
+    albums_count = 0
+    tracks_count = 0
+    filtered_count = 0
+    
+    sync_start = datetime.now()
+    
+    try:
+        # Clear old recommendations for this user  
+        cursor.execute("DELETE FROM lastfm_recommendations WHERE username = ?", (current_user or "default_user",))
         
-        # Helper function to normalize names (same as used in filtering below)
-        import unicodedata
-        def normalize_name(name):
-            """Normalize name for consistent comparison"""
-            if not name:
-                return ""
-            # Lowercase
-            normalized = name.lower().strip()
-            # Normalize unicode (decompose accents, etc.)
-            normalized = unicodedata.normalize('NFD', normalized)
-            normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
-            # Remove extra spaces
-            normalized = ' '.join(normalized.split())
-            return normalized
-        
-        try:
-            conn = get_db()
-            cursor = conn.cursor()
-            
-            # Get all albums in collection for quick lookup
-            cursor.execute("SELECT DISTINCT artist, album FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
-            for row in cursor.fetchall():
-                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-                album = row[1] if isinstance(row, tuple) else row.get('album', '')
-                if artist and album:
-                    # Normalize: lowercase, unicode normalization, strip, remove extra spaces
-                    artist_norm = normalize_name(artist)
-                    album_norm = normalize_name(album)
-                    existing_albums.add((artist_norm, album_norm))
-            
-            # Get all artists in collection
-            cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL")
-            for row in cursor.fetchall():
-                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-                if artist:
-                    artist_norm = normalize_name(artist)
-                    existing_artists.add(artist_norm)
-            
-            # Get all tracks in collection
-            cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
-            for row in cursor.fetchall():
-                artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-                title = row[1] if isinstance(row, tuple) else row.get('title', '')
-                if artist and title:
-                    artist_norm = normalize_name(artist)
-                    title_norm = normalize_name(title)
-                    existing_tracks.add((artist_norm, title_norm))
-            
-            conn.close()
-        
-        except Exception as e:
-            logging.warning(f"Failed to check collection status: {e}")
-            # Continue anyway, items just won't be marked as in collection
-        
-        # Filter out items already in collection (only return NEW recommendations)
-        filtered_recommendations = {
-            "artists": [],
-            "albums": [],
-            "tracks": []
-        }
-        
-        # Helper function to normalize artist/album/track names for comparison
-        def normalize_name(name):
-            """Normalize name for consistent comparison"""
-            import unicodedata
-            if not name:
-                return ""
-            # Lowercase
-            normalized = name.lower().strip()
-            # Normalize unicode (decompose accents, etc.)
-            normalized = unicodedata.normalize('NFD', normalized)
-            normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
-            # Remove extra spaces
-            normalized = ' '.join(normalized.split())
-            return normalized
-        
-        # Filter artists - only include those NOT in collection
+        # Store artists
         for artist in recommendations.get("artists", []):
             artist_name = artist.get("name", "")
             artist_norm = normalize_name(artist_name)
+            
             if artist_norm and artist_norm not in existing_artists:
-                filtered_recommendations["artists"].append(artist)
-                logging.debug(f"Including artist: {artist_name} (normalized: {artist_norm})")
-            elif artist_norm:
-                logging.debug(f"Filtering out artist (already in collection): {artist_name}")
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO lastfm_recommendations 
+                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        current_user or "default_user",
+                        "artist",
+                        artist_name,
+                        None,
+                        artist.get("image", ""),
+                        artist.get("playcount", 0),
+                        artist.get("url", ""),
+                        None,
+                        datetime.now()
+                    ))
+                    artists_count += 1
+                except Exception as e:
+                    logging.warning(f"Failed to store artist {artist_name}: {e}")
+            else:
+                filtered_count += 1
         
-        # Filter albums - only include those NOT in collection
+        # Store albums
         for album in recommendations.get("albums", []):
             artist_name = album.get("artist", "")
             album_name = album.get("name", "")
             artist_norm = normalize_name(artist_name)
             album_norm = normalize_name(album_name)
+            
             if (artist_norm, album_norm) and (artist_norm, album_norm) not in existing_albums:
-                filtered_recommendations["albums"].append(album)
-                logging.debug(f"Including album: {album_name} by {artist_name}")
-            elif (artist_norm, album_norm):
-                logging.debug(f"Filtering out album (already in collection): {album_name} by {artist_name}")
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO lastfm_recommendations 
+                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        current_user or "default_user",
+                        "album",
+                        album_name,
+                        artist_name,
+                        album.get("image", ""),
+                        album.get("playcount", 0),
+                        album.get("url", ""),
+                        None,
+                        datetime.now()
+                    ))
+                    albums_count += 1
+                except Exception as e:
+                    logging.warning(f"Failed to store album {album_name}: {e}")
+            else:
+                filtered_count += 1
         
-        # Filter tracks - only include those NOT in collection
+        # Store tracks
         for track in recommendations.get("tracks", []):
             artist_name = track.get("artist", "")
-            title_name = track.get("name", "")
+            track_name = track.get("name", "")
             artist_norm = normalize_name(artist_name)
-            title_norm = normalize_name(title_name)
-            if (artist_norm, title_norm) and (artist_norm, title_norm) not in existing_tracks:
-                filtered_recommendations["tracks"].append(track)
-                logging.debug(f"Including track: {title_name} by {artist_name}")
-            elif (artist_norm, title_norm):
-                logging.debug(f"Filtering out track (already in collection): {title_name} by {artist_name}")
+            track_norm = normalize_name(track_name)
+            
+            if (artist_norm, track_norm) and (artist_norm, track_norm) not in existing_tracks:
+                try:
+                    cursor.execute("""
+                        INSERT OR REPLACE INTO lastfm_recommendations 
+                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """, (
+                        current_user or "default_user",
+                        "track",
+                        track_name,
+                        artist_name,
+                        track.get("image", ""),
+                        track.get("playcount", 0),
+                        track.get("url", ""),
+                        None,
+                        datetime.now()
+                    ))
+                    tracks_count += 1
+                except Exception as e:
+                    logging.warning(f"Failed to store track {track_name}: {e}")
+            else:
+                filtered_count += 1
         
-        return jsonify({"recommendations": filtered_recommendations})
+        # Update sync history
+        sync_end = datetime.now()
+        cursor.execute("""
+            INSERT INTO lastfm_sync_history 
+            (username, sync_type, artists_count, albums_count, tracks_count, filtered_count, sync_start, sync_end)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        """, (
+            current_user or "default_user",
+            "manual",
+            artists_count,
+            albums_count,
+            tracks_count,
+            filtered_count,
+            sync_start,
+            sync_end
+        ))
+        
+        # Update scheduler config with last sync time
+        cursor.execute("""
+            INSERT OR REPLACE INTO lastfm_scheduler_config 
+            (username, last_sync)
+            VALUES (?, ?)
+        """, (current_user or "default_user", datetime.now()))
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "artists_synced": artists_count,
+            "albums_synced": albums_count,
+            "tracks_synced": tracks_count,
+            "filtered_count": filtered_count,
+            "total": artists_count + albums_count + tracks_count
+        })
+    
+    except Exception as e:
+        conn.close()
+        logging.error(f"Error syncing Last.fm recommendations: {e}")
+        return jsonify({
+            "error": str(e)
+        }), 500
+
+
+@app.route("/api/lastfm/recommendations", methods=["GET"])
+def api_lastfm_recommendations():
+    """Get Last.fm recommendations from cache"""
+    try:
+        current_user = session.get("username", "default_user")
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get cached recommendations
+        cursor.execute("""
+            SELECT recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url
+            FROM lastfm_recommendations
+            WHERE username = ?
+            ORDER BY synced_at DESC, recommendation_type, item_name
+        """, (current_user,))
+        
+        rows = cursor.fetchall()
+        
+        # Get last sync time
+        cursor.execute("""
+            SELECT MAX(synced_at) FROM lastfm_recommendations WHERE username = ?
+        """, (current_user,))
+        
+        last_sync = cursor.fetchone()[0] if cursor.fetchone() else None
+        conn.close()
+        
+        # Organize into artists, albums, tracks
+        recommendations = {
+            "artists": [],
+            "albums": [],
+            "tracks": []
+        }
+        
+        for row in rows:
+            rec_type = row[0] if isinstance(row, tuple) else row.get('recommendation_type', '')
+            item_name = row[1] if isinstance(row, tuple) else row.get('item_name', '')
+            artist_name = row[2] if isinstance(row, tuple) else row.get('artist_name', '')
+            image_url = row[3] if isinstance(row, tuple) else row.get('image_url', '')
+            playcount = row[4] if isinstance(row, tuple) else row.get('playcount', 0)
+            url = row[5] if isinstance(row, tuple) else row.get('lastfm_url', '')
+            
+            rec_item = {
+                "name": item_name,
+                "image": image_url,
+                "playcount": playcount,
+                "url": url
+            }
+            
+            if rec_type == "artist":
+                recommendations["artists"].append(rec_item)
+            elif rec_type == "album":
+                rec_item["artist"] = artist_name
+                recommendations["albums"].append(rec_item)
+            elif rec_type == "track":
+                rec_item["artist"] = artist_name
+                recommendations["tracks"].append(rec_item)
+        
+        return jsonify({
+            "recommendations": recommendations,
+            "last_sync": last_sync,
+            "cache_info": f"Cached on {last_sync}" if last_sync else "No cached data available"
+        })
     except Exception as e:
         logging.error(f"Last.fm recommendations error: {str(e)}")
-        return jsonify({"error": str(e)}), 500
+        return jsonify({"recommendations": {"artists": [], "albums": [], "tracks": []}, "cache_info": "Error loading cache"})
 
 
 @app.route("/api/lastfm/create-playlist", methods=["POST"])

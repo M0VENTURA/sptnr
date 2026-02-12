@@ -17,7 +17,12 @@
   <!-- Tabs -->
   <ul class="nav nav-tabs mb-4" role="tablist">
     <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
+      <button class="nav-link active" id="monitorTab" data-bs-toggle="tab" data-bs-target="#monitorContent" type="button" role="tab">
+        <i class="bi bi-arrow-down-circle"></i> Download Monitor
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
         <i class="bi bi-cloud-download"></i> qBittorrent
       </button>
     </li>
@@ -44,8 +49,130 @@
   </ul>
 
   <div class="tab-content">
+    <!-- Download Monitor Tab (Consolidated) -->
+    <div class="tab-pane fade show active" id="monitorContent" role="tabpanel">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-arrow-down-circle"></i> All Active Downloads
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <span class="badge bg-primary" id="monitorTotalCount" style="display:none"></span>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshAllMonitors()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="row g-3 mb-4">
+            <!-- qBittorrent Monitor Card -->
+            <div class="col-12">
+              <div class="card border-primary">
+                <div class="card-header bg-primary bg-opacity-10 border-primary d-flex justify-content-between align-items-center">
+                  <h6 class="card-title mb-0">
+                    <i class="bi bi-cloud-download"></i> qBittorrent Downloads
+                  </h6>
+                  <span class="badge bg-primary" id="monitorQbitCount" style="display:none"></span>
+                </div>
+                <div class="card-body p-3">
+                  <div id="monitorQbitLoading" class="text-center py-4">
+                    <div class="spinner-border text-primary spinner-border-sm" role="status">
+                      <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 small">Loading qBittorrent torrents...</p>
+                  </div>
+                  <div id="monitorQbitError" class="alert alert-danger alert-sm mb-0" style="display:none"></div>
+                  <div id="monitorQbitResults" style="display:none">
+                    <div id="monitorQbitEmpty" class="alert alert-info alert-sm mb-0" style="display:none">
+                      <i class="bi bi-info-circle"></i> No active torrents
+                    </div>
+                    <div id="monitorQbitTable" style="display:none">
+                      <div class="table-responsive">
+                        <table class="table table-hover table-sm mb-0">
+                          <thead>
+                            <tr>
+                              <th>Name</th>
+                              <th class="text-center" style="width: 80px;">Progress</th>
+                              <th class="text-center" style="width: 70px;">Size</th>
+                              <th class="text-center" style="width: 80px;">Speed</th>
+                              <th class="text-center" style="width: 60px;">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody id="monitorQbitTableBody"></tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            
+            <!-- Soulseek Monitor Card -->
+            <div class="col-12">
+              <div class="card border-success">
+                <div class="card-header bg-success bg-opacity-10 border-success d-flex justify-content-between align-items-center">
+                  <h6 class="card-title mb-0">
+                    <i class="bi bi-music-note-list"></i> Soulseek Downloads
+                  </h6>
+                  <span class="badge bg-success" id="monitorSlskdCount" style="display:none"></span>
+                </div>
+                <div class="card-body p-3">
+                  <div id="monitorSlskdLoading" class="text-center py-4">
+                    <div class="spinner-border text-success spinner-border-sm" role="status">
+                      <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <p class="mt-2 small">Loading Soulseek downloads...</p>
+                  </div>
+                  <div id="monitorSlskdError" class="alert alert-danger alert-sm mb-0" style="display:none"></div>
+                  <div id="monitorSlskdResults" style="display:none">
+                    <div id="monitorSlskdEmpty" class="alert alert-info alert-sm mb-0" style="display:none">
+                      <i class="bi bi-info-circle"></i> No active downloads
+                    </div>
+                    <div id="monitorSlskdTable" style="display:none">
+                      <div class="table-responsive">
+                        <table class="table table-hover table-sm mb-0">
+                          <thead>
+                            <tr>
+                              <th>User</th>
+                              <th>Filename</th>
+                              <th class="text-center" style="width: 80px;">Progress</th>
+                              <th class="text-center" style="width: 70px;">Size</th>
+                              <th class="text-center" style="width: 80px;">Speed</th>
+                              <th class="text-center" style="width: 60px;">Status</th>
+                            </tr>
+                          </thead>
+                          <tbody id="monitorSlskdTableBody"></tbody>
+                        </table>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+          
+          <!-- Summary Stats -->
+          <div class="row g-3">
+            <div class="col-md-6">
+              <div class="p-3 bg-light rounded">
+                <small class="text-muted d-block mb-2">Next auto-refresh in</small>
+                <div class="h6 mb-0"><span id="monitorNextRefresh">5s</span></div>
+              </div>
+            </div>
+            <div class="col-md-6">
+              <div class="p-3 bg-light rounded">
+                <small class="text-muted d-block mb-2">Total Downloads</small>
+                <div class="h6 mb-0"><span id="monitorTotal">0</span></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Download Monitor Tab -->
+    
     <!-- qBittorrent Tab -->
-    <div class="tab-pane fade show active" id="qbitContent" role="tabpanel">
+    <div class="tab-pane fade" id="qbitContent" role="tabpanel">
   <div class="row g-4 mb-4">
     <!-- qBittorrent Search - Full Width -->
     {% if qbit_config.enabled %}
@@ -461,19 +588,24 @@
         <div class="col-12">
           <div class="card">
             <div class="card-header d-flex justify-content-between align-items-center">
-              <h5 class="card-title mb-0">
-                <i class="bi bi-heart"></i> Last.fm Recommendations
-              </h5>
-              <button class="btn btn-sm btn-outline-primary" onclick="loadLastfmRecommendations()">
-                <i class="bi bi-arrow-clockwise"></i> Refresh
-              </button>
+              <div>
+                <h5 class="card-title mb-1">
+                  <i class="bi bi-heart"></i> Last.fm Recommendations
+                </h5>
+                <small class="text-muted" id="lastfmSyncTime">Sync status: loading...</small>
+              </div>
+              <div class="btn-group" role="group">
+                <button class="btn btn-sm btn-outline-primary" onclick="loadLastfmRecommendations()" id="lastfmRefreshBtn">
+                  <i class="bi bi-arrow-clockwise"></i> Refresh Now
+                </button>
+              </div>
             </div>
             <div class="card-body">
               <div id="lastfmLoading" class="text-center py-4">
                 <div class="spinner-border text-primary" role="status">
                   <span class="visually-hidden">Loading...</span>
                 </div>
-                <p class="mt-2">Loading recommendations from Last.fm...</p>
+                <p class="mt-2">Loading recommendations from cache...</p>
               </div>
               
               <div id="lastfmError" class="alert alert-warning" style="display: none;">
@@ -1333,7 +1465,7 @@ document.addEventListener('DOMContentLoaded', function() {
     });
   }
 
-   // Kick off monitors if present
+   // Kick off monitors if present (for individual monitor tabs)
    if (document.getElementById('qbitMonLoading')) {
      refreshQbitMonitor();
    }
@@ -1343,7 +1475,240 @@ document.addEventListener('DOMContentLoaded', function() {
    if (document.getElementById('qbitMonLoading') || document.getElementById('slskdMonLoading')) {
      startMonitorAutoRefresh();
    }
-});
+
+   // Initialize consolidated monitor
+   if (document.getElementById('monitorQbitLoading')) {
+     refreshAllMonitors();
+     startConsolidatedMonitorRefresh();
+   }
+
+// ===== Consolidated Download Monitor Functions =====
+let monitorRefreshCountdown = 5;
+let monitorCountdownInterval = null;
+
+function refreshAllMonitors() {
+  // Refresh both qBittorrent and Soulseek monitors
+  refreshConsolidatedQbitMonitor();
+  refreshConsolidatedSlskdMonitor();
+  
+  // Reset countdown
+  monitorRefreshCountdown = 5;
+  updateMonitorCountdown();
+}
+
+function updateMonitorCountdown() {
+  const countdownEl = document.getElementById('monitorNextRefresh');
+  if (countdownEl) {
+    countdownEl.textContent = monitorRefreshCountdown + 's';
+    monitorRefreshCountdown--;
+    if (monitorRefreshCountdown < 0) {
+      monitorRefreshCountdown = 5;
+    }
+  }
+}
+
+function startConsolidatedMonitorRefresh() {
+  if (monitorCountdownInterval) clearInterval(monitorCountdownInterval);
+  monitorCountdownInterval = setInterval(() => {
+    refreshAllMonitors();
+  }, 5000);
+  
+  // Update countdown display every second
+  if (monitorCountdownInterval) clearInterval(monitorCountdownInterval);
+  monitorCountdownInterval = setInterval(() => {
+    updateMonitorCountdown();
+  }, 1000);
+}
+
+function refreshConsolidatedQbitMonitor() {
+  const loading = document.getElementById('monitorQbitLoading');
+  const errorBox = document.getElementById('monitorQbitError');
+  const results = document.getElementById('monitorQbitResults');
+  const empty = document.getElementById('monitorQbitEmpty');
+  const table = document.getElementById('monitorQbitTable');
+  const tbody = document.getElementById('monitorQbitTableBody');
+  const countBadge = document.getElementById('monitorQbitCount');
+  const totalCountBadge = document.getElementById('monitorTotalCount');
+  
+  // Only show loading on first load
+  if (!results.style.display || results.style.display === 'block') {
+    if (loading) loading.style.display = 'none';
+  }
+
+  fetch('/api/qbittorrent/status')
+    .then(resp => resp.json())
+    .then(data => {
+      if (loading) loading.style.display = 'none';
+
+      if (data.error) {
+        if (errorBox) {
+          errorBox.textContent = 'Error: ' + data.error;
+          errorBox.style.display = 'block';
+        }
+        if (results) results.style.display = 'none';
+        return;
+      }
+
+      if (errorBox) errorBox.style.display = 'none';
+      if (results) results.style.display = 'block';
+      const torrents = data.torrents || [];
+      if (countBadge) {
+        countBadge.style.display = torrents.length ? 'inline-block' : 'none';
+        countBadge.textContent = `${torrents.length} active`;
+      }
+
+      if (torrents.length === 0) {
+        if (empty) empty.style.display = 'block';
+        if (table) table.style.display = 'none';
+        updateTotalMonitorCount();
+        return;
+      }
+
+      if (empty) empty.style.display = 'none';
+      if (table) table.style.display = 'block';
+      if (tbody) tbody.innerHTML = '';
+
+      torrents.forEach(torrent => {
+        const row = document.createElement('tr');
+        const state = (torrent.state || '').toLowerCase();
+        let stateClass = 'bg-secondary';
+        if (state.includes('downloading')) stateClass = 'bg-primary';
+        else if (state.includes('uploading') || state.includes('seeding')) stateClass = 'bg-success';
+        else if (state.includes('paused')) stateClass = 'bg-warning';
+        else if (state.includes('error')) stateClass = 'bg-danger';
+
+        row.innerHTML = `
+          <td title="${escapeHtml(torrent.name || '')}">
+            <small class="text-truncate d-block">${escapeHtml(torrent.name || '')}</small>
+          </td>
+          <td class="text-center">
+            <div class="progress" style="height: 18px; min-width: 80px;">
+              <div class="progress-bar ${torrent.progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${torrent.progress}%" aria-valuenow="${torrent.progress}" aria-valuemin="0" aria-valuemax="100" style="font-size: 0.75rem;">${torrent.progress}%</div>
+            </div>
+          </td>
+          <td class="text-center small">${formatBytes(torrent.size || 0)}</td>
+          <td class="text-center small">${torrent.dlspeed > 0 ? formatBytes(torrent.dlspeed) + '/s' : '—'}</td>
+          <td class="text-center"><span class="badge ${stateClass}">${state.substring(0, 8)}</span></td>
+        `;
+        if (tbody) tbody.appendChild(row);
+      });
+
+      updateTotalMonitorCount();
+    })
+    .catch(err => {
+      if (errorBox) {
+        errorBox.textContent = 'Network error: ' + err.message;
+        errorBox.style.display = 'block';
+      }
+    });
+}
+
+function refreshConsolidatedSlskdMonitor() {
+  const loading = document.getElementById('monitorSlskdLoading');
+  const errorBox = document.getElementById('monitorSlskdError');
+  const results = document.getElementById('monitorSlskdResults');
+  const empty = document.getElementById('monitorSlskdEmpty');
+  const table = document.getElementById('monitorSlskdTable');
+  const tbody = document.getElementById('monitorSlskdTableBody');
+  const countBadge = document.getElementById('monitorSlskdCount');
+
+  // Only show loading on first load
+  if (!results.style.display || results.style.display === 'block') {
+    if (loading) loading.style.display = 'none';
+  }
+
+  fetch('/api/slskd/status')
+    .then(resp => resp.json())
+    .then(data => {
+      if (loading) loading.style.display = 'none';
+
+      if (data.error) {
+        if (errorBox) {
+          errorBox.textContent = 'Error: ' + data.error;
+          errorBox.style.display = 'block';
+        }
+        if (results) results.style.display = 'none';
+        return;
+      }
+
+      if (errorBox) errorBox.style.display = 'none';
+      if (results) results.style.display = 'block';
+      const downloads = data.downloads || [];
+      if (countBadge) {
+        countBadge.style.display = downloads.length ? 'inline-block' : 'none';
+        countBadge.textContent = `${downloads.length} active`;
+      }
+
+      if (downloads.length === 0) {
+        if (empty) empty.style.display = 'block';
+        if (table) table.style.display = 'none';
+        updateTotalMonitorCount();
+        return;
+      }
+
+      if (empty) empty.style.display = 'none';
+      if (table) table.style.display = 'block';
+      if (tbody) tbody.innerHTML = '';
+
+      downloads.forEach(download => {
+        const row = document.createElement('tr');
+        const state = (download.state || '').toLowerCase();
+        let stateClass = 'bg-secondary';
+        if (state.includes('inprogress') || state.includes('downloading')) stateClass = 'bg-primary';
+        else if (state.includes('completed') || state.includes('complete')) stateClass = 'bg-success';
+        else if (state.includes('queued') || state.includes('initializing')) stateClass = 'bg-warning';
+        else if (state.includes('error') || state.includes('failed') || state.includes('cancelled')) stateClass = 'bg-danger';
+
+        const filename = download.filename || 'Unknown';
+        const fileSize = download.size || 0;
+        const progress = download.progress || 0;
+        const speed = download.averageSpeed || 0;
+
+        row.innerHTML = `
+          <td><small>${escapeHtml(download.username || '')}</small></td>
+          <td title="${escapeHtml(filename)}">
+            <small class="text-truncate d-block">${escapeHtml(filename)}</small>
+          </td>
+          <td class="text-center">
+            <div class="progress" style="height: 18px; min-width: 80px;">
+              <div class="progress-bar ${progress >= 100 ? 'bg-success' : 'bg-primary'}" role="progressbar" style="width: ${progress}%" aria-valuenow="${progress}" aria-valuemin="0" aria-valuemax="100" style="font-size: 0.75rem;">${progress}%</div>
+            </div>
+          </td>
+          <td class="text-center small">${formatBytes(fileSize)}</td>
+          <td class="text-center small">${speed > 0 ? formatBytes(speed) + '/s' : '—'}</td>
+          <td class="text-center"><span class="badge ${stateClass}">${state.substring(0, 8)}</span></td>
+        `;
+        if (tbody) tbody.appendChild(row);
+      });
+
+      updateTotalMonitorCount();
+    })
+    .catch(err => {
+      if (errorBox) {
+        errorBox.textContent = 'Network error: ' + err.message;
+        errorBox.style.display = 'block';
+      }
+    });
+}
+
+function updateTotalMonitorCount() {
+  const qbitCount = document.querySelectorAll('#monitorQbitTableBody tr').length;
+  const slskdCount = document.querySelectorAll('#monitorSlskdTableBody tr').length;
+  const total = qbitCount + slskdCount;
+  
+  const totalBadge = document.getElementById('monitorTotalCount');
+  if (totalBadge) {
+    totalBadge.textContent = total;
+    totalBadge.style.display = total > 0 ? 'inline-block' : 'none';
+  }
+  
+  const totalEl = document.getElementById('monitorTotal');
+  if (totalEl) {
+    totalEl.textContent = total;
+  }
+}
+
+// ===== END Consolidated Download Monitor Functions =====
 
 // Clean up polling when leaving page
 window.addEventListener('beforeunload', () => {
@@ -2200,11 +2565,14 @@ async function loadLastfmRecommendations() {
   const error = document.getElementById('lastfmError');
   const tabsContainer = document.getElementById('lastfmTabs');
   const tabContent = document.getElementById('lastfmTabContent');
+  const syncTimeEl = document.getElementById('lastfmSyncTime');
+  const refreshBtn = document.getElementById('lastfmRefreshBtn');
   
   loading.style.display = 'block';
   error.style.display = 'none';
   tabsContainer.style.display = 'none';
   tabContent.style.display = 'none';
+  if (refreshBtn) refreshBtn.disabled = true;
   
   try {
     const response = await fetch('/api/lastfm/recommendations');
@@ -2215,6 +2583,17 @@ async function loadLastfmRecommendations() {
     }
     
     const recommendations = data.recommendations || {};
+    const lastSync = data.last_sync;
+    
+    // Update sync time display
+    if (syncTimeEl) {
+      if (lastSync) {
+        const syncDate = new Date(lastSync);
+        syncTimeEl.textContent = `Last synced: ${syncDate.toLocaleString()}`;
+      } else {
+        syncTimeEl.textContent = `Sync status: No cache available (click "Refresh Now" to fetch)`;
+      }
+    }
     
     // Display artists
     displayLastfmArtists(recommendations.artists || []);
@@ -2233,6 +2612,11 @@ async function loadLastfmRecommendations() {
     loading.style.display = 'none';
     error.style.display = 'block';
     document.getElementById('lastfmErrorText').textContent = err.message || 'Unable to load recommendations';
+    if (syncTimeEl) {
+      syncTimeEl.textContent = `Sync status: Error - ${err.message}`;
+    }
+  } finally {
+    if (refreshBtn) refreshBtn.disabled = false;
   }
 }
 
@@ -2241,19 +2625,17 @@ function displayLastfmArtists(artists) {
   grid.innerHTML = '';
   
   if (artists.length === 0) {
-    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No new artist recommendations available (all recommended artists are already in your collection).</div></div>';
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No cached artist recommendations. Click "Refresh Now" to fetch new recommendations.</div></div>';
     return;
   }
   
-  // Display all artists (backend has already filtered out ones in collection)
   artists.forEach(artist => {
     const card = document.createElement('div');
     card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
     
-    // Image with error handling
     let imageHtml = '';
     if (artist.image) {
-      imageHtml = `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;" onerror="this.parentElement.innerHTML='<div class=\\'card-img-top bg-secondary d-flex align-items-center justify-content-center\\' style=\\'height: 200px;\\' style=\\'height: 200px;\\'><i class=\\'bi bi-person\\' style=\\'font-size: 3rem; color: white;\\'></i></div>'">`;
+      imageHtml = `<img src="${escapeHtml(artist.image)}" class="card-img-top" alt="${escapeHtml(artist.name)}" style="height: 200px; object-fit: cover;" onerror="this.parentElement.innerHTML='<div class=\\'card-img-top bg-secondary d-flex align-items-center justify-content-center\\' style=\\'height: 200px;\\'><i class=\\'bi bi-person\\' style=\\'font-size: 3rem; color: white;\\'></i></div>'">`;
     } else {
       imageHtml = `<div class="card-img-top bg-secondary d-flex align-items-center justify-content-center" style="height: 200px;"><i class="bi bi-person" style="font-size: 3rem; color: white;"></i></div>`;
     }
@@ -2263,7 +2645,6 @@ function displayLastfmArtists(artists) {
         ${imageHtml}
         <div class="card-body d-flex flex-column">
           <h6 class="card-title text-truncate">${escapeHtml(artist.name)}</h6>
-          <small class="text-muted mb-2">${artist.listeners ? `${parseInt(artist.listeners).toLocaleString()} listeners` : 'Artist'}</small>
           <small class="text-muted text-truncate">Playcount: ${artist.playcount || 0}</small>
           <div class="mt-auto pt-2">
             <button class="btn btn-sm btn-primary w-100" onclick="downloadArtist('${escapeHtml(artist.name)}')">
@@ -2282,16 +2663,14 @@ function displayLastfmAlbums(albums) {
   grid.innerHTML = '';
   
   if (albums.length === 0) {
-    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No new album recommendations available (all recommended albums are already in your collection).</div></div>';
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No cached album recommendations. Click "Refresh Now" to fetch new recommendations.</div></div>';
     return;
   }
   
-  // Display all albums (backend has already filtered out ones in collection)
   albums.forEach(album => {
     const card = document.createElement('div');
     card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
     
-    // Image with error handling
     let imageHtml = '';
     if (album.image) {
       imageHtml = `<img src="${escapeHtml(album.image)}" class="card-img-top" alt="${escapeHtml(album.name)}" style="height: 200px; object-fit: cover;" onerror="this.parentElement.innerHTML='<div class=\\'card-img-top bg-secondary d-flex align-items-center justify-content-center\\' style=\\'height: 200px;\\'><i class=\\'bi bi-disc\\' style=\\'font-size: 3rem; color: white;\\'></i></div>'">`;
@@ -2323,16 +2702,14 @@ function displayLastfmTracks(tracks) {
   grid.innerHTML = '';
   
   if (tracks.length === 0) {
-    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No new track recommendations available (all recommended tracks are already in your collection).</div></div>';
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No cached track recommendations. Click "Refresh Now" to fetch new recommendations.</div></div>';
     return;
   }
   
-  // Display all tracks (backend has already filtered out ones in collection)
   tracks.forEach(track => {
     const card = document.createElement('div');
     card.className = 'col-12 col-sm-6 col-md-4 col-lg-3';
     
-    // Image with error handling
     let imageHtml = '';
     if (track.image) {
       imageHtml = `<img src="${escapeHtml(track.image)}" class="card-img-top" alt="${escapeHtml(track.name)}" style="height: 200px; object-fit: cover;" onerror="this.parentElement.innerHTML='<div class=\\'card-img-top bg-secondary d-flex align-items-center justify-content-center\\' style=\\'height: 200px;\\'><i class=\\'bi bi-music-note\\' style=\\'font-size: 3rem; color: white;\\'></i></div>'">`;
