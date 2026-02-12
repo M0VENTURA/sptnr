@@ -2975,7 +2975,7 @@ def api_album_bulk_delete():
 
 @app.route("/api/album/bulk-tag", methods=["POST"])
 def api_album_bulk_tag():
-    """Add genre tags to multiple tracks"""
+    """Add genre tags to multiple tracks and write to MP3 files"""
     try:
         data = request.get_json()
         track_ids = data.get("track_ids", [])
@@ -2993,12 +2993,22 @@ def api_album_bulk_tag():
         cursor = conn.cursor()
         
         updated_count = 0
+        failed_files = []
         genre_str = ", ".join(genres)
+        
+        # Try to import mutagen for MP3 tagging
+        try:
+            from mutagen.id3 import ID3
+            from mutagen.mp3 import MP3
+            from mutagen.id3 import TCON as TagCON
+            has_mutagen = True
+        except ImportError:
+            has_mutagen = False
         
         for track_id in track_ids:
             try:
-                # Get current genres
-                cursor.execute("SELECT genres FROM tracks WHERE id = ?", (track_id,))
+                # Get track info
+                cursor.execute("SELECT title, genres, beets_path, file_path FROM tracks WHERE id = ?", (track_id,))
                 result = cursor.fetchone()
                 
                 if result:
@@ -3009,6 +3019,22 @@ def api_album_bulk_tag():
                     existing.update(genres)
                     # Join back
                     new_genres = ', '.join(sorted(existing))
+                    
+                    # Write to MP3 file if mutagen is available
+                    if has_mutagen:
+                        file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                        if file_path and os.path.exists(file_path):
+                            try:
+                                audio = MP3(file_path, ID3=ID3)
+                                if audio.tags is None:
+                                    audio.add_tags()
+                                audio.tags['TCON'] = TagCON(encoding=3, text=list(existing))
+                                audio.save()
+                                logging.info(f"[TAG] Updated MP3 tags for {file_path}: {new_genres}")
+                            except Exception as file_error:
+                                logging.warning(f"[TAG] Failed to update MP3 tags for {file_path}: {file_error}")
+                                track_title = row_get(result, 'title', '')
+                                failed_files.append(track_title if track_title else f"Track ID: {track_id}")
                     
                     # Update database
                     cursor.execute("""
@@ -3024,12 +3050,19 @@ def api_album_bulk_tag():
         conn.commit()
         conn.close()
         
-        return jsonify({
+        response = {
             "success": True,
             "updated_count": updated_count,
             "genres": genres,
             "message": f"Added {len(genres)} genre(s) to {updated_count} track(s)"
-        })
+        }
+        
+        if failed_files:
+            response["warning"] = f"⚠️ Failed to update MP3 tags for: {', '.join(failed_files[:5])}{'...' if len(failed_files) > 5 else ''}"
+        elif not has_mutagen:
+            response["warning"] = "ℹ️ Genres updated in database. Install mutagen (pip install mutagen) to update MP3 files."
+        
+        return jsonify(response)
     except Exception as e:
         logging.error(f"[TAG] Error in bulk tag: {e}")
         return jsonify({"error": str(e)}), 500
