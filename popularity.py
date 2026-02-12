@@ -1483,12 +1483,12 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
     allowing intelligent weight redistribution during popularity scoring.
     
     Falls back to Last.fm's top tracks API if database has limited catalogue coverage.
+    Also fetches artist info to determine top 10% threshold.
     
     Example:
         - Colossus by Borknagar: 43,991 Last.fm listeners
-        - Borknagar average: ~11,000 listeners
-        - Colossus is 3.9 sigma above mean → boost Last.fm weight to 0.45+ (from default 0.3)
-        - This reflects actual user engagement patterns across the artist's full catalogue
+        - Borknagar has ~150 total tracks → Top 10% = top 15 tracks
+        - Colossus is in top 15 globally AND outlier on album → 5 stars
     
     Args:
         artist_name: Name of the artist
@@ -1500,9 +1500,11 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         - stdev: Standard deviation of Last.fm listeners
         - min: Minimum listener count
         - max: Maximum listener count
-        - track_count: Number of tracks analyzed
-        - track_zscores: Dict mapping track_id → z-score for all tracks
-        - source: 'database' or 'lastfm_api' indicating data source
+        - track_count: Number of tracks analyzed (for stats)
+        - total_tracks: Total artist tracks on Last.fm (from API)
+        - top_10_percentile_threshold: Listener count for top 10% of artist tracks
+        - track_zscores: Dict mapping track_id → z-score for database tracks
+        - source: 'database' or 'lastfm_api' indicating stats data source
     """
     try:
         cursor = conn.cursor()
@@ -1524,47 +1526,55 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         tracks = cursor.fetchall()
         listeners_list = [row[3] for row in tracks if row[3] > 0]
         
-        # If limited database coverage (< 20 tracks), supplement with Last.fm top tracks API
-        min_threshold = 20
-        data_source = 'database'
-        if not listeners_list or len(listeners_list) < min_threshold:
-            log_debug(f"Limited database coverage ({len(listeners_list)} tracks) for {artist_name} - supplementing with Last.fm top tracks API")
-            try:
-                # Import here to avoid circular dependencies
-                from api_clients.lastfm import _get_lastfm_client
-                from config_loader import load_config
+        # Fetch artist info to get total track count and top 10% threshold
+        total_tracks = 0
+        top_10_percentile_threshold = 0
+        try:
+            import requests
+            from config_loader import load_config
+            
+            config = load_config()
+            if config and config.lastfm_api_key:
+                # Fetch top 50 tracks and artist info
+                params = {
+                    "method": "artist.getTopTracks",
+                    "artist": artist_name,
+                    "api_key": config.lastfm_api_key,
+                    "limit": 50,
+                    "format": "json"
+                }
                 
-                config = load_config()
-                if config and config.lastfm_api_key:
-                    lastfm_client = _get_lastfm_client(config.lastfm_api_key)
+                response = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
+                if response.status_code == 200:
+                    data = response.json()
+                    top_tracks = data.get("toptracks", {}).get("track", [])
                     
-                    # Fetch top 50 tracks from Last.fm API
-                    import requests
-                    params = {
-                        "method": "artist.getTopTracks",
-                        "artist": artist_name,
-                        "api_key": config.lastfm_api_key,
-                        "limit": 50,
-                        "format": "json"
-                    }
+                    # Get total track count from response (if available)
+                    toptracks_attr = data.get("toptracks", {}).get("@attr", {})
+                    total_tracks = int(toptracks_attr.get("total", 0) or 0)
                     
-                    response = requests.get("https://ws.audioscrobbler.com/2.0/", params=params, timeout=10)
-                    if response.status_code == 200:
-                        data = response.json()
-                        top_tracks = data.get("toptracks", {}).get("track", [])
+                    # Extract listener counts and find top 10% threshold
+                    api_listeners_list = []
+                    for track in top_tracks:
+                        listeners = int(track.get("playcount", 0) or 0)
+                        if listeners > 0:
+                            api_listeners_list.append(listeners)
+                            listeners_list.append(listeners)
+                    
+                    # Top 10% threshold = 90th percentile of listener counts
+                    if total_tracks > 0:
+                        top_10_count = max(1, total_tracks // 10)
+                        # Estimate threshold from available top tracks
+                        if len(api_listeners_list) >= top_10_count:
+                            sorted_listeners = sorted(api_listeners_list, reverse=True)
+                            top_10_percentile_threshold = sorted_listeners[min(top_10_count - 1, len(sorted_listeners) - 1)]
                         
-                        # Extract listener counts from API response
-                        for track in top_tracks:
-                            listeners = int(track.get("playcount", 0) or 0)
-                            if listeners > 0:
-                                listeners_list.append(listeners)
-                        
-                        if listeners_list:
-                            log_debug(f"Added {len(top_tracks)} top tracks from Last.fm API for {artist_name}")
-                            data_source = 'lastfm_api'
-            except Exception as e:
-                log_debug(f"Failed to fetch Last.fm top tracks for {artist_name}: {e}")
-                # Continue with database-only data if API fails
+                        log_debug(f"Artist info: {artist_name} has {total_tracks} total tracks, top 10% = ~{top_10_count} tracks, threshold: {top_10_percentile_threshold} listeners")
+                    
+                    if listeners_list:
+                        log_debug(f"Added {len(api_listeners_list)} top tracks from Last.fm API for {artist_name}")
+        except Exception as e:
+            log_debug(f"Failed to fetch Last.fm artist info for {artist_name}: {e}")
         
         if not listeners_list or len(listeners_list) < 2:
             return {
@@ -1573,8 +1583,10 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                 'min': 0,
                 'max': 0,
                 'track_count': len(listeners_list) if listeners_list else 0,
+                'total_tracks': total_tracks,
+                'top_10_percentile_threshold': top_10_percentile_threshold,
                 'track_zscores': {},
-                'source': data_source
+                'source': 'error'
             }
         
         # Calculate artist-level statistics
@@ -1595,7 +1607,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                 track_zscores[track_id] = z
                 # Log tracks that are significant outliers (for debugging)
                 if abs(z) >= 2.0:
-                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, source={data_source})")
+                    in_top_10 = "✓ in top 10%" if listeners >= top_10_percentile_threshold else "✗ not in top 10%"
+                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, {in_top_10})")
         
         return {
             'mean': artist_mean,
@@ -1603,8 +1616,10 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'min': artist_min,
             'max': artist_max,
             'track_count': len(listeners_list),
+            'total_tracks': total_tracks,
+            'top_10_percentile_threshold': top_10_percentile_threshold,
             'track_zscores': track_zscores,
-            'source': data_source
+            'source': 'database_plus_api' if listeners_list else 'error'
         }
         
     except Exception as e:
@@ -1615,6 +1630,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'min': 0,
             'max': 0,
             'track_count': 0,
+            'total_tracks': 0,
+            'top_10_percentile_threshold': 0,
             'track_zscores': {},
             'source': 'error'
         }
@@ -2700,6 +2717,12 @@ def popularity_scan(
                 # so that z-score single detection can be conditionally disabled for underperforming albums
                 # while still using metadata-based detection (Discogs, Spotify, MusicBrainz).
                 artist_stats = calculate_artist_popularity_stats(artist, conn)
+                
+                # Add top 10% threshold from Last.fm context (from earlier pre-fetch)
+                # This allows star rating to use dual criteria: global top 10% + album outlier
+                artist_stats['top_10_percentile_threshold'] = artist_lastfm_context.get('top_10_percentile_threshold', 0)
+                artist_stats['total_artist_tracks'] = artist_lastfm_context.get('total_tracks', 0)
+                
                 artist_median = artist_stats['median_popularity'] if artist_stats['track_count'] > 0 else 0.0
                 
                 # Calculate album median to check for underperformance
@@ -2871,7 +2894,7 @@ def popularity_scan(
                 
                 # Get all tracks for this album with their popularity scores and single detection
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
@@ -2987,26 +3010,33 @@ def popularity_scan(
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
-                        # NEW: 5-STAR LOGIC WITH ARTIST CONTEXT
+                        # NEW: 5-STAR LOGIC WITH DUAL ARTIST + ALBUM CONTEXT
                         # A track becomes 5★ if ANY of these conditions are met:
-                        # 1. Artist-level standout (zscore >= 2.0) - significantly outperforms artist's typical tracks
+                        # 1. Artist-level standout (zscore >= 2.0) + top 10% of artist tracks globally
                         # 2. User-set single
                         # 3. High-confidence single detection
                         # 4. Medium-confidence with 2+ sources
                         #
-                        # Artist context: Tracks that are 2+ sigma above artist's mean are objectively standout
-                        # content worthy of 5 stars, regardless of single status or detection confidence.
+                        # Artist context: Dual criteria for maximum relevance
+                        # - Top 10% globally: Track is in artist's most-streamed catalogue (global significance)
+                        # - Album outlier: Track stands out from its album peers (local significance)
+                        # Both needed = meaningful standout content
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
                             # Apply new 5-star rule
-                            # FIRST: Artist-level standout check (zscore >= 2.0)
-                            # This takes priority over all other conditions
-                            if track_zscore >= 2.0:
+                            # FIRST: Dual artist context check
+                            # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
+                            track_lastfm_listeners = track_row.get("lastfm_track_playcount", 0) or 0
+                            artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
+                            is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
+                            is_album_outlier = track_zscore >= 2.0
+                            
+                            if is_top_10_global and is_album_outlier:
                                 stars = 5
-                                log_info(f"5-star assignment: {title} (artist-level standout, zscore={track_zscore:.2f})")
-                                log_debug(f"Artist-level outlier - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
+                                log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
                             # User-set singles always get 5 stars
                             elif single_confidence == "user":
                                 stars = 5
