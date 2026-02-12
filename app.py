@@ -1731,13 +1731,13 @@ def api_artist_missing_releases():
         norm_title = _normalize_release_title(rg.get("title"))
         if not norm_title or norm_title in existing_norm:
             continue
-        # skip compilations/secondary types if present
+        # Categorize by type
         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-        if "compilation" in secondary:
-            continue
         primary_type = (rg.get("primary_type") or "").lower()
         category = "Album"
-        if primary_type == "ep":
+        if "compilation" in secondary:
+            category = "Compilation"
+        elif primary_type == "ep":
             category = "EP"
         elif primary_type == "single" or "single" in secondary:
             category = "Single"
@@ -1940,14 +1940,13 @@ def api_scan_all_missing_releases():
                         if not norm_title:
                             continue
                         
-                        # Skip compilations
+                        # Categorize by type (including compilations)
                         secondary = [s.lower() for s in rg.get("secondary_types") or []]
-                        if "compilation" in secondary:
-                            continue
-                        
                         primary_type = (rg.get("primary_type") or "").lower()
                         category = "Album"
-                        if primary_type == "ep":
+                        if "compilation" in secondary:
+                            category = "Compilation"
+                        elif primary_type == "ep":
                             category = "EP"
                         elif primary_type == "single" or "single" in secondary:
                             category = "Single"
@@ -7737,6 +7736,8 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
         Image bytes if found, None otherwise
     """
     try:
+        import requests
+        
         # Try to get MBID from database
         conn = get_db()
         cursor = conn.cursor()
@@ -7749,6 +7750,7 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
         conn.close()
         
         album_mbid = result['beets_album_mbid'] if result else None
+        log_debug(f"MusicBrainz: Database MBID check - {artist_name} - {album_name}: {album_mbid}")
         
         # If we don't have MBID, try to search for it
         if not album_mbid:
@@ -7766,22 +7768,27 @@ def _fetch_album_art_from_musicbrainz(artist_name: str, album_name: str) -> byte
                 rgs = data.get("release-groups", [])
                 if rgs:
                     album_mbid = rgs[0].get("id")
+                    log_info(f"MusicBrainz: Found MBID via search - {artist_name} - {album_name}: {album_mbid}")
             except Exception as e:
-                logging.debug(f"MusicBrainz album search failed: {e}")
+                log_debug(f"MusicBrainz album search failed: {e}")
                 return None
         
         if not album_mbid:
+            log_debug(f"MusicBrainz: No MBID found for {artist_name} - {album_name}")
             return None
         
         # Fetch cover art from Cover Art Archive
         cover_url = f"https://coverartarchive.org/release-group/{album_mbid}/front-500"
         resp = requests.get(cover_url, timeout=3)
         if resp.status_code == 200:
+            log_info(f"MusicBrainz: Successfully fetched cover art for {artist_name} - {album_name}")
             return resp.content
+        else:
+            log_debug(f"MusicBrainz: Cover Art Archive returned {resp.status_code} for {album_mbid}")
         
         return None
     except Exception as e:
-        logging.debug(f"Failed to fetch album art from MusicBrainz: {e}")
+        log_debug(f"Failed to fetch album art from MusicBrainz: {e}")
         return None
 
 
@@ -7797,6 +7804,7 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
         Image bytes if found, None otherwise
     """
     try:
+        import requests
         from api_clients.discogs import DiscogsClient
         
         config_data, _ = _read_yaml(CONFIG_PATH)
@@ -7804,6 +7812,7 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
         discogs_token = discogs_config.get("token", "") or os.environ.get("DISCOGS_TOKEN", "")
         
         if not discogs_token:
+            log_debug(f"Discogs: No token configured")
             return None
             
         discogs = DiscogsClient(discogs_token)
@@ -7820,9 +7829,13 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
                 if result.get("cover_url"):
                     resp = requests.get(result["cover_url"], timeout=3)
                     if resp.status_code == 200:
+                        log_info(f"Discogs: Successfully fetched cover art for {artist_name} - {album_name}")
                         return resp.content
+            log_debug(f"Discogs: No results found for {artist_name} - {album_name}")
+        else:
+            log_debug(f"Discogs: API returned {res.status_code}")
     except Exception as e:
-        logging.debug(f"Failed to fetch album art from Discogs: {e}")
+        log_debug(f"Failed to fetch album art from Discogs: {e}")
     
     return None
 
@@ -7874,6 +7887,8 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
         Image bytes if found, None otherwise
     """
     try:
+        import requests
+        
         # Search iTunes API
         search_url = "https://itunes.apple.com/search"
         params = {
@@ -7888,6 +7903,7 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
         
         results = data.get("results", [])
         if not results:
+            log_debug(f"iTunes: No results for {artist_name} - {album_name}")
             return None
         
         # Try to find the best match
@@ -7901,10 +7917,12 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
                 if artwork_url:
                     # Replace 100x100 with higher resolution
                     artwork_url = artwork_url.replace("100x100", "600x600")
+                    log_info(f"iTunes: Found match for {artist_name} - {album_name}")
                     
                     # Fetch the artwork
                     art_resp = requests.get(artwork_url, timeout=5)
                     if art_resp.status_code == 200:
+                        log_info(f"iTunes: Successfully fetched cover art for {artist_name} - {album_name}")
                         return art_resp.content
         
         # If no exact match, try the first result if it exists
@@ -7912,13 +7930,15 @@ def _fetch_album_art_from_itunes(artist_name: str, album_name: str) -> bytes | N
             artwork_url = results[0].get("artworkUrl100", "")
             if artwork_url:
                 artwork_url = artwork_url.replace("100x100", "600x600")
+                log_debug(f"iTunes: Using first result for {artist_name} - {album_name}")
                 art_resp = requests.get(artwork_url, timeout=5)
                 if art_resp.status_code == 200:
+                    log_info(f"iTunes: Successfully fetched cover art (first result) for {artist_name} - {album_name}")
                     return art_resp.content
         
         return None
     except Exception as e:
-        logging.debug(f"Failed to fetch album art from iTunes: {e}")
+        log_debug(f"Failed to fetch album art from iTunes: {e}")
         return None
 
 
@@ -7937,6 +7957,8 @@ def api_album_art(artist, album):
         artist = unquote(artist)
         album = unquote(album)
         
+        log_info(f"Album art request: {artist} - {album}")
+        
         # 0. First, check local album_art table for stored images
         try:
             conn = get_db()
@@ -7951,12 +7973,13 @@ def api_album_art(artist, album):
             if result and result[0]:
                 image_data = result[0]
                 mime_type = result[1] or 'image/jpeg'
+                log_info(f"Album art found in local database for {artist} - {album}")
                 return send_file(
                     io.BytesIO(image_data),
                     mimetype=mime_type
                 )
         except Exception as e:
-            logging.debug(f"Error fetching local album art: {e}")
+            log_debug(f"Error fetching local album art: {e}")
         
         # 1. Check if we have cover_art_url or spotify_album_art_url in database
         try:
@@ -7998,6 +8021,7 @@ def api_album_art(artist, album):
             
             if cover_art_url:
                 try:
+                    log_debug(f"Attempting to fetch from database URL: {cover_art_url[:50]}...")
                     resp = requests.get(cover_art_url, timeout=5)
                     if resp.status_code == 200:
                         # Save to database for future access
@@ -8006,14 +8030,17 @@ def api_album_art(artist, album):
                             io.BytesIO(resp.content),
                             mimetype='image/jpeg'
                         )
+                    else:
+                        log_debug(f"Database URL returned {resp.status_code}")
                 except Exception as e:
-                    logging.debug(f"Failed to fetch cover_art_url from database: {e}")
+                    log_debug(f"Failed to fetch cover_art_url from database: {e}")
                     pass  # Fall through to other methods
         except Exception as e:
-            logging.debug(f"Error checking database for album art: {e}")
+            log_debug(f"Error checking database for album art: {e}")
         
         # 2. Try to get from Navidrome (more robust search with artist name)
         try:
+            log_debug(f"Attempting Navidrome fetch for: {artist} - {album}")
             cfg, _ = _read_yaml(CONFIG_PATH)
             nav_users = cfg.get("navidrome_users", [])
             if not nav_users:
@@ -8057,8 +8084,10 @@ def api_album_art(artist, album):
                                 data = resp.json()
                                 albums = data.get('subsonic-response', {}).get('searchResult3', {}).get('album', [])
                                 if albums:
+                                    log_debug(f"Navidrome: Found {len(albums)} album(s)")
                                     album_id = albums[0].get('id')
                                     if album_id:
+                                        log_debug(f"Navidrome: Getting cover art for album ID {album_id}")
                                         # Get cover art
                                         cover_url = f"{base_url}/rest/getCoverArt.view"
                                         cover_params = {
@@ -8070,48 +8099,67 @@ def api_album_art(artist, album):
                                         }
                                         cover_resp = session.get(cover_url, params=cover_params, timeout=5)
                                         if cover_resp.status_code == 200:
+                                            log_info(f"Successfully fetched album art from Navidrome")
                                             # Save to database for future access
                                             _save_album_art_to_db(artist, album, cover_resp.content, source="navidrome")
                                             return send_file(
                                                 io.BytesIO(cover_resp.content),
                                                 mimetype='image/jpeg'
                                             )
+                                        else:
+                                            log_debug(f"Navidrome getCoverArt returned {cover_resp.status_code}")
                                     break  # Found album, don't try again
+                                else:
+                                    log_debug(f"Navidrome: No albums found")
+                            else:
+                                log_debug(f"Navidrome search returned {resp.status_code}")
                         except Exception as e:
-                            logging.debug(f"Navidrome search attempt failed: {e}")
+                            log_debug(f"Navidrome search attempt failed: {e}")
                             continue
+            else:
+                log_debug("Navidrome not configured")
         except Exception as e:
-            logging.debug(f"Navidrome cover art fetch failed: {e}")
+            log_debug(f"Navidrome cover art fetch failed: {e}")
         
         # 3. Try MusicBrainz
+        log_debug(f"Attempting MusicBrainz fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_musicbrainz(artist, album)
         if art_bytes:
+            log_info(f"Successfully fetched album art from MusicBrainz")
             _save_album_art_to_db(artist, album, art_bytes, source="musicbrainz")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'
             )
+        log_debug(f"MusicBrainz returned no art")
         
         # 4. Try iTunes/Apple Music
+        log_debug(f"Attempting iTunes fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_itunes(artist, album)
         if art_bytes:
+            log_info(f"Successfully fetched album art from iTunes")
             _save_album_art_to_db(artist, album, art_bytes, source="itunes")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'
             )
+        log_debug(f"iTunes returned no art")
         
         # 5. Fallback to Discogs
+        log_debug(f"Attempting Discogs fetch for: {artist} - {album}")
         art_bytes = _fetch_album_art_from_discogs(artist, album)
         if art_bytes:
+            log_info(f"Successfully fetched album art from Discogs")
             _save_album_art_to_db(artist, album, art_bytes, source="discogs")
             return send_file(
                 io.BytesIO(art_bytes),
                 mimetype='image/jpeg'
             )
+        log_debug(f"Discogs returned no art")
         
         # 6. Try to extract from MP3 file
         try:
+            log_debug(f"Attempting to extract album art from MP3 files for: {artist} - {album}")
             from metadata_reader import extract_album_art_from_mp3
             
             # Get a track file path from this album (try multiple strategies)
@@ -8151,22 +8199,195 @@ def api_album_art(artist, album):
             
             conn.close()
             
-            if file_path and os.path.exists(file_path):
-                art_data = extract_album_art_from_mp3(file_path)
-                if art_data:
-                    return send_file(
-                        io.BytesIO(art_data),
-                        mimetype='image/jpeg'
-                    )
+            if file_path:
+                log_debug(f"Found file path: {file_path}")
+                if os.path.exists(file_path):
+                    art_data = extract_album_art_from_mp3(file_path)
+                    if art_data:
+                        log_info(f"Successfully extracted album art from MP3 file")
+                        return send_file(
+                            io.BytesIO(art_data),
+                            mimetype='image/jpeg'
+                        )
+                    else:
+                        log_debug(f"MP3 file has no embedded art")
+                else:
+                    log_debug(f"File path does not exist: {file_path}")
+            else:
+                log_debug("No file paths found for this album")
         except Exception as e:
-            logging.debug(f"Failed to extract album art from MP3: {e}")
+            log_debug(f"Failed to extract album art from MP3: {e}")
         
         # 7. No art found - return placeholder SVG instead of 404
+        log_info(f"No album art found from any source for: {artist} - {album}. Returning placeholder.")
         return _album_art_placeholder_svg()
     except Exception as e:
-        logging.error(f"Error fetching album art for {artist} - {album}: {e}")
+        log_unified(f"Error fetching album art for {artist} - {album}: {e}", level=logging.ERROR)
         # Return placeholder SVG instead of 404
         return _album_art_placeholder_svg()
+
+
+@app.route("/api/album/tracklist")
+def api_album_tracklist():
+    """Get tracklist for an EP/Single from MusicBrainz"""
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    
+    if not artist or not album:
+        return jsonify({"error": "Artist and album parameters required"}), 400
+    
+    try:
+        log_debug(f"Fetching tracklist for {artist} - {album}")
+        import requests
+        
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        search_url = "https://musicbrainz.org/ws/2/release-group"
+        params = {
+            "query": f'release:"{album}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": 1
+        }
+        
+        resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        release_groups = data.get("release-groups", [])
+        if not release_groups:
+            log_debug(f"No MusicBrainz results for {artist} - {album}")
+            return jsonify({"error": "Album not found on MusicBrainz"}), 404
+        
+        rg = release_groups[0]
+        rg_id = rg.get("id")
+        
+        if not rg_id:
+            return jsonify({"error": "Cannot get release ID"}), 400
+        
+        # Fetch releases for this release group
+        releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
+        releases_params = {"fmt": "json", "inc": "recordings", "limit": 1}
+        
+        releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
+        releases_resp.raise_for_status()
+        releases_data = releases_resp.json()
+        
+        releases = releases_data.get("releases", [])
+        if not releases:
+            return jsonify({"error": "No releases found for this release group"}), 404
+        
+        # Get first release with media/tracks
+        tracklist = []
+        for release in releases:
+            media = release.get("media", [])
+            if media:
+                for track_obj in media[0].get("tracks", []):
+                    recording = track_obj.get("recording", {})
+                    tracklist.append({
+                        "position": track_obj.get("position", ""),
+                        "title": recording.get("title", "Unknown"),
+                        "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                    })
+                break
+        
+        if not tracklist:
+            return jsonify({"error": "No tracks found"}), 404
+        
+        log_info(f"Found {len(tracklist)} tracks for {artist} - {album}")
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "album": album,
+            "tracklist": tracklist,
+            "release_id": rg_id
+        })
+    
+    except Exception as e:
+        log_debug(f"Error fetching tracklist: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/album/tracklist/match")
+def api_album_tracklist_match():
+    """Check which tracks from a tracklist already exist in the library"""
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    
+    if not artist or not album:
+        return jsonify({"error": "Artist and album parameters required"}), 400
+    
+    try:
+        log_debug(f"Matching tracklist for {artist} - {album}")
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all tracks in library
+        cursor.execute("""
+            SELECT title, artist FROM tracks WHERE artist = ? OR artist LIKE ?
+        """, (artist, f"%{artist}%"))
+        
+        library_tracks = {row['title'].lower(): row['artist'] for row in cursor.fetchall()}
+        conn.close()
+        
+        # Match against tracklist
+        matched_tracks = []
+        unmatched_tracks = []
+        
+        # Fetch tracklist first
+        import requests
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        search_url = "https://musicbrainz.org/ws/2/release-group"
+        params = {
+            "query": f'release:"{album}" AND artist:"{artist}"',
+            "fmt": "json",
+            "limit": 1
+        }
+        
+        resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        
+        release_groups = data.get("release-groups", [])
+        if not release_groups:
+            return jsonify({"matched": [], "unmatched": []})
+        
+        rg = release_groups[0]
+        rg_id = rg.get("id")
+        
+        releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
+        releases_params = {"fmt": "json", "inc": "recordings", "limit": 1}
+        
+        releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
+        releases_resp.raise_for_status()
+        releases_data = releases_resp.json()
+        
+        releases = releases_data.get("releases", [])
+        if releases:
+            media = releases[0].get("media", [])
+            if media:
+                for track_obj in media[0].get("tracks", []):
+                    recording = track_obj.get("recording", {})
+                    track_title = recording.get("title", "").lower().strip()
+                    
+                    if track_title in library_tracks:
+                        matched_tracks.append({
+                            "title": recording.get("title", ""),
+                            "library_artist": library_tracks[track_title]
+                        })
+                    else:
+                        unmatched_tracks.append({
+                            "title": recording.get("title", "")
+                        })
+        
+        log_info(f"Matched {len(matched_tracks)} tracks for {artist} - {album}")
+        return jsonify({
+            "success": True,
+            "matched": matched_tracks,
+            "unmatched": unmatched_tracks
+        })
+    
+    except Exception as e:
+        log_debug(f"Error matching tracklist: {e}")
+        return jsonify({"error": str(e)}), 500
 
 
 @app.route("/api/downloads/scan")
@@ -10336,13 +10557,14 @@ def api_artist_apply_genres():
             return jsonify({"error": "Missing required fields"}), 400
         
         # Get all tracks by the artist from database
+        # Use COALESCE with album_artist to match artist page logic
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
             SELECT id, title, album, beets_path, file_path
             FROM tracks
-            WHERE artist = ?
-        """, (artist,))
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? OR artist = ?
+        """, (artist, artist))
         tracks = cursor.fetchall()
         
         if not tracks:

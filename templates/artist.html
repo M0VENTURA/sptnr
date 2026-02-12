@@ -1797,8 +1797,277 @@ function saveArtistIds() {
     });
 }
 
-// Toggle missing albums visibility
-function toggleMissing(category) {
+// Toggle tracklist visibility
+function toggleTracklist(artist, album) {
+  const rowId = `tracklist-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+  const btnId = `toggle-btn-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+  const row = document.getElementById(rowId);
+  const btn = document.getElementById(btnId);
+  
+  if (row) {
+    const isHidden = row.style.display === 'none';
+    row.style.display = isHidden ? '' : 'none';
+    
+    // Update button styling and icon
+    if (btn) {
+      if (isHidden) {
+        btn.classList.add('active');
+        btn.innerHTML = '<i class="bi bi-chevron-up"></i>';
+        // Auto-load tracklist when expanded if not already loaded
+        setTimeout(() => {
+          const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+          const contentDiv = document.getElementById(contentId);
+          if (contentDiv && !contentDiv.innerHTML.includes('list-group-item')) {
+            const trackedRow = document.getElementById(rowId);
+            const loadBtn = trackedRow?.querySelector('button:not(.btn-tracklist)');
+            if (loadBtn && loadBtn.textContent.includes('Load')) {
+              loadBtn.click();
+            }
+          }
+        }, 100);
+      } else {
+        btn.classList.remove('active');
+        btn.innerHTML = '<i class="bi bi-list-ul"></i>';
+      }
+    }
+  }
+}
+
+function downloadTrack(searchQuery, artist, title) {
+  if (!confirm(`Download "${title}" by ${artist}?`)) return;
+  
+  const btn = event.target.closest('button');
+  const originalHTML = btn.innerHTML;
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+  
+  // Initiate download via Soulseek
+  fetch('/api/slskd/search', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ query: searchQuery })
+  })
+  .then(response => response.json())
+  .then(data => {
+    if (data.error) {
+      alert('❌ Error: ' + data.error);
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+      return;
+    }
+    
+    const searchId = data.searchId;
+    // Poll for results with a shorter timeout since we just want the first match
+    pollSlskdResultsForDownload(searchId, artist, title, btn, originalHTML);
+  })
+  .catch(error => {
+    alert('❌ Network error: ' + error.message);
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+  });
+}
+
+function pollSlskdResultsForDownload(searchId, artist, title, btn, originalHTML, pollCount = 0) {
+  if (pollCount > 10) {
+    // Timeout - try again or show manual search
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+    alert('⏱️ Search timed out. Try downloading manually from the Downloads page.');
+    return;
+  }
+  
+  fetch(`/api/slskd/search/${searchId}`)
+    .then(response => response.json())
+    .then(data => {
+      if (!data.isComplete) {
+        setTimeout(() => pollSlskdResultsForDownload(searchId, artist, title, btn, originalHTML, pollCount + 1), 1000);
+        return;
+      }
+      
+      if (data.fileCount === 0 || !data.results || data.results.length === 0) {
+        btn.disabled = false;
+        btn.innerHTML = originalHTML;
+        alert('❌ No results found. Try searching manually.');
+        return;
+      }
+      
+      // Find best match (prefer complete albums/ep, then by size and seeders)
+      const bestResult = data.results[0]; // Soulseek API should rank by relevance
+      
+      // Download the best match
+      downloadSlskdFile(bestResult.username, bestResult.filename, bestResult.size || 0, btn, originalHTML);
+    })
+    .catch(error => {
+      btn.disabled = false;
+      btn.innerHTML = originalHTML;
+      alert('❌ Search error: ' + error.message);
+    });
+}
+
+function downloadSlskdFile(username, filename, size, btn, originalHTML) {
+  fetch('/api/slskd/download-single', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      username: username,
+      filename: filename,
+      size: parseInt(size)
+    })
+  })
+  .then(response => response.json())
+  .then(data => {
+    btn.disabled = false;
+    if (data.error) {
+      btn.innerHTML = originalHTML;
+      alert('❌ Error: ' + data.error);
+    } else {
+      btn.innerHTML = '<i class="bi bi-check-circle"></i>';
+      btn.classList.add('btn-success');
+      btn.classList.remove('btn-outline-success');
+      setTimeout(() => {
+        btn.innerHTML = originalHTML;
+        btn.classList.remove('btn-success');
+        btn.classList.add('btn-outline-success');
+      }, 2000);
+      alert('✅ Download started!');
+    }
+  })
+  .catch(error => {
+    btn.disabled = false;
+    btn.innerHTML = originalHTML;
+    alert('❌ Network error: ' + error.message);
+  });
+}
+
+
+  const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+  const contentDiv = document.getElementById(contentId);
+  const spinner = button.querySelector('.spinner-border');
+  
+  if (!contentDiv) return;
+  
+  // Show spinner
+  if (spinner) spinner.style.display = 'inline-block';
+  button.disabled = true;
+  
+  // Fetch and match tracklist
+  Promise.all([
+    fetch(`/api/album/tracklist?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`).then(r => r.json()),
+    fetch(`/api/album/tracklist/match?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`).then(r => r.json())
+  ])
+  .then(([tracklistResponse, matchResponse]) => {
+    if (spinner) spinner.style.display = 'none';
+    button.disabled = false;
+    
+    if (tracklistResponse.error) {
+      contentDiv.innerHTML = `<div class="alert alert-warning"><i class="bi bi-exclamation-triangle"></i> ${escapeHtml(tracklistResponse.error)}</div>`;
+      return;
+    }
+    
+    const tracklist = tracklistResponse.tracklist || [];
+    const matched = new Set((matchResponse.matched || []).map(t => t.title.toLowerCase()));
+    
+    if (tracklist.length === 0) {
+      contentDiv.innerHTML = '<div class="alert alert-info">No tracks found</div>';
+      return;
+    }
+    
+    // Build tracklist HTML
+    let html = `
+      <div class="card border-info">
+        <div class="card-header bg-info bg-opacity-10">
+          <h6 class="mb-0"><i class="bi bi-list-ul"></i> Tracklist (${tracklist.length} tracks)</h6>
+        </div>
+        <div class="list-group list-group-flush">
+    `;
+    
+    tracklist.forEach(track => {
+      const isMatched = matched.has(track.title.toLowerCase());
+      const matchBadge = isMatched ? '<span class="badge bg-success ms-2"><i class="bi bi-check-circle"></i> In Library</span>' : '';
+      const rowClass = isMatched ? '' : '';
+      
+      // Build search query for download (artist + title)
+      const searchQuery = `${artist} ${track.title}`;
+      
+      html += `
+        <div class="list-group-item ${rowClass}">
+          <div class="d-flex justify-content-between align-items-center">
+            <div class="flex-grow-1">
+              <span class="text-muted small" style="min-width: 2em; text-align: right; display: inline-block;">
+                ${(track.position || '').padStart(2, '0')}
+              </span>
+              <span class="ms-2">${escapeHtml(track.title || '')}</span>
+              ${matchBadge}
+            </div>
+            <div class="d-flex align-items-center gap-2">
+              <small class="text-muted me-2" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(track.artist || '')}</small>
+              <button class="btn btn-sm btn-outline-success" onclick="downloadTrack('${escapeJsString(searchQuery)}', '${escapeJsString(artist)}', '${escapeJsString(track.title)}')" title="Download this track" style="flex-shrink: 0;">
+                <i class="bi bi-download"></i>
+              </button>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += `
+        </div>
+        <div class="card-footer text-muted small">
+          <i class="bi bi-info-circle"></i> Green checkmarks = already in library. Click download button to add missing tracks from Soulseek.
+        </div>
+      </div>
+    `;
+    
+    contentDiv.innerHTML = html;
+  })
+  .catch(error => {
+    if (spinner) spinner.style.display = 'none';
+    button.disabled = false;
+    contentDiv.innerHTML = `<div class="alert alert-danger"><i class="bi bi-x-circle"></i> Error: ${escapeHtml(error.message)}</div>`;
+  });
+}
+
+// Add button to toggle tracklist for each Single/EP
+function initializeTracklistButtons() {
+  // Find all single/ep rows and add toggle button
+  const singleRows = document.querySelectorAll('#singles-section .album-row');
+  const epRows = document.querySelectorAll('#eps-section .album-row');
+  
+  [].concat(Array.from(singleRows), Array.from(epRows)).forEach(row => {
+    // Add a toggle button to the actions cell
+    const actionCell = row.querySelector('td:last-child');
+    if (actionCell && !actionCell.querySelector('.btn-tracklist')) {
+      const artist = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
+      const album = row.dataset.album || '';
+      
+      const toggleBtn = document.createElement('button');
+      toggleBtn.className = 'btn btn-sm btn-outline-info btn-tracklist ms-1';
+      toggleBtn.innerHTML = '<i class="bi bi-list-ul"></i>';
+      toggleBtn.title = 'Show tracklist';
+      toggleBtn.onclick = () => {
+        const rowId = `tracklist-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
+        const tracklistRow = document.getElementById(rowId);
+        if (tracklistRow) {
+          toggleBtn.querySelector('i').className = tracklistRow.style.display === 'none' 
+            ? 'bi bi-list-ul' 
+            : 'bi bi-chevron-up';
+          tracklistRow.style.display = tracklistRow.style.display === 'none' ? '' : 'none';
+        }
+      };
+      
+      actionCell.appendChild(toggleBtn);
+    }
+  });
+}
+
+// Initialize tracklist buttons when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(initializeTracklistButtons, 500);
+});
+
+// Toggle tracklist visibility
+
+
   const section = document.getElementById(category + '-section');
   if (!section) return;
   

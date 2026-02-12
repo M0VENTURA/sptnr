@@ -2354,6 +2354,67 @@ def popularity_scan(
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
                     log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
+                    
+                    # After album complete, calculate standout tracks for artist
+                    # Standout = z-score >= 2.0 (2+ stdev above artist mean) + >= 1000 listeners
+                    if album_scanned > 0:
+                        try:
+                            log_info(f'Analyzing standout tracks for artist: {artist}')
+                            cursor.execute("""
+                                SELECT id, title, lastfm_track_playcount FROM tracks
+                                WHERE artist = ? AND is_single = 0 AND album NOT IN (
+                                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
+                                ) AND album NOT IN (
+                                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
+                                )
+                            """, (artist, artist, artist))
+                            artist_tracks = cursor.fetchall()
+                            
+                            if artist_tracks:
+                                listeners_list = [row_get(t, 'lastfm_track_playcount', 0) for t in artist_tracks if row_get(t, 'lastfm_track_playcount', 0) > 0]
+                                
+                                if len(listeners_list) >= 2:
+                                    artist_mean = mean(listeners_list)
+                                    artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
+                                    
+                                    log_debug(f'Artist {artist} listener stats: mean={artist_mean:.0f}, stdev={artist_stdev:.0f}')
+                                    
+                                    standup_count = 0
+                                    for track in artist_tracks:
+                                        track_id = row_get(track, 'id')
+                                        track_title = row_get(track, 'title')
+                                        listeners = row_get(track, 'lastfm_track_playcount', 0)
+                                        
+                                        if listeners > 0 and artist_stdev > 0:
+                                            track_zscore = (listeners - artist_mean) / artist_stdev
+                                            
+                                            # Mark as standout if z-score >= 2.0 AND listeners >= 1000
+                                            is_standout = 1 if (track_zscore >= 2.0 and listeners >= 1000) else 0
+                                            
+                                            if is_standout:
+                                                cursor.execute("""
+                                                    UPDATE tracks SET is_standout_track = ?, artist_z_score = ?
+                                                    WHERE id = ?
+                                                """, (is_standout, track_zscore, track_id))
+                                                standup_count += 1
+                                                log_info(f'Marked as standout: {track_title} (z-score: {track_zscore:.2f}, listeners: {listeners})')
+                                            else:
+                                                cursor.execute("""
+                                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = ?
+                                                    WHERE id = ?
+                                                """, (track_zscore, track_id))
+                                        else:
+                                            cursor.execute("""
+                                                UPDATE tracks SET is_standout_track = 0
+                                                WHERE id = ?
+                                            """, (track_id,))
+                                    
+                                    conn.commit()
+                                    if standup_count > 0:
+                                        log_unified(f'Popularity Scan - Identified {standup_count} standout tracks for {artist}')
+                        
+                        except Exception as e:
+                            log_debug(f'Standout track analysis failed for {artist}: {e}')
                 
                 # End of popularity scanning section (skipped in singles_only mode)
 
@@ -2758,24 +2819,38 @@ def popularity_scan(
                     log_debug(f'Star distribution details: {star_distribution}')
                     
                     # Generate unified log summary for singles and star ratings
-                    # Re-fetch tracks with their final star ratings and single detection results
+                    # Re-fetch tracks with their final star ratings, single detection, and standout info
                     cursor.execute(
-                        """SELECT id, title, stars, is_single, single_confidence, single_sources 
+                        """SELECT id, title, stars, is_single, single_confidence, single_sources, 
+                                  is_standout_track, artist_z_score
                         FROM tracks 
                         WHERE artist = ? AND album = ? 
-                        ORDER BY is_single DESC, stars DESC, popularity_score DESC""",
+                        ORDER BY stars DESC, popularity_score DESC""",
                         (artist, album)
                     )
                     final_tracks = cursor.fetchall()
                     
-                    # Separate singles from non-singles
-                    singles = []
-                    non_singles = []
+                    # Categorize tracks
+                    detected_singles = []      # is_single = 1, 5 stars
+                    standout_tracks = []       # is_standout_track = 1, 5 stars
+                    possible_singles = []      # Medium confidence, not marked as single
+                    rest_of_album = []         # Other tracks
+                    
+                    SOURCE_DISPLAY_NAMES = {
+                        "musicbrainz": "MusicBrainz",
+                        "discogs": "Discogs",
+                        "discogs_video": "Discogs Video",
+                        "spotify": "Spotify"
+                    }
+                    
                     for track_row in final_tracks:
                         track_title = track_row["title"]
                         track_stars = track_row["stars"] if track_row["stars"] else 0
                         track_is_single = track_row["is_single"] if track_row["is_single"] else 0
+                        track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
+                        track_single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else ""
                         track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
+                        track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
                         
                         # Parse single sources
                         try:
@@ -2786,37 +2861,54 @@ def popularity_scan(
                         except json.JSONDecodeError:
                             track_sources = []
                         
-                        # Format sources for display using mapping for consistent naming
-                        SOURCE_DISPLAY_NAMES = {
-                            "musicbrainz": "MusicBrainz",
-                            "discogs": "Discogs",
-                            "discogs_video": "Discogs Video",
-                            "spotify": "Spotify"
-                        }
+                        # Format sources for display
                         formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
                         sources_str = ", ".join(formatted_sources) if formatted_sources else ""
                         
                         # Create star rating string (max 5 stars)
                         stars_str = "★" * min(track_stars, 5)
                         
-                        if track_is_single:
-                            singles.append((track_title, stars_str, sources_str))
+                        # Determine detection method(s) for display
+                        detection_methods = []
+                        if track_is_single and sources_str:
+                            detection_methods.append(sources_str)
+                        if track_is_standout:
+                            detection_methods.append(f"Standout (z-score: {track_zscore:.2f})")
+                        if track_single_confidence and not track_is_single:
+                            detection_methods.append(f"Possible Single ({track_single_confidence})")
+                        
+                        method_str = " - " + " | ".join(detection_methods) if detection_methods else ""
+                        
+                        # Categorize track
+                        if track_is_single and track_stars == 5:
+                            detected_singles.append((track_title, stars_str, method_str))
+                        elif track_is_standout and track_stars == 5:
+                            standout_tracks.append((track_title, stars_str, method_str))
+                        elif track_single_confidence == "medium" and not track_is_single:
+                            possible_singles.append((track_title, stars_str, method_str))
                         else:
-                            non_singles.append((track_title, stars_str))
+                            rest_of_album.append((track_title, stars_str, method_str))
                     
-                    # Log singles detected header
-                    if singles:
-                        log_unified(f"Single Detection Scan - Singles Detected in {artist} - {album}")
-                        for title, stars, sources in singles:
-                            source_info = f" ({sources})" if sources else ""
-                            # Use dynamic width based on max possible stars (5)
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{source_info}")
+                    # Log categorized results
+                    if detected_singles:
+                        log_unified(f"Single Detection Scan - ===== Detected Singles =====")
+                        for title, stars, method in detected_singles:
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                     
-                    # Log popularity ratings for remaining songs
-                    if non_singles:
-                        log_unified(f"Single Detection Scan - Popularity Rating for Remaining Songs")
-                        for title, stars in non_singles:
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
+                    if standout_tracks:
+                        log_unified(f"Single Detection Scan - ===== Standout Tracks =====")
+                        for title, stars, method in standout_tracks:
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                    
+                    if possible_singles:
+                        log_unified(f"Single Detection Scan - ===== Possible Singles (Medium Confidence) =====")
+                        for title, stars, method in possible_singles:
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                    
+                    if rest_of_album:
+                        log_unified(f"Single Detection Scan - ===== Rest of Album =====")
+                        for title, stars, method in rest_of_album:
+                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                 
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()

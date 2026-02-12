@@ -189,7 +189,8 @@ required_columns = {
     # ✅ Alternate take detection fields (for parenthesis matching)
     "alternate_take": "INTEGER",               # 1 if track is alternate take (similar title with parenthesis)
     "base_track_id": "TEXT",                   # ID of base track (if this is an alternate take)
-    "last_spotify_lookup": "TEXT"              # Timestamp of last Spotify API lookup (for 24hr caching)
+    "last_spotify_lookup": "TEXT",              # Timestamp of last Spotify API lookup (for 24hr caching)
+    "is_standout_track": "INTEGER"               # 1 if track is standout (artist-level z-score >= 2.0)
 }
 
 # ✅ Define columns for the artists table
