@@ -1679,9 +1679,10 @@ def detect_single_enhanced(
     #     - Spotify single (strict)
     #     - MusicBrainz single (strict)
     #     - Discogs music video
+    #     - Last.fm single confirmation
     #
     # Do NOT allow z-score or popularity outlier to bypass this filter.
-    has_explicit_metadata = discogs_confirmed or spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed
+    has_explicit_metadata = discogs_confirmed or spotify_confirmed or musicbrainz_confirmed or discogs_video_confirmed or lastfm_single_confirmed
     
     if artist_mean > 0 and popularity < artist_mean:
         if not has_explicit_metadata:

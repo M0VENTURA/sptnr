@@ -1725,7 +1725,7 @@ function openEditArtistIdsModal() {
           </div>
           <div class="modal-footer">
             <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-            <button type="button" id="saveArtistIdsBtn" class="btn btn-primary">
+            <button type="button" class="btn btn-primary" onclick="saveArtistIds()">
               <i class="bi bi-save"></i> Save Changes
             </button>
           </div>
@@ -1739,15 +1739,6 @@ function openEditArtistIdsModal() {
   if (existingModal) existingModal.remove();
   
   document.body.insertAdjacentHTML('beforeend', modalHtml);
-  
-  // Attach event listener to save button using proper event delegation
-  const saveBtn = document.getElementById('saveArtistIdsBtn');
-  if (saveBtn) {
-    saveBtn.addEventListener('click', function(e) {
-      e.preventDefault();
-      saveArtistIds();
-    });
-  }
   
   const modal = new bootstrap.Modal(document.getElementById('editArtistIdsModal'));
   modal.show();

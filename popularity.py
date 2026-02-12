@@ -1098,6 +1098,68 @@ def get_resume_artist_from_db():
         return None
 
 
+def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
+    """
+    Fetch album art URL from MusicBrainz Cover Art Archive.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        
+    Returns:
+        Cover Art Archive URL if found, None otherwise
+    """
+    try:
+        import requests
+        
+        # Try to get MBID from database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT beets_album_mbid FROM tracks 
+            WHERE artist = ? AND album = ? AND beets_album_mbid IS NOT NULL
+            LIMIT 1
+        """, (artist, album))
+        result = cursor.fetchone()
+        conn.close()
+        
+        album_mbid = result['beets_album_mbid'] if result else None
+        
+        # If we don't have MBID, try to search for it
+        if not album_mbid:
+            try:
+                search_url = "https://musicbrainz.org/ws/2/release-group"
+                params = {
+                    "query": f'release:"{album}" AND artist:"{artist}"',
+                    "fmt": "json",
+                    "limit": 1
+                }
+                headers = {"User-Agent": "sptnr/1.0 (https://github.com/sptnr)"}
+                resp = requests.get(search_url, params=params, headers=headers, timeout=3)
+                resp.raise_for_status()
+                data = resp.json()
+                rgs = data.get("release-groups", [])
+                if rgs:
+                    album_mbid = rgs[0].get("id")
+                    log_debug(f"[ALBUM_ART] Found MBID via search - {artist} - {album}: {album_mbid}")
+            except Exception as e:
+                log_debug(f"[ALBUM_ART] MusicBrainz album search failed: {e}")
+                return None
+        
+        if not album_mbid:
+            log_debug(f"[ALBUM_ART] No MBID found for {artist} - {album}")
+            return None
+        
+        # Construct Cover Art Archive URL
+        cover_url = f"https://coverartarchive.org/release-group/{album_mbid}/front-500"
+        log_debug(f"[ALBUM_ART] Constructed CAA URL for {artist} - {album}: {cover_url}")
+        return cover_url
+        
+    except Exception as e:
+        log_debug(f"[ALBUM_ART] Failed to fetch album art URL from MusicBrainz: {e}")
+        return None
+
+
 def detect_single_for_track(
     title: str,
     artist: str,
@@ -2107,6 +2169,15 @@ def popularity_scan(
                 # Initialize unconditionally for both singles_only and normal mode
                 spotify_results_cache = {}
                 
+                # Fetch and cache album art URL from MusicBrainz for this album
+                album_art_url = None
+                if not singles_only:
+                    album_art_url = fetch_album_art_url_from_musicbrainz(artist, album)
+                    if album_art_url:
+                        log_info(f'Fetched album art URL for {artist} - {album}: {album_art_url}')
+                    else:
+                        log_debug(f'No album art URL found for {artist} - {album}')
+                
                 # Collect Last.fm data for all album tracks for z-score normalization
                 # This enables us to calculate z-scores relative to the album
                 album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
@@ -2220,7 +2291,7 @@ def popularity_scan(
                                     cached_lastfm_ratio = row_get(track, 'lastfm_ratio', 0)
                                 
                                     # Add to batch update with cached scores (genres remain unchanged when using cache)
-                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, None, None, track_id))
+                                    track_updates.append((cached_popularity, cached_spotify_score, cached_lastfm_ratio, None, None, None, None, album_art_url, track_id))
                                     scanned_count += 1
                                     album_scanned += 1
                                     tracks_processed += 1
@@ -2585,7 +2656,7 @@ def popularity_scan(
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, track_id))
+                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
@@ -2613,12 +2684,15 @@ def popularity_scan(
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if track_updates and not singles_only:
                     cursor.executemany(
-                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ?, discogs_genres = ?, musicbrainz_genres = ? WHERE id = ?",
+                        "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ?, discogs_genres = ?, musicbrainz_genres = ?, cover_art_url = ? WHERE id = ?",
                         track_updates
                     )
                     conn.commit()
                     log_debug(f"Batch committed {len(track_updates)} popularity scores and genre sources for album '{album}'")
-                    log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
+                    if album_art_url:
+                        log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
+                    else:
+                        log_debug(f"[ALBUM_ART] Album art will be fetched on-demand from Navidrome or Apple Music sources")
                 
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
