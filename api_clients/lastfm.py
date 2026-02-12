@@ -515,12 +515,16 @@ class LastFmClient:
         This method searches for an album with the same name as the track,
         which would indicate the track was released as a single.
         
+        Only returns True if:
+        1. An album with the same name as the track exists, AND
+        2. The album has less than 6 tracks
+        
         Args:
             artist: Artist name
             track_title: Track title to check
             
         Returns:
-            True if an album/single with the track's name exists on Last.fm, False otherwise
+            True if an album/single with the track's name exists on Last.fm with < 6 tracks, False otherwise
         """
         if not self.api_key:
             logger.debug("Last.fm API key missing. Skipping single lookup.")
@@ -551,8 +555,27 @@ class LastFmClient:
                 
                 # Check if the album name matches the track title
                 if normalized_album == normalized_track:
-                    logger.debug(f"Found single/album '{album_name}' matching track '{track_title}'")
-                    return True
+                    # Get track count to verify it's actually a single (< 6 tracks)
+                    tracks_data = album_data.get("tracks", {})
+                    track_count = 0
+                    
+                    if isinstance(tracks_data, dict):
+                        track_list = tracks_data.get("track", [])
+                        if isinstance(track_list, dict):
+                            # Single track
+                            track_count = 1
+                        elif isinstance(track_list, list):
+                            track_count = len(track_list)
+                    elif isinstance(tracks_data, list):
+                        track_count = len(tracks_data)
+                    
+                    # Only return True if track count is less than 6
+                    if track_count > 0 and track_count < 6:
+                        logger.debug(f"Found single/album '{album_name}' matching track '{track_title}' with {track_count} tracks")
+                        return True
+                    else:
+                        logger.debug(f"Found album '{album_name}' matching track '{track_title}' but has {track_count} tracks (>= 6), not a single")
+                        return False
             
             return False
         except HTTPError as e:
