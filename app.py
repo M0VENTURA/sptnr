@@ -2715,22 +2715,6 @@ def api_artist_search_images():
                 if result.get("thumb"):
                     images.append({"url": result["thumb"], "source": "Discogs"})
         
-        elif source == "spotify":
-            # Search Spotify for artist
-            from api_clients.spotify import SpotifyClient
-            
-            config_data, _ = _read_yaml(CONFIG_PATH)
-            spotify = SpotifyClient(config_data)
-            
-            if spotify.sp:
-                results = spotify.sp.search(q=f'artist:{artist_name}', type='artist', limit=5)
-                
-                for artist in results.get('artists', {}).get('items', []):
-                    artist_images = artist.get('images', [])
-                    if artist_images:
-                        # Get the medium-sized image (usually index 1)
-                        img_url = artist_images[1]['url'] if len(artist_images) > 1 else artist_images[0]['url']
-                        images.append({"url": img_url, "source": "Spotify"})
         
         return jsonify({"images": images})
         
@@ -3297,57 +3281,6 @@ def api_album_search_art():
                 except Exception as e:
                     logger.debug(f"Discogs search with query '{query}' failed: {e}")
                     continue
-        
-        elif source == "spotify":
-            # Search Spotify for album
-            from api_clients.spotify import SpotifyClient
-            
-            config_data, _ = _read_yaml(CONFIG_PATH)
-            spotify = SpotifyClient(config_data)
-            
-            if spotify.sp:
-                # Try different query formats
-                for query in [f'album:"{album_name}" artist:"{artist_name}"', 
-                              f'album:{album_name} artist:{artist_name}',
-                              f'{artist_name} {album_name}']:
-                    try:
-                        logger.debug(f"Searching Spotify with query: {query}")
-                        results = spotify.sp.search(q=query, type='album', limit=15)
-                        
-                        for album in results.get('albums', {}).get('items', []):
-                            album_images = album.get('images', [])
-                            if album_images:
-                                # Get the largest image available
-                                img_url = album_images[0]['url']
-                                
-                                # Verify the image URL is valid
-                                try:
-                                    img_resp = requests.head(img_url, timeout=3)
-                                    if img_resp.status_code == 200:
-                                        images.append({
-                                            "url": img_url,
-                                            "source": "Spotify",
-                                            "title": album.get('name', ''),
-                                            "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
-                                        })
-                                except Exception as e:
-                                    logger.debug(f"Image verification failed for Spotify: {e}")
-                                    # Still add the image even if HEAD fails (some URLs don't support HEAD)
-                                    images.append({
-                                        "url": img_url,
-                                        "source": "Spotify",
-                                        "title": album.get('name', ''),
-                                        "artist": ", ".join([a.get('name', '') for a in album.get('artists', [])])
-                                    })
-                        
-                        if images:
-                            logger.debug(f"Found {len(images)} images on Spotify")
-                            break  # Stop if we found images
-                    except Exception as e:
-                        logger.debug(f"Spotify search with query '{query}' failed: {e}")
-                        continue
-            else:
-                logger.warning("Spotify client not initialized")
         
         elif source == "applemusic":
             # Search Apple Music/iTunes for album
