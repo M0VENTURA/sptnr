@@ -70,9 +70,13 @@ class DownloadRetryManager:
         }
         
         try:
-            conn = sqlite3.connect(self.db_path, timeout=30.0)
+            conn = sqlite3.connect(self.db_path, timeout=120.0)
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
+            
+            # Set WAL mode for better concurrency
+            cursor.execute("PRAGMA query_only = OFF")
+            cursor.execute("PRAGMA journal_mode = WAL")
             
             # Get downloads pending retry
             cursor.execute("""
@@ -98,12 +102,23 @@ class DownloadRetryManager:
                     # Check if track is already in Navidrome
                     if self._verify_in_navidrome(download['artist'], download['release_title']):
                         logger.info(f"✓ Track verified in Navidrome: {download['artist']} - {download['release_title']}")
-                        cursor.execute("""
-                            UPDATE managed_downloads
-                            SET status = 'completed', completion_verified = 1, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                            WHERE id = ?
-                        """, (download['id'],))
-                        conn.commit()
+                        
+                        # Retry update with exponential backoff on lock
+                        update_attempts = 3
+                        for attempt in range(update_attempts):
+                            try:
+                                cursor.execute("""
+                                    UPDATE managed_downloads
+                                    SET status = 'completed', completion_verified = 1, completed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                                    WHERE id = ?
+                                """, (download['id'],))
+                                conn.commit()
+                                break
+                            except sqlite3.OperationalError as e:
+                                if "database is locked" in str(e) and attempt < update_attempts - 1:
+                                    time.sleep(0.5 * (2 ** attempt))
+                                else:
+                                    raise
                         
                         # Update session if applicable
                         if download['session_id']:
@@ -124,12 +139,22 @@ class DownloadRetryManager:
                             # Record that we tried this method
                             tried_methods = f"{methods_tried},{current_method}" if methods_tried else current_method
                             
-                            cursor.execute("""
-                                UPDATE managed_downloads
-                                SET current_method = ?, methods_tried = ?, last_method_failed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
-                                WHERE id = ?
-                            """, (next_method, tried_methods, download['id']))
-                            conn.commit()
+                            # Retry update with exponential backoff on lock
+                            update_attempts = 3
+                            for attempt in range(update_attempts):
+                                try:
+                                    cursor.execute("""
+                                        UPDATE managed_downloads
+                                        SET current_method = ?, methods_tried = ?, last_method_failed_at = CURRENT_TIMESTAMP, updated_at = CURRENT_TIMESTAMP
+                                        WHERE id = ?
+                                    """, (next_method, tried_methods, download['id']))
+                                    conn.commit()
+                                    break
+                                except sqlite3.OperationalError as e:
+                                    if "database is locked" in str(e) and attempt < update_attempts - 1:
+                                        time.sleep(0.5 * (2 ** attempt))
+                                    else:
+                                        raise
                             stats["method_switched"] += 1
                             continue
                     
@@ -137,15 +162,25 @@ class DownloadRetryManager:
                     new_retry_count = download['retry_count'] + 1
                     
                     # Mark as waiting_retry with updated timestamp
-                    cursor.execute("""
-                        UPDATE managed_downloads
-                        SET status = 'waiting_retry', 
-                            retry_count = ?,
-                            last_search_attempt = CURRENT_TIMESTAMP,
-                            updated_at = CURRENT_TIMESTAMP
-                        WHERE id = ?
-                    """, (new_retry_count, download['id']))
-                    conn.commit()
+                    # Retry update with exponential backoff on lock
+                    update_attempts = 3
+                    for attempt in range(update_attempts):
+                        try:
+                            cursor.execute("""
+                                UPDATE managed_downloads
+                                SET status = 'waiting_retry', 
+                                    retry_count = ?,
+                                    last_search_attempt = CURRENT_TIMESTAMP,
+                                    updated_at = CURRENT_TIMESTAMP
+                                WHERE id = ?
+                            """, (new_retry_count, download['id']))
+                            conn.commit()
+                            break
+                        except sqlite3.OperationalError as e:
+                            if "database is locked" in str(e) and attempt < update_attempts - 1:
+                                time.sleep(0.5 * (2 ** attempt))
+                            else:
+                                raise
                     
                     # Log retry info
                     retry_info = f"Marked for retry ({new_retry_count}/{download['max_retries']})"
@@ -283,28 +318,47 @@ class DownloadRetryManager:
         Args:
             days: Delete downloads older than this many days with status='error'
         """
-        try:
-            conn = sqlite3.connect(self.db_path, timeout=30.0)
-            cursor = conn.cursor()
-            
-            cutoff_date = datetime.now() - timedelta(days=days)
-            
-            cursor.execute("""
-                DELETE FROM managed_downloads
-                WHERE status = 'error'
-                AND retry_count >= max_retries
-                AND created_at < ?
-            """, (cutoff_date.isoformat(),))
-            
-            deleted = cursor.rowcount
-            if deleted > 0:
-                logger.info(f"Cleaned up {deleted} old failed downloads")
-            
-            conn.commit()
-            conn.close()
-            
-        except Exception as e:
-            logger.error(f"Error in cleanup: {e}")
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                conn = sqlite3.connect(self.db_path, timeout=120.0)
+                cursor = conn.cursor()
+                
+                # Set WAL mode for better concurrency
+                cursor.execute("PRAGMA query_only = OFF")
+                cursor.execute("PRAGMA journal_mode = WAL")
+                
+                cutoff_date = datetime.now() - timedelta(days=days)
+                
+                cursor.execute("""
+                    DELETE FROM managed_downloads
+                    WHERE status = 'error'
+                    AND retry_count >= max_retries
+                    AND created_at < ?
+                """, (cutoff_date.isoformat(),))
+                
+                deleted = cursor.rowcount
+                if deleted > 0:
+                    logger.info(f"Cleaned up {deleted} old failed downloads")
+                
+                conn.commit()
+                conn.close()
+                return
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    if attempt < max_retries - 1:
+                        wait_time = 0.5 * (2 ** attempt)  # Exponential backoff
+                        logger.debug(f"Database locked during cleanup, retrying in {wait_time}s (attempt {attempt + 1}/{max_retries})")
+                        time.sleep(wait_time)
+                    else:
+                        logger.error(f"Error in cleanup: database is locked after {max_retries} retries")
+                else:
+                    logger.error(f"Error in cleanup: {e}")
+                    return
+            except Exception as e:
+                logger.error(f"Error in cleanup: {e}")
+                return
 
 
 def run_retry_manager(db_path: str, navidrome_url: str = None, navidrome_token: str = None) -> Dict:
