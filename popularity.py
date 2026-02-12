@@ -2774,6 +2774,14 @@ def popularity_scan(
                 # Get album track count for context-based confidence adjustment
                 album_track_count = len(album_tracks)
                 
+                # Track progress within singles detection phase
+                singles_processed = 0
+                # Pre-calculate milestone track counts for efficient checking
+                singles_milestone_25 = int(album_track_count * 0.25)
+                singles_milestone_50 = int(album_track_count * 0.50)
+                singles_milestone_75 = int(album_track_count * 0.75)
+                singles_milestones_logged = set()
+                
                 for track in album_tracks:
                     track_id = track["id"]
                     title = track["title"]
@@ -2848,6 +2856,22 @@ def popularity_scan(
                             else:
                                 log_info(f"Single detected: {title} (user-set)")
                             log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {single_sources}")
+                    
+                    # Track progress in singles detection
+                    singles_processed += 1
+                    # Efficient milestone checking using pre-calculated values
+                    if singles_processed == singles_milestone_25 and 25 not in singles_milestones_logged:
+                        log_unified(f"Single Detection - 25% completed - {singles_processed}/{album_track_count} tracks")
+                        log_debug(f"Progress milestone - 25% completed for singles detection in album {album}")
+                        singles_milestones_logged.add(25)
+                    elif singles_processed == singles_milestone_50 and 50 not in singles_milestones_logged:
+                        log_unified(f"Single Detection - 50% completed - {singles_processed}/{album_track_count} tracks")
+                        log_debug(f"Progress milestone - 50% completed for singles detection in album {album}")
+                        singles_milestones_logged.add(50)
+                    elif singles_processed == singles_milestone_75 and 75 not in singles_milestones_logged:
+                        log_unified(f"Single Detection - 75% completed - {singles_processed}/{album_track_count} tracks")
+                        log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
+                        singles_milestones_logged.add(75)
                 
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
