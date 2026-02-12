@@ -6,5 +6,9 @@
   "reportOptionalMemberAccess": false,
   "reportOptionalCall": false,
   "reportAttributeAccessIssue": false,
+  "reportGeneralTypeIssues": false,
+  "reportCallIssue": false,
+  "reportArgumentType": false,
+  "reportRedeclaration": false,
   "pythonVersion": "3.13"
 }

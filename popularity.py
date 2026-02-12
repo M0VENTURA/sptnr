@@ -2797,7 +2797,7 @@ def popularity_scan(
                 artist_stats = calculate_artist_popularity_stats(artist, conn)
                 
                 # Log artist statistics for reference in single detection decisions
-                log_debug(f'Artist stats - track_count: {artist_stats["track_count"]}, mean: {artist_stats["mean_popularity"]:.1f}, median: {artist_stats["median_popularity"]:.1f}, stddev: {artist_stats["stddev_popularity"]:.1f}')
+                log_debug(f'Artist stats - track_count: {artist_stats["track_count"]}, mean: {artist_stats["avg_popularity"]:.1f}, median: {artist_stats["median_popularity"]:.1f}, stddev: {artist_stats["stddev_popularity"]:.1f}')
                 
                 # Add top 10% threshold from Last.fm context (from earlier pre-fetch)
                 # This allows star rating to use dual criteria: global top 10% + album outlier

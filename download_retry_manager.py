@@ -31,7 +31,7 @@ logger = logging.getLogger(__name__)
 class DownloadRetryManager:
     """Manages automatic retries for persistent downloads with method fallback."""
     
-    def __init__(self, db_path: str, navidrome_url: str = None, navidrome_token: str = None):
+    def __init__(self, db_path: str, navidrome_url: str | None = None, navidrome_token: str | None = None):
         """
         Initialize the retry manager.
         
@@ -394,7 +394,7 @@ class DownloadRetryManager:
             logger.error(f"Error in cleanup: {e}")
 
 
-def run_retry_manager(db_path: str, navidrome_url: str = None, navidrome_token: str = None) -> Dict:
+def run_retry_manager(db_path: str, navidrome_url: str | None = None, navidrome_token: str | None = None) -> Dict:
     """
     Standalone function to run the retry manager once.
     

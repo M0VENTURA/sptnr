@@ -1097,13 +1097,15 @@ def get_db():
     global _schema_updated
     if PG_HOST and PG_USER and PG_DATABASE:
         # Connect to PostgreSQL
-        conn = psycopg2.connect(
+        if 'psycopg2' not in globals():
+            raise RuntimeError("psycopg2 not available - install with: pip install psycopg2-binary")
+        conn = psycopg2.connect(  # type: ignore[name-defined]
             host=PG_HOST,
             port=PG_PORT,
             user=PG_USER,
             password=PG_PASSWORD,
             dbname=PG_DATABASE,
-            cursor_factory=psycopg2.extras.RealDictCursor
+            cursor_factory=psycopg2.extras.RealDictCursor  # type: ignore[name-defined]
         )
         return conn
     else:
@@ -1742,7 +1744,7 @@ def api_artist_missing_releases():
     mb_releases = _fetch_musicbrainz_releases(artist, artist_mbid=artist_mbid)
     missing = []
     for rg in mb_releases:
-        norm_title = _normalize_release_title(rg.get("title"))
+        norm_title = _normalize_release_title(rg.get("title") or "")
         if not norm_title or norm_title in existing_norm:
             continue
         # Categorize by type
