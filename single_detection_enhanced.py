@@ -15,7 +15,7 @@ import json
 import logging
 import sqlite3
 from typing import Dict, List, Optional, Tuple
-from statistics import mean, stdev
+from statistics import mean, stdev, median
 from datetime import datetime
 
 # Import centralized logging functions
