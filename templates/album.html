@@ -541,7 +541,7 @@
                                     {% endif %}
                                 </td>
                                 <td class="d-none d-lg-table-cell text-center">
-                                    {% if track.is_single == 1 %}
+                                    {% if track.is_single == 1 and track.single_confidence == 'high' %}
                                         <span class="badge bg-info">Single</span>
                                     {% else %}
                                         <span class="text-muted">—</span>
@@ -632,7 +632,7 @@
                                 {% endif %}
                             </td>
                             <td class="d-none d-lg-table-cell text-center">
-                                {% if track.is_single == 1 %}
+                                {% if track.is_single == 1 and track.single_confidence == 'high' %}
                                     <span class="badge bg-info">Single</span>
                                 {% else %}
                                     <span class="text-muted">—</span>
