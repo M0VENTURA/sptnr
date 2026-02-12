@@ -342,7 +342,10 @@ def write_genre_to_mp3(file_path, genres):
     
     Args:
         file_path: Path to MP3 file
-        genres: Genre string or list of genres (e.g., "Pop, Christmas" or ["Pop", "Christmas"])
+        genres: Genre string or list of genres. Can be:
+                - Comma-separated string: "Pop, Christmas"
+                - Double-backslash separated string: "Pop\\\\Christmas" (ID3v2 format)
+                - List of genres: ["Pop", "Christmas"]
         
     Returns:
         bool: True if successful, False otherwise
@@ -354,11 +357,19 @@ def write_genre_to_mp3(file_path, genres):
         from mutagen.id3 import ID3, TCON
         from mutagen.mp3 import MP3
         
-        # Convert genres to list if string
+        # Convert genres to list, handling different input formats
         if isinstance(genres, str):
-            genre_list = [g.strip() for g in genres.split(',') if g.strip()]
+            # Check if it's double-backslash separated (ID3 format)
+            if '\\\\' in genres:
+                # Keep the double backslash format for ID3 tags
+                genre_str = genres
+            else:
+                # Split on comma and reconstruct with double backslash
+                genre_list = [g.strip() for g in genres.split(',') if g.strip()]
+                genre_str = '\\'.join(genre_list)
         else:
-            genre_list = genres if isinstance(genres, list) else [genres]
+            # It's a list, join with double backslash
+            genre_str = '\\'.join(str(g).strip() for g in genres if g)
         
         # Load the MP3 file
         audio = MP3(file_path, ID3=ID3)
@@ -368,8 +379,8 @@ def write_genre_to_mp3(file_path, genres):
             audio.add_tags()
         
         # Set Genre tag (TCON frame in ID3v2)
-        # This will replace any existing genres with the new list
-        audio.tags['TCON'] = TCON(encoding=3, text=genre_list)
+        # Use the double backslash format for consistency with Navidrome/Subsonic
+        audio.tags['TCON'] = TCON(encoding=3, text=[genre_str])
         
         # Save changes
         audio.save()

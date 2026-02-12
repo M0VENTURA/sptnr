@@ -2976,6 +2976,10 @@ def api_album_bulk_delete():
 @app.route("/api/album/bulk-tag", methods=["POST"])
 def api_album_bulk_tag():
     """Add genre tags to multiple tracks and write to MP3 files"""
+    from mutagen.id3 import ID3 as ID3_Class
+    from mutagen.mp3 import MP3 as MP3_Class
+    from mutagen.id3 import TCON as TagCON
+    
     try:
         data = request.get_json()
         track_ids = data.get("track_ids", [])
@@ -2995,13 +2999,14 @@ def api_album_bulk_tag():
         updated_count = 0
         failed_files = []
         genre_str = ", ".join(genres)
+        # Format for ID3 tags (double backslash separated)
+        genre_id3_str = '\\'.join(genres)
         
         # Try to import mutagen for MP3 tagging
+        has_mutagen = True
         try:
             from mutagen.id3 import ID3
             from mutagen.mp3 import MP3
-            from mutagen.id3 import TCON as TagCON
-            has_mutagen = True
         except ImportError:
             has_mutagen = False
         
@@ -3013,30 +3018,36 @@ def api_album_bulk_tag():
                 
                 if result:
                     current_genres = row_get(result, 'genres') or ''
-                    # Parse existing genres
-                    existing = set(g.strip() for g in current_genres.split(',') if g.strip())
+                    # Parse existing genres (handle both comma-separated and double-backslash formats)
+                    if '\\' in current_genres:
+                        existing = set(g.strip() for g in current_genres.split('\\') if g.strip())
+                    else:
+                        existing = set(g.strip() for g in current_genres.split(',') if g.strip())
                     # Add new genres
                     existing.update(genres)
-                    # Join back
+                    # Join back for database (comma-separated for display)
                     new_genres = ', '.join(sorted(existing))
+                    # Format for ID3 tags (double backslash separated)
+                    genre_id3_final = '\\'.join(sorted(existing))
                     
                     # Write to MP3 file if mutagen is available
                     if has_mutagen:
                         file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
                         if file_path and os.path.exists(file_path):
                             try:
-                                audio = MP3(file_path, ID3=ID3)
+                                audio = MP3_Class(file_path, ID3=ID3_Class)
                                 if audio.tags is None:
                                     audio.add_tags()
-                                audio.tags['TCON'] = TagCON(encoding=3, text=list(existing))
+                                # Write with double backslash format for ID3 tags
+                                audio.tags['TCON'] = TagCON(encoding=3, text=[genre_id3_final])
                                 audio.save()
-                                logging.info(f"[TAG] Updated MP3 tags for {file_path}: {new_genres}")
+                                logging.info(f"[TAG] Updated MP3 tags for {file_path}: {genre_id3_final}")
                             except Exception as file_error:
                                 logging.warning(f"[TAG] Failed to update MP3 tags for {file_path}: {file_error}")
                                 track_title = row_get(result, 'title', '')
                                 failed_files.append(track_title if track_title else f"Track ID: {track_id}")
                     
-                    # Update database
+                    # Update database (store comma-separated for display)
                     cursor.execute("""
                         UPDATE tracks SET genres = ? WHERE id = ?
                     """, (new_genres, track_id))

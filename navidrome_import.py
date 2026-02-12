@@ -312,17 +312,23 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
                 
                 # Extract genre from Navidrome and use it as the initial genres value
-                # Navidrome can separate multiple genres with "•", ",", ";", or "\\" depending on ID3 tag format
+                # Navidrome stores genres in ID3 with double backslash separation: "Genre1\\Genre2\\Genre3"
+                # The API returns the raw ID3 genre string
                 navidrome_genre_raw = t.get("genre", "")
                 if navidrome_genre_raw:
-                    # Handle multiple possible separators: bullet point, comma, semicolon, double backslash
-                    # Replace all separators with comma, then split
-                    normalized = navidrome_genre_raw.replace("•", ",").replace(";", ",").replace("\\\\", ",")
-                    navidrome_genre_list = [g.strip() for g in normalized.split(",") if g.strip()]
+                    # Parse genres from all possible separators, but preserve double backslash format for ID3 compatibility
+                    # First normalize all formats to use double backslash
+                    normalized = navidrome_genre_raw.replace("•", "\\").replace(";", "\\").replace(",", "\\")
+                    # Remove duplicate backslashes
+                    while "\\\\" in normalized:
+                        normalized = normalized.replace("\\\\", "\\")
+                    # Split and clean
+                    navidrome_genre_list = [g.strip() for g in normalized.split("\\") if g.strip()]
+                    # Reconstruct with double backslash for ID3 compatibility
+                    navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
                 else:
                     navidrome_genre_list = []
-                # Create comma-separated string for the navidrome_genre field and logging
-                navidrome_genre = ", ".join(navidrome_genre_list) if navidrome_genre_list else ""
+                    navidrome_genre = ""
                 
                 # Detect Christmas songs and add Christmas genre
                 track_title = t.get("title", "")
@@ -331,8 +337,8 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     # Add Christmas to genre if not already present
                     if not any("christmas" in g.lower() for g in navidrome_genre_list):
                         navidrome_genre_list.append("Christmas")
-                        # Update the string representation
-                        navidrome_genre = ", ".join(navidrome_genre_list)
+                        # Update the string representation with double backslash format
+                        navidrome_genre = "\\".join(navidrome_genre_list)
                         log_debug(f"Detected Christmas song: {track_title} - Genre updated to: {navidrome_genre}")
                 
                 # Get file path from Navidrome track data
@@ -353,9 +359,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": navidrome_genre_list if navidrome_genre_list else "",  # Initialize with Navidrome genre list (including Christmas if detected)
-                    "navidrome_genres": navidrome_genre_list if navidrome_genre_list else "",  # Store as list (save_to_db will convert to comma-separated string)
-                    "navidrome_genre": navidrome_genre,  # Also store in single genre field as comma-separated string
+                    "genres": navidrome_genre if navidrome_genre else "",  # Store with double backslash format for ID3 compatibility
+                    "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as double backslash separated string
+                    "navidrome_genre": navidrome_genre,  # Also store in single genre field as double backslash separated string
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string
