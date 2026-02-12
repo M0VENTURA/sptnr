@@ -292,12 +292,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
                 
                 # Extract genre from Navidrome and use it as the initial genres value
-                # Navidrome can separate multiple genres with "•", ",", or ";" depending on ID3 tag format
+                # Navidrome can separate multiple genres with "•", ",", ";", or "\" depending on ID3 tag format
                 navidrome_genre_raw = t.get("genre", "")
                 if navidrome_genre_raw:
-                    # Handle multiple possible separators: bullet point, comma, semicolon
+                    # Handle multiple possible separators: bullet point, comma, semicolon, backslash
                     # Replace all separators with comma, then split
-                    normalized = navidrome_genre_raw.replace("•", ",").replace(";", ",")
+                    normalized = navidrome_genre_raw.replace("•", ",").replace(";", ",").replace("\\", ",")
                     navidrome_genre_list = [g.strip() for g in normalized.split(",") if g.strip()]
                 else:
                     navidrome_genre_list = []
