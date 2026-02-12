@@ -3700,7 +3700,13 @@ def album_detail(artist, album):
                 # Parse track's genres - use navidrome_genres which comes from Navidrome
                 track_genres = set()
                 if track_dict.get('navidrome_genres'):
-                    track_genres.update([g.strip() for g in track_dict['navidrome_genres'].split(',') if g.strip()])
+                    # navidrome_genres should already be split, but handle both scenarios
+                    if isinstance(track_dict['navidrome_genres'], str):
+                        # Split by bullet or comma if it's a string
+                        track_genres.update([g.strip() for g in track_dict['navidrome_genres'].replace('•', ',').split(',') if g.strip()])
+                    elif isinstance(track_dict['navidrome_genres'], list):
+                        # If it's already a list, just use it
+                        track_genres.update(track_dict['navidrome_genres'])
                 
                 # Calculate how many album genres this track contains
                 genre_matches = len(track_genres & album_genres) if album_genres else 0
@@ -4128,6 +4134,22 @@ def track_detail(track_id):
         for col in beets_columns:
             if col not in track:
                 track[col] = None
+        
+        # Parse genre fields - handle both JSON and comma-separated formats
+        for genre_field in ['navidrome_genres', 'spotify_genres', 'discogs_genres', 'musicbrainz_genres']:
+            if genre_field in track and track[genre_field]:
+                genre_val = track[genre_field]
+                try:
+                    # Try to parse as JSON first
+                    if isinstance(genre_val, str) and genre_val.startswith('['):
+                        import json as json_module
+                        parsed = json_module.loads(genre_val)
+                        # Convert list to comma-separated string for template
+                        if isinstance(parsed, list):
+                            track[genre_field] = ", ".join([g.strip() for g in parsed if g.strip()])
+                    # Otherwise leave as-is (already comma-separated or string)
+                except Exception:
+                    pass  # Keep original value if parsing fails
         
         # Get recommended genres from other tracks with similar titles or artists
         recommended_genres = []
