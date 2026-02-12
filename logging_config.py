@@ -62,7 +62,7 @@ class ServicePrefixFormatter(logging.Formatter):
     """Formatter that adds a service prefix to log messages."""
     
     def __init__(self, prefix, fmt=None):
-        super().__init__(fmt or '%(asctime)s [%(levelname)s] %(message)s')
+        super().__init__(fmt or '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         self.prefix = prefix
     
     def format(self, record):
@@ -102,9 +102,9 @@ def setup_logging(service_name="sptnr"):
     """
     prefix = f"{service_name}_"
     
-    # Create formatters
-    standard_formatter = logging.Formatter('%(asctime)s [%(levelname)s] %(message)s')
-    prefix_formatter = ServicePrefixFormatter(prefix)
+    # Create formatters with millisecond precision for better timing tracking
+    standard_formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    prefix_formatter = ServicePrefixFormatter(prefix, fmt='%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s')
     
     # --- Unified Logger (basic operations only) ---
     unified_logger = logging.getLogger(UNIFIED_LOGGER)

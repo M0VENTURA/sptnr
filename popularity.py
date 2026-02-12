@@ -2407,16 +2407,17 @@ def popularity_scan(
                                         )
                                         if best_match:
                                             log_info(f'Strict match found for: {title}')
-                                            log_debug(f'Best match: {best_match}')
+                                            log_debug(f'Best match track_id: {best_match.get("id")}, popularity: {best_match.get("popularity")}')
                                         else:
                                             log_info(f'No strict match found for: {title} (trying standard matching)')
                                             # Fallback to standard matching if no strict match
                                             best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
-                                            log_debug(f'Fallback to standard match: {best_match}')
+                                            log_debug(f'Fallback to standard match - id: {best_match.get("id")}, popularity: {best_match.get("popularity")}')
                                     else:
                                         # Standard matching: highest popularity
                                         best_match = max(spotify_search_results, key=lambda r: r.get('popularity', 0))
-                                        log_debug(f'Standard matching - best match: {best_match}')
+                                        # Log only essential fields to reduce log bloat
+                                        log_debug(f'Standard matching - best match: {best_match.get("name")}, popularity: {best_match.get("popularity")}')
                                 
                                     if best_match:
                                         spotify_score = best_match.get("popularity", 0)
@@ -2490,9 +2491,10 @@ def popularity_scan(
                                     log_debug(f'Last.fm rate limit check failed: {reason}')
                                     # Try to wait if reasonable
                                     if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                        log_debug(f"Waited for Last.fm rate limit, retrying {title}")
                                         can_proceed = True  # Successfully waited, can proceed now
                                     else:
-                                        log_info(f'Skipping Last.fm lookup for {title} due to rate limits')
+                                        log_info(f'Last.fm rate limit hit for {title}: {reason}, skipping lookup')
                             
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
@@ -2507,8 +2509,8 @@ def popularity_scan(
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()
                                     log_debug(f'Last.fm API request recorded for rate limiting')
-                                
-                                    log_debug(f'Last.fm API response: {lastfm_info}')
+                                    
+                                    log_debug(f'Last.fm API response - listeners: {lastfm_info.get("listeners")}, playcount: {lastfm_info.get("track_play", 0)}')
                                     if lastfm_info and lastfm_info.get("listeners"):
                                         listeners = lastfm_info.get("listeners")
                                         playcount = lastfm_info.get("track_play", 0)
@@ -2768,6 +2770,7 @@ def popularity_scan(
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
+                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={compilation}, album_type={album_type}')
                 singles_detected = 0
                 
                 # Log which sources are available for single detection
@@ -2779,14 +2782,17 @@ def popularity_scan(
                     sources_available.append("Discogs")
                 if HAVE_DISCOGS_VIDEO and discogs_token:
                     sources_available.append("Discogs Video")
-                log_info(f'Single detection using sources: {", ".join(sources_available)}')
-                log_debug(f'Available sources for single detection: {sources_available}')
+                log_info(f'Available sources for single detection: {[", ".join(sources_available)]}')
+                log_debug(f'Source details: Spotify=enabled, MB={HAVE_MUSICBRAINZ}, Discogs={HAVE_DISCOGS and bool(discogs_token)}, Video={HAVE_DISCOGS_VIDEO and bool(discogs_token)}')
                 
                 # Calculate artist-level popularity statistics BEFORE single detection
                 # Reason: We need to determine if this album is underperforming vs the artist's catalog
                 # so that z-score single detection can be conditionally disabled for underperforming albums
                 # while still using metadata-based detection (Discogs, Spotify, MusicBrainz).
                 artist_stats = calculate_artist_popularity_stats(artist, conn)
+                
+                # Log artist statistics for reference in single detection decisions
+                log_debug(f'Artist stats - track_count: {artist_stats["track_count"]}, mean: {artist_stats["mean_popularity"]:.1f}, median: {artist_stats["median_popularity"]:.1f}, stddev: {artist_stats["stddev_popularity"]:.1f}')
                 
                 # Add top 10% threshold from Last.fm context (from earlier pre-fetch)
                 # This allows star rating to use dual criteria: global top 10% + album outlier

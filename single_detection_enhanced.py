@@ -940,25 +940,31 @@ def determine_final_status(
         log_debug(f"[CONFIDENCE] → RETURNING 'medium' (medium_count={medium_confidence_count} >= 1)")
         return 'medium'
     
-    # Z-score inference for confidence ONLY - requires metadata to be valid
+    # Z-score inference for confidence ONLY
     # Per problem statement: popularity outliers alone cannot be singles
+    # However, artist-level standouts can get medium confidence without metadata
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     log_debug(f"[CONFIDENCE] Z-score path: use_zscore_detection={use_zscore_detection} (album_underperforming={album_is_underperforming}, artist_standout={is_artist_level_standout})")
     
-    if use_zscore_detection and has_metadata:
+    if use_zscore_detection:
         log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
-        # Medium confidence: album_z >= 0.5 OR artist_z >= 1.0 (ONLY with metadata)
-        if album_z >= 0.5 or artist_z >= 1.0:
-            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.0)")
-            return 'medium'
         
-        # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
-        if album_z >= 0.2 and spotify_version_count >= 3:
-            log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
-            return 'low'
-    else:
-        log_debug(f"[CONFIDENCE] Z-score path skipped (use_zscore_detection={use_zscore_detection}, has_metadata={has_metadata})")
+        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.0 (with explicit metadata)
+        if has_metadata:
+            if album_z >= 0.5 or artist_z >= 1.0:
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.0, with metadata)")
+                return 'medium'
+            
+            # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
+            if album_z >= 0.2 and spotify_version_count >= 3:
+                log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
+                return 'low'
+        
+        # MEDIUM confidence for artist-level standouts WITHOUT metadata (popular across entire artist)
+        elif is_artist_level_standout and artist_z >= 1.0:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f})")
+            return 'medium'
     
     # No confidence indicators
     log_debug(f"[CONFIDENCE] → RETURNING 'none' (no confidence indicators found)")
