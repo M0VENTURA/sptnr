@@ -2131,6 +2131,15 @@ def popularity_scan(
                         try:
                             rate_limiter = get_rate_limiter()
                             can_proceed, reason = rate_limiter.check_lastfm_limit()
+                            if not can_proceed:
+                                # Rate limit hit - wait before proceeding
+                                log_debug(f'Rate limit hit for {title}: {reason}, waiting...')
+                                if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                    can_proceed = True
+                                else:
+                                    # Still at limit after waiting, skip this one
+                                    log_debug(f'Rate limit still active for {title} after wait, skipping Last.fm prefetch')
+                            
                             if can_proceed:
                                 lastfm_info = _run_with_timeout(
                                     get_lastfm_track_info,
@@ -2151,10 +2160,9 @@ def popularity_scan(
                                 else:
                                     album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
                             else:
-                                # Rate limit hit - skip fetch but still add placeholder entry
+                                # Still rate limited after wait - add placeholder entry
                                 # This ensures z-score has complete track count even with partial data
                                 album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
-                                log_debug(f'Rate limit reached - skipping Last.fm prefetch for {title} ({reason})')
                         except Exception as e:
                             log_debug(f'Failed to fetch Last.fm data for {title}: {e}')
                             album_lastfm_data[track_id] = {"listeners": 0, "playcount": 0}
