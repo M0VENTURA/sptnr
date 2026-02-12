@@ -409,20 +409,6 @@ class DiscogsClient:
             logger.debug(f"Discogs: Skipping single check for '{title}' from special edition album")
             return False
         
-        # Reject single detection for self-titled album tracks
-        # Self-titled tracks (where track title == album name) are album title tracks, not singles
-        # Examples: "Hellyeah" on album "Hellyeah" (self-titled album)
-        if album_context and album_context.get("album_name"):
-            album_name = album_context.get("album_name", "").lower().strip()
-            title_lower = title.lower().strip()
-            # Normalize by removing parenthetical content for comparison
-            album_normalized = album_name.split('(')[0].strip()
-            title_normalized = title_lower.split('(')[0].strip()
-            # Check if this is a self-titled track
-            if album_normalized and title_normalized == album_normalized:
-                logger.debug(f"Discogs: Skipping single check for self-titled track '{title}' from album '{album_name}'")
-                return False
-        
         # Cache lookup
         allow_live_ctx = bool(album_context and (album_context.get("is_live") or album_context.get("is_unplugged")))
         context_key = "live" if allow_live_ctx else "studio"
