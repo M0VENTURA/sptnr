@@ -34,8 +34,9 @@ class SpotifyMetadataFetcher:
         """
         self.client = spotify_client
         self.conn = db_connection
-        # Set busy timeout for better concurrent write handling
-        self.conn.execute("PRAGMA busy_timeout = 5000")  # 5 seconds
+        # Set busy timeout for better concurrent write handling (matching app.py timeout)
+        # This allows other processes (like tag updates) to wait for database locks
+        self.conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds (matches app.py)
     
     def fetch_and_store_track_metadata(
         self, 

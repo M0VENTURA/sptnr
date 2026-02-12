@@ -290,7 +290,7 @@ def update_track_tags(track_id: str, tag_updates: Dict[str, Any]) -> bool:
 
 def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], selected_tracks: Optional[List[str]] = None) -> int:
     """
-    Update metadata tags for all tracks in an album.
+    Update metadata tags for all tracks in an album with retry logic for database locks.
     
     Args:
         album: Album name
@@ -301,6 +301,9 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
     Returns:
         Number of tracks updated
     """
+    import time
+    import sqlite3
+    
     try:
         # Validate and clean updates
         validated = {}
@@ -327,26 +330,57 @@ def update_album_tags(album: str, artist: str, tag_updates: Dict[str, Any], sele
         
         # Build UPDATE statement
         set_clause = ", ".join([f"{field} = ?" for field in validated.keys()])
-        
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        query_values = list(validated.values()) + [album, artist]
         
         if selected_tracks:
             # Update only selected tracks
             placeholders = ", ".join(["?" for _ in selected_tracks])
             query = f"UPDATE tracks SET {set_clause} WHERE album = ? AND artist = ? AND id IN ({placeholders})"
-            cursor.execute(query, list(validated.values()) + [album, artist] + selected_tracks)
+            query_values.extend(selected_tracks)
         else:
             # Update all tracks in album
             query = f"UPDATE tracks SET {set_clause} WHERE album = ? AND artist = ?"
-            cursor.execute(query, list(validated.values()) + [album, artist])
         
-        updated_count = cursor.rowcount
-        conn.commit()
-        conn.close()
+        # Retry logic for database locked errors
+        max_retries = 3
+        retry_delay = 0.5  # Start with 500ms
         
-        logger.info(f"Updated {updated_count} tracks in album {artist} - {album}")
-        return updated_count
+        for attempt in range(max_retries):
+            conn = None
+            try:
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                cursor.execute(query, query_values)
+                updated_count = cursor.rowcount
+                conn.commit()
+                conn.close()
+                
+                logger.info(f"Updated {updated_count} tracks in album {artist} - {album}")
+                return updated_count
+                
+            except sqlite3.OperationalError as e:
+                if "database is locked" in str(e):
+                    if attempt < max_retries - 1:
+                        logger.debug(f"Database locked while updating album tags, retrying ({attempt + 1}/{max_retries})...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2  # Exponential backoff: 0.5s, 1s, 2s
+                    else:
+                        logger.error(f"Failed to update album tags after {max_retries} attempts: database is locked")
+                        raise
+                else:
+                    logger.error(f"Database error updating album tags: {e}")
+                    raise
+            except Exception as e:
+                logger.error(f"Failed to update album tags for {artist} - {album}: {e}")
+                raise
+            finally:
+                if conn:
+                    try:
+                        conn.close()
+                    except:
+                        pass
+        
+        return 0
     except Exception as e:
         logger.error(f"Failed to update album tags for {artist} - {album}: {e}")
         return 0

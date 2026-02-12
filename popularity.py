@@ -2952,11 +2952,15 @@ def popularity_scan(
                         stars = max(1, 4 - band_index)
                         
                         # NEW: 5-STAR LOGIC PER PROBLEM STATEMENT
-                        # A track becomes 5★ ONLY if:
-                        # - it has high-confidence status, OR
-                        # - it has >= 2 medium-confidence sources
+                        # A track becomes 5★ if ANY of these conditions are met:
+                        # 1. User-set single
+                        # 2. High-confidence detection
+                        # 3. Medium-confidence with 2+ sources
+                        # 4. Confirmed single (is_single=1) that is artist-level standout (zscore >= 2.0)
                         #
-                        # Do NOT assign 5★ based on popularity alone.
+                        # Artist context: Singles that significantly outperform artist's typical tracks
+                        # warrant 5 stars even with limited single detection sources, as they represent
+                        # meaningful standout content.
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
@@ -2986,6 +2990,13 @@ def popularity_scan(
                                     else:
                                         log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                                # NEW: Artist-level outlier boost for medium-confidence singles
+                                # If track is already marked as single AND is artist-level standout (zscore >= 2.0),
+                                # award 5 stars even with only 1 source (e.g., Last.fm confirmation)
+                                elif is_single and track_zscore >= 2.0:
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (artist-level standout single, zscore={track_zscore:.2f})")
+                                    log_debug(f"Artist-level outlier single - track_id: {track_id}, zscore: {track_zscore:.2f}, sources: {medium_conf_count}")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (unless they exceed artist median)
