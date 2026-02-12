@@ -423,7 +423,7 @@ def _write_id3_tags(file_path: str, tags: Dict[str, Any]) -> bool:
         return False
     
     try:
-        audio = MP3(file_path, ID3=ID3)
+        audio = MP3(file_path, ID3=ID3)  # type: ignore[name-defined]
         
         # Map our field names to ID3 frame names
         id3_mapping = {
@@ -463,7 +463,7 @@ def _write_flac_tags(file_path: str, tags: Dict[str, Any]) -> bool:
         return False
     
     try:
-        audio = FLAC(file_path)
+        audio = FLAC(file_path)  # type: ignore[name-defined]
         
         # FLAC uses Vorbis comments - direct mapping
         for field, value in tags.items():
