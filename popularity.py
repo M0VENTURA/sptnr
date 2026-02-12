@@ -2770,7 +2770,10 @@ def popularity_scan(
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
-                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={compilation}, album_type={album_type}')
+                # Extract album type from first track's metadata
+                album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', 'unknown')
+                is_compilation = album_type.lower() == 'compilation' if album_type else False
+                log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type}')
                 singles_detected = 0
                 
                 # Log which sources are available for single detection
