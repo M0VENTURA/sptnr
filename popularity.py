@@ -3029,7 +3029,7 @@ def popularity_scan(
                             # Apply new 5-star rule
                             # FIRST: Dual artist context check
                             # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
-                            track_lastfm_listeners = track_row.get("lastfm_track_playcount", 0) or 0
+                            track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
                             artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
                             is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
                             is_album_outlier = track_zscore >= 2.0
