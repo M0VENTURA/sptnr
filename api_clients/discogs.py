@@ -275,16 +275,7 @@ class DiscogsClient:
             if ('single' in desc or 'maxi-single' in desc) and 'ep' not in desc:
                 return True
         
-        # Rule 3: 1-2 tracks
-        if 1 <= track_count <= 2:
-            return True
-        
-        # Rule 4: Promo with 1-2 tracks
-        is_promo = any('promo' in f for f in names_lower + descs_lower)
-        if is_promo and 1 <= track_count <= 2:
-            return True
-        
-        # Rule 5: Check master release
+        # Rule 3: Check master release
         if master_id:
             try:
                 _throttle_discogs()
@@ -392,10 +383,11 @@ class DiscogsClient:
         """
         Discogs single detection (best-effort, rate-limit safe).
         
-        Strong paths:
-          - Explicit 'Single' in release formats
-          - EP with first track == A-side AND an official video on the same release
-          - Structural fallback: 1–2 track A/B sides where matched title is present
+        Only trusts explicit format indicators:
+          - Explicit 'Single' in release formats/descriptions
+          - EP with track as first track (A-side)
+          
+        Note: Official video detection is handled separately via has_official_video()
           
         Args:
             title: Track title
@@ -404,7 +396,7 @@ class DiscogsClient:
             timeout: Request timeout
             
         Returns:
-            True if detected as single
+            True if detected as single via explicit format indicators
         """
         if not self.enabled or not self.token:
             return False
@@ -539,12 +531,6 @@ class DiscogsClient:
                 if is_ep and best_idx == 0:
                     self._single_cache[cache_key] = True
                     return True
-                
-                # Structural fallback: 1-2 tracks
-                if 1 <= len(tracks) <= 2:
-                    if best_idx == 0:
-                        self._single_cache[cache_key] = True
-                        return True
             
             self._single_cache[cache_key] = False
             return False
