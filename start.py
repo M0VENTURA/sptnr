@@ -598,7 +598,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "listenbrainz_score": 0,
                     "age_score": 0,
                     "genres": json.dumps([]),  # Serialize as JSON string
-                    "navidrome_genres": ",".join([g.strip() for g in t.get("genre", "").split("•") if g.strip()]) if t.get("genre") else "",  # Store as comma-separated string for template
+                    "navidrome_genres": ",".join([g.strip() for g in t.get("genre", "").replace("•", ",").replace(";", ",").split(",") if g.strip()]) if t.get("genre") else "",  # Store as comma-separated string for template
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string

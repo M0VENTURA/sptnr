@@ -273,7 +273,7 @@ class NavidromeClient:
             "album_artist": track.get("albumArtist", ""),
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz
-            "navidrome_genres": [g.strip() for g in track.get("genre", "").split("•") if g.strip()] if track.get("genre") else [],
+            "navidrome_genres": [g.strip() for g in track.get("genre", "").replace("•", ",").replace(";", ",").split(",") if g.strip()] if track.get("genre") else [],
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
         }
