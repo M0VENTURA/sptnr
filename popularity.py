@@ -2014,9 +2014,12 @@ def popularity_scan(
                         can_proceed, reason = rate_limiter.check_spotify_limit()
                         if not can_proceed:
                             log_debug(f'Spotify rate limit check failed: {reason}')
-                            if not rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
+                            if rate_limiter.wait_if_needed_spotify(max_wait_seconds=5.0):
+                                can_proceed = True  # Successfully waited, can proceed now
+                            else:
                                 log_info(f'Skipping Spotify artist ID lookup for {artist} due to rate limits')
-                        else:
+                        
+                        if can_proceed:
                             spotify_artist_id = _run_with_timeout(
                                 get_spotify_artist_id, 
                                 API_CALL_TIMEOUT, 
@@ -2486,7 +2489,9 @@ def popularity_scan(
                                 if not can_proceed:
                                     log_debug(f'Last.fm rate limit check failed: {reason}')
                                     # Try to wait if reasonable
-                                    if not rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                    if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                        can_proceed = True  # Successfully waited, can proceed now
+                                    else:
                                         log_info(f'Skipping Last.fm lookup for {title} due to rate limits')
                                         can_proceed = False  # Mark as failed after waiting
                             
