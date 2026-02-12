@@ -315,20 +315,30 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Navidrome stores genres in ID3 with double backslash separation: "Genre1\\Genre2\\Genre3"
                 # The API returns the raw ID3 genre string
                 navidrome_genre_raw = t.get("genre", "")
+                log_debug(f"[GENRE] Track {track_id} - Raw genre from Navidrome: '{navidrome_genre_raw}'")
+                
                 if navidrome_genre_raw:
                     # Parse genres from all possible separators, but preserve double backslash format for ID3 compatibility
                     # First normalize all formats to use double backslash
                     normalized = navidrome_genre_raw.replace("•", "\\").replace(";", "\\").replace(",", "\\")
+                    log_debug(f"[GENRE] Track {track_id} - After separator normalization: '{normalized}'")
+                    
                     # Remove duplicate backslashes
                     while "\\\\" in normalized:
                         normalized = normalized.replace("\\\\", "\\")
+                    log_debug(f"[GENRE] Track {track_id} - After duplicate backslash removal: '{normalized}'")
+                    
                     # Split and clean
                     navidrome_genre_list = [g.strip() for g in normalized.split("\\") if g.strip()]
+                    log_debug(f"[GENRE] Track {track_id} - Parsed genre list ({len(navidrome_genre_list)} genres): {navidrome_genre_list}")
+                    
                     # Reconstruct with double backslash for ID3 compatibility
                     navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
+                    log_debug(f"[GENRE] Track {track_id} - Reconstructed double-backslash format: '{navidrome_genre}'")
                 else:
                     navidrome_genre_list = []
                     navidrome_genre = ""
+                    log_debug(f"[GENRE] Track {track_id} - No genres found in Navidrome data")
                 
                 # Detect Christmas songs and add Christmas genre
                 track_title = t.get("title", "")
@@ -339,7 +349,12 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                         navidrome_genre_list.append("Christmas")
                         # Update the string representation with double backslash format
                         navidrome_genre = "\\".join(navidrome_genre_list)
-                        log_debug(f"Detected Christmas song: {track_title} - Genre updated to: {navidrome_genre}")
+                        log_debug(f"[GENRE] Track {track_id} - Detected Christmas song, added 'Christmas' genre. Updated genres ({len(navidrome_genre_list)}): {navidrome_genre_list}")
+                        log_debug(f"[GENRE] Track {track_id} - Final genre string for storage: '{navidrome_genre}'")
+                    else:
+                        log_debug(f"[GENRE] Track {track_id} - Christmas song but 'Christmas' genre already present")
+                else:
+                    log_debug(f"[GENRE] Track {track_id} - Not a Christmas song")
                 
                 # Get file path from Navidrome track data
                 # Navidrome provides 'path' field which is the file path relative to music folder
@@ -348,6 +363,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Get current single detection state to preserve user edits during Navidrome sync
                 current_single = get_current_single_detection(track_id)
                 log_debug(f"Track {track_id} - Current single detection: is_single={current_single['is_single']}, confidence={current_single['single_confidence']}")
+                
+                # Debug log: Show all genre fields being saved
+                log_debug(f"[GENRE] Track {track_id} ({track_title}) - Saving to DB with genres: '{navidrome_genre}'")
+                if navidrome_genre_list:
+                    log_debug(f"[GENRE] Track {track_id} - Genre list has {len(navidrome_genre_list)} entries: {navidrome_genre_list}")
                 
                 td = {
                     "id": track_id,

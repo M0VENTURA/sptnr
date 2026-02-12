@@ -398,6 +398,10 @@ def save_to_db(track_data):
     conn = get_db_connection()
     cursor = conn.cursor()
     
+    # Log the genres being saved for debugging
+    if track_data.get('genres'):
+        logging.debug(f"[GENRE] Saving track '{track_data.get('title')}' with genres: '{track_data.get('genres')}'")
+    
     # Convert any list values to comma-separated strings for SQLite compatibility
     sanitized_data = {}
     for key, value in track_data.items():
@@ -498,9 +502,19 @@ def save_to_db(track_data):
     placeholders = ', '.join(['?'] * len(sanitized_data))
     update_clause = ', '.join([f"{k}=excluded.{k}" for k in sanitized_data.keys()])
     sql = f"INSERT INTO tracks ({columns}) VALUES ({placeholders}) ON CONFLICT(id) DO UPDATE SET {update_clause}"
+    
+    # Log if genres are being inserted/updated
+    if 'genres' in sanitized_data:
+        logging.debug(f"[GENRE] Saving to DB - id={sanitized_data.get('id')}, title={sanitized_data.get('title')}, genres='{sanitized_data.get('genres')}'")
+        logging.debug(f"[GENRE] Genre string length: {len(sanitized_data.get('genres', ''))}, Contains backslash: {'\\\\' in sanitized_data.get('genres', '')}")
+    
     cursor.execute(sql, list(sanitized_data.values()))
     conn.commit()
     conn.close()
+    
+    # Log confirmation after successful save
+    if 'genres' in sanitized_data and sanitized_data.get('genres'):
+        logging.debug(f"[GENRE] Successfully saved track ID {sanitized_data.get('id')} with genres to database")
 
 def build_artist_index(verbose: bool = False):
     """Build artist index from Navidrome (wrapper using NavidromeClient)."""

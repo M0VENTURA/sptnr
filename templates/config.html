@@ -40,6 +40,7 @@
         <a href="#downloads" class="btn btn-sm btn-outline-primary">Downloads</a>
         <a href="#watcher" class="btn btn-sm btn-outline-primary">Watcher</a>
         <a href="#retry-scheduler" class="btn btn-sm btn-outline-primary">Retry Scheduler</a>
+        <a href="#sync-jobs" class="btn btn-sm btn-outline-primary">Sync Jobs</a>
         <a href="#api-integrations" class="btn btn-sm btn-outline-primary">API Keys</a>
         <a href="#beets" class="btn btn-sm btn-outline-primary">Beets</a>
         <a href="#database" class="btn btn-sm btn-outline-primary">Database</a>
@@ -495,6 +496,200 @@
       <div class="alert alert-info mt-4 mb-0">
         <i class="bi bi-info-circle"></i> 
         <strong>About Beets:</strong> Beets is a music library manager that automatically tags your music files with metadata from MusicBrainz. It can detect album information, fix tags, and organize your music collection.
+      </div>
+    </div>
+  </div>
+
+  <!-- Sync Jobs Configuration Section -->
+  <div class="card shadow-sm mb-3" id="sync-jobs">
+    <div class="card-header bg-secondary bg-opacity-10 border-bottom">
+      <div class="d-flex justify-content-between align-items-center">
+        <div>
+          <h5 class="mb-0"><i class="bi bi-hourglass-split"></i> Sync Jobs</h5>
+          <small class="text-muted">Configure automated scheduling for synchronization and scanning tasks</small>
+        </div>
+        <button type="button" class="btn btn-sm btn-outline-primary" onclick="initializeSyncJobs()">
+          <i class="bi bi-arrow-clockwise"></i> Refresh Status
+        </button>
+      </div>
+    </div>
+    <div class="card-body">
+      <!-- Job Configuration Cards -->
+      <div class="row g-3 mb-4">
+        
+        <!-- Last.fm Recommendations Sync -->
+        <div class="col-lg-6">
+          <div class="card h-100">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+              <h6 class="mb-0"><i class="bi bi-database-fill"></i> Last.fm Recommendations</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input sync-job-toggle" type="checkbox" id="toggle_lastfm" data-job-type="lastfm">
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label form-label-sm">Daily Sync Time</label>
+                <input type="time" class="form-control form-control-sm sync-job-time" id="time_lastfm" value="01:00" data-job-type="lastfm">
+              </div>
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input sync-job-filter" type="checkbox" id="filter_lastfm" checked data-job-type="lastfm">
+                  <label class="form-check-label form-label-sm" for="filter_lastfm">
+                    Filter existing items
+                  </label>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted">Last sync: <span id="lastsync_lastfm" class="text-secondary">Never</span></small>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary w-100" onclick="triggerSyncJob('lastfm')">
+                <i class="bi bi-play-fill"></i> Sync Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Navidrome Sync -->
+        <div class="col-lg-6">
+          <div class="card h-100">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+              <h6 class="mb-0"><i class="bi bi-music-note-beamed"></i> Navidrome Sync</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input sync-job-toggle" type="checkbox" id="toggle_navidrome" data-job-type="navidrome">
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label form-label-sm">Daily Sync Time</label>
+                <input type="time" class="form-control form-control-sm sync-job-time" id="time_navidrome" value="02:00" data-job-type="navidrome">
+              </div>
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input sync-job-filter" type="checkbox" id="filter_navidrome" checked data-job-type="navidrome">
+                  <label class="form-check-label form-label-sm" for="filter_navidrome">
+                    Update metadata
+                  </label>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted">Last sync: <span id="lastsync_navidrome" class="text-secondary">Never</span></small>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary w-100" onclick="triggerSyncJob('navidrome')">
+                <i class="bi bi-play-fill"></i> Sync Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Popularity & Single Detection Scan -->
+        <div class="col-lg-6">
+          <div class="card h-100">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+              <h6 class="mb-0"><i class="bi bi-star-fill"></i> Popularity & Singles</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input sync-job-toggle" type="checkbox" id="toggle_popularity_single" data-job-type="popularity_single">
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label form-label-sm">Daily Scan Time</label>
+                <input type="time" class="form-control form-control-sm sync-job-time" id="time_popularity_single" value="03:00" data-job-type="popularity_single">
+              </div>
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input sync-job-filter" type="checkbox" id="filter_popularity_single" checked data-job-type="popularity_single">
+                  <label class="form-check-label form-label-sm" for="filter_popularity_single">
+                    Analyze metadata sources
+                  </label>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted">Last scan: <span id="lastsync_popularity_single" class="text-secondary">Never</span></small>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary w-100" onclick="triggerSyncJob('popularity_single')">
+                <i class="bi bi-play-fill"></i> Scan Now
+              </button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Beets Import -->
+        <div class="col-lg-6">
+          <div class="card h-100">
+            <div class="card-header bg-light d-flex justify-content-between align-items-center">
+              <h6 class="mb-0"><i class="bi bi-music-note"></i> Beets Import</h6>
+              <div class="form-check form-switch mb-0">
+                <input class="form-check-input sync-job-toggle" type="checkbox" id="toggle_beets_import" data-job-type="beets_import">
+              </div>
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <label class="form-label form-label-sm">Daily Import Time</label>
+                <input type="time" class="form-control form-control-sm sync-job-time" id="time_beets_import" value="04:00" data-job-type="beets_import">
+              </div>
+              <div class="mb-3">
+                <div class="form-check">
+                  <input class="form-check-input sync-job-filter" type="checkbox" id="filter_beets_import" checked data-job-type="beets_import">
+                  <label class="form-check-label form-label-sm" for="filter_beets_import">
+                    Auto-tag with MusicBrainz
+                  </label>
+                </div>
+              </div>
+              <div class="mb-2">
+                <small class="text-muted">Last import: <span id="lastsync_beets_import" class="text-secondary">Never</span></small>
+              </div>
+              <button type="button" class="btn btn-sm btn-primary w-100" onclick="triggerSyncJob('beets_import')">
+                <i class="bi bi-play-fill"></i> Import Now
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Sync Jobs Status & History -->
+      <div class="row g-3">
+        <div class="col-lg-8">
+          <div class="card">
+            <div class="card-header bg-light">
+              <h6 class="mb-0"><i class="bi bi-clock-history"></i> Recent Sync History</h6>
+            </div>
+            <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+              <div id="syncHistoryContainer">
+                <small class="text-muted">Loading sync history...</small>
+              </div>
+            </div>
+          </div>
+        </div>
+        <div class="col-lg-4">
+          <div class="card">
+            <div class="card-header bg-light">
+              <h6 class="mb-0"><i class="bi bi-info-circle"></i> Statistics</h6>
+            </div>
+            <div class="card-body">
+              <div class="mb-3">
+                <small class="text-muted">Jobs Enabled:</small>
+                <div id="statsJobsEnabled" class="h6 mb-0">—</div>
+              </div>
+              <div class="mb-3">
+                <small class="text-muted">Total Syncs:</small>
+                <div id="statsTotalSyncs" class="h6 mb-0">—</div>
+              </div>
+              <div class="mb-3">
+                <small class="text-muted">Last Activity:</small>
+                <div id="statsLastActivity" class="h6 mb-0 text-truncate">—</div>
+              </div>
+              <hr>
+              <button type="button" class="btn btn-sm btn-outline-danger w-100" onclick="clearSyncHistory()">
+                <i class="bi bi-trash"></i> Clear History
+              </button>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="alert alert-info mt-4 mb-0">
+        <i class="bi bi-info-circle"></i> 
+        <strong>Automated Scheduling:</strong> Enable jobs above to schedule daily synchronization. Times are in 24-hour format (e.g., 01:00 = 1 AM). Sync status and history will be displayed here.
       </div>
     </div>
   </div>
@@ -2005,6 +2200,191 @@ function stopRetryScheduler() {
   });
 }
 
+// ============================================================================
+// SYNC JOBS MANAGEMENT
+// ============================================================================
+
+function initializeSyncJobs() {
+  // Load sync job configurations
+  fetch('/api/sync-jobs/config')
+    .then(res => res.json())
+    .then(data => {
+      if (data.success && data.jobs) {
+        data.jobs.forEach(job => {
+          const jobType = job.job_type;
+          const toggle = document.getElementById(`toggle_${jobType}`);
+          const timeInput = document.getElementById(`time_${jobType}`);
+          const filterInput = document.getElementById(`filter_${jobType}`);
+          const lastSyncEl = document.getElementById(`lastsync_${jobType}`);
+          
+          if (toggle) toggle.checked = job.enabled || false;
+          if (timeInput) timeInput.value = job.schedule_time || '01:00';
+          if (filterInput) filterInput.checked = job.filter_existing !== false;
+          if (lastSyncEl) {
+            lastSyncEl.textContent = job.last_sync ? new Date(job.last_sync).toLocaleString() : 'Never';
+          }
+        });
+      }
+      loadSyncHistory();
+    })
+    .catch(err => console.error('Error loading sync job config:', err));
+}
+
+function saveSyncJobConfig(jobType) {
+  const toggle = document.getElementById(`toggle_${jobType}`);
+  const timeInput = document.getElementById(`time_${jobType}`);
+  const filterInput = document.getElementById(`filter_${jobType}`);
+  
+  const config = {
+    job_type: jobType,
+    enabled: toggle ? toggle.checked : false,
+    schedule_time: timeInput ? timeInput.value : '01:00',
+    filter_existing: filterInput ? filterInput.checked : true
+  };
+  
+  fetch('/api/sync-jobs/config', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(config)
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (!data.success) {
+        alert('Error saving sync job config: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(err => console.error('Error saving sync job config:', err));
+}
+
+function triggerSyncJob(jobType) {
+  const btn = event.target;
+  btn.disabled = true;
+  btn.innerHTML = '<i class="bi bi-hourglass-split"></i> Running...';
+  
+  fetch(`/api/sync-jobs/trigger/${jobType}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' }
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        // Update last sync time
+        const lastSyncEl = document.getElementById(`lastsync_${jobType}`);
+        if (lastSyncEl) {
+          lastSyncEl.textContent = new Date().toLocaleString();
+        }
+        loadSyncHistory();
+        alert(`${jobType} sync triggered successfully!`);
+      } else {
+        alert('Error triggering sync: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(err => {
+      console.error('Error triggering sync:', err);
+      alert('Error triggering sync: ' + err.message);
+    })
+    .finally(() => {
+      btn.disabled = false;
+      btn.innerHTML = '<i class="bi bi-play-fill"></i> ' + (jobType === 'beets_import' ? 'Import Now' : 'Sync Now');
+    });
+}
+
+function loadSyncHistory() {
+  fetch('/api/sync-jobs/history?limit=10')
+    .then(res => res.json())
+    .then(data => {
+      const container = document.getElementById('syncHistoryContainer');
+      if (!data.success || !data.history || data.history.length === 0) {
+        container.innerHTML = '<small class="text-muted">No sync history yet</small>';
+        return;
+      }
+      
+      let html = '<table class="table table-sm mb-0"><thead><tr><th>Job</th><th>Status</th><th>Time</th><th>Items</th></tr></thead><tbody>';
+      data.history.forEach(entry => {
+        const statusBadge = entry.sync_status === 'success' 
+          ? '<span class="badge bg-success">Success</span>'
+          : entry.sync_status === 'running'
+          ? '<span class="badge bg-info">Running</span>'
+          : '<span class="badge bg-danger">Failed</span>';
+        
+        const itemsText = entry.items_success ? `${entry.items_success}/${entry.items_processed}` : '—';
+        const timeText = new Date(entry.created_at).toLocaleString();
+        
+        html += `<tr>
+          <td><small>${entry.job_type}</small></td>
+          <td>${statusBadge}</td>
+          <td><small>${timeText}</small></td>
+          <td><small>${itemsText}</small></td>
+        </tr>`;
+      });
+      html += '</tbody></table>';
+      container.innerHTML = html;
+      
+      // Update statistics
+      updateSyncStats();
+    })
+    .catch(err => console.error('Error loading sync history:', err));
+}
+
+function updateSyncStats() {
+  fetch('/api/sync-jobs/stats')
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        document.getElementById('statsJobsEnabled').textContent = data.jobs_enabled || 0;
+        document.getElementById('statsTotalSyncs').textContent = data.total_syncs || 0;
+        document.getElementById('statsLastActivity').textContent = data.last_activity ? new Date(data.last_activity).toLocaleString() : '—';
+      }
+    })
+    .catch(err => console.error('Error loading sync stats:', err));
+}
+
+function clearSyncHistory() {
+  if (!confirm('Are you sure you want to clear all sync history?')) return;
+  
+  fetch('/api/sync-jobs/history', {
+    method: 'DELETE'
+  })
+    .then(res => res.json())
+    .then(data => {
+      if (data.success) {
+        loadSyncHistory();
+        alert('Sync history cleared');
+      } else {
+        alert('Error clearing history: ' + (data.error || 'Unknown error'));
+      }
+    })
+    .catch(err => console.error('Error clearing history:', err));
+}
+
+// Setup event listeners for sync job controls
+document.addEventListener('DOMContentLoaded', function() {
+  // Load sync jobs on page load
+  initializeSyncJobs();
+  
+  // Refresh sync history every 10 seconds
+  setInterval(loadSyncHistory, 10000);
+  
+  // Add event listeners for toggles and time inputs
+  document.querySelectorAll('.sync-job-toggle').forEach(el => {
+    el.addEventListener('change', function() {
+      saveSyncJobConfig(this.dataset.jobType);
+    });
+  });
+  
+  document.querySelectorAll('.sync-job-time').forEach(el => {
+    el.addEventListener('change', function() {
+      saveSyncJobConfig(this.dataset.jobType);
+    });
+  });
+  
+  document.querySelectorAll('.sync-job-filter').forEach(el => {
+    el.addEventListener('change', function() {
+      saveSyncJobConfig(this.dataset.jobType);
+    });
+  });
+});
+
 // Load scheduler status on page load
 document.addEventListener('DOMContentLoaded', function() {
   getRetrySchedulerStatus();
@@ -2013,3 +2393,4 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 </script>
 {% endblock %}
+
