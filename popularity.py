@@ -2351,17 +2351,33 @@ def popularity_scan(
                                         log_info(f'Spotify popularity score: {spotify_score}')
                                         log_debug(f'Spotify track ID: {spotify_track_id}')
                                         log_debug(f'Spotify release date: {spotify_release_date}')
+                                        
+                                        # Extract album art URL from Spotify
+                                        album_info = best_match.get("album", {})
+                                        images = album_info.get("images", [])
+                                        spotify_album_art_url = ""
+                                        if images:
+                                            # Get the first (largest) image
+                                            largest_image = images[0]
+                                            spotify_album_art_url = largest_image.get("url", "")
+                                            log_debug(f"[ALBUM_ART] Spotify returned {len(images)} image(s) for {title}")
+                                            log_debug(f"[ALBUM_ART] Image dimensions: {largest_image.get('width')}x{largest_image.get('height')}, URL: {spotify_album_art_url}")
+                                        else:
+                                            log_debug(f"[ALBUM_ART] Spotify search result has no images for {title}")
                                     else:
                                         spotify_score = 0
                                         spotify_track_id = None
                                         spotify_release_date = None
+                                        spotify_album_art_url = ""
                                         log_info(f'No Spotify match found for: {title}')
+                                        log_debug(f"[ALBUM_ART] No Spotify match, cannot extract album art for {title}")
                                 
                                     # Skip comprehensive metadata fetch during popularity scan (can be fetched on-demand later)
                                     # This was causing 90s timeouts per track which severely slowed down scans
                                     log_debug(f"Skipping comprehensive metadata fetch for {title} (can be fetched on-demand later)")
                                 else:
                                     log_info(f'No Spotify results found for: {title}')
+                                    log_debug(f"[ALBUM_ART] No Spotify results available, cannot extract album art for {title}")
                             else:
                                 log_info(f'No Spotify artist ID available')
                         except TimeoutError as e:
@@ -2617,6 +2633,8 @@ def popularity_scan(
                     )
                     conn.commit()
                     log_debug(f"Batch committed {len(track_updates)} popularity scores and genre sources for album '{album}'")
+                    log_debug(f"[ALBUM_ART] NOTE: Album art URLs are extracted from Spotify but NOT currently stored in database update (spotify_album_art_url field is empty)")
+                    log_debug(f"[ALBUM_ART] To enable album art download, spotify_album_art_url should be added to the batch UPDATE query")
                 
                 if not singles_only:
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
