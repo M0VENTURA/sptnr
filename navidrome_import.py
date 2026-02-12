@@ -444,14 +444,20 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         log_debug(f"Artist scan complete - Name: {artist_name}, Albums scanned: {albums_scanned}, Tracks imported: {tracks_imported}, Force: {force}")
         
         # Cleanup: Remove orphaned tracks (missing from Navidrome AND missing physical files)
-        try:
-            tracks_removed = _cleanup_orphaned_tracks(artist_name, imported_track_ids)
-            if tracks_removed > 0:
-                log_unified(f"Navidrome Import Scan - Cleanup: Removed {tracks_removed} orphaned tracks for {artist_name}")
-                log_info(f"Cleanup: Removed {tracks_removed} orphaned tracks (missing from Navidrome + physical files deleted) for artist: {artist_name}")
-                log_debug(f"Orphaned tracks cleanup complete - Artist: {artist_name}, Tracks removed: {tracks_removed}")
-        except Exception as e:
-            log_debug(f"Orphaned tracks cleanup failed for {artist_name}: {e}", exc_info=True)
+        # IMPORTANT: Only run cleanup during full artist scans (no album_filter)
+        # When filtering to a single album, we only import that album's tracks, so we can't
+        # reliably detect which tracks from other albums are truly orphaned
+        if not album_filter:
+            try:
+                tracks_removed = _cleanup_orphaned_tracks(artist_name, imported_track_ids)
+                if tracks_removed > 0:
+                    log_unified(f"Navidrome Import Scan - Cleanup: Removed {tracks_removed} orphaned tracks for {artist_name}")
+                    log_info(f"Cleanup: Removed {tracks_removed} orphaned tracks (missing from Navidrome + physical files deleted) for artist: {artist_name}")
+                    log_debug(f"Orphaned tracks cleanup complete - Artist: {artist_name}, Tracks removed: {tracks_removed}")
+            except Exception as e:
+                log_debug(f"Orphaned tracks cleanup failed for {artist_name}: {e}", exc_info=True)
+        else:
+            log_debug(f"Skipping orphaned track cleanup - album_filter '{album_filter}' specified (single album rescan)")
         
         # Fetch artist biography and images after successful import
         try:
