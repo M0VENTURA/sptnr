@@ -8,10 +8,19 @@ import sqlite3
 import os
 from datetime import datetime
 
-DATABASE_PATH = os.path.join(os.path.dirname(__file__), 'database.db')
+# Use the same database path as the app
+DATABASE_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 
 def create_lastfm_recommendations_table():
     """Create the lastfm_recommendations table if it doesn't exist."""
+    # Ensure database directory exists
+    db_dir = os.path.dirname(DATABASE_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Could not create database directory {db_dir}: {e}")
+    
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
@@ -57,6 +66,14 @@ def create_lastfm_recommendations_table():
 
 def create_lastfm_sync_history_table():
     """Create the lastfm_sync_history table to track sync operations."""
+    # Ensure database directory exists
+    db_dir = os.path.dirname(DATABASE_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Could not create database directory {db_dir}: {e}")
+    
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     
@@ -96,6 +113,14 @@ def create_lastfm_sync_history_table():
 
 def create_lastfm_scheduler_config_table():
     """Create the lastfm_scheduler_config table to track scheduler settings."""
+    # Ensure database directory exists
+    db_dir = os.path.dirname(DATABASE_PATH)
+    if db_dir and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Could not create database directory {db_dir}: {e}")
+    
     conn = sqlite3.connect(DATABASE_PATH)
     cursor = conn.cursor()
     

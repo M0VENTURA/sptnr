@@ -8,7 +8,16 @@ from datetime import datetime
 
 def create_upcoming_releases_schema():
     """Create schema for tracking upcoming album releases"""
-    db_path = 'database.db'
+    # Use the same database path as the app
+    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
+    
+    # Ensure database directory exists
+    db_dir = os.path.dirname(db_path)
+    if db_dir and not os.path.exists(db_dir):
+        try:
+            os.makedirs(db_dir, exist_ok=True)
+        except (PermissionError, OSError) as e:
+            print(f"Warning: Could not create database directory {db_dir}: {e}")
     
     conn = sqlite3.connect(db_path)
     cursor = conn.cursor()
