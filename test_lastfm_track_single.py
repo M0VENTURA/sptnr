@@ -18,10 +18,10 @@ import json
 
 
 def test_track_exists_as_single():
-    """Test when a track exists as a single on Last.fm"""
+    """Test when a track exists as a single on Last.fm with < 6 tracks"""
     client = LastFmClient(api_key="test_key")
     
-    # Mock response for a track that exists as a single
+    # Mock response for a track that exists as a single with 2 tracks (< 6)
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -39,8 +39,8 @@ def test_track_exists_as_single():
     
     with patch.object(client.session, 'get', return_value=mock_response):
         result = client.check_track_as_single("Ed Sheeran", "Shape of You")
-        assert result is True, "Should return True when track exists as single"
-        print("✓ Test 1 passed: Track exists as single")
+        assert result is True, "Should return True when track exists as single with < 6 tracks"
+        print("✓ Test 1 passed: Track exists as single with < 6 tracks")
 
 
 def test_track_not_exists_as_single():
@@ -90,7 +90,7 @@ def test_case_insensitive_matching():
     """Test that matching is case-insensitive"""
     client = LastFmClient(api_key="test_key")
     
-    # Mock response with different case
+    # Mock response with different case and < 6 tracks
     mock_response = Mock()
     mock_response.status_code = 200
     mock_response.json.return_value = {
@@ -118,6 +118,69 @@ def test_no_api_key():
     print("✓ Test 5 passed: Missing API key handled")
 
 
+def test_track_exists_but_too_many_tracks():
+    """Test when track exists as album title but has >= 6 tracks (should be FALSE)"""
+    client = LastFmClient(api_key="test_key")
+    
+    # Mock response for a track that matches album name but has 10 tracks (>= 6)
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "album": {
+            "name": "Greatest Hits",
+            "artist": "Test Artist",
+            "tracks": {
+                "track": [
+                    {"name": "Greatest Hits"},
+                    {"name": "Track 2"},
+                    {"name": "Track 3"},
+                    {"name": "Track 4"},
+                    {"name": "Track 5"},
+                    {"name": "Track 6"},
+                    {"name": "Track 7"},
+                    {"name": "Track 8"},
+                    {"name": "Track 9"},
+                    {"name": "Track 10"}
+                ]
+            }
+        }
+    }
+    
+    with patch.object(client.session, 'get', return_value=mock_response):
+        result = client.check_track_as_single("Test Artist", "Greatest Hits")
+        assert result is False, "Should return False when track exists but has >= 6 tracks"
+        print("✓ Test 6 passed: Track with >= 6 tracks correctly rejected")
+
+
+def test_track_exists_with_exactly_5_tracks():
+    """Test when track exists with exactly 5 tracks (should be TRUE)"""
+    client = LastFmClient(api_key="test_key")
+    
+    # Mock response for a track that matches album name with exactly 5 tracks
+    mock_response = Mock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {
+        "album": {
+            "name": "EP Release",
+            "artist": "Test Artist",
+            "tracks": {
+                "track": [
+                    {"name": "EP Release"},
+                    {"name": "Track 2"},
+                    {"name": "Track 3"},
+                    {"name": "Track 4"},
+                    {"name": "Track 5"}
+                ]
+            }
+        }
+    }
+    
+    with patch.object(client.session, 'get', return_value=mock_response):
+        result = client.check_track_as_single("Test Artist", "EP Release")
+        assert result is True, "Should return True when track exists with exactly 5 tracks"
+        print("✓ Test 7 passed: Track with exactly 5 tracks correctly accepted")
+
+
 if __name__ == "__main__":
     print("Running Last.fm track single detection tests...\n")
     
@@ -126,5 +189,7 @@ if __name__ == "__main__":
     test_track_exists_but_name_mismatch()
     test_case_insensitive_matching()
     test_no_api_key()
+    test_track_exists_but_too_many_tracks()
+    test_track_exists_with_exactly_5_tracks()
     
-    print("\n✅ All 5 tests passed!")
+    print("\n✅ All 7 tests passed!")
