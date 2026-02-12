@@ -3002,14 +3002,19 @@ def popularity_scan(
                         # NEW: 5-STAR LOGIC WITH DUAL ARTIST + ALBUM CONTEXT
                         # A track becomes 5★ if ANY of these conditions are met:
                         # 1. Artist-level standout (zscore >= 2.0) + top 10% of artist tracks globally
-                        # 2. User-set single
-                        # 3. High-confidence single detection
-                        # 4. Medium-confidence with 2+ sources
+                        # 2. High popularity + strong z-score (zscore >= 2.0 AND popularity significantly above album mean)
+                        # 3. User-set single
+                        # 4. High-confidence single detection
+                        # 5. Medium-confidence with 2+ sources
                         #
                         # Artist context: Dual criteria for maximum relevance
                         # - Top 10% globally: Track is in artist's most-streamed catalogue (global significance)
                         # - Album outlier: Track stands out from its album peers (local significance)
                         # Both needed = meaningful standout content
+                        #
+                        # Popularity context: Strong outlier within album (z-score >= 2.0) with high absolute popularity
+                        # - Z-score >= 2.0: Top ~2% of tracks in album by popularity
+                        # - Popularity significantly above album mean: Standard deviation of popularity indicates separation
                         
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
@@ -3026,6 +3031,12 @@ def popularity_scan(
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                 log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
+                            # SECOND: High popularity + strong z-score (alternative 5-star method)
+                            # Track with z-score >= 2.0 AND popularity significantly above album mean gets 5 stars
+                            elif track_zscore >= 2.0 and popularity_score > popularity_mean * 1.5:
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (high popularity + strong outlier, pop={popularity_score:.1f} vs album_mean={popularity_mean:.1f}, zscore={track_zscore:.2f})")
+                                log_debug(f"High pop+zscore met - track_id: {track_id}, pop: {popularity_score}, album_mean: {popularity_mean}, zscore: {track_zscore:.2f}")
                             # User-set singles always get 5 stars
                             elif single_confidence == "user":
                                 stars = 5
