@@ -139,6 +139,17 @@ def log_verbose(msg):
 
 app = Flask(__name__)
 
+# Add cache-control headers to prevent browser caching of HTML templates
+@app.after_request
+def set_cache_headers(response):
+    """Prevent browser caching of HTML templates but allow caching of static assets"""
+    if response.content_type and 'text/html' in response.content_type:
+        # Don't cache HTML templates
+        response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+        response.headers['Pragma'] = 'no-cache'
+        response.headers['Expires'] = '0'
+    return response
+
 # Ensure album_artist column exists and is populated on startup
 import logging
 ensure_result = ensure_album_artist_column()
