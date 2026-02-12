@@ -703,7 +703,7 @@ def should_check_track(
     
     Otherwise check if:
     - In top 3 by popularity
-    - popularity >= (album_mean + 1 * album_stddev)
+    - popularity >= (album_mean - 0.5 * album_stddev) [allows underperforming singles]
     """
     # Compilation albums: check ALL tracks
     if is_compilation:
@@ -722,8 +722,9 @@ def should_check_track(
     if popularity in sorted_pops[:3]:
         return True
     
-    # Threshold check
-    threshold = album_mean + album_stddev
+    # Threshold check - use mean MINUS 0.5*stddev to capture underperforming singles
+    # Singles often have lower popularity than album tracks but are still worth checking
+    threshold = album_mean - (0.5 * album_stddev)
     if popularity >= threshold:
         return True
     
