@@ -74,7 +74,27 @@ try:
     from single_detector import get_current_single_detection
 except ImportError:
     def get_current_single_detection(track_id: str) -> dict:
-        """Fallback if single_detector not available"""
+        """Fallback if single_detector not available - query database directly"""
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute(
+                "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
+                (track_id,)
+            )
+            row = cursor.fetchone()
+            conn.close()
+            if row:
+                is_single, confidence, sources_json, stars = row
+                sources = json.loads(sources_json) if sources_json else []
+                return {
+                    "is_single": bool(is_single),
+                    "single_confidence": confidence or "low",
+                    "single_sources": sources,
+                    "stars": stars or 0
+                }
+        except Exception as e:
+            log_debug(f"Failed to get current single detection for track {track_id}: {e}")
         return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
 
 
