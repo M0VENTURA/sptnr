@@ -79,6 +79,28 @@
         </div>
     </div>
     
+    <!-- Upcoming & Recent Releases Banner -->
+    <div class="card mb-4 border-info">
+        <div class="card-header bg-info bg-opacity-10 border-info d-flex justify-content-between align-items-center">
+            <h5 class="card-title mb-0">
+                <i class="bi bi-calendar-event"></i> Upcoming & Recent Releases
+            </h5>
+            <a href="{{ url_for('downloads') }}#upcomingTab" class="btn btn-sm btn-info">
+                <i class="bi bi-arrow-right"></i> View All
+            </a>
+        </div>
+        <div class="card-body">
+            <div id="upcomingBannerContent" style="max-height: 300px; overflow-y: auto;">
+                <div class="text-center py-3">
+                    <div class="spinner-border spinner-border-sm" role="status">
+                        <span class="visually-hidden">Loading...</span>
+                    </div>
+                    <small class="d-block mt-2 text-muted">Loading releases...</small>
+                </div>
+            </div>
+        </div>
+    </div>
+    
     <!-- Scan Operations -->
     <div class="card mb-4">
         <div class="card-header">
@@ -822,6 +844,63 @@ function switchUser(userIndex) {
 }
 
 // Load selected user on page load
+async function loadUpcomingReleasesBanner() {
+    try {
+        const response = await fetch('/api/upcoming-releases?collection=true');
+        const data = await response.json();
+        
+        if (!response.ok || !data.releases || data.releases.length === 0) {
+            document.getElementById('upcomingBannerContent').innerHTML = `
+                <p class="text-muted text-center"><i class="bi bi-info-circle"></i> No upcoming releases from artists in your collection.</p>
+            `;
+            return;
+        }
+        
+        // Sort releases by date
+        const releases = data.releases.sort((a, b) => {
+            const dateA = new Date(a.release_date || '9999-12-31');
+            const dateB = new Date(b.release_date || '9999-12-31');
+            return dateA - dateB;
+        }).slice(0, 10); // Show only first 10
+        
+        let html = '<div class="list-group list-group-flush">';
+        
+        releases.forEach(release => {
+            const releaseDate = release.release_date || 'TBA';
+            const isUpcoming = new Date(releaseDate) > new Date();
+            const badge = isUpcoming ? 
+                '<span class="badge bg-success ms-2">Upcoming</span>' :
+                '<span class="badge bg-primary ms-2">Recent</span>';
+            
+            html += `
+                <div class="list-group-item d-flex justify-content-between align-items-start py-2">
+                    <div class="flex-grow-1">
+                        <h6 class="mb-1" style="font-size: 0.95rem;">
+                            ${releaseDate} ${badge}
+                        </h6>
+                        <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
+                    </div>
+                </div>
+            `;
+        });
+        
+        html += '</div>';
+        document.getElementById('upcomingBannerContent').innerHTML = html;
+        
+    } catch (error) {
+        console.error('Error loading upcoming releases:', error);
+        document.getElementById('upcomingBannerContent').innerHTML = `
+            <p class="text-muted text-center text-danger"><i class="bi bi-exclamation-triangle"></i> Error loading releases</p>
+        `;
+    }
+}
+
+document.addEventListener('DOMContentLoaded', function() {
+    loadUpcomingReleasesBanner();
+    // Refresh every 30 minutes
+    setInterval(loadUpcomingReleasesBanner, 30 * 60 * 1000);
+});
+
 document.addEventListener('DOMContentLoaded', function() {
     const savedUser = localStorage.getItem('selectedNavidromeUser');
     if (savedUser && document.getElementById('userSelector')) {

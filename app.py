@@ -11717,6 +11717,84 @@ def api_cleanup_duplicates():
         logging.error(f"Duplicate cleanup error: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
+
+# ============================================================================
+# UPCOMING RELEASES
+# ============================================================================
+
+@app.route("/api/upcoming-releases", methods=["GET"])
+def api_upcoming_releases():
+    """Get upcoming releases, optionally filtered by collection artists"""
+    try:
+        from wikipedia_releases_scraper import WikipediaReleaseScraper
+        
+        filter_collection = request.args.get("collection", "false").lower() == "true"
+        
+        scraper = WikipediaReleaseScraper()
+        releases = scraper.get_upcoming_releases(artist_in_collection=filter_collection)
+        
+        # Group by month for UI display
+        grouped = {}
+        for release in releases:
+            month = release.get('release_date', 'Unknown')[:7]  # YYYY-MM
+            if month not in grouped:
+                grouped[month] = []
+            grouped[month].append(release)
+        
+        return jsonify({
+            "success": True,
+            "total": len(releases),
+            "grouped": grouped,
+            "releases": releases
+        })
+    except Exception as e:
+        logging.error(f"Error fetching upcoming releases: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/scrape", methods=["POST"])
+def api_scrape_upcoming_releases():
+    """Trigger a Wikipedia scrape for upcoming releases"""
+    try:
+        from wikipedia_releases_scraper import WikipediaReleaseScraper
+        
+        scraper = WikipediaReleaseScraper()
+        results = scraper.scrape_all_sources()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Scraped {results['total_items']} releases ({results['total_added']} new, {results['total_updated']} updated)",
+            "results": results
+        })
+    except Exception as e:
+        logging.error(f"Error scraping Wikipedia: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/search", methods=["POST"])
+def api_search_upcoming_release():
+    """Search for downloads of an upcoming release"""
+    try:
+        data = request.get_json() or {}
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        
+        # Redirect to downloads with search query
+        search_query = f"{artist} {album}"
+        
+        return jsonify({
+            "success": True,
+            "search_query": search_query,
+            "message": f"Ready to search for: {search_query}"
+        })
+    except Exception as e:
+        logging.error(f"Error processing release search: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 if __name__ == "__main__":
     # Check if background scanner should auto-start on app launch
     try:

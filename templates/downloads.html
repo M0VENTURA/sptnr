@@ -46,6 +46,11 @@
         <i class="bi bi-heart"></i> Last.fm Recommendations
       </button>
     </li>
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="upcomingTab" data-bs-toggle="tab" data-bs-target="#upcomingContent" type="button" role="tab">
+        <i class="bi bi-calendar-event"></i> Upcoming Releases
+      </button>
+    </li>
   </ul>
 
   <div class="tab-content">
@@ -654,6 +659,53 @@
       </div>
     </div>
     <!-- End Last.fm Recommendations Tab -->
+
+    <!-- Upcoming Releases Tab -->
+    <div class="tab-pane fade" id="upcomingContent" role="tabpanel">
+      <div class="card">
+        <div class="card-header d-flex justify-content-between align-items-center">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-calendar-event"></i> Upcoming Album Releases
+          </h5>
+          <div class="d-flex align-items-center gap-2">
+            <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
+              <i class="bi bi-download"></i> Update from Wikipedia
+            </button>
+            <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleases()">
+              <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+          </div>
+        </div>
+        <div class="card-body">
+          <div class="mb-3">
+            <label class="form-check">
+              <input class="form-check-input" type="checkbox" id="upcomingFilterCollection" onchange="refreshUpcomingReleases()">
+              <span class="form-check-label">Only show releases from artists in my collection</span>
+            </label>
+          </div>
+
+          <div id="upcomingStatus" class="alert alert-info" style="display:none;">
+            <div class="d-flex">
+              <div class="spinner-border spinner-border-sm me-2" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+              <div>
+                <span id="upcomingStatusText">Loading upcoming releases...</span>
+              </div>
+            </div>
+          </div>
+
+          <div id="upcomingError" class="alert alert-danger" style="display:none;"></div>
+
+          <div id="upcomingReleases">
+            <div class="text-center py-5">
+              <p class="text-muted">Click "Update from Wikipedia" to load upcoming releases</p>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Upcoming Releases Tab -->
 
   </div>
   <!-- End tab-content -->
@@ -3053,6 +3105,185 @@ document.querySelectorAll('.nav-link').forEach(tab => {
 document.addEventListener('DOMContentLoaded', function() {
   if (document.getElementById('playlistTab').classList.contains('active')) {
     refreshPlaylistSessions();
+  }
+});
+
+// ===== Upcoming Releases Functions =====
+
+async function scrapeUpcomingReleases() {
+  const statusEl = document.getElementById('upcomingStatus');
+  const statusText = document.getElementById('upcomingStatusText');
+  const errorEl = document.getElementById('upcomingError');
+  
+  statusEl.style.display = 'block';
+  errorEl.style.display = 'none';
+  statusText.textContent = 'Scraping Wikipedia for upcoming releases...';
+  
+  try {
+    const response = await fetch('/api/upcoming-releases/scrape', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to scrape releases');
+    }
+    
+    statusText.textContent = `✓ ${data.message}`;
+    setTimeout(() => {
+      statusEl.style.display = 'none';
+      refreshUpcomingReleases();
+    }, 2000);
+    
+  } catch (error) {
+    console.error('Error scraping:', error);
+    statusEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = `
+      <i class="bi bi-exclamation-triangle"></i>
+      <strong>Error scraping Wikipedia:</strong> ${error.message}
+    `;
+  }
+}
+
+async function refreshUpcomingReleases() {
+  const container = document.getElementById('upcomingReleases');
+  const filterCollection = document.getElementById('upcomingFilterCollection').checked;
+  
+  container.innerHTML = `
+    <div class="text-center py-4">
+      <div class="spinner-border text-primary spinner-border-sm" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+      <p class="mt-2 small">Loading upcoming releases...</p>
+    </div>
+  `;
+  
+  try {
+    const response = await fetch(`/api/upcoming-releases?collection=${filterCollection}`);
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to load releases');
+    }
+    
+    if (!data.releases || data.releases.length === 0) {
+      container.innerHTML = `
+        <div class="alert alert-info">
+          <i class="bi bi-info-circle"></i>
+          No upcoming releases found. Click "Update from Wikipedia" to load release data.
+        </div>
+      `;
+      return;
+    }
+    
+    // Group by month
+    const grouped = {};
+    data.releases.forEach(release => {
+      const date = release.release_date || 'Unknown Date';
+      const month = date.substring(0, 7); // YYYY-MM
+      if (!grouped[month]) grouped[month] = [];
+      grouped[month].push(release);
+    });
+    
+    // Sort months
+    const sortedMonths = Object.keys(grouped).sort();
+    
+    let html = '<div class="accordion" id="releaseAccordion">';
+    
+    sortedMonths.forEach((month, idx) => {
+      const releases = grouped[month];
+      const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
+        year: 'numeric',
+        month: 'long'
+      });
+      
+      html += `
+        <div class="accordion-item">
+          <h2 class="accordion-header" id="heading${idx}">
+            <button class="accordion-button ${idx > 0 ? 'collapsed' : ''}" type="button" data-bs-toggle="collapse" 
+              data-bs-target="#collapse${idx}" aria-expanded="${idx === 0}">
+              <strong>${monthLabel}</strong>
+              <span class="badge bg-primary ms-2">${releases.length}</span>
+            </button>
+          </h2>
+          <div id="collapse${idx}" class="accordion-collapse collapse ${idx === 0 ? 'show' : ''}" 
+            data-bs-parent="#releaseAccordion">
+            <div class="accordion-body p-0">
+              <div class="table-responsive">
+                <table class="table table-hover table-sm mb-0">
+                  <thead>
+                    <tr>
+                      <th>Artist</th>
+                      <th>Album</th>
+                      <th>Date</th>
+                      <th style="width: 100px;"></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+      `;
+      
+      releases.forEach(release => {
+        const inCollection = release.artist_in_collection ? 
+          '<span class="badge bg-success">In Collection</span>' : '';
+        
+        html += `
+          <tr>
+            <td>${escapeHtml(release.artist_name)}</td>
+            <td>${escapeHtml(release.album_name)}</td>
+            <td><small>${release.release_date || 'TBA'}</small></td>
+            <td>
+              <button class="btn btn-sm btn-primary" title="Search for downloads"
+                onclick="searchReleaseDownloads('${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
+                <i class="bi bi-search"></i>
+              </button>
+            </td>
+          </tr>
+        `;
+      });
+      
+      html += `
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    
+    html += '</div>';
+    container.innerHTML = html;
+    
+  } catch (error) {
+    console.error('Error loading releases:', error);
+    container.innerHTML = `
+      <div class="alert alert-danger">
+        <i class="bi bi-exclamation-triangle"></i>
+        <strong>Error loading releases:</strong> ${error.message}
+      </div>
+    `;
+  }
+}
+
+function searchReleaseDownloads(artist, album) {
+  const query = `${artist} ${album}`;
+  
+  // Switch to qBittorrent search tab
+  document.getElementById('qbitTab').click();
+  
+  setTimeout(() => {
+    document.getElementById('qbitSearchInput').value = query;
+    performQbitSearch();
+  }, 300);
+}
+
+// Load upcoming releases when tab is shown
+document.getElementById('upcomingTab').addEventListener('click', function() {
+  if (document.getElementById('upcomingReleases').innerHTML.trim() === '') {
+    refreshUpcomingReleases();
   }
 });
 </script>
