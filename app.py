@@ -3985,9 +3985,9 @@ def album_edit(artist, album):
     album_mbid = request.form.get("album_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
     
-    # Debug logging for character encoding issues
-    logging.info(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
-    logging.info(f"Album edit - URL album: {repr(album)}, form album_title: {repr(album_title)}")
+    # Debug logging for character encoding issues (use debug level to avoid log noise)
+    logging.debug(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
+    logging.debug(f"Album edit - URL album: {repr(album)}, form album_title: {repr(album_title)}")
     
     if not album_title or not album_artist:
         flash("Album title and artist are required", "danger")
@@ -4092,17 +4092,14 @@ def album_edit(artist, album):
         else:
             flash("No changes to save", "info")
         
-        conn.close()
-        
         # Redirect to the (potentially new) album page
         # To ensure special characters are preserved, query the database for the actual artist/album names
         # after the update, rather than relying on potentially corrupted form data
+        # Reuse existing connection to avoid overhead of creating new connection
         try:
-            temp_conn = get_db()
-            temp_cursor = temp_conn.cursor()
             # Get the actual artist and album names from the database after the update
             # Use the same COALESCE logic as album_detail to get the correct artist
-            temp_cursor.execute("""
+            cursor.execute("""
                 SELECT 
                     COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                     album
@@ -4111,8 +4108,7 @@ def album_edit(artist, album):
                     AND album = ?
                 LIMIT 1
             """, (album_artist, album_title))
-            db_row = temp_cursor.fetchone()
-            temp_conn.close()
+            db_row = cursor.fetchone()
             
             if db_row:
                 # db_row[0] = effective_artist, db_row[1] = album
@@ -4127,6 +4123,8 @@ def album_edit(artist, album):
             # Fallback: use form data if names changed, otherwise use original URL params
             redirect_artist = album_artist if names_changed else artist
             redirect_album = album_title if names_changed else album
+        finally:
+            conn.close()
         
         return redirect(url_for("album_detail", artist=redirect_artist, album=redirect_album))
         
