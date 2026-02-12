@@ -259,9 +259,11 @@ def calculate_lastfm_zscore_popularity(
     if listeners <= 0 or playcount <= 0:
         return 0.0
     
-    # Need at least 2 tracks to calculate meaningful z-scores
+    # If we have fewer than 2 tracks, fall back to simple logarithmic scoring
+    # This handles the case where z-score calculation is attempted before all album tracks are fetched
     if len(album_listeners) < 2 or len(album_playcounts) < 2:
-        return 0.0
+        # Use simple logarithmic scoring as fallback
+        return calculate_lastfm_popularity_score(listeners)
     
     try:
         # Calculate z-scores for listeners
