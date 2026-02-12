@@ -525,12 +525,12 @@ IGNORE_SINGLE_KEYWORDS = [
 ]
 
 
-def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, int]:
+def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, float, int]:
     """
     Calculate album popularity statistics for pre-filter.
     
     Returns:
-        Tuple of (mean, stddev, count)
+        Tuple of (mean, stddev, median, count)
     """
     cursor = conn.cursor()
     cursor.execute("""
@@ -542,12 +542,13 @@ def calculate_album_stats(conn, artist: str, album: str) -> Tuple[float, float, 
     popularities = [row[0] for row in cursor.fetchall()]
     
     if len(popularities) < 2:
-        return 0.0, 0.0, len(popularities)
+        return 0.0, 0.0, 0.0, len(popularities)
     
     album_mean = mean(popularities)
     album_stddev = stdev(popularities)
+    album_median = median(popularities)
     
-    return album_mean, album_stddev, len(popularities)
+    return album_mean, album_stddev, album_median, len(popularities)
 
 
 def calculate_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
@@ -688,6 +689,7 @@ def should_check_track(
     popularity: float,
     album_mean: float,
     album_stddev: float,
+    album_median: float,
     album_popularities: List[float],
     spotify_version_count: int,
     is_compilation: bool = False
@@ -703,7 +705,9 @@ def should_check_track(
     
     Otherwise check if:
     - In top 3 by popularity
-    - popularity >= (album_mean - 0.5 * album_stddev) [allows underperforming singles]
+    - popularity >= (album_median - 0.5 * album_stddev) [allows underperforming singles]
+    
+    Uses median instead of mean for robustness against outliers (very popular singles).
     """
     # Compilation albums: check ALL tracks
     if is_compilation:
@@ -722,9 +726,10 @@ def should_check_track(
     if popularity in sorted_pops[:3]:
         return True
     
-    # Threshold check - use mean MINUS 0.5*stddev to capture underperforming singles
+    # Threshold check - use median MINUS 0.5*stddev to capture underperforming singles
+    # Median is more robust than mean - not pulled up by very popular singles
     # Singles often have lower popularity than album tracks but are still worth checking
-    threshold = album_mean - (0.5 * album_stddev)
+    threshold = album_median - (0.5 * album_stddev)
     if popularity >= threshold:
         return True
     
@@ -1145,7 +1150,7 @@ def detect_single_enhanced(
     log_debug(f"[DETECT] Starting single detection for: '{title}' by {artist} (album: {album}, pop: {popularity:.1f})")
 
     # Get album statistics
-    album_mean, album_stddev, album_track_count = calculate_album_stats(conn, artist, album)
+    album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
     log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
 
     # Get all album popularities for pre-filter
@@ -1201,7 +1206,7 @@ def detect_single_enhanced(
     result['spotify_version_count'] = spotify_version_count
     
     # STAGE 1: Pre-Filter (with compilation override)
-    if not should_check_track(popularity, album_mean, album_stddev, album_popularities, spotify_version_count, is_compilation):
+    if not should_check_track(popularity, album_mean, album_stddev, album_median, album_popularities, spotify_version_count, is_compilation):
         log_debug(f"[PREFILTER] ✗ REJECTED - Track does not meet pre-filter criteria (not high priority)")
         if verbose:
             log_debug(f"Pre-filter: Skipping {title} (not high priority)")
