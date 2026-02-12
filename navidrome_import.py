@@ -292,23 +292,22 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
                 
                 # Extract genre from Navidrome and use it as the initial genres value
-                navidrome_genre = t.get("genre", "")
-                navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
+                # Navidrome separates multiple genres with "•" character
+                navidrome_genre_raw = t.get("genre", "")
+                navidrome_genre_list = [g.strip() for g in navidrome_genre_raw.split("•") if g.strip()] if navidrome_genre_raw else []
+                # Keep the string representation for backward compatibility
+                navidrome_genre = ", ".join(navidrome_genre_list) if navidrome_genre_list else ""
                 
                 # Detect Christmas songs and add Christmas genre
                 track_title = t.get("title", "")
                 is_christmas = detect_christmas_song(track_title, album_name)
                 if is_christmas:
                     # Add Christmas to genre if not already present
-                    if navidrome_genre and "christmas" not in navidrome_genre.lower():
-                        # Append to existing genre
-                        navidrome_genre = f"{navidrome_genre}, Christmas"
+                    if not any("christmas" in g.lower() for g in navidrome_genre_list):
                         navidrome_genre_list.append("Christmas")
-                    elif not navidrome_genre:
-                        # Set Christmas as the genre
-                        navidrome_genre = "Christmas"
-                        navidrome_genre_list = ["Christmas"]
-                    log_debug(f"Detected Christmas song: {track_title} - Genre updated to: {navidrome_genre}")
+                        # Update the string representation
+                        navidrome_genre = ", ".join(navidrome_genre_list)
+                        log_debug(f"Detected Christmas song: {track_title} - Genre updated to: {navidrome_genre}")
                 
                 # Get file path from Navidrome track data
                 # Navidrome provides 'path' field which is the file path relative to music folder
@@ -328,9 +327,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "lastfm_score": 0,
                     "listenbrainz_score": 0,
                     "age_score": 0,
-                    "genres": navidrome_genre if navidrome_genre else "",  # Initialize with Navidrome genre (including Christmas if detected)
-                    "navidrome_genres": navidrome_genre if navidrome_genre else "",  # Store as comma-separated string
-                    "navidrome_genre": navidrome_genre,  # Also store in single genre field
+                    "genres": navidrome_genre_list if navidrome_genre_list else "",  # Initialize with Navidrome genre list (including Christmas if detected)
+                    "navidrome_genres": navidrome_genre_list if navidrome_genre_list else "",  # Store as list (save_to_db will convert to comma-separated string)
+                    "navidrome_genre": navidrome_genre,  # Also store in single genre field as comma-separated string
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string
