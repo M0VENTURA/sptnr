@@ -3747,6 +3747,7 @@ def album_detail(artist, album):
         # Get the actual artist name from the database (from first track)
         # This ensures the form is populated with the actual database value, not the URL value
         # which might have encoding issues
+        # Note: tracks_with_genre_fit contains dictionaries (converted from Row objects above)
         db_artist_name = artist  # default to URL parameter
         db_album_name = album    # default to URL parameter
         if tracks_with_genre_fit:
@@ -4102,7 +4103,7 @@ def album_edit(artist, album):
             # Get the actual artist and album names from the database after the update
             # Use the same COALESCE logic as album_detail to get the correct artist
             temp_cursor.execute("""
-                SELECT DISTINCT 
+                SELECT 
                     COALESCE(NULLIF(album_artist, ''), artist) as effective_artist,
                     album
                 FROM tracks
@@ -4114,6 +4115,7 @@ def album_edit(artist, album):
             temp_conn.close()
             
             if db_row:
+                # db_row[0] = effective_artist, db_row[1] = album
                 redirect_artist = db_row[0]
                 redirect_album = db_row[1]
             else:
