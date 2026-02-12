@@ -1597,12 +1597,13 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             from config_loader import load_config
             
             config = load_config()
-            if config and config.lastfm_api_key:
+            lastfm_api_key = config.get("api_integrations", {}).get("lastfm", {}).get("api_key") if config else None
+            if lastfm_api_key:
                 # Fetch top 50 tracks and artist info
                 params = {
                     "method": "artist.getTopTracks",
                     "artist": artist_name,
-                    "api_key": config.lastfm_api_key,
+                    "api_key": lastfm_api_key,
                     "limit": 50,
                     "format": "json"
                 }
