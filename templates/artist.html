@@ -1208,7 +1208,7 @@ function sortAlbumsByYear() {
 
 // Load artist bio on page load
 document.addEventListener('DOMContentLoaded', () => {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   loadArtistBio(artistName);
   loadSinglesCount(artistName);
 });
@@ -1400,7 +1400,7 @@ function openSlskdSearch(query, artistName) {
 }
 
 function fetchArtistGenreRecommendations() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const btn = document.getElementById('fetchArtistGenresBtn');
   const container = document.getElementById('recommendedArtistGenres');
   const section = document.getElementById('recommendedArtistGenresSection');
@@ -1484,7 +1484,7 @@ function applySelectedArtistGenres() {
     return;
   }
   
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const genresArray = Array.from(selectedArtistGenres);
   
   if (!confirm(`Apply genres [${genresArray.join(', ')}] to ALL tracks by ${artistName}?\n\nThis will update the MP3 files for all albums by this artist.`)) {
@@ -1523,7 +1523,7 @@ function applySelectedArtistGenres() {
 }
 
 function fetchArtistCountry() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const btn = document.getElementById('fetchArtistCountryBtn');
   const container = document.getElementById('artistCountryDisplay');
   
@@ -1570,7 +1570,7 @@ function fetchArtistCountry() {
 }
 
 function editArtistCountry() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   // Extract country text by getting text nodes (skipping the icon element)
   const badgeEl = document.querySelector('#artistCountryDisplay .badge');
   const currentCountry = badgeEl ? Array.from(badgeEl.childNodes)
@@ -1613,7 +1613,7 @@ function editArtistCountry() {
 }
 
 function saveArtistCountry() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const country = document.getElementById('countryInput').value.trim();
   
   if (!country) {
@@ -1653,7 +1653,7 @@ function saveArtistCountry() {
 }
 
 function applyCountryAsGenre() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const countryBadge = document.querySelector('#artistCountryDisplay .badge');
   if (!countryBadge) {
     alert('No country information available');
@@ -1687,7 +1687,7 @@ function applyCountryAsGenre() {
 }
 
 function openEditArtistIdsModal() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const spotifyId = document.getElementById('spotifyArtistId').value;
   const musicbrainzId = document.getElementById('musicbrainzArtistId').value;
   const discogsId = (function() { const el = document.getElementById('discogsArtistId'); return el ? el.value : ''; })();
@@ -1745,7 +1745,7 @@ function openEditArtistIdsModal() {
 }
 
 function saveArtistIds() {
-  const artistName = '{{ artist_name }}';
+  const artistName = {{ artist_name|tojson }};
   const spotifyId = document.getElementById('editSpotifyArtistId').value.trim();
   const musicbrainzId = document.getElementById('editMusicbrainzArtistId').value.trim();
   const discogsId = document.getElementById('editDiscogsArtistId').value.trim();
