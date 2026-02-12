@@ -740,7 +740,7 @@ API_CALL_TIMEOUT = int(os.environ.get("POPULARITY_API_TIMEOUT", "30"))
 # Comprehensive metadata timeout (allows for parallel API calls)
 # With parallel fetching: track_meta (~30.5s) + max(audio, artist, album) (~30.5s) = ~61s
 # Setting to 90s provides buffer for retries and network latency
-COMPREHENSIVE_METADATA_TIMEOUT = int(os.environ.get("COMPREHENSIVE_METADATA_TIMEOUT", "90"))
+COMPREHENSIVE_METADATA_TIMEOUT = int(os.environ.get("COMPREHENSIVE_METADATA_TIMEOUT", "5"))
 
 # Discogs API rate limiting constants
 _DISCOGS_LAST_REQUEST_TIME = 0
@@ -2349,29 +2349,9 @@ def popularity_scan(
                                         spotify_release_date = None
                                         log_info(f'No Spotify match found for: {title}')
                                 
-                                    # Fetch comprehensive metadata for this track
-                                    if spotify_track_id:
-                                        try:
-                                            from popularity_helpers import fetch_comprehensive_metadata
-                                            log_debug(f"Fetching comprehensive metadata for track ID: {spotify_track_id}")
-                                            metadata_fetched = _run_with_timeout(
-                                                fetch_comprehensive_metadata,
-                                                COMPREHENSIVE_METADATA_TIMEOUT,
-                                                f"Comprehensive metadata fetch timed out after {COMPREHENSIVE_METADATA_TIMEOUT}s",
-                                                db_track_id=track_id,
-                                                spotify_track_id=spotify_track_id,
-                                                force_refresh=force
-                                            )
-                                            if metadata_fetched:
-                                                log_debug(f"Comprehensive metadata fetched successfully for: {title}")
-                                            else:
-                                                log_debug(f"Failed to fetch comprehensive metadata for: {title}")
-                                        except TimeoutError as e:
-                                            log_info(f"Comprehensive metadata fetch timed out for {title}")
-                                            log_debug(f"Timeout error: {e}")
-                                        except Exception as e:
-                                            log_info(f"Error fetching comprehensive metadata for {title}: {e}")
-                                            log_debug(f"Exception details: {type(e).__name__}: {str(e)}")
+                                    # Skip comprehensive metadata fetch during popularity scan (can be fetched on-demand later)
+                                    # This was causing 90s timeouts per track which severely slowed down scans
+                                    log_debug(f"Skipping comprehensive metadata fetch for {title} (can be fetched on-demand later)")
                                 else:
                                     log_info(f'No Spotify results found for: {title}')
                             else:
