@@ -2053,9 +2053,8 @@ document.addEventListener('DOMContentLoaded', function() {
   setTimeout(initializeTracklistButtons, 500);
 });
 
-// Toggle tracklist visibility
-
-
+// Toggle missing items visibility
+function toggleMissing(category) {
   const section = document.getElementById(category + '-section');
   if (!section) return;
   
