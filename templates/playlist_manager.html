@@ -629,9 +629,8 @@ function switchTab(tabName) {
   try {
     console.log('[Playlist Manager] Switching to tab:', tabName);
     
-    // Hide all sections
+    // Hide all sections (use class only, no inline styles)
     document.querySelectorAll('.tab-section').forEach(section => {
-      section.style.display = 'none';
       section.classList.remove('tab-active');
     });
     
@@ -673,9 +672,7 @@ function switchTab(tabName) {
       console.warn('[Playlist Manager] Tab button not found:', tabId);
     }
 
-    // Force display the section
-    section.style.display = 'block';
-    section.style.visibility = 'visible';
+    // Show section using class only (avoids inline style specificity issues)
     section.classList.add('tab-active');
     
     if (tab) {
