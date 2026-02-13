@@ -505,6 +505,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionUrl = '{{ url_for("scan_navidrome") }}';
             } else if (action === 'popularity') {
                 actionUrl = '{{ url_for("scan_popularity_route") }}';
+            } else if (action === 'combined') {
+                actionUrl = '{{ url_for("scan_combined") }}';
             } else if (action === 'mp3') {
                 actionUrl = '{{ url_for("scan_mp3") }}';
             }
