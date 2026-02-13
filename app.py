@@ -23,6 +23,16 @@ try:
     import psycopg2.extras
 except ImportError:
     pass  # PostgreSQL support optional
+# Mutagen imports for audio file tagging
+try:
+    from mutagen.mp3 import MP3
+    from mutagen.flac import FLAC
+    from mutagen.id3 import ID3, TCON as TagCON
+except ImportError:
+    MP3 = None
+    FLAC = None
+    ID3 = None
+    TagCON = None
 from contextlib import closing
 import json
 import yaml
@@ -3104,14 +3114,8 @@ def api_album_bulk_tag():
         # Format for ID3 tags (double backslash separated)
         genre_id3_str = '\\'.join(genres)
         
-        # Try to import mutagen for audio file tagging
-        has_mutagen = True
-        try:
-            from mutagen.mp3 import MP3
-            from mutagen.flac import FLAC
-            from mutagen.id3 import ID3, TCON as TagCON
-        except ImportError:
-            has_mutagen = False
+        # Check if mutagen is available (imported at module level)
+        has_mutagen = MP3 is not None and FLAC is not None and ID3 is not None
         
         for track_id in track_ids:
             try:
@@ -11482,7 +11486,7 @@ def api_album_apply_genres():
                     failed_files.append(track_title if track_title else f"Track ID: {row_get(track, 'id')}")
             else:
                 # Check if error is due to unsupported format or actual failure
-                if "Unsupported format" in error:
+                if error and "Unsupported format" in error:
                     logger.debug(f"Skipped {file_path}: {error}")
                     # Still update database for unsupported formats
                     try:
@@ -11594,7 +11598,7 @@ def api_artist_apply_genres():
                         failed_files.append(f"Track ID: {row_get(track, 'id')}")
             else:
                 # Check if error is due to unsupported format or actual failure
-                if "Unsupported format" in error:
+                if error and "Unsupported format" in error:
                     logger.debug(f"Skipped {file_path}: {error}")
                     # Still update database for unsupported formats
                     try:
