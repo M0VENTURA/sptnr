@@ -194,21 +194,27 @@ class WikipediaReleaseScraper:
         albums_in_collection = set()
         
         try:
-            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks")
-            artists_in_collection = {row[0] for row in cursor.fetchall()}
+            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks WHERE artist IS NOT NULL")
+            rows = cursor.fetchall() or []
+            artists_in_collection = {row[0] for row in rows if row and row[0]}
             
             # Get list of albums in collection
-            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks")
-            albums_in_collection = {(row[0], row[1]) for row in cursor.fetchall()}
-        except sqlite3.OperationalError as e:
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
+            rows = cursor.fetchall() or []
+            albums_in_collection = {(row[0], row[1]) for row in rows if row and row[0] and row[1]}
+        except (sqlite3.OperationalError, TypeError) as e:
             # tracks table may not exist yet, continue without filtering
             logger.debug(f"Could not query tracks table (may not exist yet): {e}")
             artists_in_collection = set()
             albums_in_collection = set()
         
         for release in releases:
-            artist_in_collection = release["artist_name"].lower() in artists_in_collection
-            album_in_collection = (release["artist_name"].lower(), release["album_name"].lower()) in albums_in_collection
+            if not release or not isinstance(release, dict):
+                logger.warning(f"Skipping invalid release: {release}")
+                continue
+                
+            artist_in_collection = release.get("artist_name", "").lower() in artists_in_collection if release.get("artist_name") else False
+            album_in_collection = (release.get("artist_name", "").lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("artist_name") and release.get("album_name") else False
             
             try:
                 cursor.execute("""
@@ -221,10 +227,10 @@ class WikipediaReleaseScraper:
                     artist_in_collection = excluded.artist_in_collection,
                     album_in_collection = excluded.album_in_collection
                 """, (
-                    release["artist_name"],
-                    release["album_name"],
-                    release["release_date"],
-                    release["release_year"],
+                    release.get("artist_name", "Unknown"),
+                    release.get("album_name", "Unknown"),
+                    release.get("release_date"),
+                    release.get("release_year", 2026),
                     source_name,
                     artist_in_collection,
                     album_in_collection,
@@ -237,25 +243,28 @@ class WikipediaReleaseScraper:
                     SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
                     WHERE artist_name = ? AND album_name = ? AND release_date = ?
                 """, (artist_in_collection, album_in_collection, 
-                      release["artist_name"], release["album_name"], release["release_date"]))
+                      release.get("artist_name", ""), release.get("album_name", ""), release.get("release_date")))
                 updated += 1
         
         # Log scrape
-        cursor.execute("""
-            INSERT INTO release_scrape_history 
-            (source_url, source_name, items_found, items_added, items_updated, 
-             scrape_status, scrape_start, scrape_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            WIKIPEDIA_SOURCES.get(source_name, {}).get("url", ""),
-            source_name,
-            len(releases),
-            added,
-            updated,
-            "success",
-            datetime.now(),
-            datetime.now(),
-        ))
+        try:
+            cursor.execute("""
+                INSERT INTO release_scrape_history 
+                (source_url, source_name, items_found, items_added, items_updated, 
+                 scrape_status, scrape_start, scrape_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                WIKIPEDIA_SOURCES.get(source_name, {}).get("url", ""),
+                source_name,
+                len(releases),
+                added,
+                updated,
+                "success",
+                datetime.now(),
+                datetime.now(),
+            ))
+        except Exception as e:
+            logger.error(f"Error logging scrape history: {e}")
         
         conn.commit()
         conn.close()
@@ -264,19 +273,34 @@ class WikipediaReleaseScraper:
     
     def get_upcoming_releases(self, artist_in_collection: bool = False) -> List[Dict]:
         """Get upcoming releases, optionally filtered by collection artists"""
-        conn = self.get_db()
-        cursor = conn.cursor()
-        
-        if artist_in_collection:
-            query = "SELECT * FROM upcoming_releases WHERE artist_in_collection = TRUE ORDER BY release_date ASC"
-        else:
-            query = "SELECT * FROM upcoming_releases ORDER BY release_date ASC"
-        
-        cursor.execute(query)
-        releases = [dict(row) for row in cursor.fetchall()]
-        conn.close()
-        
-        return releases
+        try:
+            conn = self.get_db()
+            cursor = conn.cursor()
+            
+            if artist_in_collection:
+                query = "SELECT * FROM upcoming_releases WHERE artist_in_collection = TRUE ORDER BY release_date ASC"
+            else:
+                query = "SELECT * FROM upcoming_releases ORDER BY release_date ASC"
+            
+            cursor.execute(query)
+            rows = cursor.fetchall() or []
+            releases = []
+            
+            for row in rows:
+                if row is None:
+                    logger.warning("Skipping None row from database")
+                    continue
+                try:
+                    releases.append(dict(row))
+                except (TypeError, ValueError) as e:
+                    logger.warning(f"Could not convert row to dict: {e}, row: {row}")
+                    continue
+            
+            conn.close()
+            return releases
+        except Exception as e:
+            logger.error(f"Error retrieving upcoming releases: {e}")
+            return []
 
 
 if __name__ == "__main__":
