@@ -291,7 +291,11 @@ class WikipediaReleaseScraper:
                     logger.warning("Skipping None row from database")
                     continue
                 try:
-                    releases.append(dict(row))
+                    release_dict = dict(row)
+                    # Ensure release_date is never None (default to 'Unknown')
+                    if not release_dict.get('release_date'):
+                        release_dict['release_date'] = 'Unknown'
+                    releases.append(release_dict)
                 except (TypeError, ValueError) as e:
                     logger.warning(f"Could not convert row to dict: {e}, row: {row}")
                     continue

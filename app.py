@@ -12098,7 +12098,9 @@ def api_upcoming_releases():
         # Group by month for UI display
         grouped = {}
         for release in releases:
-            month = release.get('release_date', 'Unknown')[:7]  # YYYY-MM
+            # Handle cases where release_date might be None
+            release_date = release.get('release_date') or 'Unknown'
+            month = release_date[:7] if release_date and release_date != 'Unknown' else 'Unknown'
             if month not in grouped:
                 grouped[month] = []
             grouped[month].append(release)

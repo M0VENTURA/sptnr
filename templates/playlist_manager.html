@@ -753,8 +753,11 @@ document.addEventListener('DOMContentLoaded', function() {
 
 async function loadNavidromePlaylists() {
   try {
+    console.log('[Playlist Manager] Starting loadNavidromePlaylists');
     const response = await fetch('/api/navidrome/playlists');
     const data = await response.json();
+    console.log('[Playlist Manager] API response:', data);
+    
     const smartSelect = document.getElementById('smartPlaylistSelect');
     const regularSelect = document.getElementById('regularPlaylistSelect');
     
@@ -765,6 +768,8 @@ async function loadNavidromePlaylists() {
 
     smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
     regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
+    
+    console.log('[Playlist Manager] Data from API - smart:', data.smart?.length || 0, 'regular:', data.regular?.length || 0);
     
     // Check for API error response
     if (data.error) {
@@ -792,6 +797,8 @@ async function loadNavidromePlaylists() {
     }
     if ((!data.smart || data.smart.length === 0) && (!data.regular || data.regular.length === 0)) {
       console.warn('[Playlist Manager] No playlists found in Navidrome');
+      smartSelect.innerHTML = '<option value="">No smart playlists found in Navidrome</option>';
+      regularSelect.innerHTML = '<option value="">No regular playlists found in Navidrome</option>';
     }
   } catch (e) {
     console.error('[Playlist Manager] Failed to load Navidrome playlists:', e);
@@ -909,10 +916,21 @@ let selectedReplacements = {};
 
 async function loadPlaylistList() {
   try {
+    console.log('[Playlist Manager] Starting loadPlaylistList');
     const response = await fetch('/api/playlist/list');
     const data = await response.json();
+    console.log('[Playlist Manager] Playlist list API response:', data);
+    
     const select = document.getElementById('playlistFileSelect');
     select.innerHTML = '<option value="">Select a playlist...</option>';
+    
+    if (!data || !data.playlists) {
+      console.error('[Playlist Manager] Invalid playlist list response:', data);
+      select.innerHTML = '<option value="">Error: Invalid API response</option>';
+      return;
+    }
+    
+    console.log('[Playlist Manager] Found', data.playlists.length, 'playlists');
     if (data.playlists && data.playlists.length > 0) {
       data.playlists.forEach(playlist => {
         const option = document.createElement('option');
@@ -926,7 +944,8 @@ async function loadPlaylistList() {
         select.appendChild(option);
       });
     } else {
-      select.innerHTML = '<option value="">No playlists found</option>';
+      select.innerHTML = '<option value="">No playlists found - check Navidrome configuration</option>';
+      console.warn('[Playlist Manager] No playlists returned from /api/playlist/list');
     }
   } catch (error) {
     console.error('Error loading playlists:', error);
@@ -1701,7 +1720,7 @@ async function createPlaylistFromListenBrainz() {
 /* Tab Section Styling */
 .tab-section {
   animation: fadeIn 0.3s ease-in;
-  display: none !important;  /* Initially hidden */
+  display: none;  /* Initially hidden */
 }
 
 .tab-section.tab-active {
