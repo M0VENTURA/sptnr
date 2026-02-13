@@ -10813,8 +10813,9 @@ def track_genre_recommendations():
                     if isinstance(genre_list, list):
                         genres_set.update(g.strip() for g in genre_list if g and g.strip())
                 except:
-                    # Fallback to comma-separated
-                    genres_set.update(g.strip() for g in genre_field.split(',') if g and g.strip())
+                    # Handle backslash-separated (from Navidrome) and comma-separated
+                    delimiter = '\\' if '\\' in str(genre_field) else ','
+                    genres_set.update(g.strip() for g in str(genre_field).split(delimiter) if g and g.strip())
         
         # Get artist-level genres
         conn = get_db()
@@ -10844,7 +10845,9 @@ def track_genre_recommendations():
                                 if g and g.strip():
                                     artist_genres_count[g.strip()] = artist_genres_count.get(g.strip(), 0) + 1
                     except:
-                        for g in genre_field.split(','):
+                        # Handle backslash-separated (from Navidrome) and comma-separated
+                        delimiter = '\\' if '\\' in str(genre_field) else ','
+                        for g in str(genre_field).split(delimiter):
                             if g and g.strip():
                                 artist_genres_count[g.strip()] = artist_genres_count.get(g.strip(), 0) + 1
         
