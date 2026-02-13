@@ -10914,6 +10914,107 @@ def track_genre_recommendations():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/album/<path:artist>/<path:album>/track-recommendations", methods=["GET"])
+def api_album_track_recommendations(artist, album):
+    """Get genre recommendations for all tracks in an album
+    
+    Returns recommendations from Spotify, MusicBrainz, Discogs, LastFM, and Navidrome sources.
+    """
+    logger = logging.getLogger('sptnr')
+    try:
+        from urllib.parse import unquote
+        artist = unquote(artist)
+        album = unquote(album)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all tracks in the album with their metadata and genres
+        cursor.execute("""
+            SELECT 
+                id, title, artist, track_number,
+                spotify_genres, spotify_artist_genres,
+                lastfm_tags,
+                discogs_genres, discogs_artist_genres,
+                musicbrainz_genres, musicbrainz_artist_genres,
+                navidrome_genres
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+            ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999), title COLLATE NOCASE
+        """, (artist, album))
+        
+        tracks_data = cursor.fetchall()
+        conn.close()
+        
+        if not tracks_data:
+            return jsonify({"error": "Album not found"}), 404
+        
+        # Build recommendations for each track
+        recommendations_by_track = {}
+        
+        for track in tracks_data:
+            track_id = track['id'] if isinstance(track, dict) else track[0]
+            track_title = track['title'] if isinstance(track, dict) else track[1]
+            
+            # Collect genres from all sources
+            genres_set = set()
+            
+            # Parse each genre field
+            genre_fields = {
+                'spotify_genres': track['spotify_genres'] if isinstance(track, dict) else track[4],
+                'spotify_artist_genres': track['spotify_artist_genres'] if isinstance(track, dict) else track[5],
+                'lastfm_tags': track['lastfm_tags'] if isinstance(track, dict) else track[6],
+                'discogs_genres': track['discogs_genres'] if isinstance(track, dict) else track[7],
+                'discogs_artist_genres': track['discogs_artist_genres'] if isinstance(track, dict) else track[8],
+                'musicbrainz_genres': track['musicbrainz_genres'] if isinstance(track, dict) else track[9],
+                'musicbrainz_artist_genres': track['musicbrainz_artist_genres'] if isinstance(track, dict) else track[10],
+                'navidrome_genres': track['navidrome_genres'] if isinstance(track, dict) else track[11],
+            }
+            
+            # Extract genres from all fields
+            for field_name, field_value in genre_fields.items():
+                if field_value:
+                    try:
+                        # Try to parse as JSON array
+                        if isinstance(field_value, str):
+                            genre_list = json.loads(field_value)
+                            if isinstance(genre_list, list):
+                                for g in genre_list:
+                                    if g and len(g.strip()) > 2:
+                                        genres_set.add(g.strip())
+                    except (json.JSONDecodeError, TypeError):
+                        # Handle comma or backslash-separated genres
+                        delimiter = '\\' if isinstance(field_value, str) and '\\' in field_value else ','
+                        if isinstance(field_value, str):
+                            for g in field_value.split(delimiter):
+                                if g and len(g.strip()) > 2:
+                                    genres_set.add(g.strip())
+            
+            # Format and deduplicate genres
+            recommendations = []
+            for genre in sorted(genres_set):
+                # Capitalize properly
+                formatted = ' '.join(word.capitalize() for word in genre.split())
+                if formatted not in recommendations:
+                    recommendations.append(formatted)
+            
+            recommendations_by_track[str(track_id)] = {
+                'title': track_title,
+                'recommendations': recommendations[:15]  # Limit to top 15
+            }
+        
+        return jsonify({
+            "success": True,
+            "album": album,
+            "artist": artist,
+            "recommendations": recommendations_by_track
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error fetching track recommendations: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/musicbrainz", methods=["POST"])
 def api_album_musicbrainz_lookup():
     """Lookup album on MusicBrainz for multiple matches (Picard-style) with retry logic"""

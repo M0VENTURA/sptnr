@@ -357,14 +357,14 @@
             {% if tracks or tracks_by_disc %}
             <div>
                 <h6 class="mb-3"><i class="bi bi-music-note-list"></i> Genre Coverage Across Tracks</h6>
-                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata. <small>Click genre badges to remove, or use the + button to add genres.</small></p>
-                <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
+                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata. <small>Click genre badges to remove, or use the + button to add genres. Suggested genres appear below when available.</small></p>
+                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
                     <table class="table table-sm mb-0" style="font-size: 0.85rem;">
                         <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
                             <tr>
                                 <th style="width: 200px;">Track</th>
                                 <th class="text-center" style="width: 60px;">Fit %</th>
-                                <th>Genres</th>
+                                <th>Genres & Recommendations</th>
                             </tr>
                         </thead>
                         <tbody>
@@ -372,11 +372,11 @@
                                 {% for disc_num in tracks_by_disc|dictsort %}
                                     {% for track in disc_num[1] %}
                                     <tr>
-                                        <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                        <td class="align-top" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
                                             <small class="text-muted">{{ disc_num[0] }}.{{ track.track_number or loop.index }}</small>
                                             {{ track.title }}
                                         </td>
-                                        <td class="text-center">
+                                        <td class="text-center align-top">
                                             {% if track.genre_fit_percent > 0 %}
                                             <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
                                                 {{ track.genre_fit_percent }}%
@@ -385,7 +385,49 @@
                                             <span class="text-muted">—</span>
                                             {% endif %}
                                         </td>
-                                        <td>
+                                        <td class="align-top">
+                                            <div class="d-flex flex-column gap-2">
+                                                <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
+                                                    {% if track.matching_genres %}
+                                                        {% for genre in track.matching_genres %}
+                                                        <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                            {{ genre }}
+                                                            <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
+                                                        </span>
+                                                        {% endfor %}
+                                                    {% else %}
+                                                    <span class="text-muted small">No album genres</span>
+                                                    {% endif %}
+                                                    <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                                        <i class="bi bi-plus-circle"></i> Add
+                                                    </button>
+                                                </div>
+                                                <!-- Suggested Genres for Track -->
+                                                <div class="d-flex align-items-center gap-2 flex-wrap ps-2" id="suggestions-{{ track.id }}" style="display: none; border-left: 2px solid #dee2e6; padding-left: 0.5rem;">
+                                                </div>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    {% endfor %}
+                                {% endfor %}
+                            {% else %}
+                                {% for track in tracks %}
+                                <tr>
+                                    <td class="align-top" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
+                                        <small class="text-muted">{{ loop.index }}</small>
+                                        {{ track.title }}
+                                    </td>
+                                    <td class="text-center align-top">
+                                        {% if track.genre_fit_percent > 0 %}
+                                        <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
+                                            {{ track.genre_fit_percent }}%
+                                        </span>
+                                        {% else %}
+                                        <span class="text-muted">—</span>
+                                        {% endif %}
+                                    </td>
+                                    <td class="align-top">
+                                        <div class="d-flex flex-column gap-2">
                                             <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
                                                 {% if track.matching_genres %}
                                                     {% for genre in track.matching_genres %}
@@ -401,41 +443,9 @@
                                                     <i class="bi bi-plus-circle"></i> Add
                                                 </button>
                                             </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                {% endfor %}
-                            {% else %}
-                                {% for track in tracks %}
-                                <tr>
-                                    <td style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
-                                        <small class="text-muted">{{ loop.index }}</small>
-                                        {{ track.title }}
-                                    </td>
-                                    <td class="text-center">
-                                        {% if track.genre_fit_percent > 0 %}
-                                        <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
-                                            {{ track.genre_fit_percent }}%
-                                        </span>
-                                        {% else %}
-                                        <span class="text-muted">—</span>
-                                        {% endif %}
-                                    </td>
-                                    <td>
-                                        <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
-                                            {% if track.matching_genres %}
-                                                {% for genre in track.matching_genres %}
-                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
-                                                    {{ genre }}
-                                                    <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
-                                                </span>
-                                                {% endfor %}
-                                            {% else %}
-                                            <span class="text-muted small">No album genres</span>
-                                            {% endif %}
-                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
-                                                <i class="bi bi-plus-circle"></i> Add
-                                            </button>
+                                            <!-- Suggested Genres for Track -->
+                                            <div class="d-flex align-items-center gap-2 flex-wrap ps-2" id="suggestions-{{ track.id }}" style="display: none; border-left: 2px solid #dee2e6; padding-left: 0.5rem;">
+                                            </div>
                                         </div>
                                     </td>
                                 </tr>
@@ -1441,6 +1451,89 @@
         });
     }
     
+    // Load track-level recommendations when page loads
+    async function loadTrackRecommendations() {
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        
+        try {
+            const response = await fetch(`/api/album/${encodeURIComponent(artistName)}/${encodeURIComponent(albumName)}/track-recommendations`);
+            const data = await response.json();
+            
+            if (!response.ok || !data.success) {
+                console.debug('Could not load track recommendations:', data.error);
+                return;
+            }
+            
+            // Display recommendations for each track
+            const recs = data.recommendations;
+            for (const trackId in recs) {
+                const trackRecs = recs[trackId];
+                if (trackRecs.recommendations && trackRecs.recommendations.length > 0) {
+                    displayTrackRecommendations(trackId, trackRecs.recommendations);
+                }
+            }
+        } catch (error) {
+            console.debug('Error loading track recommendations:', error);
+        }
+    }
+    
+    function displayTrackRecommendations(trackId, recommendations) {
+        const suggestionsDiv = document.getElementById(`suggestions-${trackId}`);
+        if (!suggestionsDiv) return;
+        
+        // Show the suggestions section
+        suggestionsDiv.style.display = 'flex';
+        
+        // Build recommendation badges
+        let html = '<small class="text-muted me-2" style="white-space: nowrap;">Suggested:</small>';
+        recommendations.forEach(genre => {
+            html += `
+                <span class="badge bg-info bg-opacity-75" style="font-size: 0.7rem; cursor: pointer; position: relative;" 
+                      title="Click to add to this track" onclick="quickAddGenre('${trackId}', '${escapeHtml(genre)}')">
+                    ${escapeHtml(genre)}
+                    <i class="bi bi-plus ms-1" style="font-size: 0.6rem;"></i>
+                </span>
+            `;
+        });
+        
+        suggestionsDiv.innerHTML = html;
+    }
+    
+    function quickAddGenre(trackId, genre) {
+        // Add the genre to the track's genres
+        const genresDiv = document.getElementById(`genres-${trackId}`);
+        if (!genresDiv) return;
+        
+        // Check if genre already exists
+        if (genresDiv.textContent.includes(genre)) {
+            return; // Genre already added
+        }
+        
+        // Make API call to add genre to track
+        fetch('/api/tags/track/' + trackId, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                genre: genre,
+                action: 'add',
+                sync_to_file: true
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Reload the page to show updated genres
+                location.reload();
+            } else {
+                alert('Error adding genre: ' + (data.error || 'Unknown error'));
+            }
+        })
+        .catch(error => {
+            alert('Network error: ' + error.message);
+        });
+    }
+    
     // Album metadata form population function
     function populateAlbumFields(title, year, albumType, mbid, discogsId, coverArtUrl, genres) {
         // Close the modal
@@ -1504,6 +1597,9 @@
                 }
             });
         }
+        
+        // Load track-level genre recommendations
+        loadTrackRecommendations();
     });
     
     function addAlbumGenre() {
