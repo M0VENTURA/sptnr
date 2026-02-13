@@ -147,6 +147,7 @@
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_navidrome') }}" class="d-flex">
@@ -180,6 +181,7 @@
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_popularity') }}" class="d-flex">
@@ -213,6 +215,7 @@
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_combined') }}" class="d-flex">
@@ -487,9 +490,23 @@
         line-height: 1.3;
     }
 
-    /* Dropdown z-index fix: ensure dropdowns appear above log window */
+    /* Dropdown z-index fix: ensure dropdowns appear above all other elements */
     .dropdown-menu {
-        z-index: 1050 !important;
+        z-index: 1060 !important;
+    }
+    
+    /* Prevent card overflow from clipping dropdowns */
+    .card {
+        overflow: visible !important;
+    }
+    
+    .card-body {
+        overflow: visible !important;
+    }
+    
+    /* Ensure btn-group doesn't clip dropdown */
+    .btn-group {
+        position: static !important;
     }
 </style>
 
