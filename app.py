@@ -5773,25 +5773,32 @@ def help_page(doc_name=None):
 @app.route("/api/stats")
 def api_stats():
     """API endpoint for statistics"""
-    conn = get_db()
-    cursor = conn.cursor()
-    
-    cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
-    artist_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
-    album_count = cursor.fetchone()[0]
-    
-    cursor.execute("SELECT COUNT(*) FROM tracks")
-    track_count = cursor.fetchone()[0]
-    
-    conn.close()
-    
-    return jsonify({
-        "artists": artist_count,
-        "albums": album_count,
-        "tracks": track_count
-    })
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT COUNT(DISTINCT artist) FROM tracks")
+        artist_result = cursor.fetchone()
+        artist_count = artist_result[0] if artist_result else 0
+        
+        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks")
+        album_result = cursor.fetchone()
+        album_count = album_result[0] if album_result else 0
+        
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        track_result = cursor.fetchone()
+        track_count = track_result[0] if track_result else 0
+        
+        conn.close()
+        
+        return jsonify({
+            "artists": artist_count,
+            "albums": album_count,
+            "tracks": track_count
+        })
+    except Exception as e:
+        logging.error(f"Error getting stats: {e}")
+        return jsonify({"artists": 0, "albums": 0, "tracks": 0}), 500
 
 
 @app.route("/api/scan-status")
@@ -5993,21 +6000,27 @@ def api_track_count():
     try:
         with closing(sqlite3.connect(DB_PATH)) as conn:
             cursor = conn.cursor()
+            
             cursor.execute("SELECT COUNT(*) FROM tracks")
-            total_tracks = cursor.fetchone()[0]
+            total_result = cursor.fetchone()
+            total_tracks = total_result[0] if total_result else 0
             
             # Also get counts with different metadata filled in
             cursor.execute("SELECT COUNT(*) FROM tracks WHERE stars IS NOT NULL")
-            navidrome_filled = cursor.fetchone()[0]
+            navidrome_result = cursor.fetchone()
+            navidrome_filled = navidrome_result[0] if navidrome_result else 0
             
             cursor.execute("SELECT COUNT(*) FROM tracks WHERE spotify_score IS NOT NULL")
-            popularity_filled = cursor.fetchone()[0]
+            popularity_result = cursor.fetchone()
+            popularity_filled = popularity_result[0] if popularity_result else 0
             
             cursor.execute("SELECT COUNT(*) FROM tracks WHERE is_single IS NOT NULL")
-            singles_filled = cursor.fetchone()[0]
+            singles_result = cursor.fetchone()
+            singles_filled = singles_result[0] if singles_result else 0
             
             cursor.execute("SELECT COUNT(*) FROM tracks WHERE file_path IS NOT NULL")
-            filepath_filled = cursor.fetchone()[0]
+            filepath_result = cursor.fetchone()
+            filepath_filled = filepath_result[0] if filepath_result else 0
             
             return jsonify({
                 "total_tracks": total_tracks,
@@ -9662,7 +9675,7 @@ def api_lastfm_recommendations():
         """, (current_user,))
         
         last_sync_row = cursor.fetchone()
-        last_sync = last_sync_row[0] if last_sync_row else None
+        last_sync = last_sync_row[0] if last_sync_row and last_sync_row[0] else None
         conn.close()
         
         # Organize into artists, albums, tracks
@@ -9673,28 +9686,35 @@ def api_lastfm_recommendations():
         }
         
         for row in rows:
-            rec_type = row[0] if isinstance(row, tuple) else row.get('recommendation_type', '')
-            item_name = row[1] if isinstance(row, tuple) else row.get('item_name', '')
-            artist_name = row[2] if isinstance(row, tuple) else row.get('artist_name', '')
-            image_url = row[3] if isinstance(row, tuple) else row.get('image_url', '')
-            playcount = row[4] if isinstance(row, tuple) else row.get('playcount', 0)
-            url = row[5] if isinstance(row, tuple) else row.get('lastfm_url', '')
+            if row is None:
+                continue
             
-            rec_item = {
-                "name": item_name,
-                "image": image_url,
-                "playcount": playcount,
-                "url": url
-            }
-            
-            if rec_type == "artist":
-                recommendations["artists"].append(rec_item)
-            elif rec_type == "album":
-                rec_item["artist"] = artist_name
-                recommendations["albums"].append(rec_item)
-            elif rec_type == "track":
-                rec_item["artist"] = artist_name
-                recommendations["tracks"].append(rec_item)
+            try:
+                rec_type = row[0] if isinstance(row, tuple) else row.get('recommendation_type', '')
+                item_name = row[1] if isinstance(row, tuple) else row.get('item_name', '')
+                artist_name = row[2] if isinstance(row, tuple) else row.get('artist_name', '')
+                image_url = row[3] if isinstance(row, tuple) else row.get('image_url', '')
+                playcount = row[4] if isinstance(row, tuple) else row.get('playcount', 0)
+                url = row[5] if isinstance(row, tuple) else row.get('lastfm_url', '')
+                
+                rec_item = {
+                    "name": item_name,
+                    "image": image_url,
+                    "playcount": playcount,
+                    "url": url
+                }
+                
+                if rec_type == "artist":
+                    recommendations["artists"].append(rec_item)
+                elif rec_type == "album":
+                    rec_item["artist"] = artist_name
+                    recommendations["albums"].append(rec_item)
+                elif rec_type == "track":
+                    rec_item["artist"] = artist_name
+                    recommendations["tracks"].append(rec_item)
+            except (IndexError, TypeError) as e:
+                logging.debug(f"Error processing recommendation row: {e}, row: {row}")
+                continue
         
         return jsonify({
             "recommendations": recommendations,
@@ -10818,7 +10838,7 @@ def api_album_musicbrainz_lookup():
             try:
                 resp = session.get(
                     "https://musicbrainz.org/ws/2/release-group",
-                    params={"query": query, "fmt": "json", "limit": 25},
+                    params={"query": query, "fmt": "json", "limit": 10},
                     headers=headers,
                     timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
@@ -10874,7 +10894,7 @@ def api_album_musicbrainz_lookup():
         # Sort by confidence
         results.sort(key=lambda x: x["confidence"], reverse=True)
         
-        return jsonify({"results": results[:25]}), 200
+        return jsonify({"results": results[:10]}), 200
             
     except Exception as e:
         logger = logging.getLogger('sptnr')
@@ -11354,85 +11374,6 @@ def api_artist_apply_genres():
     finally:
         if conn:
             conn.close()
-
-@app.route("/api/album/submit-musicbrainz", methods=["POST"])
-def api_album_submit_musicbrainz():
-    """Generate a seeded MusicBrainz submission URL with pre-filled album data from Spotify/Discogs"""
-    logger = logging.getLogger('sptnr')
-    try:
-        data = request.get_json() or {}
-        artist = data.get("artist", "").strip()
-        album = data.get("album", "").strip()
-        discogs_id = data.get("discogs_id", "")
-        spotify_album_type = data.get("album_type", "")
-        release_date = data.get("release_date", "")
-        genres = data.get("genres", [])
-        tracks_data = data.get("tracks", [])  # Array of {title, duration, artist} objects
-        
-        if not artist or not album:
-            return jsonify({"error": "Missing artist or album"}), 400
-        
-        try:
-            # Build the MusicBrainz submission URL with seed parameters
-            # MusicBrainz seed parameters for new release submissions
-            base_url = "https://musicbrainz.org/release/add"
-            
-            params = {
-                "name": album,
-                "artist_name": artist,
-                "type": "Album"  # Default type
-            }
-            
-            # Add album type if available
-            if spotify_album_type and spotify_album_type.lower() == "single":
-                params["type"] = "Single"
-            elif spotify_album_type and spotify_album_type.lower() == "ep":
-                params["type"] = "EP"
-            
-            # Add release date if available
-            if release_date:
-                # Try to extract just the date in YYYY-MM-DD format
-                date_str = str(release_date)[:10]  # Get first 10 chars (YYYY-MM-DD)
-                if len(date_str) >= 4:  # At least year
-                    params["date"] = date_str
-            
-            # Add language/script hints
-            params["lang"] = "en"
-            
-            # Build URL with parameters
-            query_string = "&".join([f"{k}={requests.utils.quote(str(v))}" for k, v in params.items()])
-            submission_url = f"{base_url}?{query_string}"
-            
-            # Create instructions for the user
-            instructions = {
-                "step1": "Click 'Open MusicBrainz' to go to the submission page",
-                "step2": "The album name and artist will be pre-filled",
-                "step3": "Fill in the remaining details (release date, barcode, label, etc.)",
-                "step4": f"Add tracks manually or use the Discogs ID {discogs_id} as a reference",
-                "step5": "Click 'Submit' to create a new edit",
-                "sources": {
-                    "discogs_id": discogs_id if discogs_id else None,
-                    "genres": genres if genres else None,
-                    "tracks_found": len(tracks_data) if tracks_data else 0
-                }
-            }
-            
-            logger.info(f"Generated MusicBrainz submission URL for {artist} - {album}")
-            
-            return jsonify({
-                "success": True,
-                "submission_url": submission_url,
-                "instructions": instructions,
-                "message": "Open the URL below to submit this album to MusicBrainz. Your data will be pre-filled."
-            }), 200
-            
-        except Exception as inner_e:
-            logger.error(f"Error building submission URL: {inner_e}")
-            raise
-            
-    except Exception as e:
-        logger.error(f"MusicBrainz submission error: {e}")
-        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
