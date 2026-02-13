@@ -3181,7 +3181,6 @@ async function refreshUpcomingReleases() {
     }
     
     // Filter to only show albums NOT in collection
-    const filterCollection = document.getElementById('upcomingFilterCollection').checked;
     let releases = data.releases;
     if (filterCollection) {
       releases = releases.filter(r => !r.album_in_collection);
