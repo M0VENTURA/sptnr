@@ -44,6 +44,16 @@ WIKIPEDIA_SOURCES = {
 class WikipediaReleaseScraper:
     """Scrapes album releases from Wikipedia"""
     
+    # Column order for each source: [position0, position1, position2, ...]
+    # Positions: 'day', 'artist', 'album'
+    SOURCE_COLUMN_ORDERS = {
+        "2026_albums": ['day', 'artist', 'album'],      # Number, Artist, Album
+        "2026_heavy_metal": ['day', 'artist', 'album'],  # Day, Artist, Album
+        "2026_rock": ['day', 'artist', 'album'],         # Number, Artist, Album
+        "2026_kpop": ['day', 'album', 'artist'],         # Number, Album, Artist
+        "2026_american": ['day', 'album', 'artist'],     # Number, Album, Artist
+    }
+    
     def __init__(self, db_path: str = "database.db"):
         self.db_path = db_path
         self.session = requests.Session()
@@ -68,7 +78,7 @@ class WikipediaReleaseScraper:
         
         for source_key, source_info in WIKIPEDIA_SOURCES.items():
             logger.info(f"Scraping {source_info['name']}...")
-            items = self.scrape_source(source_info["url"], source_info["name"])
+            items = self.scrape_source(source_key, source_info["url"], source_info["name"])
             
             results["sources"][source_key] = {
                 "name": source_info["name"],
@@ -90,7 +100,7 @@ class WikipediaReleaseScraper:
         
         return results
     
-    def scrape_source(self, url: str, source_name: str) -> List[Dict]:
+    def scrape_source(self, source_key: str, url: str, source_name: str) -> List[Dict]:
         """Scrape a single Wikipedia source"""
         try:
             logger.debug(f"Fetching {url}")
@@ -98,7 +108,7 @@ class WikipediaReleaseScraper:
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
-            releases = self._parse_release_tables(soup, source_name)
+            releases = self._parse_release_tables(soup, source_key, source_name)
             
             logger.info(f"✓ Scraped {len(releases)} releases from {source_name}")
             return releases
@@ -106,15 +116,13 @@ class WikipediaReleaseScraper:
             logger.error(f"Error scraping {source_name}: {e}")
             return []
     
-    def _parse_release_tables(self, soup: BeautifulSoup, source_name: str) -> List[Dict]:
+    def _parse_release_tables(self, soup: BeautifulSoup, source_key: str, source_name: str) -> List[Dict]:
         """Parse release information from Wikipedia tables
         
         Expected structure:
         - Month heading (h2/h3/text with month name)
         - Table with releases for that month
-        - First column: day number
-        - Second column: artist or album info
-        - Third column: album or artist info
+        - Columns vary by source (see SOURCE_COLUMN_ORDERS)
         """
         releases = []
         
@@ -123,6 +131,10 @@ class WikipediaReleaseScraper:
             'may': 5, 'june': 6, 'july': 7, 'august': 8,
             'september': 9, 'october': 10, 'november': 11, 'december': 12
         }
+        
+        # Get column order for this source
+        column_order = self.SOURCE_COLUMN_ORDERS.get(source_key, ['day', 'artist', 'album'])
+        logger.debug(f"Using column order for {source_name}: {column_order}")
         
         # Find all tables on the page
         tables = soup.find_all('table', {'class': 'wikitable'})
@@ -172,59 +184,55 @@ class WikipediaReleaseScraper:
                 if len(cells) < 2:
                     continue
                 
-                release = self._parse_row_for_month(cells, source_name, current_month)
+                release = self._parse_row_for_month(cells, source_key, source_name, current_month, column_order)
                 if release:
                     releases.append(release)
                     logger.debug(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
         
         return releases
     
-    def _parse_row_for_month(self, cells, source_name: str, current_month: int) -> Optional[Dict]:
-        """Parse a row that's already in a month context
+    def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
+                             column_order: list) -> Optional[Dict]:
+        """Parse a row using source-specific column order
         
-        Format: [day] [artist/info] [album/title] ...
+        column_order: list like ['day', 'artist', 'album'] indicating what each column contains
         """
         try:
-            if len(cells) < 2:
+            if len(cells) < len([c for c in column_order if c]):  # At least the important columns
                 return None
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
             
-            # First cell should be day number
-            day_text = cell_texts[0].strip()
+            # Extract fields based on column order
+            artist = None
+            album = None
             day = None
             
-            try:
-                day = int(day_text)
-                if not (1 <= day <= 31):
-                    day = None
-            except ValueError:
-                # First cell might not be day, could be artist or date text
-                pass
+            for col_idx, col_type in enumerate(column_order):
+                if col_idx >= len(cell_texts):
+                    break
+                
+                cell_value = cell_texts[col_idx].strip()
+                if not cell_value:
+                    continue
+                
+                if col_type == 'day':
+                    try:
+                        day = int(cell_value)
+                        if not (1 <= day <= 31):
+                            day = None
+                    except ValueError:
+                        pass
+                elif col_type == 'artist':
+                    artist = cell_value
+                elif col_type == 'album':
+                    album = cell_value
             
-            # If we got a valid day, artist/album are in positions 1 and 2
-            if day:
-                if len(cell_texts) < 3:
-                    # Only 2 cells, could be [day] [artist-album text]
-                    combined = cell_texts[1]
-                    # Try to split on dash or hyphen
-                    if ' - ' in combined:
-                        parts = combined.split(' - ', 1)
-                        artist = parts[0].strip()
-                        album = parts[1].strip()
-                    else:
-                        # Can't reliably parse
-                        return None
-                else:
-                    artist = cell_texts[1].strip()
-                    album = cell_texts[2].strip()
-            else:
-                # No valid day in first cell, treat as (artist, album, ...)
-                artist = cell_texts[0].strip()
-                album = cell_texts[1].strip()
-                day = 1  # Default to first of month
+            # If we didn't get a day, default to 1
+            if not day:
+                day = 1
             
-            # Validate
+            # Validate we have artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
                 return None
             
@@ -244,7 +252,7 @@ class WikipediaReleaseScraper:
                 "source": source_name,
             }
         except Exception as e:
-            logger.debug(f"Error parsing row for month {current_month}: {e}")
+            logger.debug(f"Error parsing row for {source_name}: {e}")
             return None
     
     
