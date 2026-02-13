@@ -144,28 +144,25 @@ class WikipediaReleaseScraper:
             # Find the month heading before this table
             current_month = None
             
-            # Walk backwards from table to find month heading
-            prev = table.find_previous(['h2', 'h3', 'h4'])
-            if prev:
-                heading_text = prev.get_text(strip=True).lower()
+            # Walk backwards from table through all previous elements looking for month
+            prev = table.find_previous()
+            while prev and not current_month:
+                text = prev.get_text(strip=True).lower()
+                # Check if this element contains a month name
                 for month_name, month_num in months.items():
-                    if month_name in heading_text:
+                    if month_name in text and len(text) < 100:  # Month heading is usually short
                         current_month = month_num
-                        logger.debug(f"Found month heading: {month_name} ({month_num})")
+                        logger.debug(f"Found month heading '{text}' -> month {month_num}")
                         break
-            
-            # Also check for month text right before table
-            if not current_month:
-                prev_text = table.find_previous(string=True)
-                if prev_text:
-                    prev_clean = prev_text.lower().strip()
-                    for month_name, month_num in months.items():
-                        if month_name in prev_clean and len(prev_clean) < 50:
-                            current_month = month_num
-                            break
+                
+                # Don't search too far back (stop at next table or major heading)
+                if prev.name in ['table']:
+                    break
+                prev = prev.find_previous()
             
             if not current_month:
                 current_month = 1  # Default to January
+                logger.debug(f"Could not find month heading, defaulting to January")
             
             # Parse table rows
             rows = table.find_all('tr')
@@ -176,7 +173,19 @@ class WikipediaReleaseScraper:
             start_idx = 0
             if rows and rows[0].find_all('th'):
                 start_idx = 1
-                logger.debug(f"Skipping header row for month {current_month}")
+                logger.debug(f"Skipping header row (contains <th> elements) for month {current_month}")
+            elif rows and len(rows) > 1:
+                # Check if first row looks like a header by its content
+                first_row_cells = rows[0].find_all('td')
+                if first_row_cells:
+                    first_row_text = [c.get_text(strip=True).lower() for c in first_row_cells]
+                    is_header = any(keyword in text for text in first_row_text 
+                                  for keyword in ['date', 'artist', 'album', 'title', 'release', 'day', 'number'])
+                    if is_header:
+                        start_idx = 1
+                        logger.debug(f"Skipping header row (contains column names) for month {current_month}")
+            
+            logger.debug(f"Starting data row parsing from index {start_idx}")
             
             # Parse data rows
             for row in rows[start_idx:]:
@@ -184,10 +193,16 @@ class WikipediaReleaseScraper:
                 if len(cells) < 2:
                     continue
                 
+                # Debug first few rows to understand structure
+                if len(releases) < 3:
+                    cell_preview = [c.get_text(strip=True)[:30] for c in cells[:4]]
+                    logger.info(f"Row {len(releases)} preview: {cell_preview}")
+                
                 release = self._parse_row_for_month(cells, source_key, source_name, current_month, column_order)
                 if release:
                     releases.append(release)
-                    logger.debug(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
+                    if len(releases) <= 3:
+                        logger.info(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
         
         return releases
     
@@ -203,6 +218,9 @@ class WikipediaReleaseScraper:
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
             
+            # Debug: log what we're parsing
+            logger.debug(f"Raw cells for {source_name}: {cell_texts[:4]}")  # First 4 cells
+            
             # Extract fields based on column order
             artist = None
             album = None
@@ -216,33 +234,51 @@ class WikipediaReleaseScraper:
                 if not cell_value:
                     continue
                 
+                logger.debug(f"  Column {col_idx} ({col_type}): '{cell_value[:50]}'")
+                
                 if col_type == 'day':
+                    # Extract number from cell (handle cases like "9", "9.", etc.)
                     try:
-                        day = int(cell_value)
-                        if not (1 <= day <= 31):
-                            day = None
-                    except ValueError:
-                        pass
+                        # Use regex to extract the leading number
+                        match = re.match(r'(\d+)', cell_value)
+                        if match:
+                            day = int(match.group(1))
+                            if not (1 <= day <= 31):
+                                logger.debug(f"    Day {day} out of range, ignoring")
+                                day = None
+                            else:
+                                logger.debug(f"    Extracted day: {day} from '{cell_value}'")
+                        else:
+                            logger.debug(f"    No number found in '{cell_value}'")
+                    except (ValueError, AttributeError) as e:
+                        logger.debug(f"    Could not extract day from '{cell_value}': {e}")
                 elif col_type == 'artist':
                     artist = cell_value
+                    logger.debug(f"    Artist: {artist[:40]}")
                 elif col_type == 'album':
                     album = cell_value
+                    logger.debug(f"    Album: {album[:40]}")
             
             # If we didn't get a day, default to 1
             if not day:
                 day = 1
+                logger.debug(f"  No day found, defaulting to 1")
             
             # Validate we have artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
+                logger.debug(f"  Invalid: artist={artist}, album={album}")
                 return None
             
             # Skip entries with wiki markup
             for text in [artist, album]:
                 if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
+                    logger.debug(f"  Skipping due to wiki markup")
                     return None
             
             # Build date
             release_date = f"2026-{current_month:02d}-{day:02d}"
+            
+            logger.debug(f"  Final: {artist} - {album} ({release_date})")
             
             return {
                 "artist_name": artist,
@@ -253,6 +289,8 @@ class WikipediaReleaseScraper:
             }
         except Exception as e:
             logger.debug(f"Error parsing row for {source_name}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
             return None
     
     
