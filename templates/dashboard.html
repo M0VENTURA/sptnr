@@ -130,7 +130,7 @@
             <div class="row g-2">
                 <!-- Navidrome Sync Button -->
                 <div class="col-12 col-md-4">
-                    <div class="card h-100">
+                    <div class="card h-100 scan-operation-card">
                         <div class="card-body p-3">
                             <h6 class="mb-2">
                                 <i class="bi bi-cloud"></i> Navidrome Sync
@@ -162,7 +162,7 @@
                 
                 <!-- Popularity & Singles Button -->
                 <div class="col-12 col-md-4">
-                    <div class="card h-100">
+                    <div class="card h-100 scan-operation-card">
                         <div class="card-body p-3">
                             <h6 class="mb-2">
                                 <i class="bi bi-graph-up"></i> Popularity & Singles
@@ -196,7 +196,7 @@
                 
                 <!-- Combined Scan Button -->
                 <div class="col-12 col-md-4">
-                    <div class="card h-100">
+                    <div class="card h-100 scan-operation-card">
                         <div class="card-body p-3">
                             <h6 class="mb-2">
                                 <i class="bi bi-lightning-fill"></i> Combined Scan
@@ -491,22 +491,23 @@
     }
 
     /* Dropdown z-index fix: ensure dropdowns appear above all other elements */
-    .dropdown-menu {
-        z-index: 1060 !important;
+    /* Bootstrap modals are at z-index 1050, so we need to be higher */
+    .scan-dropdown-btn + .dropdown-menu {
+        z-index: 1060;
     }
     
-    /* Prevent card overflow from clipping dropdowns */
-    .card {
-        overflow: visible !important;
+    /* Prevent scan operation card overflow from clipping dropdowns */
+    /* Only target cards within the scan operations section */
+    .scan-operation-card {
+        overflow: visible;
     }
     
-    .card-body {
-        overflow: visible !important;
+    .scan-operation-card .card-body {
+        overflow: visible;
     }
     
-    /* Ensure btn-group doesn't clip dropdown */
-    .btn-group {
-        position: static !important;
+    .scan-operation-card .btn-group {
+        position: static;
     }
 </style>
 
