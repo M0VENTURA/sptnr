@@ -9789,32 +9789,92 @@ def api_lastfm_create_playlist():
         cursor = conn.cursor()
         
         for rec in rec_list:
-            artist_name = rec.get("artist", "")
-            track_name = rec.get("name", "")
-            
-            if not artist_name or not track_name:
-                continue
-            
-            # Search by artist and title
-            cursor.execute("""
-                SELECT id, artist, title FROM tracks 
-                WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
-                LIMIT 1
-            """, (artist_name, track_name))
-            result = cursor.fetchone()
-            
-            if result:
-                matched_tracks.append({
-                    "id": result[0],
-                    "artist": result[1],
-                    "title": result[2]
-                })
-            else:
-                missing_tracks.append({
-                    "artist": artist_name,
-                    "title": track_name,
-                    "playcount": rec.get("playcount", 0)
-                })
+            if rec_type == "tracks":
+                # For tracks: rec has "artist" and "name" (track name)
+                artist_name = rec.get("artist", "")
+                track_name = rec.get("name", "")
+                
+                if not artist_name or not track_name:
+                    continue
+                
+                # Search by artist and title
+                cursor.execute("""
+                    SELECT id, artist, title FROM tracks 
+                    WHERE LOWER(artist) = LOWER(?) AND LOWER(title) = LOWER(?)
+                    LIMIT 1
+                """, (artist_name, track_name))
+                result = cursor.fetchone()
+                
+                if result:
+                    matched_tracks.append({
+                        "id": result[0],
+                        "artist": result[1],
+                        "title": result[2]
+                    })
+                else:
+                    missing_tracks.append({
+                        "artist": artist_name,
+                        "title": track_name,
+                        "playcount": rec.get("playcount", 0)
+                    })
+                    
+            elif rec_type == "albums":
+                # For albums: rec has "artist" and "name" (album name)
+                artist_name = rec.get("artist", "")
+                album_name = rec.get("name", "")
+                
+                if not artist_name or not album_name:
+                    continue
+                
+                # Search for albums by artist and album name
+                cursor.execute("""
+                    SELECT id, artist, album FROM tracks 
+                    WHERE LOWER(artist) = LOWER(?) AND LOWER(album) = LOWER(?)
+                    LIMIT 1
+                """, (artist_name, album_name))
+                result = cursor.fetchone()
+                
+                if result:
+                    matched_tracks.append({
+                        "id": result[0],
+                        "artist": result[1],
+                        "title": result[2]  # Using 'album' as title for display
+                    })
+                else:
+                    missing_tracks.append({
+                        "artist": artist_name,
+                        "title": album_name,
+                        "playcount": rec.get("playcount", 0)
+                    })
+                    
+            elif rec_type == "artists":
+                # For artists: rec only has "name" (artist name)
+                artist_name = rec.get("name", "")
+                
+                if not artist_name:
+                    continue
+                
+                # Search for any tracks by this artist
+                cursor.execute("""
+                    SELECT id, artist, album FROM tracks 
+                    WHERE LOWER(artist) = LOWER(?)
+                    LIMIT 5
+                """, (artist_name,))
+                results = cursor.fetchall()
+                
+                if results:
+                    for result in results:
+                        matched_tracks.append({
+                            "id": result[0],
+                            "artist": result[1],
+                            "title": result[2]
+                        })
+                else:
+                    missing_tracks.append({
+                        "artist": artist_name,
+                        "title": f"(multiple tracks)",
+                        "playcount": rec.get("playcount", 0)
+                    })
         
         conn.close()
         
