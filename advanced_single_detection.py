@@ -60,12 +60,14 @@ ALTERNATE_VERSION_PATTERNS = [
     r'\(cover\)',
 ]
 
-# Live/unplugged patterns
+# Live/acoustic/unplugged patterns
 LIVE_PATTERNS = [
     r'\blive\b',
     r'\bunplugged\b',
+    r'\bacoustic\b',
     r'\(live\)',
     r'\(unplugged\)',
+    r'\(acoustic\)',
 ]
 
 
@@ -109,18 +111,19 @@ def is_alternate_version(title: str) -> bool:
     return False
 
 
-def is_live_version(title: str, album: str) -> bool:
+def is_live_version(title: str, album: str, genres: str = '') -> bool:
     """
-    Check if track or album indicates a live/unplugged version.
+    Check if track or album indicates a live/acoustic/unplugged version.
     
     Args:
         title: Track title
         album: Album name
+        genres: Genre tags string (comma or semicolon separated)
         
     Returns:
-        True if title or album matches live patterns
+        True if title, album, or genres match live/acoustic/unplugged patterns
     """
-    combined = f"{title} {album}".lower()
+    combined = f"{title} {album} {genres}".lower()
     for pattern in LIVE_PATTERNS:
         if re.search(pattern, combined):
             return True
@@ -191,7 +194,7 @@ def find_matching_versions(
         cursor.execute("""
             SELECT id, title, artist, album, isrc, duration, popularity_score,
                    spotify_album_type, is_spotify_single, 
-                   source_musicbrainz_single
+                   source_musicbrainz_single, genres
             FROM tracks
             WHERE artist = ? AND isrc = ?
         """, (artist, isrc))
@@ -199,10 +202,11 @@ def find_matching_versions(
         for row in cursor.fetchall():
             track_title = row[1] or ''
             track_album = row[3] or ''
+            track_genres = row[10] or ''
             
             # Check if it's an alternate version
             is_alt = is_alternate_version(track_title)
-            is_live_ver = is_live_version(track_title, track_album)
+            is_live_ver = is_live_version(track_title, track_album, track_genres)
             
             # Skip if live/unplugged context doesn't match
             if is_live and not is_live_ver:
@@ -231,7 +235,7 @@ def find_matching_versions(
         cursor.execute("""
             SELECT id, title, artist, album, isrc, duration, popularity_score,
                    spotify_album_type, is_spotify_single,
-                   source_musicbrainz_single
+                   source_musicbrainz_single, genres
             FROM tracks
             WHERE artist = ?
         """, (artist,))
@@ -243,6 +247,7 @@ def find_matching_versions(
             track_title = row[1] or ''
             track_album = row[3] or ''
             track_duration = row[5]
+            track_genres = row[10] or ''
             
             # Check title match
             if normalize_title(track_title) != norm_title:
@@ -255,7 +260,7 @@ def find_matching_versions(
             
             # Check if it's an alternate version
             is_alt = is_alternate_version(track_title)
-            is_live_ver = is_live_version(track_title, track_album)
+            is_live_ver = is_live_version(track_title, track_album, track_genres)
             
             # Skip if live/unplugged context doesn't match
             if is_live and not is_live_ver:
