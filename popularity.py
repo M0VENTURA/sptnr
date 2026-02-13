@@ -2998,18 +2998,18 @@ def popularity_scan(
                     log_debug(f"Updated artist_stats table for {artist}")
                 
                 # Get all tracks for this album with their popularity scores and single detection
-                # Try matching on COALESCE(NULLIF(album_artist, ''), artist) first, then fall back to artist
+                # Try matching on artist field first, then fall back to album_artist field
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
                 
-                # If no results from first query, fall back to matching on artist alone
+                # If no results from first query, fall back to matching on album_artist
                 if not album_tracks_with_scores:
-                    log_debug(f"No tracks found with COALESCE logic for artist '{artist}', falling back to artist field match")
+                    log_debug(f"No tracks found with artist field match for artist '{artist}', falling back to album_artist field match")
                     cursor.execute(
-                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE album_artist = ? AND album = ? ORDER BY popularity_score DESC",
                         (artist, album)
                     )
                     album_tracks_with_scores = cursor.fetchall()
