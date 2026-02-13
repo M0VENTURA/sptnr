@@ -2218,6 +2218,8 @@ def update_audio_file_genres(file_path, genres_list):
         
     Returns:
         tuple: (success: bool, error_message: str or None)
+        - (True, None) if file was successfully updated
+        - (False, "error message") if there was an error or unsupported format
     """
     try:
         from mutagen.mp3 import MP3
@@ -2246,8 +2248,8 @@ def update_audio_file_genres(file_path, genres_list):
             audio.save()
             return True, None
         else:
-            # For unsupported formats, return success but note it was skipped
-            return True, f"Unsupported format: {file_ext}"
+            # For unsupported formats, return error to skip file
+            return False, f"Unsupported format: {file_ext}"
     except Exception as e:
         return False, str(e)
 
@@ -3154,7 +3156,7 @@ def api_album_bulk_tag():
                                     # FLAC uses vorbis comments, which support multiple genre values
                                     audio['genre'] = sorted(existing)
                                     audio.save()
-                                    logging.info(f"[TAG] Updated FLAC tags for {file_path}: {new_genres}")
+                                    logging.info(f"[TAG] Updated FLAC tags for {file_path}: {', '.join(sorted(existing))}")
                                 else:
                                     # For unsupported formats, only update database
                                     logging.debug(f"[TAG] Skipping file tag update for unsupported format: {file_path}")
@@ -11479,10 +11481,26 @@ def api_album_apply_genres():
                     track_title = row_get(track, 'title', '')
                     failed_files.append(track_title if track_title else f"Track ID: {row_get(track, 'id')}")
             else:
-                logger.error(f"Failed to update {file_path}: {error}")
-                track_id = row_get(track, 'id', 'unknown')
-                track_title = row_get(track, 'title', '')
-                failed_files.append(track_title if track_title else f"Track ID: {track_id}")
+                # Check if error is due to unsupported format or actual failure
+                if "Unsupported format" in error:
+                    logger.debug(f"Skipped {file_path}: {error}")
+                    # Still update database for unsupported formats
+                    try:
+                        cursor.execute("""
+                            UPDATE tracks
+                            SET genres = ?
+                            WHERE id = ?
+                        """, (genres_str, row_get(track, 'id')))
+                        updated_count += 1
+                    except Exception as db_error:
+                        logger.error(f"Failed to update database for {file_path}: {db_error}")
+                        track_title = row_get(track, 'title', '')
+                        failed_files.append(track_title if track_title else f"Track ID: {row_get(track, 'id')}")
+                else:
+                    logger.error(f"Failed to update {file_path}: {error}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    track_title = row_get(track, 'title', '')
+                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
         
         conn.commit()
         
@@ -11575,14 +11593,34 @@ def api_artist_apply_genres():
                     else:
                         failed_files.append(f"Track ID: {row_get(track, 'id')}")
             else:
-                logger.error(f"Failed to update {file_path}: {error}")
-                track_id = row_get(track, 'id', 'unknown')
-                album = row_get(track, 'album', '')
-                title = row_get(track, 'title', '')
-                if album and title:
-                    failed_files.append(f"{album} - {title}")
+                # Check if error is due to unsupported format or actual failure
+                if "Unsupported format" in error:
+                    logger.debug(f"Skipped {file_path}: {error}")
+                    # Still update database for unsupported formats
+                    try:
+                        cursor.execute("""
+                            UPDATE tracks
+                            SET genres = ?
+                            WHERE id = ?
+                        """, (genres_str, row_get(track, 'id')))
+                        updated_count += 1
+                    except Exception as db_error:
+                        logger.error(f"Failed to update database for {file_path}: {db_error}")
+                        album = row_get(track, 'album', '')
+                        title = row_get(track, 'title', '')
+                        if album and title:
+                            failed_files.append(f"{album} - {title}")
+                        else:
+                            failed_files.append(f"Track ID: {row_get(track, 'id')}")
                 else:
-                    failed_files.append(f"Track ID: {track_id}")
+                    logger.error(f"Failed to update {file_path}: {error}")
+                    track_id = row_get(track, 'id', 'unknown')
+                    album = row_get(track, 'album', '')
+                    title = row_get(track, 'title', '')
+                    if album and title:
+                        failed_files.append(f"{album} - {title}")
+                    else:
+                        failed_files.append(f"Track ID: {track_id}")
         
         conn.commit()
         
