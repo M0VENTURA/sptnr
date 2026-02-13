@@ -2998,12 +2998,22 @@ def popularity_scan(
                     log_debug(f"Updated artist_stats table for {artist}")
                 
                 # Get all tracks for this album with their popularity scores and single detection
-                # Match on COALESCE(NULLIF(album_artist, ''), artist) = artist (grouping artist) to handle albums where album_artist differs from track artist
+                # Try matching on COALESCE(NULLIF(album_artist, ''), artist) first, then fall back to artist
                 cursor.execute(
                     "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
+                
+                # If no results from first query, fall back to matching on artist alone
+                if not album_tracks_with_scores:
+                    log_debug(f"No tracks found with COALESCE logic for artist '{artist}', falling back to artist field match")
+                    cursor.execute(
+                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                        (artist, album)
+                    )
+                    album_tracks_with_scores = cursor.fetchall()
+                
                 log_debug(f"Retrieved {len(album_tracks_with_scores)} tracks for star rating calculation")
                 
                 if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
