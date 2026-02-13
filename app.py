@@ -4645,7 +4645,7 @@ def track_detail(track_id):
                 track[col] = None
         
         # Parse genre fields - handle both JSON and comma-separated formats
-        for genre_field in ['navidrome_genres', 'spotify_genres', 'discogs_genres', 'musicbrainz_genres']:
+        for genre_field in ['navidrome_genres', 'spotify_genres', 'lastfm_tags', 'discogs_genres', 'musicbrainz_genres']:
             if genre_field in track and track[genre_field]:
                 genre_val = track[genre_field]
                 try:
@@ -4656,6 +4656,10 @@ def track_detail(track_id):
                         # Convert list to comma-separated string for template
                         if isinstance(parsed, list):
                             track[genre_field] = ", ".join([g.strip() for g in parsed if g.strip()])
+                    # Handle backslash-separated strings (from Navidrome)
+                    elif isinstance(genre_val, str) and '\\' in genre_val:
+                        # Replace backslashes with commas for consistent display
+                        track[genre_field] = genre_val.replace('\\', ',')
                     # Otherwise leave as-is (already comma-separated or string)
                 except Exception:
                     pass  # Keep original value if parsing fails
