@@ -202,6 +202,9 @@
                                         <i class="bi bi-play-fill"></i> Start
                                     </button>
                                     <ul class="dropdown-menu">
+                                        <!-- Note: No "Missing Only" mode - Combined scan processes each artist individually,
+                                             so it doesn't use bulk filtering like other scans. All artists are processed
+                                             sequentially with complete Navidrome→Popularity→Singles workflow. -->
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Process all artists sequentially</small></a></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
                                     </ul>

@@ -6388,6 +6388,8 @@ def scan_combined():
                         logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
                         
                         # Step 1: Navidrome import for this artist
+                        # Note: filter_missing is always False because we process each artist explicitly
+                        # The combined scan handles all artists in sequence, unlike bulk scans
                         logging.info(f"  → Navidrome import for {artist_name}")
                         try:
                             scan_artist_to_db(
@@ -6395,7 +6397,7 @@ def scan_combined():
                                 artist_id, 
                                 verbose=False, 
                                 force=force_rescan,
-                                filter_missing=False,
+                                filter_missing=False,  # Combined scan processes all artists explicitly
                                 processed_artists=idx, 
                                 total_artists=total
                             )
@@ -6404,6 +6406,8 @@ def scan_combined():
                             # Continue with next steps even if Navidrome import fails
                         
                         # Step 2: Popularity and singles scan for this artist
+                        # Note: artist_filter expects artist name (string), not ID
+                        # This is by design - popularity_scan uses name for SQL WHERE clause
                         logging.info(f"  → Popularity & singles scan for {artist_name}")
                         try:
                             scan_popularity_func(
