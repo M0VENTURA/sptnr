@@ -687,10 +687,13 @@ document.addEventListener('DOMContentLoaded', function() {
                     activeScanType = 'navidrome_scan';
                     scanDisplayName = 'Navidrome Sync';
                 } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
-                    // Could be popularity, singles, or missing_releases - check scan_type field
+                    // Could be popularity, singles, combined, or missing_releases - check scan_type field
                     if (data.scan_type === 'singles_scan') {
                         activeScanType = 'singles_scan';
                         scanDisplayName = 'Singles Detection';
+                    } else if (data.scan_type === 'combined_scan') {
+                        activeScanType = 'combined_scan';
+                        scanDisplayName = 'Combined Scan';
                     } else if (data.scan_type === 'missing_releases_scan') {
                         activeScanType = 'missing_releases_scan';
                         scanDisplayName = 'Missing Releases Scan';
@@ -705,6 +708,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Sync' },
                         'popularity_scan': { type: 'popularity_scan', name: 'Popularity & Singles' },
                         'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
+                        'combined_scan': { type: 'combined_scan', name: 'Combined Scan' },
                         'missing_releases_scan': { type: 'missing_releases_scan', name: 'Missing Releases Scan' }
                     };
                     const mapping = scanTypeMapping[data.scan_type];
@@ -742,7 +746,7 @@ document.addEventListener('DOMContentLoaded', function() {
                         details += ` · ${data.current_artist}`;
                     }
                     barColor = 'bg-primary';
-                } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan') && data.total_artists !== undefined) {
+                } else if ((activeScanType === 'popularity_scan' || activeScanType === 'singles_scan' || activeScanType === 'combined_scan') && data.total_artists !== undefined) {
                     const processedArtists = data.processed_artists || 0;
                     const totalArtists = data.total_artists || 0;
                     percent = totalArtists ? Math.round((processedArtists / totalArtists) * 100) : (data.percent_complete || 0);
@@ -750,7 +754,7 @@ document.addEventListener('DOMContentLoaded', function() {
                     if (data.current_artist) {
                         details += ` · ${data.current_artist}`;
                     }
-                    barColor = 'bg-success';
+                    barColor = activeScanType === 'combined_scan' ? 'bg-info' : 'bg-success';
                 } else if (activeScanType === 'missing_releases_scan' && data.total_artists !== undefined) {
                     const processedArtists = data.processed_artists || 0;
                     const totalArtists = data.total_artists || 0;
