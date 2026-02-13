@@ -115,33 +115,57 @@ class WikipediaReleaseScraper:
         logger.debug(f"Found {len(tables)} tables on {source_name}")
         
         for table in tables:
-            rows = table.find_all('tr')[1:]  # Skip header row
+            rows = table.find_all('tr')
+            current_month = None
             
             for row in rows:
-                cells = row.find_all('td')
-                if len(cells) < 2:
-                    continue
+                # Check if this is a month header (th elements with month names)
+                headers = row.find_all('th')
+                if headers:
+                    header_text = headers[0].get_text(strip=True).lower()
+                    # Check if header contains a month name
+                    months = ['january', 'february', 'march', 'april', 'may', 'june',
+                              'july', 'august', 'september', 'october', 'november', 'december']
+                    for month_num, month_name in enumerate(months, 1):
+                        if month_name in header_text:
+                            current_month = month_num
+                            break
                 
-                # Try to extract artist and album information
-                release = self._parse_row(cells, source_name)
-                if release:
-                    releases.append(release)
+                # Parse data rows
+                cells = row.find_all('td')
+                if len(cells) >= 2:
+                    release = self._parse_row(cells, source_name, current_month)
+                    if release:
+                        releases.append(release)
         
         return releases
     
-    def _parse_row(self, cells, source_name: str) -> Optional[Dict]:
+    def _parse_row(self, cells, source_name: str, current_month: Optional[int] = None) -> Optional[Dict]:
         """Parse a single table row"""
         try:
             # Extract text from cells
             cell_text = [cell.get_text(strip=True) for cell in cells]
             
             # Try different parsing strategies based on number of columns
+            day = None
             artist = None
             album = None
             release_date = None
             
-            if len(cell_text) >= 2:
-                # Most common format: Artist | Album | Date
+            if len(cell_text) >= 3:
+                # Format: Day | Artist | Album (| Date)
+                try:
+                    day_str = cell_text[0].strip()
+                    day = int(re.search(r'\d+', day_str).group()) if re.search(r'\d+', day_str) else None
+                except (ValueError, AttributeError):
+                    day = None
+                
+                artist = cell_text[1]
+                album = cell_text[2]
+                if len(cell_text) >= 4:
+                    release_date = cell_text[3]
+            elif len(cell_text) >= 2:
+                # Format: Artist | Album | Date
                 artist = cell_text[0]
                 album = cell_text[1]
                 if len(cell_text) >= 3:
@@ -155,14 +179,26 @@ class WikipediaReleaseScraper:
             if not artist or not album:
                 return None
             
-            # Try to parse the date
-            year = self._extract_year(release_date or "2026")
+            # Build proper date from day and current month if available
+            if day and current_month:
+                release_date = f"2026-{current_month:02d}-{day:02d}"
+            else:
+                # Try to parse the date string if provided
+                if release_date:
+                    parsed_date = self._parse_date_string(release_date)
+                    if parsed_date:
+                        release_date = parsed_date
+                else:
+                    release_date = "2026-01-01"
             
             # Skip if artist or album is generic placeholder text
-            if any(x in artist.lower() for x in ['edit', 'cite', 'ref']):
+            if any(x in artist.lower() for x in ['edit', 'cite', 'ref', 'citation']):
                 return None
-            if any(x in album.lower() for x in ['edit', 'cite', 'ref']):
+            if any(x in album.lower() for x in ['edit', 'cite', 'ref', 'citation']):
                 return None
+            
+            # Extract year from release_date
+            year = self._extract_year(release_date or "2026")
             
             return {
                 "artist_name": artist,
@@ -181,6 +217,60 @@ class WikipediaReleaseScraper:
         if match:
             return int(match.group())
         return 2026
+    
+    def _parse_date_string(self, date_str: str) -> Optional[str]:
+        """Parse various date formats and return YYYY-MM-DD"""
+        if not date_str or date_str.lower() in ['unknown', 'tba', 'tbr', 'pending']:
+            return None
+        
+        date_str = date_str.strip()
+        
+        # Try common date formats
+        formats = [
+            '%Y-%m-%d',  # 2026-01-15
+            '%B %d, %Y',  # January 15, 2026
+            '%b %d, %Y',  # Jan 15, 2026
+            '%m/%d/%Y',  # 01/15/2026
+            '%d/%m/%Y',  # 15/01/2026
+            '%B %d',  # January 15 (assume 2026)
+            '%b %d',  # Jan 15 (assume 2026)
+        ]
+        
+        for fmt in formats:
+            try:
+                parsed = datetime.strptime(date_str, fmt)
+                # If no year was in format, use 2026
+                if '%Y' not in fmt:
+                    parsed = parsed.replace(year=2026)
+                return parsed.strftime('%Y-%m-%d')
+            except ValueError:
+                continue
+        
+        # Try extracting day and month with regex: "January 15" or "15 January"
+        day_month_match = re.search(r'(\d{1,2})\s+(\w+)', date_str)
+        month_day_match = re.search(r'(\w+)\s+(\d{1,2})', date_str)
+        
+        if day_month_match:
+            try:
+                day = int(day_month_match.group(1))
+                month_str = day_month_match.group(2)
+                date_with_year = f"{month_str} {day}, 2026"
+                parsed = datetime.strptime(date_with_year, '%B %d, %Y')
+                return parsed.strftime('%Y-%m-%d')
+            except (ValueError, AttributeError):
+                pass
+        
+        if month_day_match:
+            try:
+                month_str = month_day_match.group(1)
+                day = int(month_day_match.group(2))
+                date_with_year = f"{month_str} {day}, 2026"
+                parsed = datetime.strptime(date_with_year, '%B %d, %Y')
+                return parsed.strftime('%Y-%m-%d')
+            except (ValueError, AttributeError):
+                pass
+        
+        return None
     
     def save_releases(self, releases: List[Dict], source_name: str) -> tuple:
         """Save releases to database, avoiding duplicates"""
