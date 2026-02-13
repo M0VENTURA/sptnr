@@ -651,6 +651,7 @@ scan_process_mp3 = None  # MP3 scanner process
 scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
+scan_process_combined = None  # Combined scan process (Navidrome + Popularity + Singles per artist)
 scan_process_missing_releases = None  # Missing releases scan process
 scan_lock = threading.Lock()
 
@@ -5314,10 +5315,34 @@ def scan_stop_singles():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/stop-combined", methods=["POST"])
+def scan_stop_combined():
+    """Stop the combined scan"""
+    global scan_process_combined
+    
+    with scan_lock:
+        if scan_process_combined is not None:
+            if isinstance(scan_process_combined, dict):
+                thread = scan_process_combined.get('thread')
+                if thread and thread.is_alive():
+                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
+                    # The scan will check for stop signals and exit gracefully
+                    scan_process_combined = None
+                    flash("Combined scan stop requested (will finish current artist)", "info")
+                else:
+                    flash("No combined scan is currently running", "warning")
+            else:
+                flash("No combined scan is currently running", "warning")
+        else:
+            flash("No combined scan is currently running", "warning")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/clear-stuck", methods=["POST"])
 def scan_clear_stuck():
     """Clear all stuck scan progress files"""
-    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     with scan_lock:
         db_dir = os.path.dirname(DB_PATH)
@@ -5329,6 +5354,7 @@ def scan_clear_stuck():
             ("navidrome_scan_progress.json", scan_process_navidrome),
             ("popularity_scan_progress.json", scan_process_popularity),
             ("singles_scan_progress.json", scan_process_singles),
+            ("combined_scan_progress.json", scan_process_combined),
             ("missing_releases_scan_progress.json", scan_process_missing_releases),
         ]
         
@@ -6304,6 +6330,110 @@ def scan_navidrome():
         except Exception as e:
             logging.error(f"Error starting Navidrome import: {e}", exc_info=True)
             flash(f"❌ Error starting Navidrome import: {str(e)}", "danger")
+    
+    return redirect(url_for("dashboard"))
+
+
+@app.route("/scan/combined", methods=["POST"])
+def scan_combined():
+    """Run combined scan: Navidrome import + popularity + singles for each artist."""
+    global scan_process_combined
+    
+    # Get scan mode from query parameters (default: "all")
+    mode = request.args.get('mode', 'all')  # all, force
+    
+    with scan_lock:
+        if scan_process_combined is not None:
+            if isinstance(scan_process_combined, dict):
+                thread = scan_process_combined.get('thread')
+                if thread and thread.is_alive():
+                    flash("Combined scan is already running", "warning")
+                    return redirect(url_for("dashboard"))
+            elif hasattr(scan_process_combined, 'is_alive') and scan_process_combined.is_alive():
+                flash("Combined scan is already running", "warning")
+                return redirect(url_for("dashboard"))
+        
+        try:
+            db_dir = os.path.dirname(DB_PATH)
+            combined_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
+            _write_progress_file(combined_progress_file, "combined_scan", True, {"status": "starting"})
+            
+            def run_combined_scan_bg():
+                try:
+                    logging.info(f"Starting combined scan (mode={mode})")
+                    from popularity import popularity_scan as scan_popularity_func
+                    
+                    # Build artist index
+                    artist_map = build_artist_index()
+                    artists = list(artist_map.items())
+                    total = len(artists)
+                    
+                    # Determine force rescan based on mode
+                    force_rescan = (mode == 'force')
+                    
+                    # Process each artist sequentially
+                    for idx, (artist_name, info) in enumerate(artists, start=1):
+                        artist_id = info.get("id")
+                        
+                        logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
+                        
+                        # Step 1: Navidrome import for this artist
+                        logging.info(f"  → Navidrome import for {artist_name}")
+                        try:
+                            scan_artist_to_db(
+                                artist_name, 
+                                artist_id, 
+                                verbose=False, 
+                                force=force_rescan,
+                                filter_missing=False,
+                                processed_artists=idx, 
+                                total_artists=total
+                            )
+                        except Exception as e:
+                            logging.error(f"Error in Navidrome import for {artist_name}: {e}")
+                            # Continue with next steps even if Navidrome import fails
+                        
+                        # Step 2: Popularity and singles scan for this artist
+                        logging.info(f"  → Popularity & singles scan for {artist_name}")
+                        try:
+                            scan_popularity_func(
+                                verbose=False, 
+                                force=force_rescan,
+                                artist_filter=artist_name
+                            )
+                        except Exception as e:
+                            logging.error(f"Error in popularity scan for {artist_name}: {e}")
+                            # Continue with next artist even if popularity scan fails
+                        
+                        # Update progress
+                        progress_data = {
+                            "status": "running",
+                            "current_artist": artist_name,
+                            "processed_artists": idx,
+                            "total_artists": total,
+                            "percent": int((idx / total) * 100)
+                        }
+                        _write_progress_file(combined_progress_file, "combined_scan", True, progress_data)
+                    
+                    _write_progress_file(combined_progress_file, "combined_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info("Combined scan completed successfully")
+                except Exception as e:
+                    logging.error(f"Error in combined scan: {e}", exc_info=True)
+                    _write_progress_file(combined_progress_file, "combined_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                finally:
+                    # Clean up thread reference when done
+                    with scan_lock:
+                        global scan_process_combined
+                        scan_process_combined = None
+            
+            scan_thread = threading.Thread(target=run_combined_scan_bg, daemon=False)
+            scan_thread.start()
+            scan_process_combined = {'thread': scan_thread, 'type': 'combined'}
+            mode_desc = {'all': 'Full', 'force': 'Full (Forced)'}.get(mode, 'Full')
+            flash(f"✅ Combined scan started ({mode_desc} - Navidrome → Popularity → Singles for each artist)", "success")
+        except Exception as e:
+            logging.error(f"Error starting combined scan: {e}", exc_info=True)
+            flash(f"❌ Error starting combined scan: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
