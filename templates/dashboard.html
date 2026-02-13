@@ -856,8 +856,18 @@ async function loadUpcomingReleasesBanner() {
             return;
         }
         
+        // Filter to only show albums NOT in collection
+        let releases = data.releases.filter(r => !r.album_in_collection);
+        
+        if (releases.length === 0) {
+            document.getElementById('upcomingBannerContent').innerHTML = `
+                <p class="text-muted text-center"><i class="bi bi-check-circle"></i> You have all upcoming releases from artists in your collection!</p>
+            `;
+            return;
+        }
+        
         // Sort releases by date
-        const releases = data.releases.sort((a, b) => {
+        releases = releases.sort((a, b) => {
             const dateA = new Date(a.release_date || '9999-12-31');
             const dateB = new Date(b.release_date || '9999-12-31');
             return dateA - dateB;
@@ -872,6 +882,8 @@ async function loadUpcomingReleasesBanner() {
                 '<span class="badge bg-success ms-2">Upcoming</span>' :
                 '<span class="badge bg-primary ms-2">Recent</span>';
             
+            const searchQuery = encodeURIComponent(`${release.artist_name} ${release.album_name}`);
+            
             html += `
                 <div class="list-group-item d-flex justify-content-between align-items-start py-2">
                     <div class="flex-grow-1">
@@ -880,6 +892,9 @@ async function loadUpcomingReleasesBanner() {
                         </h6>
                         <small class="text-muted">${escapeHtml(release.artist_name)} - ${escapeHtml(release.album_name)}</small>
                     </div>
+                    <a href="{{ url_for('downloads') }}?search=${searchQuery}#upcomingTab" class="btn btn-sm btn-outline-primary" title="Search for this release">
+                        <i class="bi bi-download"></i>
+                    </a>
                 </div>
             `;
         });

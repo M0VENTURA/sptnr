@@ -3180,9 +3180,24 @@ async function refreshUpcomingReleases() {
       return;
     }
     
+    // Filter to only show albums NOT in collection
+    const filterCollection = document.getElementById('upcomingFilterCollection').checked;
+    let releases = data.releases;
+    if (filterCollection) {
+      releases = releases.filter(r => !r.album_in_collection);
+      if (releases.length === 0) {
+        container.innerHTML = `
+          <div class="alert alert-info">
+            <i class="bi bi-check-circle"></i> You have all upcoming releases from artists in your collection!
+          </div>
+        `;
+        return;
+      }
+    }
+    
     // Group by month
     const grouped = {};
-    data.releases.forEach(release => {
+    releases.forEach(release => {
       const date = release.release_date || 'Unknown Date';
       const month = date.substring(0, 7); // YYYY-MM
       if (!grouped[month]) grouped[month] = [];
@@ -3195,7 +3210,7 @@ async function refreshUpcomingReleases() {
     let html = '<div class="accordion" id="releaseAccordion">';
     
     sortedMonths.forEach((month, idx) => {
-      const releases = grouped[month];
+      const monthReleases = grouped[month];
       const monthLabel = new Date(month + '-01').toLocaleDateString('en-US', {
         year: 'numeric',
         month: 'long'
@@ -3207,7 +3222,7 @@ async function refreshUpcomingReleases() {
             <button class="accordion-button ${idx > 0 ? 'collapsed' : ''}" type="button" data-bs-toggle="collapse" 
               data-bs-target="#collapse${idx}" aria-expanded="${idx === 0}">
               <strong>${monthLabel}</strong>
-              <span class="badge bg-primary ms-2">${releases.length}</span>
+              <span class="badge bg-primary ms-2">${monthReleases.length}</span>
             </button>
           </h2>
           <div id="collapse${idx}" class="accordion-collapse collapse ${idx === 0 ? 'show' : ''}" 
@@ -3220,25 +3235,25 @@ async function refreshUpcomingReleases() {
                       <th>Artist</th>
                       <th>Album</th>
                       <th>Date</th>
-                      <th style="width: 100px;"></th>
+                      <th style="width: 120px;">Action</th>
                     </tr>
                   </thead>
                   <tbody>
       `;
       
-      releases.forEach(release => {
-        const inCollection = release.artist_in_collection ? 
-          '<span class="badge bg-success">In Collection</span>' : '';
+      monthReleases.forEach(release => {
+        const albumStatus = release.album_in_collection ? 
+          ' <span class="badge bg-success ms-1">In Collection</span>' : '';
         
         html += `
           <tr>
             <td>${escapeHtml(release.artist_name)}</td>
-            <td>${escapeHtml(release.album_name)}</td>
+            <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
-              <button class="btn btn-sm btn-primary" title="Search for downloads"
+              <button class="btn btn-sm btn-outline-primary" title="Search for downloads"
                 onclick="searchReleaseDownloads('${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
-                <i class="bi bi-search"></i>
+                <i class="bi bi-download"></i> Search
               </button>
             </td>
           </tr>
