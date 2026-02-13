@@ -5909,7 +5909,7 @@ def api_stats():
 @app.route("/api/scan-status")
 def api_scan_status():
     """API endpoint to get status of all scan types"""
-    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     def is_process_running(proc):
         """Check if a process/thread is running, handling both dict and process objects."""
@@ -5956,6 +5956,10 @@ def api_scan_status():
                 "name": "Single Detection",
                 "running": is_process_running(scan_process_singles)
             },
+            "combined_scan": {
+                "name": "Combined Scan",
+                "running": is_process_running(scan_process_combined)
+            },
             "missing_releases_scan": {
                 "name": "Missing Releases Scan",
                 "running": is_process_running(scan_process_missing_releases)
@@ -5979,13 +5983,13 @@ def api_recent_scans():
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
-    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_missing_releases
+    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     try:
         from unified_scan import get_scan_progress
         progress = get_scan_progress()
         
-        # If unified scan is not running, check for MP3, Navidrome, Popularity, and Singles scans
+        # If unified scan is not running, check for MP3, Navidrome, Popularity, Singles, and Combined scans
         if not progress.get("is_running", False):
             db_dir = os.path.dirname(DB_PATH)
             
@@ -6012,6 +6016,12 @@ def api_scan_progress():
             singles_progress = _validate_and_cleanup_progress_file(singles_progress_file, scan_process_singles)
             if singles_progress and singles_progress.get("is_running", False):
                 return jsonify(singles_progress)
+            
+            # Check Combined scan progress with validation
+            combined_progress_file = os.path.join(db_dir, "combined_scan_progress.json")
+            combined_progress = _validate_and_cleanup_progress_file(combined_progress_file, scan_process_combined)
+            if combined_progress and combined_progress.get("is_running", False):
+                return jsonify(combined_progress)
             
             # Check Missing Releases scan progress with validation
             missing_releases_progress_file = os.path.join(db_dir, "missing_releases_scan_progress.json")
