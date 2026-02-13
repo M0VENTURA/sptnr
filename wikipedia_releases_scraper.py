@@ -469,7 +469,8 @@ class WikipediaReleaseScraper:
             
             # Get count before deletion
             cursor.execute("SELECT COUNT(*) FROM upcoming_releases")
-            count_before = cursor.fetchone()[0] if cursor.fetchone() else 0
+            count_row = cursor.fetchone()
+            count_before = count_row[0] if count_row else 0
             
             cursor.execute("DELETE FROM upcoming_releases")
             
