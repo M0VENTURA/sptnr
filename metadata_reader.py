@@ -226,8 +226,23 @@ def read_mp3_metadata(file_path):
                 metadata['date'] = str(audio['TDRC'].text[0]) if audio['TDRC'].text else ''
             if 'TRCK' in audio:  # Track Number
                 metadata['track_number'] = str(audio['TRCK'].text[0]) if audio['TRCK'].text else ''
-            if 'TCON' in audio:  # Genre
-                metadata['genre'] = str(audio['TCON'].text[0]) if audio['TCON'].text else ''
+            if 'TCON' in audio:  # Genre - can have multiple values
+                # Handle both single TCON frame with multiple values and multiple TCON frames
+                genre_list = []
+                if audio['TCON'].text:
+                    # TCON can contain multiple genres separated by null bytes or backslashes
+                    for genre_item in audio['TCON'].text:
+                        genre_str = str(genre_item)
+                        # Split on common separators but keep individual genres
+                        if '\\' in genre_str:
+                            # Handle backslash-separated genres (ID3 format)
+                            parts = [g.strip() for g in genre_str.split('\\') if g.strip()]
+                            genre_list.extend(parts)
+                        else:
+                            genre_list.append(genre_str)
+                
+                # Join with double backslash for consistency
+                metadata['genre'] = '\\'.join(genre_list) if genre_list else ''
             if 'TBPM' in audio:  # BPM
                 metadata['bpm'] = str(audio['TBPM'].text[0]) if audio['TBPM'].text else ''
             if 'TLAN' in audio:  # Language
@@ -284,6 +299,48 @@ def read_mp3_metadata(file_path):
         return metadata
     
     return metadata
+
+
+def read_genres_from_mp3(file_path):
+    """
+    Read ALL genre tags from MP3 file, handling multiple TCON frames and multi-value frames.
+    This reads raw ID3 tags, which may be more complete than what Navidrome returns.
+    
+    Args:
+        file_path: Path to MP3 file
+        
+    Returns:
+        str: Genre string with multiple genres separated by double backslash (e.g., "Genre1\\Genre2\\Genre3")
+             Empty string if no genres found
+    """
+    if not file_path or not os.path.exists(file_path):
+        return ""
+    
+    try:
+        from mutagen.id3 import ID3
+        audio = ID3(file_path)
+        
+        genre_list = []
+        
+        # Handle TCON (genre) frame - can have multiple frames with same ID
+        if 'TCON' in audio:
+            frame = audio['TCON']
+            if hasattr(frame, 'text'):
+                for text_item in frame.text:
+                    genre_str = str(text_item).strip()
+                    if genre_str:
+                        # Split on backslashes if present (ID3v2 format stores multiple genres this way)
+                        if '\\' in genre_str:
+                            parts = [g.strip() for g in genre_str.split('\\') if g.strip()]
+                            genre_list.extend(parts)
+                        else:
+                            genre_list.append(genre_str)
+        
+        # Return with double backslash separation (ID3 compatibility format)
+        return '\\'.join(genre_list) if genre_list else ""
+    
+    except Exception as e:
+        return ""
 
 
 def find_track_file(artist, album, title, music_root="/music", timeout_seconds=5):

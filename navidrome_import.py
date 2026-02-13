@@ -268,6 +268,17 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Get album artist from the album-level metadata (most reliable source)
                 api_album_artist = album_data.get("artist", "")
                 log_debug(f"API Response: fetch_album_tracks returned {len(tracks)} tracks for album_id={album_id}, album_artist='{api_album_artist}'")
+                
+                # Debug: Log the first track's full data structure to see what Navidrome provides
+                if tracks:
+                    import json
+                    first_track = tracks[0]
+                    log_debug(f"[NAVIDROME_API] First track raw data: {json.dumps(first_track, indent=2, default=str)}")
+                    # Also check specifically for genre-related fields
+                    genre_fields = {k: v for k, v in first_track.items() if 'genre' in k.lower()}
+                    if genre_fields:
+                        log_debug(f"[NAVIDROME_API] Genre-related fields in first track: {genre_fields}")
+                    
             except Exception as e:
                 log_debug(f"Failed to fetch tracks for album '{album_name}': {e}", exc_info=True)
                 tracks = []
@@ -311,34 +322,49 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
                 
-                # Extract genre from Navidrome and use it as the initial genres value
-                # Navidrome stores genres in ID3 with double backslash separation: "Genre1\\Genre2\\Genre3"
-                # The API returns the raw ID3 genre string
-                navidrome_genre_raw = t.get("genre", "")
+                # Extract genre from Navidrome via Subsonic API and use it as the initial genres value
+                # Subsonic API returns genres as a single string with various separator formats:
+                # - bullet: "Genre1 • Genre2 • Genre3"
+                # - backslash: "Genre1\Genre2\Genre3" or "Genre1\\Genre2\\Genre3"
+                # - semicolon: "Genre1; Genre2; Genre3"
+                # - comma: "Genre1, Genre2, Genre3"
+                
+                navidrome_genre_raw = t.get("genre", "") or ""
                 log_debug(f"[GENRE] Track {track_id} - Raw genre from Navidrome: '{navidrome_genre_raw}'")
                 
+                # Parse genres from Navidrome
+                navidrome_genre_list = []
+                
                 if navidrome_genre_raw:
-                    # Parse genres from all possible separators, but preserve double backslash format for ID3 compatibility
-                    # First normalize all formats to use double backslash
-                    normalized = navidrome_genre_raw.replace("•", "\\").replace(";", "\\").replace(",", "\\")
-                    log_debug(f"[GENRE] Track {track_id} - After separator normalization: '{normalized}'")
-                    
-                    # Remove duplicate backslashes
-                    while "\\\\" in normalized:
+                    # First, handle case where genres are already split with • (bullet, common in Navidrome)
+                    if "•" in navidrome_genre_raw:
+                        # Split on bullet first (highest priority)
+                        navidrome_genre_list = [g.strip() for g in navidrome_genre_raw.split("•") if g.strip()]
+                        log_debug(f"[GENRE] Track {track_id} - Split on bullet separator: {navidrome_genre_list}")
+                    else:
+                        # Fall back to normalizing other separators to backslash
+                        normalized = navidrome_genre_raw.replace(";", "\\").replace(",", "\\")
+                        # Also handle cases where backslashes might be escaped
                         normalized = normalized.replace("\\\\", "\\")
-                    log_debug(f"[GENRE] Track {track_id} - After duplicate backslash removal: '{normalized}'")
+                        log_debug(f"[GENRE] Track {track_id} - After separator normalization: '{normalized}'")
+                        
+                        # Split and clean
+                        navidrome_genre_list = [g.strip() for g in normalized.split("\\") if g.strip()]
+                        log_debug(f"[GENRE] Track {track_id} - Split on normalized separators: {navidrome_genre_list}")
                     
-                    # Split and clean
-                    navidrome_genre_list = [g.strip() for g in normalized.split("\\") if g.strip()]
-                    log_debug(f"[GENRE] Track {track_id} - Parsed genre list ({len(navidrome_genre_list)} genres): {navidrome_genre_list}")
-                    
-                    # Reconstruct with double backslash for ID3 compatibility
-                    navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
+                    if navidrome_genre_list:
+                        log_debug(f"[GENRE] Track {track_id} - Parsed genre list ({len(navidrome_genre_list)} genres): {navidrome_genre_list}")
+                    else:
+                        log_debug(f"[GENRE] Track {track_id} - Could not parse genres from: '{navidrome_genre_raw}'")
+                else:
+                    log_debug(f"[GENRE] Track {track_id} - No genres found in Navidrome data")
+                
+                # Reconstruct with double backslash for ID3 compatibility
+                navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
+                if navidrome_genre:
                     log_debug(f"[GENRE] Track {track_id} - Reconstructed double-backslash format: '{navidrome_genre}'")
                 else:
-                    navidrome_genre_list = []
-                    navidrome_genre = ""
-                    log_debug(f"[GENRE] Track {track_id} - No genres found in Navidrome data")
+                    log_debug(f"[GENRE] Track {track_id} - No genres from Navidrome")
                 
                 # Detect Christmas songs and add Christmas genre
                 track_title = t.get("title", "")
