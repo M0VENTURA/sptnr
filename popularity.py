@@ -3244,6 +3244,7 @@ def popularity_scan(
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
                     log_debug(f'Star distribution details: {star_distribution}')
+                    log_unified(f"Star Ratings - Album '{album}' by {artist}: {dist_str}")
                     
                     # Generate unified log summary for singles and star ratings
                     # Re-fetch tracks with their final star ratings, single detection, and standout info
