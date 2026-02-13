@@ -12136,7 +12136,7 @@ def api_upcoming_releases():
         
         filter_collection = request.args.get("collection", "false").lower() == "true"
         
-        scraper = WikipediaReleaseScraper()
+        scraper = WikipediaReleaseScraper(db_path=DB_PATH)
         releases = scraper.get_upcoming_releases(artist_in_collection=filter_collection)
         
         # Group by month for UI display
@@ -12164,7 +12164,7 @@ def api_scrape_upcoming_releases():
     try:
         from wikipedia_releases_scraper import WikipediaReleaseScraper
         
-        scraper = WikipediaReleaseScraper()
+        scraper = WikipediaReleaseScraper(db_path=DB_PATH)
         results = scraper.scrape_all_sources()
         
         return jsonify({

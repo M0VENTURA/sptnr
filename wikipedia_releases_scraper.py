@@ -189,13 +189,22 @@ class WikipediaReleaseScraper:
         added = 0
         updated = 0
         
-        # Get list of artists in collection
-        cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks")
-        artists_in_collection = {row[0] for row in cursor.fetchall()}
+        # Get list of artists in collection (gracefully handle if tracks table doesn't exist)
+        artists_in_collection = set()
+        albums_in_collection = set()
         
-        # Get list of albums in collection
-        cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks")
-        albums_in_collection = {(row[0], row[1]) for row in cursor.fetchall()}
+        try:
+            cursor.execute("SELECT DISTINCT LOWER(artist) FROM tracks")
+            artists_in_collection = {row[0] for row in cursor.fetchall()}
+            
+            # Get list of albums in collection
+            cursor.execute("SELECT DISTINCT LOWER(artist), LOWER(album) FROM tracks")
+            albums_in_collection = {(row[0], row[1]) for row in cursor.fetchall()}
+        except sqlite3.OperationalError as e:
+            # tracks table may not exist yet, continue without filtering
+            logger.debug(f"Could not query tracks table (may not exist yet): {e}")
+            artists_in_collection = set()
+            albums_in_collection = set()
         
         for release in releases:
             artist_in_collection = release["artist_name"].lower() in artists_in_collection
