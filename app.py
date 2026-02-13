@@ -6421,7 +6421,7 @@ def scan_combined():
                             "current_artist": artist_name,
                             "processed_artists": idx,
                             "total_artists": total,
-                            "percent": int((idx / total) * 100)
+                            "percent_complete": int((idx / total) * 100)
                         }
                         _write_progress_file(combined_progress_file, "combined_scan", True, progress_data)
                     
@@ -6436,6 +6436,7 @@ def scan_combined():
                         global scan_process_combined
                         scan_process_combined = None
             
+            # daemon=False matches other scan threads - allows scan to complete even during shutdown
             scan_thread = threading.Thread(target=run_combined_scan_bg, daemon=False)
             scan_thread.start()
             scan_process_combined = {'thread': scan_thread, 'type': 'combined'}
