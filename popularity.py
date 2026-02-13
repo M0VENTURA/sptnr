@@ -3245,12 +3245,15 @@ def popularity_scan(
                     dist_str = ", ".join([f"{stars}★: {count}" for stars, count in sorted(star_distribution.items(), reverse=True) if count > 0])
                     log_info(f'Star distribution for "{album}": {dist_str}')
                     log_debug(f'Star distribution details: {star_distribution}')
+                    log_debug(f"About to call log_unified for star distribution: {dist_str}")
                     log_unified(f"Star Ratings - Album '{album}' by {artist}: {dist_str}")
+                    log_debug(f"Successfully logged star distribution to unified log")
                     
                     # Generate unified log summary for singles and star ratings
                     # Re-fetch tracks with their final star ratings, single detection, and standout info
                     log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
-                    cursor.execute(
+                    try:
+                        cursor.execute(
                         """SELECT id, title, stars, is_single, single_confidence, single_sources, 
                                   is_standout_track, artist_z_score
                         FROM tracks 
@@ -3349,6 +3352,14 @@ def popularity_scan(
                         # Log individual rest-of-album tracks
                         for title, stars, method in rest_of_album:
                             log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                    
+                    log_debug(f"Successfully logged all categorized tracks for album {album}")
+                    
+                    except Exception as e:
+                        log_info(f"Error logging categorized tracks for album {album}: {e}")
+                        log_debug(f"Exception in track categorization: {type(e).__name__}: {str(e)}")
+                        import traceback
+                        log_debug(f"Traceback: {traceback.format_exc()}")
                 
                 # Update last_scanned timestamp for all tracks in this album
                 current_timestamp = datetime.now().isoformat()
