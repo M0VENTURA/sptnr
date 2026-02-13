@@ -43,7 +43,7 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     Load scan progress from file.
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         
     Returns:
         Progress dict or None if not found
@@ -51,6 +51,8 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     # Get progress file path at runtime to support testing
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "combined":
+        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:
         progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
@@ -74,7 +76,7 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     Save scan progress to file.
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         progress_data: Progress data to save
         
     Returns:
@@ -83,6 +85,8 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     # Get progress file path at runtime to support testing
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "combined":
+        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:
         progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
@@ -107,7 +111,7 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
     Clear scan progress file (on completion).
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         
     Returns:
         True if successful, False otherwise
@@ -115,6 +119,8 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
     # Get progress file path at runtime
     if scan_type == "navidrome":
         progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    elif scan_type == "combined":
+        progress_file = os.environ.get("COMBINED_PROGRESS_FILE", "/database/combined_scan_progress.json")
     else:
         progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
@@ -149,7 +155,7 @@ def detect_interrupted_scan(scan_type: str = "navidrome") -> Optional[Dict]:
     3. Last update was recent (within 24 hours)
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         
     Returns:
         Progress dict if interrupted scan detected, None otherwise
@@ -252,6 +258,9 @@ def should_resume_scan(scan_type: str = "navidrome") -> Tuple[bool, Optional[str
     """
     Check if scan should be resumed.
     
+    Args:
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
+    
     Returns:
         Tuple of (should_resume: bool, resume_from_artist: Optional[str])
     """
@@ -280,7 +289,7 @@ def get_last_scanned_artist(scan_type: str = "navidrome", db_path: str = "/datab
     to find the most recently scanned artist based on last_scanned timestamp.
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         db_path: Path to database
         
     Returns:
@@ -308,7 +317,7 @@ def mark_scan_completed(scan_type: str = "navidrome") -> bool:
     Mark scan as completed and clear progress.
     
     Args:
-        scan_type: Type of scan ('navidrome' or 'popularity')
+        scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
         
     Returns:
         True if successful
