@@ -166,6 +166,8 @@ required_columns = {
     # ✅ Artist Metadata (from /artists endpoint)
     "spotify_artist_genres": "TEXT",          # JSON array of artist genres
     "spotify_artist_popularity": "INTEGER",   # Artist popularity (0-100)
+    "discogs_artist_genres": "TEXT",          # JSON array of Discogs artist genres
+    "musicbrainz_artist_genres": "TEXT",      # JSON array of MusicBrainz artist genres
     # ✅ Album Metadata (from /albums endpoint)
     "spotify_album_label": "TEXT",            # Record label
     "spotify_explicit": "INTEGER",            # Explicit flag (0 or 1)

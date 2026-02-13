@@ -3034,11 +3034,7 @@ def api_album_bulk_delete():
 
 @app.route("/api/album/bulk-tag", methods=["POST"])
 def api_album_bulk_tag():
-    """Add genre tags to multiple tracks and write to MP3 files"""
-    from mutagen.id3 import ID3 as ID3_Class
-    from mutagen.mp3 import MP3 as MP3_Class
-    from mutagen.id3 import TCON as TagCON
-    
+    """Add genre tags to multiple tracks and write to audio files"""
     try:
         data = request.get_json()
         track_ids = data.get("track_ids", [])
@@ -3061,11 +3057,12 @@ def api_album_bulk_tag():
         # Format for ID3 tags (double backslash separated)
         genre_id3_str = '\\'.join(genres)
         
-        # Try to import mutagen for MP3 tagging
+        # Try to import mutagen for audio file tagging
         has_mutagen = True
         try:
-            from mutagen.id3 import ID3
             from mutagen.mp3 import MP3
+            from mutagen.flac import FLAC
+            from mutagen.id3 import ID3, TCON as TagCON
         except ImportError:
             has_mutagen = False
         
@@ -3089,20 +3086,35 @@ def api_album_bulk_tag():
                     # Format for ID3 tags (double backslash separated)
                     genre_id3_final = '\\'.join(sorted(existing))
                     
-                    # Write to MP3 file if mutagen is available
+                    # Write to audio file if mutagen is available
                     if has_mutagen:
                         file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
                         if file_path and os.path.exists(file_path):
                             try:
-                                audio = MP3_Class(file_path, ID3=ID3_Class)
-                                if audio.tags is None:
-                                    audio.add_tags()
-                                # Write with double backslash format for ID3 tags
-                                audio.tags['TCON'] = TagCON(encoding=3, text=[genre_id3_final])
-                                audio.save()
-                                logging.info(f"[TAG] Updated MP3 tags for {file_path}: {genre_id3_final}")
+                                # Determine file format and handle accordingly
+                                file_ext = os.path.splitext(file_path)[1].lower()
+                                
+                                if file_ext == '.mp3':
+                                    # Handle MP3 files with ID3 tags
+                                    audio = MP3(file_path, ID3=ID3)
+                                    if audio.tags is None:
+                                        audio.add_tags()
+                                    # Write with double backslash format for ID3 tags
+                                    audio.tags['TCON'] = TagCON(encoding=3, text=[genre_id3_final])
+                                    audio.save()
+                                    logging.info(f"[TAG] Updated MP3 tags for {file_path}: {genre_id3_final}")
+                                elif file_ext == '.flac':
+                                    # Handle FLAC files with Vorbis comments
+                                    audio = FLAC(file_path)
+                                    # FLAC uses vorbis comments, which support multiple genre values
+                                    audio['genre'] = sorted(existing)
+                                    audio.save()
+                                    logging.info(f"[TAG] Updated FLAC tags for {file_path}: {new_genres}")
+                                else:
+                                    # For unsupported formats, only update database
+                                    logging.debug(f"[TAG] Skipping file tag update for unsupported format: {file_path}")
                             except Exception as file_error:
-                                logging.warning(f"[TAG] Failed to update MP3 tags for {file_path}: {file_error}")
+                                logging.warning(f"[TAG] Failed to update tags for {file_path}: {file_error}")
                                 track_title = row_get(result, 'title', '')
                                 failed_files.append(track_title if track_title else f"Track ID: {track_id}")
                     
@@ -3128,9 +3140,9 @@ def api_album_bulk_tag():
         }
         
         if failed_files:
-            response["warning"] = f"⚠️ Failed to update MP3 tags for: {', '.join(failed_files[:5])}{'...' if len(failed_files) > 5 else ''}"
+            response["warning"] = f"⚠️ Failed to update audio tags for: {', '.join(failed_files[:5])}{'...' if len(failed_files) > 5 else ''}"
         elif not has_mutagen:
-            response["warning"] = "ℹ️ Genres updated in database. Install mutagen (pip install mutagen) to update MP3 files."
+            response["warning"] = "ℹ️ Genres updated in database. Install mutagen (pip install mutagen) to update audio files."
         
         return jsonify(response)
     except Exception as e:
