@@ -141,7 +141,8 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
             "total_artists": total_artists,
             "is_running": True,
             "scan_type": "navidrome_scan",
-            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0
+            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0,
+            "last_updated": datetime.now().isoformat()
         }
         with open(progress_file, 'w') as f:
             json.dump(progress, f, indent=2)
@@ -405,6 +406,54 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 # Get current single detection state to preserve user edits during Navidrome sync
                 current_single = get_current_single_detection(track_id)
                 log_debug(f"Track {track_id} - Current single detection: is_single={current_single['is_single']}, confidence={current_single['single_confidence']}")
+                
+                # Process genres and title for acoustic/live/unplugged tags
+                # Import the processor module
+                try:
+                    from genre_title_processor import process_track_genres_and_title, update_track_metadata_file
+                    
+                    # Get current genres as list
+                    current_genre_list = navidrome_genre_list.copy() if navidrome_genre_list else []
+                    
+                    # Process title and genres
+                    processed_title, processed_genres = process_track_genres_and_title(
+                        track_title,
+                        album_name,
+                        current_genre_list
+                    )
+                    
+                    # Check if anything changed
+                    title_changed = processed_title != track_title
+                    genres_changed = set(processed_genres) != set(current_genre_list)
+                    
+                    if title_changed or genres_changed:
+                        log_info(f"Track metadata updated: {track_title}")
+                        if title_changed:
+                            log_info(f"  Title: {track_title} -> {processed_title}")
+                        if genres_changed:
+                            log_info(f"  Genres: {current_genre_list} -> {processed_genres}")
+                        
+                        # Update the variables to use processed values
+                        track_title = processed_title
+                        navidrome_genre_list = processed_genres
+                        navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
+                        
+                        # Update the audio file if file path exists
+                        if navidrome_path and os.path.exists(navidrome_path):
+                            try:
+                                if update_track_metadata_file(navidrome_path, processed_title, processed_genres):
+                                    log_info(f"Updated audio file: {navidrome_path}")
+                                else:
+                                    log_debug(f"Failed to update audio file: {navidrome_path}")
+                            except Exception as e:
+                                log_debug(f"Error updating audio file {navidrome_path}: {e}")
+                        else:
+                            log_debug(f"No file path available to update audio file for track: {track_title}")
+                    
+                except ImportError as e:
+                    log_debug(f"genre_title_processor module not available: {e}")
+                except Exception as e:
+                    log_debug(f"Error processing track genres and title: {e}")
                 
                 # Debug log: Show all genre fields being saved
                 log_debug(f"[GENRE] Track {track_id} ({track_title}) - Saving to DB with genres: '{navidrome_genre}'")
@@ -1073,19 +1122,29 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
       - Uses NavidromeClient API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
       - For each track, writes a minimal `track_data` record via `save_to_db()`
       - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
+      - Supports auto-resume: If an interrupted scan is detected, resumes from last scanned artist
     """
     from popularity_helpers import build_artist_index
+    from scan_resume import should_resume_scan, get_artists_to_scan, mark_scan_completed
+    
+    # Check for interrupted scan
+    should_resume, resume_from_artist = should_resume_scan("navidrome")
     
     # Unified log: Simple start notification
-    log_unified("Navidrome Import Scan - Starting Navidrome Import")
+    if should_resume:
+        log_unified(f"Navidrome Import Scan - Resuming from {resume_from_artist}")
+    else:
+        log_unified("Navidrome Import Scan - Starting Navidrome Import")
     
     # Info log: Detailed start information
     log_info(f"Starting Navidrome library scan")
-    log_info(f"Scan parameters - Verbose: {verbose}, Force: {force}")
+    log_info(f"Scan parameters - Verbose: {verbose}, Force: {force}, Resume: {should_resume}")
+    if should_resume:
+        log_info(f"Resuming scan from artist: {resume_from_artist}")
     log_info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     
     # Debug log: Technical details
-    log_debug(f"scan_library_to_db called with verbose={verbose}, force={force}")
+    log_debug(f"scan_library_to_db called with verbose={verbose}, force={force}, resume={should_resume}")
     
     def _safe_int(value):
         try:
@@ -1223,15 +1282,35 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     total_written = 0
     total_skipped = 0
     total_albums_skipped = 0
-    total_artists = len(artist_map_local)
-    artist_count = 0
     
-    log_info(f"Starting scan of {total_artists} artists from Navidrome")
-    log_debug(f"Total artists to scan: {total_artists}")
+    # Get artist list and apply resume logic
+    all_artists = list(artist_map_local.keys())
+    total_artists = len(all_artists)
+    
+    # Get artists to scan (may skip already scanned if resuming)
+    artists_to_scan = get_artists_to_scan(all_artists, resume_from_artist if should_resume else None)
+    artists_to_scan_count = len(artists_to_scan)
+    
+    # Calculate starting index for progress tracking
+    artist_start_index = total_artists - artists_to_scan_count
+    artist_count = artist_start_index
+    
+    if should_resume:
+        log_info(f"Resuming scan: {artists_to_scan_count} artists remaining ({artist_start_index} already scanned)")
+        log_debug(f"Resume: Starting from index {artist_start_index + 1}/{total_artists}")
+    else:
+        log_info(f"Starting scan of {total_artists} artists from Navidrome")
+        log_debug(f"Total artists to scan: {total_artists}")
+    
     log_info(f"Missing artists found: {len(missing_artists)}, Artists with mismatched counts: {len(artists_with_mismatched_counts)}")
     
-    for name, info in artist_map_local.items():
+    for name in artists_to_scan:
         artist_count += 1
+        info = artist_map_local.get(name)
+        if not info:
+            log_debug(f"Artist '{name}' not found in artist map")
+            continue
+            
         artist_id = info.get("id")
         if not artist_id:
             log_info(f"Skipping artist '{name}' - no artist ID available")
@@ -1262,6 +1341,10 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     
     # Debug log: Technical summary
     log_debug(f"Library scan complete - Artists: {total_artists}, Missing: {len(missing_artists)}, Mismatched: {len(artists_with_mismatched_counts)}, Verbose: {verbose}, Force: {force}")
+    
+    # Mark scan as completed and clear resume state
+    mark_scan_completed("navidrome")
+    log_info("Scan completed successfully, progress file cleared")
 
 
 if __name__ == "__main__":

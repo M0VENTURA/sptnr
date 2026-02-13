@@ -351,15 +351,34 @@ def is_non_canonical_version_strict(title: str) -> bool:
     Check if title contains non-canonical version markers per Stage 6.
     Reject: remix, remaster, acoustic, live, unplugged, orchestral, symphonic,
             demo, instrumental, edit, extended, version, alt, alternate, mix
+    
+    EXCEPTION: Allow (radio edit), (single), and (remastered) in brackets/parentheses
+    as these are canonical single versions that should not be excluded.
     """
     title_lower = title.lower()
+    
+    # Check for allowed parenthetical tags that should NOT cause rejection
+    # These are canonical single versions
+    allowed_parenthetical_tags = [
+        r'\(radio\s+edit\)',
+        r'\(single\)',
+        r'\(remastered\)',
+    ]
+    
+    # First, temporarily remove allowed parenthetical tags from the title
+    # so they don't trigger rejection
+    temp_title = title_lower
+    for allowed_pattern in allowed_parenthetical_tags:
+        temp_title = re.sub(allowed_pattern, '', temp_title)
+    
+    # Now check for non-canonical version markers in the modified title
     patterns = [
         r'\bremix\b', r'\bremaster(ed)?\b', r'\bacoustic\b', r'\blive\b',
         r'\bunplugged\b', r'\borchestral\b', r'\bsymphonic\b',
         r'\bdemo\b', r'\binstrumental\b', r'\bedit\b', r'\bextended\b',
         r'\bversion\b', r'\balt\b', r'\balternate\b', r'\bmix\b'
     ]
-    return any(re.search(p, title_lower) for p in patterns)
+    return any(re.search(p, temp_title) for p in patterns)
 
 
 def duration_matches_strict(duration1: Optional[float], duration2: Optional[float]) -> bool:
@@ -1300,13 +1319,42 @@ def detect_single_enhanced(
     if spotify_results:
         log_debug(f"[SPOTIFY] Checking {len(spotify_results)} Spotify results for single")
         norm_title = normalize_title_strict(title)
+        
+        # Get album release date from database for time window validation
+        album_release_date = None
+        try:
+            cursor = conn.cursor()
+            cursor.execute("""
+                SELECT spotify_release_date, year
+                FROM tracks
+                WHERE artist = ? AND album = ?
+                ORDER BY year DESC, spotify_release_date DESC
+                LIMIT 1
+            """, (artist, album))
+            row = cursor.fetchone()
+            if row:
+                # Use spotify_release_date if available, otherwise fall back to year
+                album_release_date = row[0] if row[0] else (str(row[1]) if row[1] else None)
+                log_debug(f"[SPOTIFY] Album release date for time window check: {album_release_date}")
+        except Exception as e:
+            log_debug(f"[SPOTIFY] Failed to get album release date: {e}")
+        
+        # Import time window validation
+        try:
+            from album_matching_enhancements import should_apply_time_window_restriction
+        except ImportError:
+            # If module not available, define a no-op function
+            def should_apply_time_window_restriction(album_name, track_date, album_date):
+                return False, True
+        
         for result_item in spotify_results:
             result_title = result_item.get('name', '')
             album_info = result_item.get('album', {})
             album_type_check = album_info.get('album_type', '').lower()
             album_name = album_info.get('name', '')
+            track_release_date = album_info.get('release_date', '')
             
-            log_debug(f"[SPOTIFY] Checking result: '{result_title}' (type: {album_type_check}, album: '{album_name}')")
+            log_debug(f"[SPOTIFY] Checking result: '{result_title}' (type: {album_type_check}, album: '{album_name}', release: {track_release_date})")
             
             # Check for "Radio Edit" in title (medium confidence indicator for singles)
             # This handles cases like "Song Name - Radio Edit" or "Song Name (Radio Edit)"
@@ -1326,6 +1374,15 @@ def detect_single_enhanced(
             # Reject non-canonical
             if is_non_canonical_version_strict(result_title):
                 log_debug(f"[SPOTIFY] Rejected non-canonical version: '{result_title}'")
+                continue
+            
+            # Apply time window restriction for special albums (live/symphony/acoustic/unplugged)
+            should_restrict, is_within = should_apply_time_window_restriction(
+                album, track_release_date, album_release_date
+            )
+            if should_restrict and not is_within:
+                log_info(f"[SPOTIFY] Rejected due to time window: '{result_title}' from '{album_name}' (release: {track_release_date})")
+                log_debug(f"[SPOTIFY] Time window restriction: Track outside ±1 year window for special album")
                 continue
             
             # Check if single or EP with matching title
