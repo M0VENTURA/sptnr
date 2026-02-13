@@ -1838,14 +1838,15 @@
                     .filter(g => g && g !== genre);  // Remove the genre being deleted
             }
             
-            // Update the database
+            // Update the database and sync to file
             return fetch(`/api/tags/track/${trackId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     tags: {
                         genre: currentGenres.join(';')
-                    }
+                    },
+                    sync_to_file: true
                 })
             });
         })
@@ -1862,6 +1863,7 @@
                         container.innerHTML = '<span class="text-muted small">No album genres</span><button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal(\'' + trackId + '\', \'' + (currentEditTrackTitle || 'Track') + '\')"><i class="bi bi-plus-circle"></i> Add</button>';
                     }
                 }, 300);
+                alert(`✅ Genre removed${data.file_synced ? ' and MP3 updated' : ''}`);
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to remove genre'));
             }
@@ -1943,21 +1945,22 @@
                 }
             });
             
-            // Update the track
+            // Update the track and sync to file
             return fetch(`/api/tags/track/${currentEditTrackId}`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({
                     tags: {
                         genre: allGenres.join(';')
-                    }
+                    },
+                    sync_to_file: true
                 })
             });
         })
         .then(r => r.json())
         .then(data => {
             if (data.success || data.message) {
-                alert(`✅ Added ${selected.length} genre(s) to the track`);
+                alert(`✅ Added ${selected.length} genre(s) to the track${data.file_synced ? ' and updated MP3 file' : ''}`);
                 
                 // Close modal
                 bootstrap.Modal.getInstance(document.getElementById('addGenreModal')).hide();
