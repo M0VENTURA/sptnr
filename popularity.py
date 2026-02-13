@@ -3100,7 +3100,7 @@ def popularity_scan(
                         is_single = track_row["is_single"] if track_row["is_single"] else 0
                         single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
                         single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
-                        is_standout_track = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
+                        is_standout_track = track_row["is_standout_track"] if track_row["is_standout_track"] is not None else 0
                         
                         # Parse single sources (defensive check for valid string)
                         try:
