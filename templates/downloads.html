@@ -667,12 +667,15 @@
           <h5 class="card-title mb-0">
             <i class="bi bi-calendar-event"></i> Upcoming Album Releases
           </h5>
-          <div class="d-flex align-items-center gap-2">
+          <div class="d-flex align-items-center gap-2 flex-wrap">
             <button class="btn btn-sm btn-primary" onclick="scrapeUpcomingReleases()">
               <i class="bi bi-download"></i> Update from Wikipedia
             </button>
             <button class="btn btn-sm btn-outline-primary" onclick="refreshUpcomingReleases()">
               <i class="bi bi-arrow-clockwise"></i> Refresh
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="clearUpcomingReleases()" title="Clear old entries and start fresh">
+              <i class="bi bi-trash"></i> Clear Database
             </button>
           </div>
         </div>
@@ -3111,6 +3114,52 @@ document.addEventListener('DOMContentLoaded', function() {
 
 // ===== Upcoming Releases Functions =====
 
+async function clearUpcomingReleases() {
+  if (!confirm('Are you sure you want to clear all upcoming releases from the database? This cannot be undone.')) {
+    return;
+  }
+
+  const statusEl = document.getElementById('upcomingStatus');
+  const statusText = document.getElementById('upcomingStatusText');
+  const errorEl = document.getElementById('upcomingError');
+  
+  statusEl.style.display = 'block';
+  errorEl.style.display = 'none';
+  statusText.textContent = 'Clearing database...';
+  
+  try {
+    const response = await fetch('/api/upcoming-releases/clear', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to clear database');
+    }
+    
+    statusText.textContent = `✓ ${data.message}`;
+    setTimeout(() => {
+      statusEl.style.display = 'none';
+      document.getElementById('upcomingReleases').innerHTML = `
+        <div class="text-center py-5">
+          <p class="text-muted">Database cleared. Click "Update from Wikipedia" to load new release data.</p>
+        </div>
+      `;
+    }, 2000);
+    
+  } catch (error) {
+    console.error('Error clearing database:', error);
+    statusEl.style.display = 'none';
+    errorEl.style.display = 'block';
+    errorEl.innerHTML = `
+      <i class="bi bi-exclamation-triangle"></i>
+      <strong>Error clearing database:</strong> ${error.message}
+    `;
+  }
+}
+
 async function scrapeUpcomingReleases() {
   const statusEl = document.getElementById('upcomingStatus');
   const statusText = document.getElementById('upcomingStatusText');
@@ -3297,9 +3346,35 @@ function searchReleaseDownloads(artist, album) {
 
 // Load upcoming releases when tab is shown
 document.getElementById('upcomingTab').addEventListener('click', function() {
-  if (document.getElementById('upcomingReleases').innerHTML.trim() === '') {
+  const container = document.getElementById('upcomingReleases');
+  if (container.innerHTML.trim() === '' || 
+      container.querySelector('.text-muted')?.textContent.includes('Click "Update')) {
     refreshUpcomingReleases();
   }
+});
+
+// Auto-load upcoming releases on page load if data exists
+async function autoLoadUpcomingReleases() {
+  try {
+    const response = await fetch('/api/upcoming-releases?collection=false');
+    const data = await response.json();
+    
+    if (data.releases && data.releases.length > 0) {
+      // Data exists in database, populate it
+      const container = document.getElementById('upcomingReleases');
+      if (container && container.innerHTML.includes('Click "Update')) {
+        refreshUpcomingReleases();
+      }
+    }
+  } catch (error) {
+    console.debug('Could not auto-load upcoming releases:', error);
+  }
+}
+
+// Call auto-load when page loads
+document.addEventListener('DOMContentLoaded', function() {
+  // Give page a moment to settle
+  setTimeout(autoLoadUpcomingReleases, 500);
 });
 </script>
 

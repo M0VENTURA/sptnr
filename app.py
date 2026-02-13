@@ -12240,6 +12240,24 @@ def api_scrape_upcoming_releases():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/upcoming-releases/clear", methods=["POST"])
+def api_clear_upcoming_releases():
+    """Clear all upcoming releases from the database"""
+    try:
+        from wikipedia_releases_scraper import WikipediaReleaseScraper
+        
+        scraper = WikipediaReleaseScraper(db_path=DB_PATH)
+        result = scraper.clear_upcoming_releases()
+        
+        if result.get("success"):
+            return jsonify(result)
+        else:
+            return jsonify(result), 500
+    except Exception as e:
+        logging.error(f"Error clearing upcoming releases: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/upcoming-releases/search", methods=["POST"])
 def api_search_upcoming_release():
     """Search for downloads of an upcoming release"""

@@ -218,6 +218,9 @@ class WikipediaReleaseScraper:
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
             
+            # Remove citation brackets like [23], [1], etc. from all cell text
+            cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
+            
             # Debug: log what we're parsing
             logger.debug(f"Raw cells for {source_name}: {cell_texts[:4]}")  # First 4 cells
             
@@ -457,6 +460,35 @@ class WikipediaReleaseScraper:
         except Exception as e:
             logger.error(f"Error retrieving upcoming releases: {e}")
             return []
+    
+    def clear_upcoming_releases(self) -> Dict:
+        """Clear all upcoming releases from the database"""
+        try:
+            conn = self.get_db()
+            cursor = conn.cursor()
+            
+            # Get count before deletion
+            cursor.execute("SELECT COUNT(*) FROM upcoming_releases")
+            count_before = cursor.fetchone()[0] if cursor.fetchone() else 0
+            
+            cursor.execute("DELETE FROM upcoming_releases")
+            
+            conn.commit()
+            conn.close()
+            
+            logger.info(f"Cleared {count_before} upcoming releases from database")
+            
+            return {
+                "success": True,
+                "cleared": count_before,
+                "message": f"Cleared {count_before} upcoming releases"
+            }
+        except Exception as e:
+            logger.error(f"Error clearing upcoming releases: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
 
 
 if __name__ == "__main__":
