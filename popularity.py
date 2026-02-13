@@ -3000,7 +3000,7 @@ def popularity_scan(
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
@@ -3009,7 +3009,7 @@ def popularity_scan(
                 if not album_tracks_with_scores:
                     log_debug(f"No tracks found with artist field match for artist '{artist}', falling back to album_artist field match")
                     cursor.execute(
-                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE album_artist = ? AND album = ? ORDER BY popularity_score DESC",
+                        "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount, is_standout_track FROM tracks WHERE album_artist = ? AND album = ? ORDER BY popularity_score DESC",
                         (artist, album)
                     )
                     album_tracks_with_scores = cursor.fetchall()
@@ -3100,6 +3100,7 @@ def popularity_scan(
                         is_single = track_row["is_single"] if track_row["is_single"] else 0
                         single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else "low"
                         single_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
+                        is_standout_track = track_row["is_standout_track"] if track_row["is_standout_track"] is not None else 0
                         
                         # Parse single sources (defensive check for valid string)
                         try:
@@ -3189,6 +3190,11 @@ def popularity_scan(
                                     else:
                                         log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                            # Standout tracks (high Last.fm scrobbles) get 5 stars
+                            elif is_standout_track:
+                                stars = 5
+                                log_info(f"5-star assignment: {title} (standout track - high Last.fm scrobbles)")
+                                log_debug(f"Standout track - track_id: {track_id}")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (only for medium confidence - high confidence singles are independently verified)
