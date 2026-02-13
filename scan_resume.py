@@ -19,8 +19,17 @@ from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Tuple
 from pathlib import Path
 
-# Import centralized logging
-from logging_config import log_debug, log_info, log_unified
+# Import centralized logging with fallback
+try:
+    from logging_config import log_debug, log_info, log_unified
+except ImportError:
+    # Fallback if logging_config not available
+    def log_debug(msg, **kwargs):
+        logging.debug(msg)
+    def log_info(msg, **kwargs):
+        logging.info(msg)
+    def log_unified(msg, **kwargs):
+        logging.info(msg)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +48,11 @@ def load_scan_progress(scan_type: str = "navidrome") -> Optional[Dict]:
     Returns:
         Progress dict or None if not found
     """
-    progress_file = NAVIDROME_PROGRESS_FILE if scan_type == "navidrome" else POPULARITY_PROGRESS_FILE
+    # Get progress file path at runtime to support testing
+    if scan_type == "navidrome":
+        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    else:
+        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
     if not os.path.exists(progress_file):
         log_debug(f"No progress file found at: {progress_file}")
@@ -67,11 +80,17 @@ def save_scan_progress(scan_type: str, progress_data: Dict) -> bool:
     Returns:
         True if successful, False otherwise
     """
-    progress_file = NAVIDROME_PROGRESS_FILE if scan_type == "navidrome" else POPULARITY_PROGRESS_FILE
+    # Get progress file path at runtime to support testing
+    if scan_type == "navidrome":
+        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    else:
+        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
     try:
         # Ensure directory exists
-        os.makedirs(os.path.dirname(progress_file), exist_ok=True)
+        progress_dir = os.path.dirname(progress_file)
+        if progress_dir:  # Only create if there's a directory component
+            os.makedirs(progress_dir, exist_ok=True)
         
         with open(progress_file, 'w') as f:
             json.dump(progress_data, f, indent=2)
@@ -93,7 +112,11 @@ def clear_scan_progress(scan_type: str = "navidrome") -> bool:
     Returns:
         True if successful, False otherwise
     """
-    progress_file = NAVIDROME_PROGRESS_FILE if scan_type == "navidrome" else POPULARITY_PROGRESS_FILE
+    # Get progress file path at runtime
+    if scan_type == "navidrome":
+        progress_file = os.environ.get("NAVIDROME_PROGRESS_FILE", "/database/navidrome_scan_progress.json")
+    else:
+        progress_file = os.environ.get("PROGRESS_FILE", "/database/scan_progress.json")
     
     try:
         if os.path.exists(progress_file):
