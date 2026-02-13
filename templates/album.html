@@ -877,7 +877,22 @@
         const resultsDiv = document.getElementById('albumLookupResults');
         
         if (!results || results.length === 0) {
-            resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            if (source === 'musicbrainz') {
+                // Offer to submit to MusicBrainz if no results found
+                const album = "{{ album_name }}";
+                const artist = "{{ artist_name }}";
+                resultsDiv.innerHTML = `
+                    <div class="alert alert-warning">
+                        <p><strong>No MusicBrainz matches found for "${album}" by ${artist}</strong></p>
+                        <p>This album might not exist on MusicBrainz yet. You can help by submitting it!</p>
+                        <button class="btn btn-sm btn-primary" onclick="showMusicBrainzSubmission('${escapeJsString(album)}', '${escapeJsString(artist)}')">
+                            <i class="bi bi-cloud-upload"></i> Submit Album to MusicBrainz
+                        </button>
+                    </div>
+                `;
+            } else {
+                resultsDiv.innerHTML = '<div class="alert alert-info">No results found</div>';
+            }
             return;
         }
         
@@ -1012,6 +1027,84 @@
     function applyAlbumGenres(genres) {
         alert('Applied Discogs Genres: ' + genres);
     }
+
+    function showMusicBrainzSubmission(albumName, artistName) {
+        // Generate submission URL with pre-filled data
+        fetch('/api/album/submit-musicbrainz', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                album: albumName,
+                artist: artistName
+            })
+        })
+        .then(response => response.json())
+        .then(data => {
+            if (data.success) {
+                // Show modal with submission URL
+                const modalHtml = `
+                    <div class="modal fade" id="mbSubmissionModal" tabindex="-1">
+                        <div class="modal-dialog modal-lg">
+                            <div class="modal-content">
+                                <div class="modal-header">
+                                    <h5 class="modal-title"><i class="bi bi-cloud-upload"></i> Submit to MusicBrainz</h5>
+                                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                                </div>
+                                <div class="modal-body">
+                                    <div class="alert alert-info">
+                                        <strong>Help improve MusicBrainz!</strong> This album doesn't exist in MusicBrainz yet.
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label"><strong>Step 1: Pre-filled Information</strong></label>
+                                        <div class="card bg-light p-3">
+                                            <p class="mb-1"><strong>Album:</strong> ${data.message.split("submitting").length > 1 ? albumName : albumName}</p>
+                                            <p class="mb-0"><strong>Artist:</strong> ${artistName}</p>
+                                        </div>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label"><strong>Step 2: Open MusicBrainz</strong></label>
+                                        <p class="text-muted">Click the button below to open MusicBrainz. Your album and artist information will be pre-filled.</p>
+                                        <button class="btn btn-primary w-100" onclick="window.open('${data.submission_url}', '_blank')">
+                                            <i class="bi bi-box-arrow-up-right"></i> Open MusicBrainz Submission Page
+                                        </button>
+                                    </div>
+                                    <div class="mb-3">
+                                        <label class="form-label"><strong>Step 3: Complete the Form</strong></label>
+                                        <ul class="text-muted small">
+                                            <li>Fill in the release date (if known)</li>
+                                            <li>Add barcode (if available)</li>
+                                            <li>Select the correct release type (Album/Single/EP)</li>
+                                            <li>Add track list (copy from Spotify or Discogs)</li>
+                                            <li>Click "Submit" to create an edit</li>
+                                        </ul>
+                                    </div>
+                                    <div class="alert alert-success">
+                                        <strong>💡 Tip:</strong> After submission, your edit will be reviewed by MusicBrainz editors. You can reference Spotify or Discogs information to help with verification.
+                                    </div>
+                                </div>
+                                <div class="modal-footer">
+                                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                                    <button type="button" class="btn btn-primary" onclick="window.open('${data.submission_url}', '_blank'); document.getElementById('mbSubmissionModal').modal.hide?.();">
+                                        <i class="bi bi-cloud-upload"></i> Open & Close
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+                
+                document.body.insertAdjacentHTML('beforeend', modalHtml);
+                const modal = new bootstrap.Modal(document.getElementById('mbSubmissionModal'));
+                modal.show();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to generate submission link'));
+            }
+        })
+        .catch(error => {
+            alert('❌ Network error: ' + error.message);
+        });
+    }
+
     function openQbitSearchAlbum(artist, album) {
         const query = `${artist} ${album}`;
         window.location.href = `/downloads?search=${encodeURIComponent(query)}`;

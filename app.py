@@ -10817,7 +10817,7 @@ def api_album_musicbrainz_lookup():
             try:
                 resp = session.get(
                     "https://musicbrainz.org/ws/2/release-group",
-                    params={"query": query, "fmt": "json", "limit": 10},
+                    params={"query": query, "fmt": "json", "limit": 25},
                     headers=headers,
                     timeout=(5, 10)  # (connect_timeout, read_timeout)
                 )
@@ -10873,7 +10873,7 @@ def api_album_musicbrainz_lookup():
         # Sort by confidence
         results.sort(key=lambda x: x["confidence"], reverse=True)
         
-        return jsonify({"results": results[:10]}), 200
+        return jsonify({"results": results[:25]}), 200
             
     except Exception as e:
         logger = logging.getLogger('sptnr')
@@ -11353,6 +11353,85 @@ def api_artist_apply_genres():
     finally:
         if conn:
             conn.close()
+
+@app.route("/api/album/submit-musicbrainz", methods=["POST"])
+def api_album_submit_musicbrainz():
+    """Generate a seeded MusicBrainz submission URL with pre-filled album data from Spotify/Discogs"""
+    logger = logging.getLogger('sptnr')
+    try:
+        data = request.get_json() or {}
+        artist = data.get("artist", "").strip()
+        album = data.get("album", "").strip()
+        discogs_id = data.get("discogs_id", "")
+        spotify_album_type = data.get("album_type", "")
+        release_date = data.get("release_date", "")
+        genres = data.get("genres", [])
+        tracks_data = data.get("tracks", [])  # Array of {title, duration, artist} objects
+        
+        if not artist or not album:
+            return jsonify({"error": "Missing artist or album"}), 400
+        
+        try:
+            # Build the MusicBrainz submission URL with seed parameters
+            # MusicBrainz seed parameters for new release submissions
+            base_url = "https://musicbrainz.org/release/add"
+            
+            params = {
+                "name": album,
+                "artist_name": artist,
+                "type": "Album"  # Default type
+            }
+            
+            # Add album type if available
+            if spotify_album_type and spotify_album_type.lower() == "single":
+                params["type"] = "Single"
+            elif spotify_album_type and spotify_album_type.lower() == "ep":
+                params["type"] = "EP"
+            
+            # Add release date if available
+            if release_date:
+                # Try to extract just the date in YYYY-MM-DD format
+                date_str = str(release_date)[:10]  # Get first 10 chars (YYYY-MM-DD)
+                if len(date_str) >= 4:  # At least year
+                    params["date"] = date_str
+            
+            # Add language/script hints
+            params["lang"] = "en"
+            
+            # Build URL with parameters
+            query_string = "&".join([f"{k}={requests.utils.quote(str(v))}" for k, v in params.items()])
+            submission_url = f"{base_url}?{query_string}"
+            
+            # Create instructions for the user
+            instructions = {
+                "step1": "Click 'Open MusicBrainz' to go to the submission page",
+                "step2": "The album name and artist will be pre-filled",
+                "step3": "Fill in the remaining details (release date, barcode, label, etc.)",
+                "step4": f"Add tracks manually or use the Discogs ID {discogs_id} as a reference",
+                "step5": "Click 'Submit' to create a new edit",
+                "sources": {
+                    "discogs_id": discogs_id if discogs_id else None,
+                    "genres": genres if genres else None,
+                    "tracks_found": len(tracks_data) if tracks_data else 0
+                }
+            }
+            
+            logger.info(f"Generated MusicBrainz submission URL for {artist} - {album}")
+            
+            return jsonify({
+                "success": True,
+                "submission_url": submission_url,
+                "instructions": instructions,
+                "message": "Open the URL below to submit this album to MusicBrainz. Your data will be pre-filled."
+            }), 200
+            
+        except Exception as inner_e:
+            logger.error(f"Error building submission URL: {inner_e}")
+            raise
+            
+    except Exception as e:
+        logger.error(f"MusicBrainz submission error: {e}")
+        return jsonify({"error": str(e)}), 500
 
 @app.route("/api/track/musicbrainz", methods=["POST"])
 def api_track_musicbrainz_lookup():
