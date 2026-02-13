@@ -265,6 +265,18 @@ class NavidromeClient:
             except (TypeError, ValueError):
                 return None
 
+        # Extract genres from the genres array if available, otherwise fall back to genre field
+        genres_list = []
+        if track.get("genres") and isinstance(track.get("genres"), list):
+            # Extract genre names from genres array
+            genres_list = [g.get("name", "").strip() for g in track.get("genres") if g.get("name", "").strip()]
+        elif track.get("genre"):
+            # Fall back to single genre field, split by common delimiters
+            genre_str = track.get("genre", "")
+            genres_list = [g.strip() for g in genre_str.replace("•", "\\").replace(";", "\\").replace(",", "\\").split("\\") if g.strip()]
+        
+        navidrome_genres = "\\".join(genres_list) if genres_list else ""
+
         return {
             "duration": track.get("duration"),  # seconds
             "track_number": _safe_int(raw_track),
@@ -273,7 +285,7 @@ class NavidromeClient:
             "album_artist": track.get("albumArtist", ""),
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz
-            "navidrome_genres": "\\".join([g.strip() for g in track.get("genre", "").replace("•", "\\").replace(";", "\\").replace(",", "\\").split("\\") if g.strip()]) if track.get("genre") else "",
+            "navidrome_genres": navidrome_genres,
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
         }

@@ -598,7 +598,7 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
                     "listenbrainz_score": 0,
                     "age_score": 0,
                     "genres": json.dumps([]),  # Serialize as JSON string
-                    "navidrome_genres": "\\".join([g.strip() for g in t.get("genre", "").replace("•", "\\").replace(";", "\\").replace(",", "\\").split("\\") if g.strip()]) if t.get("genre") else "",  # Store as double backslash separated string
+                    "navidrome_genres": "\\".join([g.get("name", "").strip() for g in t.get("genres", []) if g.get("name", "").strip()]) if t.get("genres") else ("\\".join([g.strip() for g in t.get("genre", "").replace("•", "\\").replace(";", "\\").replace(",", "\\").split("\\") if g.strip()]) if t.get("genre") else ""),  # Extract from genres array if available, else fall back to genre field
                     "spotify_genres": json.dumps([]),  # Serialize as JSON string
                     "lastfm_tags": json.dumps([]),  # Serialize as JSON string
                     "discogs_genres": json.dumps([]),  # Serialize as JSON string
