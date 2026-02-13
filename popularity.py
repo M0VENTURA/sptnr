@@ -3254,14 +3254,14 @@ def popularity_scan(
                     log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
                     try:
                         cursor.execute(
-                        """SELECT id, title, stars, is_single, single_confidence, single_sources, 
-                                  is_standout_track, artist_z_score
-                        FROM tracks 
-                        WHERE artist = ? AND album = ? 
-                        ORDER BY stars DESC, popularity_score DESC""",
-                        (artist, album)
-                    )
-                    final_tracks = cursor.fetchall()
+                            """SELECT id, title, stars, is_single, single_confidence, single_sources, 
+                                      is_standout_track, artist_z_score
+                            FROM tracks 
+                            WHERE artist = ? AND album = ? 
+                            ORDER BY stars DESC, popularity_score DESC""",
+                            (artist, album)
+                        )
+                        final_tracks = cursor.fetchall()
                     
                     # Categorize tracks
                     detected_singles = []      # is_single = 1, 5 stars
@@ -3353,8 +3353,8 @@ def popularity_scan(
                         for title, stars, method in rest_of_album:
                             log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                     
-                    log_debug(f"Successfully logged all categorized tracks for album {album}")
-                    
+                        log_debug(f"Successfully logged all categorized tracks for album {album}")
+                        
                     except Exception as e:
                         log_info(f"Error logging categorized tracks for album {album}: {e}")
                         log_debug(f"Exception in track categorization: {type(e).__name__}: {str(e)}")
