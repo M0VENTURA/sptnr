@@ -167,10 +167,10 @@
                             </div>
                             <div id="genresContainer" class="mb-2">
                                 {% if track.genres %}
-                                    {% for genre in track.genres.split(',') %}
+                                    {% for genre in track.genres|split_genres %}
                                     <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
-                                        {{ genre.strip() }}
-                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeGenre('{{ genre.strip() }}')" aria-label="Remove"></button>
+                                        {{ genre }}
+                                        <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeGenre('{{ genre }}')" aria-label="Remove"></button>
                                     </span>
                                     {% endfor %}
                                 {% else %}
@@ -310,8 +310,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Merged Genres</div>
                             <div class="metadata-value">
-                                {% for genre in track.genres.split(',') %}
-                                    <span class="badge badge-success">{{ genre.strip() }}</span>
+                                {% for genre in track.genres|split_genres %}
+                                    <span class="badge badge-success">{{ genre }}</span>
                                 {% endfor %}
                             </div>
                         </div>
@@ -320,8 +320,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Navidrome</div>
                             <div class="metadata-value">
-                                {% for genre in track.navidrome_genres.split(',') %}
-                                    <span class="badge bg-info">{{ genre.strip() }}</span>
+                                {% for genre in track.navidrome_genres|split_genres %}
+                                    <span class="badge bg-info">{{ genre }}</span>
                                 {% endfor %}
                             </div>
                         </div>
@@ -330,8 +330,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Spotify</div>
                             <div class="metadata-value">
-                                {% for genre in track.spotify_genres.split(',') %}
-                                    <span class="badge bg-success">{{ genre.strip() }}</span>
+                                {% for genre in track.spotify_genres|split_genres %}
+                                    <span class="badge bg-success">{{ genre }}</span>
                                 {% endfor %}
                             </div>
                         </div>
@@ -340,8 +340,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Last.fm</div>
                             <div class="metadata-value">
-                                {% for tag in track.lastfm_tags.split(',') %}
-                                    <span class="badge bg-danger">{{ tag.strip() }}</span>
+                                {% for tag in track.lastfm_tags|split_genres %}
+                                    <span class="badge bg-danger">{{ tag }}</span>
                                 {% endfor %}
                             </div>
                         </div>
@@ -350,8 +350,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">Discogs</div>
                             <div class="metadata-value">
-                                {% for genre in track.discogs_genres.split(',') %}
-                                    <span class="badge bg-warning text-dark">{{ genre.strip() }}</span>
+                                {% for genre in track.discogs_genres|split_genres %}
+                                    <span class="badge bg-warning text-dark">{{ genre }}</span>
                                 {% endfor %}
                             </div>
                         </div>
@@ -360,8 +360,8 @@
                         <div class="metadata-row">
                             <div class="metadata-label">MusicBrainz</div>
                             <div class="metadata-value">
-                                {% for genre in track.musicbrainz_genres.split(',') %}
-                                    <span class="badge bg-primary">{{ genre.strip() }}</span>
+                                {% for genre in track.musicbrainz_genres|split_genres %}
+                                    <span class="badge bg-primary">{{ genre }}</span>
                                 {% endfor %}
                             </div>
                         </div>

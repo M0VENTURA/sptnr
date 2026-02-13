@@ -158,6 +158,17 @@ def log_verbose(msg):
 
 app = Flask(__name__)
 
+# Add Jinja2 filter to split genres on both backslash and comma
+@app.template_filter('split_genres')
+def split_genres(s):
+    """Split string on both backslash and comma separators"""
+    if not s:
+        return []
+    # Split on backslash or comma
+    import re
+    genres = re.split(r'[\\,]+', str(s))
+    return [g.strip() for g in genres if g.strip()]
+
 # Add cache-control headers to prevent browser caching of HTML templates
 @app.after_request
 def set_cache_headers(response):
