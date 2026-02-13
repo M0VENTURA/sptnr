@@ -107,69 +107,64 @@ class WikipediaReleaseScraper:
             return []
     
     def _parse_release_tables(self, soup: BeautifulSoup, source_name: str) -> List[Dict]:
-        """Parse release information from Wikipedia tables with adaptive column detection"""
+        """Parse release information from Wikipedia tables
+        
+        Expected structure:
+        - Month heading (h2/h3/text with month name)
+        - Table with releases for that month
+        - First column: day number
+        - Second column: artist or album info
+        - Third column: album or artist info
+        """
         releases = []
         
-        # Month names for detection
-        months = ['january', 'february', 'march', 'april', 'may', 'june',
-                  'july', 'august', 'september', 'october', 'november', 'december']
+        months = {
+            'january': 1, 'february': 2, 'march': 3, 'april': 4,
+            'may': 5, 'june': 6, 'july': 7, 'august': 8,
+            'september': 9, 'october': 10, 'november': 11, 'december': 12
+        }
         
         # Find all tables on the page
         tables = soup.find_all('table', {'class': 'wikitable'})
         logger.debug(f"Found {len(tables)} tables on {source_name}")
         
         for table in tables:
+            # Find the month heading before this table
+            current_month = None
+            
+            # Walk backwards from table to find month heading
+            prev = table.find_previous(['h2', 'h3', 'h4'])
+            if prev:
+                heading_text = prev.get_text(strip=True).lower()
+                for month_name, month_num in months.items():
+                    if month_name in heading_text:
+                        current_month = month_num
+                        logger.debug(f"Found month heading: {month_name} ({month_num})")
+                        break
+            
+            # Also check for month text right before table
+            if not current_month:
+                prev_text = table.find_previous(string=True)
+                if prev_text:
+                    prev_clean = prev_text.lower().strip()
+                    for month_name, month_num in months.items():
+                        if month_name in prev_clean and len(prev_clean) < 50:
+                            current_month = month_num
+                            break
+            
+            if not current_month:
+                current_month = 1  # Default to January
+            
+            # Parse table rows
             rows = table.find_all('tr')
             if not rows:
                 continue
             
-            current_month = None
-            current_section_month = None
-            column_indices = {}  # Map of column name to index
-            
-            # Skip first row if it's clearly a header
+            # Skip header row (first row usually has th elements)
             start_idx = 0
-            first_row = rows[0] if rows else None
-            
-            for row_idx, row in enumerate(rows):
-                # Check for month headers (h2/h3 between tables or th with month name)
-                headers = row.find_all(['th', 'td'])
-                if not headers:
-                    continue
-                
-                header_text = headers[0].get_text(strip=True).lower()
-                
-                # Check if this is a month header
-                for month_num, month_name in enumerate(months, 1):
-                    if month_name in header_text and len(header_text) < 20:  # Month header is short
-                        current_month = month_num
-                        current_section_month = month_num
-                        logger.debug(f"Detected month: {month_name} ({month_num})")
-                        break
-                
-                # If we found a month, this might be a header row
-                if current_month and row_idx < len(rows) - 1:
-                    # Try to detect column headers in this row or next row
-                    next_row = rows[row_idx + 1] if row_idx < len(rows) - 1 else row
-                    column_indices = self._detect_columns(next_row)
-                    if column_indices:
-                        logger.debug(f"Detected columns: {column_indices}")
-                        start_idx = row_idx + 2  # Skip month header and column header
-                        break
-                    else:
-                        # Maybe the current row is the column header
-                        column_indices = self._detect_columns(row)
-                        if column_indices:
-                            logger.debug(f"Detected columns in current row: {column_indices}")
-                            start_idx = row_idx + 1
-                            break
-            
-            # If we didn't detect columns, try to auto-detect from first data row
-            if not column_indices and start_idx < len(rows):
-                column_indices = self._auto_detect_columns(rows[start_idx:], source_name)
-                if not column_indices:
-                    logger.debug(f"Could not detect columns for table in {source_name}")
-                    continue
+            if rows and rows[0].find_all('th'):
+                start_idx = 1
+                logger.debug(f"Skipping header row for month {current_month}")
             
             # Parse data rows
             for row in rows[start_idx:]:
@@ -177,148 +172,81 @@ class WikipediaReleaseScraper:
                 if len(cells) < 2:
                     continue
                 
-                # Check for month changes within table
-                cell_text = [c.get_text(strip=True) for c in cells]
-                if cell_text and len(cell_text[0]) < 15:
-                    # Check if first cell is a month or day
-                    for month_num, month_name in enumerate(months, 1):
-                        if month_name in cell_text[0].lower():
-                            current_month = month_num
-                            continue
-                
-                release = self._parse_row_with_columns(cells, source_name, current_month, column_indices)
+                release = self._parse_row_for_month(cells, source_name, current_month)
                 if release:
                     releases.append(release)
+                    logger.debug(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
         
         return releases
     
-    def _detect_columns(self, row) -> Dict[str, int]:
-        """Detect column indices by analyzing header row"""
-        headers = row.find_all(['th', 'td'])
-        column_map = {}
+    def _parse_row_for_month(self, cells, source_name: str, current_month: int) -> Optional[Dict]:
+        """Parse a row that's already in a month context
         
-        header_keywords = {
-            'date': ['date', 'release date', 'released', 'day'],
-            'artist': ['artist', 'by', 'performer', 'act'],
-            'album': ['album', 'title', 'album title'],
-        }
-        
-        for idx, header in enumerate(headers):
-            text = header.get_text(strip=True).lower()
-            
-            for col_type, keywords in header_keywords.items():
-                if any(kw in text for kw in keywords):
-                    column_map[col_type] = idx
-                    break
-        
-        return column_map if column_map else {}
-    
-    def _auto_detect_columns(self, rows, source_name: str) -> Dict[str, int]:
-        """Auto-detect columns by analyzing content"""
-        if not rows:
-            return {}
-        
-        months = ['january', 'february', 'march', 'april', 'may', 'june',
-                  'july', 'august', 'september', 'october', 'november', 'december']
-        
-        # Check first few rows to infer column types
-        for row in rows[:3]:
-            cells = row.find_all('td')
-            if len(cells) < 2:
-                continue
-            
-            cell_texts = [c.get_text(strip=True) for c in cells]
-            
-            # Try to identify columns based on content patterns
-            column_types = {}
-            for idx, text in enumerate(cell_texts):
-                # Check if it looks like a day number (1-31)
-                if text.isdigit() and 1 <= int(text) <= 31:
-                    if 'date' not in column_types or column_types.get('date', -1) == -1:
-                        column_types['date'] = idx
-                # Check if it's a date (contains /)  or month name
-                elif any(month in text.lower() for month in months) or '/' in text:
-                    if 'date' not in column_types:
-                        column_types['date'] = idx
-                # Check if likely an artist (contains common artist patterns or brackets with info)
-                elif '[' in text or len(text) > 5:  # Artists often have brackets with info, albums/artists are usually longer
-                    if 'artist' not in column_types and idx < len(cell_texts) - 1:
-                        column_types['artist'] = idx
-                        column_types['album'] = idx + 1
-                        break
-            
-            if len(column_types) >= 2:
-                return column_types
-        
-        return {}
-    
-    def _parse_row_with_columns(self, cells, source_name: str, current_month: Optional[int], 
-                               column_map: Dict[str, int]) -> Optional[Dict]:
-        """Parse a row using detected column mapping"""
+        Format: [day] [artist/info] [album/title] ...
+        """
         try:
-            months = ['january', 'february', 'march', 'april', 'may', 'june',
-                      'july', 'august', 'september', 'october', 'november', 'december']
+            if len(cells) < 2:
+                return None
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
             
-            # Extract data using column mapping
-            artist = None
-            album = None
-            release_date = None
+            # First cell should be day number
+            day_text = cell_texts[0].strip()
             day = None
             
-            if 'artist' in column_map and column_map['artist'] < len(cell_texts):
-                artist = cell_texts[column_map['artist']]
-            if 'album' in column_map and column_map['album'] < len(cell_texts):
-                album = cell_texts[column_map['album']]
-            if 'date' in column_map and column_map['date'] < len(cell_texts):
-                date_text = cell_texts[column_map['date']]
-                # Check if it's just a day number
-                if date_text.isdigit():
-                    day = int(date_text)
+            try:
+                day = int(day_text)
+                if not (1 <= day <= 31):
+                    day = None
+            except ValueError:
+                # First cell might not be day, could be artist or date text
+                pass
+            
+            # If we got a valid day, artist/album are in positions 1 and 2
+            if day:
+                if len(cell_texts) < 3:
+                    # Only 2 cells, could be [day] [artist-album text]
+                    combined = cell_texts[1]
+                    # Try to split on dash or hyphen
+                    if ' - ' in combined:
+                        parts = combined.split(' - ', 1)
+                        artist = parts[0].strip()
+                        album = parts[1].strip()
+                    else:
+                        # Can't reliably parse
+                        return None
                 else:
-                    release_date = date_text
+                    artist = cell_texts[1].strip()
+                    album = cell_texts[2].strip()
+            else:
+                # No valid day in first cell, treat as (artist, album, ...)
+                artist = cell_texts[0].strip()
+                album = cell_texts[1].strip()
+                day = 1  # Default to first of month
             
-            # If we don't have columns mapped, try basic assumption
-            if not artist and len(cell_texts) >= 2:
-                artist = cell_texts[0]
-                album = cell_texts[1]
-                if len(cell_texts) > 2:
-                    release_date = cell_texts[2]
-            
-            # Clean up
-            artist = artist.strip() if artist else None
-            album = album.strip() if album else None
-            
-            if not artist or not album:
+            # Validate
+            if not artist or not album or len(artist) < 2 or len(album) < 2:
                 return None
             
-            # Skip invalid entries
-            if any(x in artist.lower() for x in ['edit', 'cite', 'ref', 'citation']):
-                return None
-            if any(x in album.lower() for x in ['edit', 'cite', 'ref', 'citation']):
-                return None
+            # Skip entries with wiki markup
+            for text in [artist, album]:
+                if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
+                    return None
             
             # Build date
-            if day and current_month:
-                release_date = f"2026-{current_month:02d}-{day:02d}"
-            elif release_date:
-                release_date = self._parse_date_string(release_date, current_month)
-            else:
-                release_date = f"2026-{current_month:02d}-01" if current_month else "2026-01-01"
-            
-            year = self._extract_year(release_date or "2026")
+            release_date = f"2026-{current_month:02d}-{day:02d}"
             
             return {
                 "artist_name": artist,
                 "album_name": album,
                 "release_date": release_date,
-                "release_year": year,
+                "release_year": 2026,
                 "source": source_name,
             }
         except Exception as e:
-            logger.debug(f"Error parsing row with columns: {e}")
+            logger.debug(f"Error parsing row for month {current_month}: {e}")
             return None
+    
     
     def _extract_year(self, date_str: str) -> int:
         """Extract year from date string"""
@@ -327,20 +255,22 @@ class WikipediaReleaseScraper:
             return int(match.group())
         return 2026
     
-    def _parse_date_string(self, date_str: str, current_month: Optional[int] = None) -> Optional[str]:
+    def _parse_date_string(self, date_str: str) -> Optional[str]:
         """Parse various date formats and return YYYY-MM-DD"""
-        if not date_str or date_str.lower() in ['unknown', 'tba', 'tbr', 'pending']:
+        if not date_str or date_str.lower() in ['unknown', 'tba', 'tbr', 'pending', '']:
             return None
         
         date_str = date_str.strip()
         
-        # Try common date formats
+        # Try simple formats first
         formats = [
             '%Y-%m-%d',  # 2026-01-15
-            '%B %d, %Y',  # January 15, 2026
-            '%b %d, %Y',  # Jan 15, 2026
             '%m/%d/%Y',  # 01/15/2026
             '%d/%m/%Y',  # 15/01/2026
+            '%B %d, %Y',  # January 15, 2026
+            '%b %d, %Y',  # Jan 15, 2026
+            '%d %B %Y',  # 15 January 2026
+            '%d %b %Y',  # 15 Jan 2026
             '%B %d',  # January 15 (assume 2026)
             '%b %d',  # Jan 15 (assume 2026)
         ]
@@ -355,41 +285,7 @@ class WikipediaReleaseScraper:
             except ValueError:
                 continue
         
-        # Try extracting day and month with regex: "January 15" or "15 January"
-        day_month_match = re.search(r'(\d{1,2})\s+(\w+)', date_str)
-        month_day_match = re.search(r'(\w+)\s+(\d{1,2})', date_str)
-        
-        if day_month_match:
-            try:
-                day = int(day_month_match.group(1))
-                month_str = day_month_match.group(2)
-                date_with_year = f"{month_str} {day}, 2026"
-                parsed = datetime.strptime(date_with_year, '%B %d, %Y')
-                return parsed.strftime('%Y-%m-%d')
-            except (ValueError, AttributeError):
-                pass
-        
-        if month_day_match:
-            try:
-                month_str = month_day_match.group(1)
-                day = int(month_day_match.group(2))
-                date_with_year = f"{month_str} {day}, 2026"
-                parsed = datetime.strptime(date_with_year, '%B %d, %Y')
-                return parsed.strftime('%Y-%m-%d')
-            except (ValueError, AttributeError):
-                pass
-        
-        # If we have current_month and found a day number, use it
-        if current_month:
-            day_match = re.search(r'^(\d{1,2})', date_str)
-            if day_match:
-                try:
-                    day = int(day_match.group(1))
-                    if 1 <= day <= 31:
-                        return f"2026-{current_month:02d}-{day:02d}"
-                except ValueError:
-                    pass
-        
+        # Could not parse
         return None
     
     def save_releases(self, releases: List[Dict], source_name: str) -> tuple:
