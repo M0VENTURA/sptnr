@@ -4,44 +4,48 @@
 
 {% block content %}
 <div class="container-fluid mt-4">
-  <h1 class="mb-4">
-    <i class="bi bi-music-note-list"></i> Playlist Manager
-    <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Playlists">
-      <i class="bi bi-question-circle"></i>
-    </a>
-  </h1>
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-music-note-list"></i> Playlist Manager
+      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Playlists">
+        <i class="bi bi-question-circle"></i>
+      </a>
+    </h1>
+    <p class="text-muted mb-0">Create, manage, and import playlists from multiple sources</p>
+  </div>
 
-  <!-- Tab-style Navigation -->
-  <ul class="nav nav-pills mb-4" role="tablist">
-    <li class="nav-item">
-      <button class="nav-link active" id="browseTab" role="button" onclick="switchTab('browse')">
+  <!-- Tabs Navigation -->
+  <ul class="nav nav-tabs mb-4" role="tablist">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link active" id="browseTab" data-bs-toggle="tab" data-bs-target="#browseContent" type="button" role="tab" aria-controls="browseContent" aria-selected="true">
         <i class="bi bi-folder2-open"></i> Browse & Manage
       </button>
     </li>
-    <li class="nav-item">
-      <button class="nav-link" id="spotifyTab" role="button" onclick="switchTab('spotify')">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="spotifyTab" data-bs-toggle="tab" data-bs-target="#spotifyContent" type="button" role="tab" aria-controls="spotifyContent" aria-selected="false">
         <i class="bi bi-spotify"></i> Import from Spotify
       </button>
     </li>
-    <li class="nav-item">
-      <button class="nav-link" id="smartTab" role="button" onclick="switchTab('smart')">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="smartTab" data-bs-toggle="tab" data-bs-target="#smartContent" type="button" role="tab" aria-controls="smartContent" aria-selected="false">
         <i class="bi bi-sliders"></i> Smart Playlists
       </button>
     </li>
-    <li class="nav-item">
-      <button class="nav-link" id="lastfmTab" role="button" onclick="switchTab('lastfm')">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab" aria-controls="lastfmContent" aria-selected="false">
         <i class="bi bi-heart"></i> Last.fm Recommendations
       </button>
     </li>
-    <li class="nav-item">
-      <button class="nav-link" id="listenbrainzTab" role="button" onclick="switchTab('listenbrainz')">
+    <li class="nav-item" role="presentation">
+      <button class="nav-link" id="listenbrainzTab" data-bs-toggle="tab" data-bs-target="#listenbrainzContent" type="button" role="tab" aria-controls="listenbrainzContent" aria-selected="false">
         <i class="bi bi-brain"></i> ListenBrainz
       </button>
     </li>
   </ul>
 
-  <!-- Playlist Selection -->
-  <div id="browseSection" class="tab-section">
+  <div class="tab-content">
+    <!-- Browse & Manage Tab -->
+    <div id="browseContent" class="tab-pane fade show active" role="tabpanel" aria-labelledby="browseTab">
     <div class="row mb-4">
       <div class="col-12">
         <div class="card">
@@ -294,10 +298,10 @@
         </div>
       </div>
     </div>
-  </div><!-- END browseSection -->
+    </div><!-- END Browse Tab -->
 
-  <!-- Smart Playlists Section -->
-  <div id="smartSection" class="tab-section">
+    <!-- Smart Playlists Tab -->
+    <div id="smartContent" class="tab-pane fade" role="tabpanel" aria-labelledby="smartTab">
     <div class="mb-4">
       <div class="card">
         <div class="card-header">
@@ -353,10 +357,10 @@
         </div>
       </div>
     </div>
-  </div><!-- END smartSection -->
+    </div><!-- END Smart Tab -->
 
-  <!-- Spotify Playlist Import Section -->
-  <div id="spotifySection" class="tab-section">
+    <!-- Spotify Playlist Import Tab -->
+    <div id="spotifyContent" class="tab-pane fade" role="tabpanel" aria-labelledby="spotifyTab">
     <div class="mb-4">
       <div class="card">
         <div class="card-header">
@@ -396,10 +400,10 @@
         </div>
       </div>
     </div>
-  </div><!-- END spotifySection -->
+    </div><!-- END Spotify Tab -->
 
-  <!-- Last.fm Recommendations Section -->
-  <div id="lastfmSection" class="tab-section">
+    <!-- Last.fm Recommendations Tab -->
+    <div id="lastfmContent" class="tab-pane fade" role="tabpanel" aria-labelledby="lastfmTab">
     <div class="mb-4">
       <div class="card">
         <div class="card-header">
@@ -503,10 +507,10 @@
         </div>
       </div>
     </div>
-  </div><!-- END lastfmSection -->
+    </div><!-- END Last.fm Tab -->
 
-  <!-- ListenBrainz Recommendations Section -->
-  <div id="listenbrainzSection" class="tab-section">
+    <!-- ListenBrainz Recommendations Tab -->
+    <div id="listenbrainzContent" class="tab-pane fade" role="tabpanel" aria-labelledby="listenbrainzTab">
     <div class="mb-4">
       <div class="card">
         <div class="card-header">
@@ -611,7 +615,8 @@
         </div>
       </div>
     </div>
-  </div><!-- END listenbrainzSection -->
+    </div><!-- END ListenBrainz Tab -->
+  </div><!-- END tab-content -->
 </div><!-- END container -->
 
 <script>
@@ -623,147 +628,12 @@ let currentPlaylistId = null;
 let currentPlaylistData = null;
 
 // ===============================
-// TAB SWITCHING FUNCTIONALITY
-// ===============================
-function switchTab(tabName) {
-  try {
-    console.log('[Playlist Manager] Switching to tab:', tabName);
-    console.log('[Playlist Manager] Window.switchTab exists:', typeof window.switchTab);
-    
-    // Hide all sections (use class only, no inline styles)
-    const allSections = document.querySelectorAll('.tab-section');
-    console.log('[Playlist Manager] Found', allSections.length, 'tab sections');
-    
-    allSections.forEach(section => {
-      console.log('[Playlist Manager] Removing tab-active from:', section.id);
-      section.classList.remove('tab-active');
-    });
-    
-    // Remove active class from all tabs
-    const allNavLinks = document.querySelectorAll('.nav-link');
-    console.log('[Playlist Manager] Found', allNavLinks.length, 'nav links');
-    
-    allNavLinks.forEach(tab => {
-      console.log('[Playlist Manager] Removing active from tab:', tab.id);
-      tab.classList.remove('active');
-    });
-    
-    // Show selected section
-    const sectionMap = {
-      'browse': ['browseSection', 'browseTab'],
-      'spotify': ['spotifySection', 'spotifyTab'],
-      'smart': ['smartSection', 'smartTab'],
-      'lastfm': ['lastfmSection', 'lastfmTab'],
-      'listenbrainz': ['listenbrainzSection', 'listenbrainzTab']
-    };
-    
-    if (!sectionMap[tabName]) {
-      console.error('[Playlist Manager] Unknown tab:', tabName);
-      console.log('[Playlist Manager] Valid tabs are:', Object.keys(sectionMap).join(', '));
-      return;
-    }
-
-    const [sectionId, tabId] = sectionMap[tabName];
-    console.log('[Playlist Manager] Looking for section:', sectionId, 'and tab:', tabId);
-    
-    const section = document.getElementById(sectionId);
-    const tab = document.getElementById(tabId);
-    
-    console.log('[Playlist Manager] Section found:', !!section, section ? section.className : 'N/A');
-    console.log('[Playlist Manager] Tab button found:', !!tab, tab ? tab.className : 'N/A');
-    
-    if (!section) {
-      console.error('[Playlist Manager] Section not found:', sectionId);
-      // List all available sections for debugging
-      const availableSections = [];
-      document.querySelectorAll('.tab-section').forEach(s => {
-        availableSections.push(s.id);
-        console.log('[Playlist Manager] Available section:', s.id, 'class:', s.className);
-      });
-      console.log('[Playlist Manager] All available tab sections:', availableSections.join(', '));
-      return;
-    }
-    
-    if (!tab) {
-      console.warn('[Playlist Manager] Tab button not found:', tabId);
-      const availableTabs = [];
-      document.querySelectorAll('.nav-link').forEach(t => {
-        availableTabs.push(t.id || 'no-id');
-      });
-      console.warn('[Playlist Manager] All available nav-link buttons:', availableTabs.join(', '));
-    }
-
-    // Show section using class only (avoids inline style specificity issues)
-    console.log('[Playlist Manager] Adding tab-active class to section:', sectionId);
-    section.classList.add('tab-active');
-    console.log('[Playlist Manager] Section classes after add:', section.className);
-    
-    if (tab) {
-      console.log('[Playlist Manager] Adding active class to tab:', tabId);
-      tab.classList.add('active');
-      console.log('[Playlist Manager] Tab classes after add:', tab.className);
-    }
-
-    // Verify the classes were actually added
-    console.log('[Playlist Manager] Final section has tab-active:', section.classList.contains('tab-active'));
-    console.log('[Playlist Manager] Final computed style display:', window.getComputedStyle(section).display);
-
-    console.log('[Playlist Manager] Successfully switched to:', tabName);
-    
-  } catch (error) {
-    console.error('[Playlist Manager] Error in switchTab:', error);
-    console.error('[Playlist Manager] Stack trace:', error.stack);
-  }
-}
-
-// ===============================
-// PLAYLIST DROPDOWNS (Navidrome Only)
+// DOCUMENT INITIALIZATION
 // ===============================
 
 document.addEventListener('DOMContentLoaded', function() {
   try {
     console.log('[Playlist Manager] DOMContentLoaded starting');
-    
-    // Verify all tab buttons exist and have proper setup
-    const expectedButtons = [
-      { id: 'browseTab', tab: 'browse' },
-      { id: 'spotifyTab', tab: 'spotify' },
-      { id: 'smartTab', tab: 'smart' },
-      { id: 'lastfmTab', tab: 'lastfm' },
-      { id: 'listenbrainzTab', tab: 'listenbrainz' }
-    ];
-    
-    console.log('[Playlist Manager] Verifying tab buttons...');
-    expectedButtons.forEach(btn => {
-      const element = document.getElementById(btn.id);
-      console.log(`[Playlist Manager] Button "${btn.id}": ${element ? 'FOUND' : 'MISSING'}`, element ? element.outerHTML.substring(0, 100) : 'N/A');
-    });
-    
-    // Verify all sections exist
-    const expectedSections = [
-      'browseSection',
-      'spotifySection', 
-      'smartSection',
-      'lastfmSection',
-      'listenbrainzSection'
-    ];
-    
-    console.log('[Playlist Manager] Verifying sections...');
-    expectedSections.forEach(sectionId => {
-      const section = document.getElementById(sectionId);
-      console.log(`[Playlist Manager] Section "${sectionId}": ${section ? 'FOUND' : 'MISSING'}`, section ? `class="${section.className}"` : 'N/A');
-    });
-    
-    // Verify CSS is loaded
-    const testSection = document.getElementById('browseSection');
-    if (testSection) {
-      const computed = window.getComputedStyle(testSection);
-      console.log('[Playlist Manager] CSS test - browseSection computed display:', computed.display);
-      console.log('[Playlist Manager] CSS test - browseSection has class "tab-section":', testSection.classList.contains('tab-section'));
-    }
-    
-    // Initialize first tab
-    switchTab('browse');
     
     // Load initial data for all tabs with error isolation
     Promise.all([
@@ -1782,15 +1652,9 @@ async function createPlaylistFromListenBrainz() {
 </script>
 
 <style>
-/* Tab Section Styling */
-.tab-section {
+/* Tab Pane Fade Animation */
+.tab-pane {
   animation: fadeIn 0.3s ease-in;
-  display: none;  /* Initially hidden */
-}
-
-.tab-section.tab-active {
-  display: block !important;
-  visibility: visible !important;
 }
 
 @keyframes fadeIn {
@@ -1800,36 +1664,6 @@ async function createPlaylistFromListenBrainz() {
   to {
     opacity: 1;
   }
-}
-
-.nav-pills {
-  gap: 0.5rem;
-  border-bottom: 2px solid var(--border-color);
-  padding-bottom: 1rem;
-}
-
-.nav-pills .nav-link {
-  cursor: pointer;
-  transition: all 0.2s ease;
-  border: none;
-  padding: 0.5rem 1rem;
-  background-color: var(--tertiary-bg);
-  color: var(--text-secondary);
-  border-radius: 4px;
-  font-weight: 500;
-}
-
-.nav-pills .nav-link:hover {
-  background-color: var(--secondary-bg);
-  color: var(--text-primary);
-  transform: translateY(-2px);
-}
-
-.nav-pills .nav-link.active {
-  background-color: var(--secondary-bg);
-  color: var(--spotify-green);
-  border-bottom: 3px solid var(--spotify-green);
-  border-radius: 4px 4px 0 0;
 }
 
 .track-row {
@@ -1883,9 +1717,6 @@ async function createPlaylistFromListenBrainz() {
     background-color: var(--secondary-bg) !important;
   }
 
-  .nav-pills .nav-link:hover {
-    background-color: #495057;
-  }
 }
 </style>
 
