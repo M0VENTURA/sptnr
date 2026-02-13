@@ -1,9 +1,6 @@
 #!/usr/bin/env python3
 from db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
 import os
-# Import table creation functions
-from create_lastfm_recommendations_table import create_lastfm_recommendations_table
-from create_upcoming_releases_table import create_upcoming_releases_schema
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
 ALL_ENV_VARS = [
@@ -166,19 +163,14 @@ logging.info(f"Album Artist Migration Status: {verification['message']}")
 if not verification["exists"]:
     logging.warning(f"⚠️ Database migration issue: {verification['message']}")
 
-# Create lastfm_recommendations table if it doesn't exist
+# Initialize complete database schema (all tables now created/verified in update_schema)
+# This ensures all tables and columns exist on startup
+DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 try:
-    lastfm_result = create_lastfm_recommendations_table()
-    logging.info(f"Last.fm recommendations table status: {'Created/verified' if lastfm_result else 'Already exists or error'}")
+    update_schema(DB_PATH)
+    logging.info("Database schema initialization complete (all tables created/verified)")
 except Exception as e:
-    logging.error(f"Error creating lastfm_recommendations table: {e}")
-
-# Create upcoming_releases table if it doesn't exist
-try:
-    upcoming_result = create_upcoming_releases_schema()
-    logging.info(f"Upcoming releases table status: {'Created/verified' if upcoming_result else 'Already exists or error'}")
-except Exception as e:
-    logging.error(f"Error creating upcoming_releases table: {e}")
+    logging.error(f"Error initializing database schema: {e}")
 
 # --- Unified Log API ---
 @app.route("/api/unified-log")

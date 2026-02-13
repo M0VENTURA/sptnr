@@ -678,6 +678,131 @@ def update_schema(db_path):
     for idx_name, idx_target in indexes:
         cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
 
+    # ✅ Ensure lastfm_recommendations table exists (for caching Last.fm recommendations)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lastfm_recommendations (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            recommendation_type TEXT NOT NULL,
+            item_name TEXT NOT NULL,
+            artist_name TEXT,
+            image_url TEXT,
+            playcount INTEGER DEFAULT 0,
+            lastfm_url TEXT,
+            mbid TEXT,
+            metadata TEXT,
+            synced_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(username, recommendation_type, item_name, artist_name)
+        )
+    """)
+    
+    # ✅ Create indexes for lastfm_recommendations
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lastfm_username_type 
+        ON lastfm_recommendations(username, recommendation_type)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_lastfm_synced_at 
+        ON lastfm_recommendations(synced_at)
+    """)
+    
+    # ✅ Ensure lastfm_sync_history table exists (to track sync operations)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lastfm_sync_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT NOT NULL,
+            sync_type TEXT NOT NULL,
+            artists_count INTEGER DEFAULT 0,
+            albums_count INTEGER DEFAULT 0,
+            tracks_count INTEGER DEFAULT 0,
+            filtered_count INTEGER DEFAULT 0,
+            sync_status TEXT DEFAULT 'success',
+            error_message TEXT,
+            sync_start TIMESTAMP,
+            sync_end TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # ✅ Create indexes for lastfm_sync_history
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_sync_history_username_time 
+        ON lastfm_sync_history(username, created_at)
+    """)
+    
+    # ✅ Ensure lastfm_scheduler_config table exists (to track scheduler settings)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS lastfm_scheduler_config (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            username TEXT UNIQUE NOT NULL,
+            enabled BOOLEAN DEFAULT 1,
+            sync_time TEXT DEFAULT '01:00',
+            last_sync TIMESTAMP,
+            next_sync TIMESTAMP,
+            filter_existing BOOLEAN DEFAULT 1,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # ✅ Ensure upcoming_releases table exists (for tracking upcoming album releases)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS upcoming_releases (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist_name TEXT NOT NULL,
+            album_name TEXT NOT NULL,
+            release_date TEXT,
+            release_year INTEGER,
+            source TEXT,
+            artist_in_collection BOOLEAN DEFAULT FALSE,
+            album_in_collection BOOLEAN DEFAULT FALSE,
+            is_new_release BOOLEAN DEFAULT FALSE,
+            notes TEXT,
+            url TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE(artist_name, album_name, release_date)
+        )
+    """)
+    
+    # ✅ Create indexes for upcoming_releases
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_upcoming_artist_collection 
+        ON upcoming_releases(artist_in_collection, release_date DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_upcoming_release_date 
+        ON upcoming_releases(release_date)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_upcoming_year 
+        ON upcoming_releases(release_year)
+    """)
+    
+    # ✅ Ensure release_scrape_history table exists (to track when we last scraped)
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS release_scrape_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            source_url TEXT,
+            source_name TEXT,
+            items_found INTEGER,
+            items_added INTEGER,
+            items_updated INTEGER,
+            scrape_status TEXT,
+            error_message TEXT,
+            scrape_start TIMESTAMP,
+            scrape_end TIMESTAMP,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # ✅ Create indexes for release_scrape_history
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_scrape_history_source 
+        ON release_scrape_history(source_name, created_at DESC)
+    """)
+
     conn.commit()
     conn.close()
     
