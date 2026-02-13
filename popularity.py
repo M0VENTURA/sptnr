@@ -2998,8 +2998,9 @@ def popularity_scan(
                     log_debug(f"Updated artist_stats table for {artist}")
                 
                 # Get all tracks for this album with their popularity scores and single detection
+                # Match on COALESCE(NULLIF(album_artist, ''), artist) = artist (grouping artist) to handle albums where album_artist differs from track artist
                 cursor.execute(
-                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE artist = ? AND album = ? ORDER BY popularity_score DESC",
+                    "SELECT id, title, popularity_score, is_single, single_confidence, single_sources, lastfm_track_playcount FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? ORDER BY popularity_score DESC",
                     (artist, album)
                 )
                 album_tracks_with_scores = cursor.fetchall()
