@@ -5067,7 +5067,7 @@ def scan_popularity_route():
     global scan_process_popularity
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume
+    mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume, resume_force
     
     with scan_lock:
         # Check if scan is already running
@@ -5123,13 +5123,13 @@ def scan_popularity_route():
             from popularity import popularity_scan as scan_popularity_func
             
             # Determine force and filter logic based on mode
-            force_rescan = (mode == 'force')
+            force_rescan = (mode == 'force' or mode == 'resume_force')
             filter_missing = (mode == 'missing')
             singles_only = (mode == 'singles')
             
             # Determine resume artist for resume mode
             resume_from_artist = None
-            if mode == 'resume':
+            if mode == 'resume' or mode == 'resume_force':
                 from scan_resume import get_last_scanned_artist
                 resume_from_artist = get_last_scanned_artist(scan_type="popularity", db_path=DB_PATH)
                 if resume_from_artist:
@@ -5160,7 +5160,13 @@ def scan_popularity_route():
             if singles_only:
                 flash("✅ Singles detection scan started (popularity only)", "success")
             else:
-                mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
+                mode_desc = {
+                    'all': 'Full', 
+                    'force': 'Full (Forced)', 
+                    'missing': 'Missing Only',
+                    'resume': 'Resume from Last',
+                    'resume_force': 'Resume (Forced)'
+                }.get(mode, 'Full')
                 flash(f"✅ Popularity and singles scan started ({mode_desc} scan)", "success")
             logging.info("Popularity scan thread started successfully")
         except Exception as e:
@@ -6258,7 +6264,7 @@ def scan_navidrome():
     global scan_process_navidrome
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, resume
+    mode = request.args.get('mode', 'all')  # all, force, missing, resume, resume_force
     
     with scan_lock:
         if scan_process_navidrome is not None:
@@ -6293,7 +6299,7 @@ def scan_navidrome():
                     last_scanned_artist = None
                     
                     # For resume mode, get last scanned artist from database or progress files
-                    if mode == 'resume':
+                    if mode == 'resume' or mode == 'resume_force':
                         from scan_resume import get_last_scanned_artist
                         last_scanned_artist = get_last_scanned_artist(scan_type="navidrome", db_path=DB_PATH)
                         if last_scanned_artist:
@@ -6316,7 +6322,7 @@ def scan_navidrome():
                                 break
                     
                     # Determine force and filter logic based on mode
-                    force_rescan = (mode == 'force')
+                    force_rescan = (mode == 'force' or mode == 'resume_force')
                     filter_missing = (mode == 'missing')
                     
                     # Scan artists starting from checkpoint or beginning
@@ -6354,7 +6360,13 @@ def scan_navidrome():
             scan_thread = threading.Thread(target=run_navidrome_import_bg, daemon=False)
             scan_thread.start()
             scan_process_navidrome = {'thread': scan_thread, 'type': 'navidrome'}
-            mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
+            mode_desc = {
+                'all': 'Full', 
+                'force': 'Full (Forced)', 
+                'missing': 'Missing Only',
+                'resume': 'Resume from Last',
+                'resume_force': 'Resume (Forced)'
+            }.get(mode, 'Full')
             flash(f"✅ Navidrome import started ({mode_desc} scan)", "success")
         except Exception as e:
             logging.error(f"Error starting Navidrome import: {e}", exc_info=True)
@@ -6369,7 +6381,7 @@ def scan_combined():
     global scan_process_combined
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, resume
+    mode = request.args.get('mode', 'all')  # all, force, resume, resume_force
     
     with scan_lock:
         if scan_process_combined is not None:
@@ -6398,11 +6410,11 @@ def scan_combined():
                     total = len(artists)
                     
                     # Determine force rescan based on mode
-                    force_rescan = (mode == 'force')
+                    force_rescan = (mode == 'force' or mode == 'resume_force')
                     
                     # Determine start index for resume mode
                     start_idx = 0
-                    if mode == 'resume':
+                    if mode == 'resume' or mode == 'resume_force':
                         from scan_resume import get_last_scanned_artist
                         last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
                         if last_scanned_artist:
@@ -6478,7 +6490,12 @@ def scan_combined():
             scan_thread = threading.Thread(target=run_combined_scan_bg, daemon=False)
             scan_thread.start()
             scan_process_combined = {'thread': scan_thread, 'type': 'combined'}
-            mode_desc = {'all': 'Full', 'force': 'Full (Forced)'}.get(mode, 'Full')
+            mode_desc = {
+                'all': 'Full', 
+                'force': 'Full (Forced)',
+                'resume': 'Resume from Last',
+                'resume_force': 'Resume (Forced)'
+            }.get(mode, 'Full')
             flash(f"✅ Combined scan started ({mode_desc} - Navidrome → Popularity → Singles for each artist)", "success")
         except Exception as e:
             logging.error(f"Error starting combined scan: {e}", exc_info=True)
