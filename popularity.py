@@ -3262,97 +3262,97 @@ def popularity_scan(
                             (artist, album)
                         )
                         final_tracks = cursor.fetchall()
-                    
-                    # Categorize tracks
-                    detected_singles = []      # is_single = 1, 5 stars
-                    standout_tracks = []       # is_standout_track = 1, 5 stars
-                    possible_singles = []      # Medium confidence, not marked as single
-                    rest_of_album = []         # Other tracks
-                    
-                    SOURCE_DISPLAY_NAMES = {
-                        "musicbrainz": "MusicBrainz",
-                        "discogs": "Discogs",
-                        "discogs_video": "Discogs Video",
-                        "spotify": "Spotify"
-                    }
-                    
-                    for track_row in final_tracks:
-                        track_title = track_row["title"]
-                        track_stars = track_row["stars"] if track_row["stars"] else 0
-                        track_is_single = track_row["is_single"] if track_row["is_single"] else 0
-                        track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
-                        track_single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else ""
-                        track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
-                        track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
                         
-                        # Parse single sources
-                        try:
-                            if track_sources_json and isinstance(track_sources_json, str):
-                                track_sources = json.loads(track_sources_json)
-                            else:
+                        # Categorize tracks
+                        detected_singles = []      # is_single = 1, 5 stars
+                        standout_tracks = []       # is_standout_track = 1, 5 stars
+                        possible_singles = []      # Medium confidence, not marked as single
+                        rest_of_album = []         # Other tracks
+                        
+                        SOURCE_DISPLAY_NAMES = {
+                            "musicbrainz": "MusicBrainz",
+                            "discogs": "Discogs",
+                            "discogs_video": "Discogs Video",
+                            "spotify": "Spotify"
+                        }
+                        
+                        for track_row in final_tracks:
+                            track_title = track_row["title"]
+                            track_stars = track_row["stars"] if track_row["stars"] else 0
+                            track_is_single = track_row["is_single"] if track_row["is_single"] else 0
+                            track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
+                            track_single_confidence = track_row["single_confidence"] if track_row["single_confidence"] else ""
+                            track_sources_json = track_row["single_sources"] if track_row["single_sources"] else "[]"
+                            track_zscore = track_row["artist_z_score"] if track_row["artist_z_score"] else 0
+                            
+                            # Parse single sources
+                            try:
+                                if track_sources_json and isinstance(track_sources_json, str):
+                                    track_sources = json.loads(track_sources_json)
+                                else:
+                                    track_sources = []
+                            except json.JSONDecodeError:
                                 track_sources = []
-                        except json.JSONDecodeError:
-                            track_sources = []
+                            
+                            # Format sources for display
+                            formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
+                            sources_str = ", ".join(formatted_sources) if formatted_sources else ""
+                            
+                            # Create star rating string (max 5 stars)
+                            stars_str = "★" * min(track_stars, 5)
+                            
+                            # Determine detection method(s) for display
+                            detection_methods = []
+                            if track_is_single and sources_str:
+                                detection_methods.append(sources_str)
+                            if track_is_standout:
+                                detection_methods.append(f"Standout (z-score: {track_zscore:.2f})")
+                            if track_single_confidence and not track_is_single:
+                                detection_methods.append(f"Possible Single ({track_single_confidence})")
+                            
+                            method_str = " - " + " | ".join(detection_methods) if detection_methods else ""
+                            
+                            # Categorize track
+                            if track_is_single and track_stars == 5:
+                                detected_singles.append((track_title, stars_str, method_str))
+                            elif track_is_standout and track_stars == 5:
+                                standout_tracks.append((track_title, stars_str, method_str))
+                            elif track_single_confidence == "medium" and not track_is_single:
+                                possible_singles.append((track_title, stars_str, method_str))
+                            else:
+                                rest_of_album.append((track_title, stars_str, method_str))
                         
-                        # Format sources for display
-                        formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
-                        sources_str = ", ".join(formatted_sources) if formatted_sources else ""
+                        # Log categorized results
+                        total_logged = len(detected_singles) + len(standout_tracks) + len(possible_singles) + len(rest_of_album)
+                        log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, possible={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
                         
-                        # Create star rating string (max 5 stars)
-                        stars_str = "★" * min(track_stars, 5)
+                        if detected_singles:
+                            log_unified(f"Single Detection Scan - ===== Detected Singles =====")
+                            log_debug(f"Logging {len(detected_singles)} detected singles for {album}")
+                            for title, stars, method in detected_singles:
+                                log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{method}"
+                                log_debug(f"About to log: {log_entry}")
+                                log_unified(log_entry)
                         
-                        # Determine detection method(s) for display
-                        detection_methods = []
-                        if track_is_single and sources_str:
-                            detection_methods.append(sources_str)
-                        if track_is_standout:
-                            detection_methods.append(f"Standout (z-score: {track_zscore:.2f})")
-                        if track_single_confidence and not track_is_single:
-                            detection_methods.append(f"Possible Single ({track_single_confidence})")
+                        if standout_tracks:
+                            log_unified(f"Single Detection Scan - ===== Standout Tracks =====")
+                            for title, stars, method in standout_tracks:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                         
-                        method_str = " - " + " | ".join(detection_methods) if detection_methods else ""
+                        if possible_singles:
+                            log_unified(f"Single Detection Scan - ===== Possible Singles (Medium Confidence) =====")
+                            for title, stars, method in possible_singles:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                         
-                        # Categorize track
-                        if track_is_single and track_stars == 5:
-                            detected_singles.append((track_title, stars_str, method_str))
-                        elif track_is_standout and track_stars == 5:
-                            standout_tracks.append((track_title, stars_str, method_str))
-                        elif track_single_confidence == "medium" and not track_is_single:
-                            possible_singles.append((track_title, stars_str, method_str))
-                        else:
-                            rest_of_album.append((track_title, stars_str, method_str))
-                    
-                    # Log categorized results
-                    total_logged = len(detected_singles) + len(standout_tracks) + len(possible_singles) + len(rest_of_album)
-                    log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, possible={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
-                    
-                    if detected_singles:
-                        log_unified(f"Single Detection Scan - ===== Detected Singles =====")
-                        log_debug(f"Logging {len(detected_singles)} detected singles for {album}")
-                        for title, stars, method in detected_singles:
-                            log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{method}"
-                            log_debug(f"About to log: {log_entry}")
-                            log_unified(log_entry)
-                    
-                    if standout_tracks:
-                        log_unified(f"Single Detection Scan - ===== Standout Tracks =====")
-                        for title, stars, method in standout_tracks:
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
-                    
-                    if possible_singles:
-                        log_unified(f"Single Detection Scan - ===== Possible Singles (Medium Confidence) =====")
-                        for title, stars, method in possible_singles:
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
-                    
-                    # Always log rest of album tracks if there are any or if this is the only category
-                    if rest_of_album:
-                        # Only show header if there were detected singles/standout/possible singles
-                        if detected_singles or standout_tracks or possible_singles:
-                            log_unified(f"Single Detection Scan - ===== Rest of Album =====")
-                        # Log individual rest-of-album tracks
-                        for title, stars, method in rest_of_album:
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
-                    
+                        # Always log rest of album tracks if there are any or if this is the only category
+                        if rest_of_album:
+                            # Only show header if there were detected singles/standout/possible singles
+                            if detected_singles or standout_tracks or possible_singles:
+                                log_unified(f"Single Detection Scan - ===== Rest of Album =====")
+                            # Log individual rest-of-album tracks
+                            for title, stars, method in rest_of_album:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                        
                         log_debug(f"Successfully logged all categorized tracks for album {album}")
                         
                     except Exception as e:
