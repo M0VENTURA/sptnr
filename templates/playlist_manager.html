@@ -628,14 +628,23 @@ let currentPlaylistData = null;
 function switchTab(tabName) {
   try {
     console.log('[Playlist Manager] Switching to tab:', tabName);
+    console.log('[Playlist Manager] Window.switchTab exists:', typeof window.switchTab);
     
     // Hide all sections (use class only, no inline styles)
-    document.querySelectorAll('.tab-section').forEach(section => {
+    const allSections = document.querySelectorAll('.tab-section');
+    console.log('[Playlist Manager] Found', allSections.length, 'tab sections');
+    
+    allSections.forEach(section => {
+      console.log('[Playlist Manager] Removing tab-active from:', section.id);
       section.classList.remove('tab-active');
     });
     
     // Remove active class from all tabs
-    document.querySelectorAll('.nav-link').forEach(tab => {
+    const allNavLinks = document.querySelectorAll('.nav-link');
+    console.log('[Playlist Manager] Found', allNavLinks.length, 'nav links');
+    
+    allNavLinks.forEach(tab => {
+      console.log('[Playlist Manager] Removing active from tab:', tab.id);
       tab.classList.remove('active');
     });
     
@@ -650,6 +659,7 @@ function switchTab(tabName) {
     
     if (!sectionMap[tabName]) {
       console.error('[Playlist Manager] Unknown tab:', tabName);
+      console.log('[Playlist Manager] Valid tabs are:', Object.keys(sectionMap).join(', '));
       return;
     }
 
@@ -659,30 +669,50 @@ function switchTab(tabName) {
     const section = document.getElementById(sectionId);
     const tab = document.getElementById(tabId);
     
+    console.log('[Playlist Manager] Section found:', !!section, section ? section.className : 'N/A');
+    console.log('[Playlist Manager] Tab button found:', !!tab, tab ? tab.className : 'N/A');
+    
     if (!section) {
       console.error('[Playlist Manager] Section not found:', sectionId);
       // List all available sections for debugging
+      const availableSections = [];
       document.querySelectorAll('.tab-section').forEach(s => {
-        console.log('[Playlist Manager] Available section:', s.id);
+        availableSections.push(s.id);
+        console.log('[Playlist Manager] Available section:', s.id, 'class:', s.className);
       });
+      console.log('[Playlist Manager] All available tab sections:', availableSections.join(', '));
       return;
     }
     
     if (!tab) {
       console.warn('[Playlist Manager] Tab button not found:', tabId);
+      const availableTabs = [];
+      document.querySelectorAll('.nav-link').forEach(t => {
+        availableTabs.push(t.id || 'no-id');
+      });
+      console.warn('[Playlist Manager] All available nav-link buttons:', availableTabs.join(', '));
     }
 
     // Show section using class only (avoids inline style specificity issues)
+    console.log('[Playlist Manager] Adding tab-active class to section:', sectionId);
     section.classList.add('tab-active');
+    console.log('[Playlist Manager] Section classes after add:', section.className);
     
     if (tab) {
+      console.log('[Playlist Manager] Adding active class to tab:', tabId);
       tab.classList.add('active');
+      console.log('[Playlist Manager] Tab classes after add:', tab.className);
     }
+
+    // Verify the classes were actually added
+    console.log('[Playlist Manager] Final section has tab-active:', section.classList.contains('tab-active'));
+    console.log('[Playlist Manager] Final computed style display:', window.getComputedStyle(section).display);
 
     console.log('[Playlist Manager] Successfully switched to:', tabName);
     
   } catch (error) {
     console.error('[Playlist Manager] Error in switchTab:', error);
+    console.error('[Playlist Manager] Stack trace:', error.stack);
   }
 }
 
@@ -693,6 +723,44 @@ function switchTab(tabName) {
 document.addEventListener('DOMContentLoaded', function() {
   try {
     console.log('[Playlist Manager] DOMContentLoaded starting');
+    
+    // Verify all tab buttons exist and have proper setup
+    const expectedButtons = [
+      { id: 'browseTab', tab: 'browse' },
+      { id: 'spotifyTab', tab: 'spotify' },
+      { id: 'smartTab', tab: 'smart' },
+      { id: 'lastfmTab', tab: 'lastfm' },
+      { id: 'listenbrainzTab', tab: 'listenbrainz' }
+    ];
+    
+    console.log('[Playlist Manager] Verifying tab buttons...');
+    expectedButtons.forEach(btn => {
+      const element = document.getElementById(btn.id);
+      console.log(`[Playlist Manager] Button "${btn.id}": ${element ? 'FOUND' : 'MISSING'}`, element ? element.outerHTML.substring(0, 100) : 'N/A');
+    });
+    
+    // Verify all sections exist
+    const expectedSections = [
+      'browseSection',
+      'spotifySection', 
+      'smartSection',
+      'lastfmSection',
+      'listenbrainzSection'
+    ];
+    
+    console.log('[Playlist Manager] Verifying sections...');
+    expectedSections.forEach(sectionId => {
+      const section = document.getElementById(sectionId);
+      console.log(`[Playlist Manager] Section "${sectionId}": ${section ? 'FOUND' : 'MISSING'}`, section ? `class="${section.className}"` : 'N/A');
+    });
+    
+    // Verify CSS is loaded
+    const testSection = document.getElementById('browseSection');
+    if (testSection) {
+      const computed = window.getComputedStyle(testSection);
+      console.log('[Playlist Manager] CSS test - browseSection computed display:', computed.display);
+      console.log('[Playlist Manager] CSS test - browseSection has class "tab-section":', testSection.classList.contains('tab-section'));
+    }
     
     // Initialize first tab
     switchTab('browse');
