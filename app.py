@@ -5067,7 +5067,7 @@ def scan_popularity_route():
     global scan_process_popularity
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing, singles
+    mode = request.args.get('mode', 'all')  # all, force, missing, singles, resume
     
     with scan_lock:
         # Check if scan is already running
@@ -5127,16 +5127,26 @@ def scan_popularity_route():
             filter_missing = (mode == 'missing')
             singles_only = (mode == 'singles')
             
+            # Determine resume artist for resume mode
+            resume_from_artist = None
+            if mode == 'resume':
+                from scan_resume import get_last_scanned_artist
+                resume_from_artist = get_last_scanned_artist(scan_type="popularity", db_path=DB_PATH)
+                if resume_from_artist:
+                    logging.info(f"Resume mode: Found last scanned artist '{resume_from_artist}'")
+                else:
+                    logging.warning("Resume mode: No last scanned artist found, starting from beginning")
+            
             def run_popularity_scan_bg():
                 try:
                     if singles_only:
                         logging.info(f"Starting singles-only scan in background")
-                        scan_popularity_func(verbose=False, force=False, singles_only=True)
+                        scan_popularity_func(verbose=False, force=False, singles_only=True, resume_from=resume_from_artist)
                         _write_progress_file(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
                         logging.info("Singles scan completed successfully")
                     else:
-                        logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing})")
-                        scan_popularity_func(verbose=False, force=force_rescan, filter_missing=filter_missing)
+                        logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
+                        scan_popularity_func(verbose=False, force=force_rescan, filter_missing=filter_missing, resume_from=resume_from_artist)
                         _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
                         logging.info("Popularity scan completed successfully")
                 except Exception as e:
@@ -6248,7 +6258,7 @@ def scan_navidrome():
     global scan_process_navidrome
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing
+    mode = request.args.get('mode', 'all')  # all, force, missing, resume
     
     with scan_lock:
         if scan_process_navidrome is not None:
@@ -6278,23 +6288,32 @@ def scan_navidrome():
                     artists = list(artist_map.items())
                     total = len(artists)
                     
-                    # Check if we have a checkpoint from a previous scan
+                    # Check if we have a checkpoint from a previous scan or if resume mode is active
                     start_idx = 0
                     last_scanned_artist = None
-                    if os.path.exists(checkpoint_path):
+                    
+                    # For resume mode, get last scanned artist from database or progress files
+                    if mode == 'resume':
+                        from scan_resume import get_last_scanned_artist
+                        last_scanned_artist = get_last_scanned_artist(scan_type="navidrome", db_path=DB_PATH)
+                        if last_scanned_artist:
+                            logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
+                    # Otherwise check checkpoint file
+                    elif os.path.exists(checkpoint_path):
                         try:
                             with open(checkpoint_path, 'r') as f:
                                 checkpoint = json.load(f)
                                 last_scanned_artist = checkpoint.get("last_scanned_artist")
-                                if last_scanned_artist:
-                                    # Find the index of the last scanned artist
-                                    for idx, (artist_name, _) in enumerate(artists):
-                                        if artist_name == last_scanned_artist:
-                                            start_idx = idx + 1  # Start from the next artist
-                                            logging.info(f"Resuming Navidrome scan from artist index {start_idx} (after '{last_scanned_artist}')")
-                                            break
                         except Exception as e:
                             logging.warning(f"Error reading checkpoint: {e}, starting from beginning")
+                    
+                    # Find the index of the last scanned artist
+                    if last_scanned_artist:
+                        for idx, (artist_name, _) in enumerate(artists):
+                            if artist_name == last_scanned_artist:
+                                start_idx = idx + 1  # Start from the next artist
+                                logging.info(f"Resuming Navidrome scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                break
                     
                     # Determine force and filter logic based on mode
                     force_rescan = (mode == 'force')
@@ -6350,7 +6369,7 @@ def scan_combined():
     global scan_process_combined
     
     # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force
+    mode = request.args.get('mode', 'all')  # all, force, resume
     
     with scan_lock:
         if scan_process_combined is not None:
@@ -6381,8 +6400,23 @@ def scan_combined():
                     # Determine force rescan based on mode
                     force_rescan = (mode == 'force')
                     
+                    # Determine start index for resume mode
+                    start_idx = 0
+                    if mode == 'resume':
+                        from scan_resume import get_last_scanned_artist
+                        last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
+                        if last_scanned_artist:
+                            logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
+                            for idx, (artist_name, _) in enumerate(artists):
+                                if artist_name == last_scanned_artist:
+                                    start_idx = idx + 1  # Start from the next artist
+                                    logging.info(f"Resuming combined scan from artist index {start_idx} (after '{last_scanned_artist}')")
+                                    break
+                        else:
+                            logging.warning("Resume mode: No last scanned artist found, starting from beginning")
+                    
                     # Process each artist sequentially
-                    for idx, (artist_name, info) in enumerate(artists, start=1):
+                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
                         artist_id = info.get("id")
                         
                         logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")

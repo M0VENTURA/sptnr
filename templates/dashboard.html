@@ -145,6 +145,8 @@
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_navidrome') }}" class="d-flex">
@@ -176,6 +178,8 @@
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
                                         <li><hr class="dropdown-divider"></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_popularity') }}" class="d-flex">
@@ -207,6 +211,8 @@
                                              sequentially with complete Navidrome→Popularity→Singles workflow. -->
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Process all artists sequentially</small></a></li>
                                         <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
+                                        <li><hr class="dropdown-divider"></li>
+                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
                                     </ul>
                                 </div>
                                 <form method="POST" action="{{ url_for('scan_stop_combined') }}" class="d-flex">
