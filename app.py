@@ -4138,7 +4138,8 @@ def album_detail(artist, album):
             try:
                 genre_value = row['navidrome_genres'] if isinstance(row, dict) else row[0]
                 if genre_value:
-                    genres = [g.strip() for g in genre_value.split(',') if g.strip()]
+                    # Split on both backslash (Navidrome) and comma (user-entered)
+                    genres = [g.strip() for g in genre_value.replace('\\', ',').split(',') if g.strip()]
                     album_genres.update(genres)
             except (KeyError, IndexError, TypeError) as e:
                 logging.debug(f"Error parsing genre row: {e}")
@@ -4158,10 +4159,10 @@ def album_detail(artist, album):
                 # Parse track's genres - use navidrome_genres which comes from Navidrome
                 track_genres = set()
                 if track_dict.get('navidrome_genres'):
-                    # navidrome_genres should already be split, but handle both scenarios
+                    # navidrome_genres uses backslash separator, handle that
                     if isinstance(track_dict['navidrome_genres'], str):
-                        # Split by bullet or comma if it's a string
-                        track_genres.update([g.strip() for g in track_dict['navidrome_genres'].replace('•', ',').split(',') if g.strip()])
+                        # Split on both backslash and comma to handle both formats
+                        track_genres.update([g.strip() for g in track_dict['navidrome_genres'].replace('\\', ',').replace('•', ',').split(',') if g.strip()])
                     elif isinstance(track_dict['navidrome_genres'], list):
                         # If it's already a list, just use it
                         track_genres.update(track_dict['navidrome_genres'])

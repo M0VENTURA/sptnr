@@ -1421,9 +1421,10 @@
             document.getElementById('album_mbid').value = mbid;
         }
         
-        // Handle genres
+        // Handle genres - support both backslash (Navidrome) and comma separators
         if (genres) {
-            const genreList = genres.split(',').map(g => g.trim()).filter(g => g);
+            // Split on either backslash or comma, then trim and filter
+            const genreList = genres.split(/[\\,]+/).map(g => g.trim()).filter(g => g && g.length > 0);
             genreList.forEach(genre => {
                 if (!currentAlbumGenres.has(genre)) {
                     currentAlbumGenres.add(genre);
@@ -1446,8 +1447,11 @@
     document.addEventListener('DOMContentLoaded', function() {
         const albumGenresInput = document.getElementById('album_genres');
         if (albumGenresInput && albumGenresInput.value) {
-            const genres = albumGenresInput.value.split(',').map(g => g.trim()).filter(g => g);
+            // Split on either backslash (Navidrome) or comma (user-entered), then trim and filter
+            const genres = albumGenresInput.value.split(/[\\,]+/).map(g => g.trim()).filter(g => g && g.length > 0);
             currentAlbumGenres = new Set(genres);
+            // Redisplay genres in proper format
+            updateAlbumGenresDisplay();
         }
         
         // Add Enter key support
