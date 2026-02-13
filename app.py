@@ -6416,8 +6416,7 @@ def scan_combined():
                             logging.warning("Resume mode: No last scanned artist found, starting from beginning")
                     
                     # Process each artist sequentially
-                    for slice_idx, (artist_name, info) in enumerate(artists[start_idx:]):
-                        idx = start_idx + slice_idx + 1  # Calculate actual position (1-indexed)
+                    for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
                         artist_id = info.get("id")
                         
                         logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
