@@ -3191,17 +3191,19 @@ def popularity_scan(
                                     log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
                             
                             # NEW: Artist-level popularity context
-                            # Downgrade singles from underperforming albums (unless they exceed artist median)
-                            if album_is_underperforming and single_confidence in ["medium", "high"]:
+                            # Downgrade singles from underperforming albums (only for medium confidence - high confidence singles are independently verified)
+                            # High-confidence singles are confirmed by multiple authoritative sources (Spotify, Discogs, MusicBrainz, Last.fm),
+                            # so they should always get 5 stars regardless of album performance
+                            if album_is_underperforming and single_confidence == "medium":
                                 if artist_stats['median_popularity'] > 0:
                                     # Only downgrade if track popularity is also below artist median
                                     if popularity_score < artist_stats['median_popularity']:
-                                        # Downgrade by 1 star (but keep at least 3 stars for confirmed singles)
+                                        # Downgrade by 1 star (but keep at least 3 stars for medium-confidence singles)
                                         original_stars = stars
-                                        stars = max(stars - 1, 3 if single_confidence == "high" else 2)
+                                        stars = max(stars - 1, 3)
                                         if stars < original_stars:
                                             log_info(f"Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
-                                            log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {artist_stats['median_popularity']}")
+                                            log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {artist_stats['median_popularity']}, confidence={single_confidence}")
                         else:
                             # Track is excluded from statistics
                             log_debug(f"Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
