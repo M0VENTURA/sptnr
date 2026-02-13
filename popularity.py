@@ -3325,8 +3325,11 @@ def popularity_scan(
                     
                     if detected_singles:
                         log_unified(f"Single Detection Scan - ===== Detected Singles =====")
+                        log_debug(f"Logging {len(detected_singles)} detected singles for {album}")
                         for title, stars, method in detected_singles:
-                            log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                            log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{method}"
+                            log_debug(f"About to log: {log_entry}")
+                            log_unified(log_entry)
                     
                     if standout_tracks:
                         log_unified(f"Single Detection Scan - ===== Standout Tracks =====")
