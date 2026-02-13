@@ -9661,7 +9661,8 @@ def api_lastfm_recommendations():
             SELECT MAX(synced_at) FROM lastfm_recommendations WHERE username = ?
         """, (current_user,))
         
-        last_sync = cursor.fetchone()[0] if cursor.fetchone() else None
+        last_sync_row = cursor.fetchone()
+        last_sync = last_sync_row[0] if last_sync_row else None
         conn.close()
         
         # Organize into artists, albums, tracks
