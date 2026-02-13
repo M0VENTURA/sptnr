@@ -357,7 +357,7 @@
             {% if tracks or tracks_by_disc %}
             <div>
                 <h6 class="mb-3"><i class="bi bi-music-note-list"></i> Genre Coverage Across Tracks</h6>
-                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata</p>
+                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata. <small>Click genre badges to remove, or use the + button to add genres.</small></p>
                 <div class="table-responsive" style="max-height: 300px; overflow-y: auto;">
                     <table class="table table-sm mb-0" style="font-size: 0.85rem;">
                         <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
@@ -386,15 +386,21 @@
                                             {% endif %}
                                         </td>
                                         <td>
-                                            {% if track.matching_genres %}
-                                                {% for genre in track.matching_genres %}
-                                                <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
-                                                    {{ genre }}
-                                                </span>
-                                                {% endfor %}
-                                            {% else %}
-                                            <span class="text-muted small">No album genres</span>
-                                            {% endif %}
+                                            <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
+                                                {% if track.matching_genres %}
+                                                    {% for genre in track.matching_genres %}
+                                                    <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                        {{ genre }}
+                                                        <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
+                                                    </span>
+                                                    {% endfor %}
+                                                {% else %}
+                                                <span class="text-muted small">No album genres</span>
+                                                {% endif %}
+                                                <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                                    <i class="bi bi-plus-circle"></i> Add
+                                                </button>
+                                            </div>
                                         </td>
                                     </tr>
                                     {% endfor %}
@@ -416,15 +422,21 @@
                                         {% endif %}
                                     </td>
                                     <td>
-                                        {% if track.matching_genres %}
-                                            {% for genre in track.matching_genres %}
-                                            <span class="badge badge-light border border-secondary text-dark" style="font-size: 0.75rem;">
-                                                {{ genre }}
-                                            </span>
-                                            {% endfor %}
-                                        {% else %}
-                                        <span class="text-muted small">No album genres</span>
-                                        {% endif %}
+                                        <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
+                                            {% if track.matching_genres %}
+                                                {% for genre in track.matching_genres %}
+                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                    {{ genre }}
+                                                    <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
+                                                </span>
+                                                {% endfor %}
+                                            {% else %}
+                                            <span class="text-muted small">No album genres</span>
+                                            {% endif %}
+                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                                <i class="bi bi-plus-circle"></i> Add
+                                            </button>
+                                        </div>
                                     </td>
                                 </tr>
                                 {% endfor %}
@@ -434,6 +446,34 @@
                 </div>
             </div>
             {% endif %}
+            
+            <!-- Add Genre Modal -->
+            <div class="modal fade" id="addGenreModal" tabindex="-1">
+                <div class="modal-dialog modal-dialog-centered">
+                    <div class="modal-content">
+                        <div class="modal-header">
+                            <h5 class="modal-title">
+                                <i class="bi bi-plus-circle"></i> Add Genre to <span id="modalTrackTitle"></span>
+                            </h5>
+                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                        </div>
+                        <div class="modal-body">
+                            <div class="mb-3">
+                                <label class="form-label">Select genres to add:</label>
+                                <div id="genreOptionsContainer" style="max-height: 300px; overflow-y: auto;">
+                                    <!-- Will be populated dynamically -->
+                                </div>
+                            </div>
+                        </div>
+                        <div class="modal-footer">
+                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                            <button type="button" class="btn btn-primary" onclick="addSelectedGenresToTrack()">
+                                <i class="bi bi-check"></i> Add Selected
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
         </div>
     </div>
     
@@ -1771,6 +1811,167 @@
         .finally(() => {
             btn.disabled = false;
             btn.innerHTML = originalText;
+        });
+    }
+
+    // ============================================
+    // GENRE MANAGEMENT IN COVERAGE TABLE
+    // ============================================
+    let currentEditTrackId = null;
+    let currentEditTrackTitle = null;
+
+    function removeTrackGenre(trackId, genre, element) {
+        if (!confirm(`Remove "${genre}" from this track?`)) return;
+
+        // Fetch current track data to get current genres
+        fetch(`/api/track/${trackId}`)
+        .then(r => r.json())
+        .then(trackData => {
+            let currentGenres = [];
+            
+            // Parse current genres
+            if (trackData.genre) {
+                // Could be semicolon-separated, comma-separated, or backslash-separated
+                currentGenres = trackData.genre
+                    .split(/[;,\\]/)
+                    .map(g => g.trim())
+                    .filter(g => g && g !== genre);  // Remove the genre being deleted
+            }
+            
+            // Update the database
+            return fetch(`/api/tags/track/${trackId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    tags: {
+                        genre: currentGenres.join(';')
+                    }
+                })
+            });
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success || data.message) {
+                // Remove the badge element
+                element.style.opacity = '0.5';
+                setTimeout(() => {
+                    element.remove();
+                    // Check if no genres left
+                    const container = document.getElementById(`genres-${trackId}`);
+                    if (container && container.querySelectorAll('.genre-badge').length === 0) {
+                        container.innerHTML = '<span class="text-muted small">No album genres</span><button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal(\'' + trackId + '\', \'' + (currentEditTrackTitle || 'Track') + '\')"><i class="bi bi-plus-circle"></i> Add</button>';
+                    }
+                }, 300);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to remove genre'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
+    }
+
+    function openAddGenreModal(trackId, trackTitle) {
+        currentEditTrackId = trackId;
+        currentEditTrackTitle = trackTitle;
+        
+        // Update modal title
+        document.getElementById('modalTrackTitle').textContent = trackTitle;
+        
+        // Get current genres for this track from the badges
+        const genesContainer = document.getElementById(`genres-${trackId}`);
+        const currentGenres = Array.from(genesContainer.querySelectorAll('.genre-badge')).map(el => {
+            let text = el.textContent.trim();
+            // Remove the X icon if present
+            return text.replace(/\s*$/, '').replace(/×|\⨯/, '').trim();
+        });
+        
+        // Build genre options from album genres
+        const albumGenresArray = "{{ album_genres|join('|') }}".split('|').filter(g => g.trim());
+        let genreHtml = '';
+        
+        albumGenresArray.forEach(genre => {
+            genre = genre.trim();
+            const isChecked = currentGenres.includes(genre);
+            const isDisabled = isChecked;
+            genreHtml += `
+                <div class="form-check">
+                    <input class="form-check-input genre-checkbox" type="checkbox" id="genre-${genre}" value="${genre}" ${isChecked ? 'checked disabled' : ''}>
+                    <label class="form-check-label" for="genre-${genre}">
+                        ${genre} ${isChecked ? '<small class="text-muted">(already added)</small>' : ''}
+                    </label>
+                </div>
+            `;
+        });
+        
+        document.getElementById('genreOptionsContainer').innerHTML = genreHtml;
+        
+        // Show modal
+        const modal = new bootstrap.Modal(document.getElementById('addGenreModal'));
+        modal.show();
+    }
+
+    function addSelectedGenresToTrack() {
+        if (!currentEditTrackId) return;
+        
+        const selected = Array.from(document.querySelectorAll('.genre-checkbox:checked:not(:disabled)'))
+            .map(el => el.value);
+        
+        if (selected.length === 0) {
+            alert('Please select at least one genre to add');
+            return;
+        }
+
+        // Fetch current track to get existing genres
+        fetch(`/api/track/${currentEditTrackId}`)
+        .then(r => r.json())
+        .then(trackData => {
+            let allGenres = [];
+            
+            // Parse current genres
+            if (trackData.genre) {
+                allGenres = trackData.genre
+                    .split(/[;,\\]/)
+                    .map(g => g.trim())
+                    .filter(g => g);
+            }
+            
+            // Add new genres (avoid duplicates)
+            selected.forEach(genre => {
+                if (!allGenres.includes(genre)) {
+                    allGenres.push(genre);
+                }
+            });
+            
+            // Update the track
+            return fetch(`/api/tags/track/${currentEditTrackId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    tags: {
+                        genre: allGenres.join(';')
+                    }
+                })
+            });
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success || data.message) {
+                alert(`✅ Added ${selected.length} genre(s) to the track`);
+                
+                // Close modal
+                bootstrap.Modal.getInstance(document.getElementById('addGenreModal')).hide();
+                
+                // Reload to show updated genres
+                setTimeout(() => {
+                    location.reload();
+                }, 500);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to add genres'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
         });
     }
 </script>

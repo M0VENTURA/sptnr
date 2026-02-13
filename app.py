@@ -10784,6 +10784,32 @@ def api_track_discogs_lookup():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/track/<track_id>", methods=["GET"])
+def api_get_track(track_id):
+    """Get track metadata by ID"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, artist, album, genre, stars, is_single, 
+                   single_confidence, duration, track_number, disc_number
+            FROM tracks 
+            WHERE id = ?
+        """, (track_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({"error": "Track not found"}), 404
+        
+        track = dict(row)
+        return jsonify(track)
+    except Exception as e:
+        logging.error(f"[API] Error fetching track {track_id}: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/track/genre-recommendations", methods=["GET"])
 def track_genre_recommendations():
     """Get genre recommendations for a track from various sources"""
