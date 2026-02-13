@@ -2207,6 +2207,51 @@ def api_update_artist_country():
         return jsonify({"error": str(e)}), 500
 
 
+
+def update_audio_file_genres(file_path, genres_list):
+    """
+    Update genre tags in audio files (MP3, FLAC, etc.)
+    
+    Args:
+        file_path: Path to the audio file
+        genres_list: List of genre strings to set
+        
+    Returns:
+        tuple: (success: bool, error_message: str or None)
+    """
+    try:
+        from mutagen.mp3 import MP3
+        from mutagen.flac import FLAC
+        from mutagen.id3 import ID3, TCON
+    except ImportError:
+        return False, "Mutagen library not available"
+    
+    try:
+        # Determine file format and handle accordingly
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        if file_ext == '.mp3':
+            # Handle MP3 files with ID3 tags
+            audio = MP3(file_path, ID3=ID3)
+            if audio.tags is None:
+                audio.add_tags()
+            audio.tags['TCON'] = TCON(encoding=3, text=genres_list)
+            audio.save()
+            return True, None
+        elif file_ext == '.flac':
+            # Handle FLAC files with Vorbis comments
+            audio = FLAC(file_path)
+            # FLAC uses vorbis comments, which support multiple genre values
+            audio['genre'] = genres_list
+            audio.save()
+            return True, None
+        else:
+            # For unsupported formats, return success but note it was skipped
+            return True, f"Unsupported format: {file_ext}"
+    except Exception as e:
+        return False, str(e)
+
+
 @app.route("/api/artist/country/apply-as-genre", methods=["POST"])
 def api_apply_country_as_genre():
     """Apply artist country as genre tag to all tracks."""
@@ -11377,7 +11422,7 @@ def api_album_apply_discogs_id():
 
 @app.route("/api/album/apply-genres", methods=["POST"])
 def api_album_apply_genres():
-    """Apply selected genres to all MP3 files in an album"""
+    """Apply selected genres to all audio files in an album"""
     logger = logging.getLogger('sptnr')
     conn = None
     try:
@@ -11402,63 +11447,46 @@ def api_album_apply_genres():
         if not tracks:
             return jsonify({"error": "No tracks found in album"}), 404
         
-        # Write genres to MP3 files using mutagen and update database per-track
+        # Write genres to audio files using mutagen and update database per-track
         updated_count = 0
         failed_files = []
         genres_str = ','.join(genres)
         
-        try:
-            from mutagen.id3 import ID3
-            from mutagen.mp3 import MP3
-            from mutagen.id3 import TCON as TagCON
+        for track in tracks:
+            # Prefer beets_path, fallback to file_path
+            file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
             
-            for track in tracks:
-                # Prefer beets_path, fallback to file_path
-                file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
-                
-                if not file_path or not os.path.exists(file_path):
-                    track_id = row_get(track, 'id', 'unknown')
-                    track_title = row_get(track, 'title', '')
-                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
-                    continue
-                
+            if not file_path or not os.path.exists(file_path):
+                track_id = row_get(track, 'id', 'unknown')
+                track_title = row_get(track, 'title', '')
+                failed_files.append(track_title if track_title else f"Track ID: {track_id}")
+                continue
+            
+            # Update audio file using helper function
+            success, error = update_audio_file_genres(file_path, genres)
+            
+            if success:
+                # Update database only after successful file update
                 try:
-                    # Load MP3 file
-                    audio = MP3(file_path, ID3=ID3)
-                    
-                    # Add ID3 tag if it doesn't exist
-                    if audio.tags is None:
-                        audio.add_tags()
-                    
-                    # Set genre tag (TCON frame in ID3v2)
-                    audio.tags['TCON'] = TagCON(encoding=3, text=genres)
-                    
-                    # Save changes
-                    audio.save()
-                    
-                    # Update database only after successful MP3 update
                     cursor.execute("""
                         UPDATE tracks
                         SET genres = ?
                         WHERE id = ?
                     """, (genres_str, row_get(track, 'id')))
-                    
                     updated_count += 1
-                    
-                except Exception as file_error:
-                    logger.error(f"Failed to update {file_path}: {file_error}")
-                    track_id = row_get(track, 'id', 'unknown')
+                except Exception as db_error:
+                    logger.error(f"Failed to update database for {file_path}: {db_error}")
                     track_title = row_get(track, 'title', '')
-                    failed_files.append(track_title if track_title else f"Track ID: {track_id}")
-            
-            conn.commit()
-            
-        except ImportError:
-            return jsonify({
-                "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
-            }), 500
+                    failed_files.append(track_title if track_title else f"Track ID: {row_get(track, 'id')}")
+            else:
+                logger.error(f"Failed to update {file_path}: {error}")
+                track_id = row_get(track, 'id', 'unknown')
+                track_title = row_get(track, 'title', '')
+                failed_files.append(track_title if track_title else f"Track ID: {track_id}")
         
-        message = f"Updated {updated_count} MP3 file(s) with genres: {', '.join(genres)}"
+        conn.commit()
+        
+        message = f"Updated {updated_count} audio file(s) with genres: {', '.join(genres)}"
         if failed_files:
             message += f". Failed to update {len(failed_files)} file(s): {', '.join(failed_files[:5])}"
         
@@ -11482,7 +11510,7 @@ def api_album_apply_genres():
 
 @app.route("/api/artist/apply-genres", methods=["POST"])
 def api_artist_apply_genres():
-    """Apply selected genres to all MP3 files for all tracks by an artist"""
+    """Apply selected genres to all audio files for all tracks by an artist"""
     logger = logging.getLogger('sptnr')
     conn = None
     try:
@@ -11507,70 +11535,58 @@ def api_artist_apply_genres():
         if not tracks:
             return jsonify({"error": "No tracks found for artist"}), 404
         
-        # Write genres to MP3 files using mutagen and update database per-track
+        # Write genres to audio files using mutagen and update database per-track
         updated_count = 0
         failed_files = []
         genres_str = ','.join(genres)
         
-        try:
-            from mutagen.id3 import ID3, TCON
-            from mutagen.mp3 import MP3
+        for track in tracks:
+            # Prefer beets_path, fallback to file_path
+            file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
             
-            for track in tracks:
-                # Prefer beets_path, fallback to file_path
-                file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
-                
-                if not file_path or not os.path.exists(file_path):
-                    track_id = row_get(track, 'id', 'unknown')
-                    album = row_get(track, 'album', '')
-                    title = row_get(track, 'title', '')
-                    if album and title:
-                        failed_files.append(f"{album} - {title}")
-                    else:
-                        failed_files.append(f"Track ID: {track_id}")
-                    continue
-                
+            if not file_path or not os.path.exists(file_path):
+                track_id = row_get(track, 'id', 'unknown')
+                album = row_get(track, 'album', '')
+                title = row_get(track, 'title', '')
+                if album and title:
+                    failed_files.append(f"{album} - {title}")
+                else:
+                    failed_files.append(f"Track ID: {track_id}")
+                continue
+            
+            # Update audio file using helper function
+            success, error = update_audio_file_genres(file_path, genres)
+            
+            if success:
+                # Update database only after successful file update
                 try:
-                    # Load MP3 file
-                    audio = MP3(file_path, ID3=ID3)
-                    
-                    # Add ID3 tag if it doesn't exist
-                    if audio.tags is None:
-                        audio.add_tags()
-                    
-                    # Set genre tag (TCON frame in ID3v2)
-                    audio.tags['TCON'] = TCON(encoding=3, text=genres)
-                    
-                    # Save changes
-                    audio.save()
-                    
-                    # Update database only after successful MP3 update
                     cursor.execute("""
                         UPDATE tracks
                         SET genres = ?
                         WHERE id = ?
                     """, (genres_str, row_get(track, 'id')))
-                    
                     updated_count += 1
-                    
-                except Exception as file_error:
-                    logger.error(f"Failed to update {file_path}: {file_error}")
-                    track_id = row_get(track, 'id', 'unknown')
+                except Exception as db_error:
+                    logger.error(f"Failed to update database for {file_path}: {db_error}")
                     album = row_get(track, 'album', '')
                     title = row_get(track, 'title', '')
                     if album and title:
                         failed_files.append(f"{album} - {title}")
                     else:
-                        failed_files.append(f"Track ID: {track_id}")
-            
-            conn.commit()
-            
-        except ImportError:
-            return jsonify({
-                "error": "mutagen library not installed. Genres updated in database but not in MP3 files."
-            }), 500
+                        failed_files.append(f"Track ID: {row_get(track, 'id')}")
+            else:
+                logger.error(f"Failed to update {file_path}: {error}")
+                track_id = row_get(track, 'id', 'unknown')
+                album = row_get(track, 'album', '')
+                title = row_get(track, 'title', '')
+                if album and title:
+                    failed_files.append(f"{album} - {title}")
+                else:
+                    failed_files.append(f"Track ID: {track_id}")
         
-        message = f"Updated {updated_count} MP3 file(s) across all albums by {artist} with genres: {', '.join(genres)}"
+        conn.commit()
+        
+        message = f"Updated {updated_count} audio file(s) across all albums by {artist} with genres: {', '.join(genres)}"
         if failed_files:
             message += f". Failed to update {len(failed_files)} file(s)"
         
