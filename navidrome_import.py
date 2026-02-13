@@ -322,14 +322,30 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 raw_track = t.get("trackNumber") if "trackNumber" in t else t.get("track")
                 raw_disc = t.get("discNumber") if "discNumber" in t else t.get("disc")
                 
-                # Extract genre from Navidrome via Subsonic API and use it as the initial genres value
+                # Extract genre from Navidrome via Subsonic API
+                # First, try to get genres from the genres array if available
+                # Then fall back to the genre field with various separator formats
+                
+                navidrome_genre_raw = ""
+                
+                # Priority 1: Extract from genres array (most reliable, returns multiple genre objects)
+                if t.get("genres"):
+                    # Extract genre names from genres array
+                    genre_names = [g.get("name", "").strip() for g in t.get("genres", []) if g.get("name", "").strip()]
+                    if genre_names:
+                        navidrome_genre_raw = "\\".join(genre_names)
+                        log_debug(f"[GENRE] Track {track_id} - Extracted {len(genre_names)} genres from genres array: {genre_names}")
+                
+                # Priority 2: Fall back to genre field with various separator formats
                 # Subsonic API returns genres as a single string with various separator formats:
                 # - bullet: "Genre1 • Genre2 • Genre3"
                 # - backslash: "Genre1\Genre2\Genre3" or "Genre1\\Genre2\\Genre3"
                 # - semicolon: "Genre1; Genre2; Genre3"
                 # - comma: "Genre1, Genre2, Genre3"
+                if not navidrome_genre_raw and t.get("genre"):
+                    navidrome_genre_raw = t.get("genre", "") or ""
+                    log_debug(f"[GENRE] Track {track_id} - Falling back to genre field: '{navidrome_genre_raw}'")
                 
-                navidrome_genre_raw = t.get("genre", "") or ""
                 log_debug(f"[GENRE] Track {track_id} - Raw genre from Navidrome: '{navidrome_genre_raw}'")
                 
                 # Parse genres from Navidrome
