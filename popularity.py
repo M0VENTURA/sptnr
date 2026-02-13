@@ -3017,6 +3017,7 @@ def popularity_scan(
                 log_debug(f"Retrieved {len(album_tracks_with_scores)} tracks for star rating calculation")
                 
                 if album_tracks_with_scores and len(album_tracks_with_scores) > 0:
+                    log_debug(f"Processing {len(album_tracks_with_scores)} tracks for star ratings and single detection logging")
                     # Calculate star ratings using the same logic as sptnr.py
                     total_tracks = len(album_tracks_with_scores)
                     band_size = math.ceil(total_tracks / 4)
@@ -3248,6 +3249,7 @@ def popularity_scan(
                     
                     # Generate unified log summary for singles and star ratings
                     # Re-fetch tracks with their final star ratings, single detection, and standout info
+                    log_debug(f"Logging categorized tracks for album {album}: singles_count may be 0 if all tracks are non-singles")
                     cursor.execute(
                         """SELECT id, title, stars, is_single, single_confidence, single_sources, 
                                   is_standout_track, artist_z_score
@@ -3333,8 +3335,12 @@ def popularity_scan(
                         for title, stars, method in possible_singles:
                             log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                     
+                    # Always log rest of album tracks if there are any or if this is the only category
                     if rest_of_album:
-                        log_unified(f"Single Detection Scan - ===== Rest of Album =====")
+                        # Only show header if there were detected singles/standout/possible singles
+                        if detected_singles or standout_tracks or possible_singles:
+                            log_unified(f"Single Detection Scan - ===== Rest of Album =====")
+                        # Log individual rest-of-album tracks
                         for title, stars, method in rest_of_album:
                             log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
                 
