@@ -109,6 +109,22 @@ import unicodedata
 from playlist_matcher import match_track as enhanced_match_track
 import requests
 import hashlib
+from musicbrainz_import import (
+    get_musicbrainz_tags_for_track,
+    get_musicbrainz_tags_for_album,
+    import_musicbrainz_tags_for_track,
+    import_musicbrainz_tags_for_album,
+    import_musicbrainz_tags_for_artist,
+    update_musicbrainz_tag_in_db,
+    write_musicbrainz_tag_to_mp3
+)
+from compilation_manager import (
+    get_main_tracks_for_artist,
+    get_compilations_for_artist,
+    get_artist_stats,
+    import_featured_artists_for_track,
+    import_featured_artists_for_album
+)
 
 # Import centralized logging configuration
 from logging_config import (
@@ -1402,6 +1418,7 @@ def artist_detail(name):
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
+                MAX(album_artist) as album_artist,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
@@ -1442,8 +1459,8 @@ def artist_detail(name):
         """, (name,))
         missing_releases_data = cursor.fetchall()
         
-        # Get compilation albums where this artist is featured (Various Artists, etc.)
-        # Query by artist column for compilations where they're a track artist but not album artist
+        # Get potential compilation albums and check with MusicBrainz
+        # Query albums where this artist appears as a track artist
         cursor.execute("""
             SELECT 
                 album,
@@ -1452,19 +1469,36 @@ def artist_detail(name):
                 COALESCE(SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END), 0) as singles_count,
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
-                MAX(spotify_album_type) as album_type
+                MAX(spotify_album_type) as album_type,
+                MAX(album_artist) as album_artist
             FROM tracks
-            WHERE artist = ? AND (
-                album_artist IN ('Various Artists', 'Various', 'Compilation', 'Soundtrack')
-                OR album LIKE '%compilation%'
-                OR album LIKE '%various%'
-                OR album LIKE '%soundtrack%'
-                OR album LIKE '%tribute%'
-            )
+            WHERE artist = ?
             GROUP BY album
             ORDER BY (album_year IS NULL), album_year DESC, album COLLATE NOCASE
         """, (name,))
-        compilation_albums = cursor.fetchall()
+        potential_albums = cursor.fetchall()
+        
+        # Filter to only include albums that are actually compilations via MusicBrainz or obvious keywords
+        compilation_albums = []
+        from api_clients.musicbrainz import get_album_type_with_fallback
+        
+        for album_row in potential_albums:
+            album_name = row_get(album_row, 'album', '')
+            album_artist = row_get(album_row, 'album_artist', '')
+            spotify_type = row_get(album_row, 'album_type', '')
+            
+            # Check if it's obviously a Various Artists/Compilation album
+            if album_artist and album_artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack'):
+                compilation_albums.append(album_row)
+                continue
+            
+            # For other albums, check with MusicBrainz
+            try:
+                mb_album_type, source = get_album_type_with_fallback(name, album_name, spotify_type, enabled=True)
+                if mb_album_type and mb_album_type.lower() == 'compilation':
+                    compilation_albums.append(album_row)
+            except Exception as e:
+                logging.debug(f"Error checking MusicBrainz type for {name} - {album_name}: {e}")
         
         # Get artist country from artists table if it exists
         artist_country = None
@@ -1500,9 +1534,14 @@ def artist_detail(name):
             album_type = (album_dict.get("album_type") or "").lower()
             track_count = album_dict.get("track_count", 0)
             album_name = album_dict.get("album", "")
+            album_artist = (album_dict.get("album_artist") or "").lower()
             
+            # First check: if album_artist is a compilation-type value, mark as compilation
+            if album_artist and album_artist in ('various artists', 'various', 'compilation', 'soundtrack'):
+                albums_by_category["compilation"].append(album_dict)
+                categorized_albums.add(album_name)
             # Categorize based on spotify_album_type and track count
-            if album_type == "compilation":
+            elif album_type == "compilation":
                 albums_by_category["compilation"].append(album_dict)
                 categorized_albums.add(album_name)
             elif album_type == "album" or (not album_type and track_count > 6):
@@ -3454,6 +3493,341 @@ def api_album_set_art():
     except Exception as e:
         logger.error(f"Error setting album art: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+# ===== MusicBrainz Metadata API Endpoints =====
+
+@app.route("/api/musicbrainz/tags/track", methods=["GET"])
+def api_musicbrainz_tags_track():
+    """Get MusicBrainz tags for a single track"""
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    title = request.args.get("title", "").strip()
+    
+    if not (artist and album and title):
+        return jsonify({"error": "artist, album, and title required"}), 400
+    
+    try:
+        tags = get_musicbrainz_tags_for_track(artist, album, title)
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "album": album,
+            "title": title,
+            "tags": tags,
+            "tags_count": len(tags)
+        })
+    except Exception as e:
+        logging.error(f"Error fetching MusicBrainz tags for track: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/tags/album", methods=["GET"])
+def api_musicbrainz_tags_album():
+    """Get MusicBrainz tags for all tracks in an album"""
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    
+    if not (artist and album):
+        return jsonify({"error": "artist and album required"}), 400
+    
+    try:
+        tracks = get_musicbrainz_tags_for_album(artist, album)
+        
+        # Count how many tracks have tags
+        tracks_with_tags = sum(1 for track in tracks if len(track) > 1)  # >1 because title is always present
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "album": album,
+            "tracks": tracks,
+            "total_tracks": len(tracks),
+            "tracks_with_mb_tags": tracks_with_tags
+        })
+    except Exception as e:
+        logging.error(f"Error fetching MusicBrainz tags for album: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/import/track", methods=["POST"])
+def api_musicbrainz_import_track():
+    """Import MusicBrainz tags from MP3 for a single track"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    title = data.get("title", "").strip()
+    
+    if not (artist and album and title):
+        return jsonify({"error": "artist, album, and title required"}), 400
+    
+    try:
+        result = import_musicbrainz_tags_for_track(artist, album, title)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Error importing MusicBrainz tags for track: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/import/album", methods=["POST"])
+def api_musicbrainz_import_album():
+    """Import MusicBrainz tags from MP3s for all tracks in an album"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    
+    if not (artist and album):
+        return jsonify({"error": "artist and album required"}), 400
+    
+    try:
+        result = import_musicbrainz_tags_for_album(artist, album)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Error importing MusicBrainz tags for album: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/import/artist", methods=["POST"])
+def api_musicbrainz_import_artist():
+    """Import MusicBrainz tags from MP3s for all tracks by an artist"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    
+    if not artist:
+        return jsonify({"error": "artist required"}), 400
+    
+    try:
+        result = import_musicbrainz_tags_for_artist(artist)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Error importing MusicBrainz tags for artist: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/tag/update", methods=["POST"])
+def api_musicbrainz_tag_update():
+    """Update a MusicBrainz tag in the database and optionally write to MP3"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    title = data.get("title", "").strip()
+    field_name = data.get("field", "").strip()
+    field_value = data.get("value", "").strip()
+    write_to_mp3 = data.get("write_to_mp3", False)
+    
+    if not (artist and album and title and field_name):
+        return jsonify({"error": "artist, album, title, and field required"}), 400
+    
+    try:
+        # Update database
+        db_result = update_musicbrainz_tag_in_db(artist, album, title, field_name, field_value)
+        
+        if not db_result['success']:
+            return jsonify(db_result), 400
+        
+        # Write to MP3 if requested
+        mp3_result = None
+        if write_to_mp3:
+            mp3_result = write_musicbrainz_tag_to_mp3(artist, album, title, field_name, field_value)
+            if not mp3_result['success']:
+                # Still return OK but note the MP3 write failed
+                return jsonify({
+                    "success": True,
+                    "database": db_result,
+                    "mp3": mp3_result,
+                    "message": "Updated database but failed to write to MP3"
+                })
+        
+        return jsonify({
+            "success": True,
+            "database": db_result,
+            "mp3": mp3_result,
+            "message": "Updated successfully" + (" and written to MP3" if write_to_mp3 else "")
+        })
+        
+    except Exception as e:
+        logging.error(f"Error updating MusicBrainz tag: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/tag/write-to-mp3", methods=["POST"])
+def api_musicbrainz_tag_write_mp3():
+    """Write MusicBrainz tags to MP3 file (without database update)"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    title = data.get("title", "").strip()
+    field_name = data.get("field", "").strip()
+    field_value = data.get("value", "").strip()
+    
+    if not (artist and album and title and field_name):
+        return jsonify({"error": "artist, album, title, and field required"}), 400
+    
+    try:
+        result = write_musicbrainz_tag_to_mp3(artist, album, title, field_name, field_value)
+        if result['success']:
+            return jsonify(result)
+        else:
+            return jsonify(result), 400
+    except Exception as e:
+        logging.error(f"Error writing MusicBrainz tag to MP3: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/musicbrainz/tags/batch-update", methods=["POST"])
+def api_musicbrainz_batch_update():
+    """Update multiple MusicBrainz tags at once"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    title = data.get("title", "").strip()
+    tags = data.get("tags", {})  # Dict of field_name: field_value
+    write_to_mp3 = data.get("write_to_mp3", False)
+    
+    if not (artist and album and title and tags):
+        return jsonify({"error": "artist, album, title, and tags required"}), 400
+    
+    try:
+        results = {
+            "database": {},
+            "mp3": {},
+            "success_count": 0,
+            "fail_count": 0
+        }
+        
+        for field_name, field_value in tags.items():
+            # Update database
+            db_result = update_musicbrainz_tag_in_db(artist, album, title, field_name, field_value)
+            results["database"][field_name] = db_result
+            
+            if db_result['success']:
+                results["success_count"] += 1
+                
+                # Write to MP3 if requested
+                if write_to_mp3:
+                    mp3_result = write_musicbrainz_tag_to_mp3(artist, album, title, field_name, field_value)
+                    results["mp3"][field_name] = mp3_result
+            else:
+                results["fail_count"] += 1
+        
+        results["success"] = results["fail_count"] == 0
+        results["message"] = f"Updated {results['success_count']} tags, {results['fail_count']} failed"
+        
+        return jsonify(results)
+        
+    except Exception as e:
+        logging.error(f"Error batch updating MusicBrainz tags: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+# ===== Compilation and Artist Credits API Endpoints =====
+
+@app.route("/api/artist/compilations", methods=["GET"])
+def api_artist_compilations():
+    """Get all compilation tracks (featured artist appearances) for an artist"""
+    artist = request.args.get("name", "").strip()
+    
+    if not artist:
+        return jsonify({"error": "Artist name required"}), 400
+    
+    try:
+        compilations = get_compilations_for_artist(artist)
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "compilations": compilations,
+            "count": len(compilations)
+        })
+    except Exception as e:
+        logging.error(f"Error fetching artist compilations: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/main-tracks", methods=["GET"])
+def api_artist_main_tracks():
+    """Get all main tracks (where artist is album artist) for an artist"""
+    artist = request.args.get("name", "").strip()
+    
+    if not artist:
+        return jsonify({"error": "Artist name required"}), 400
+    
+    try:
+        tracks = get_main_tracks_for_artist(artist)
+        
+        # Group by album
+        albums = {}
+        for track in tracks:
+            album = track['album']
+            if album not in albums:
+                albums[album] = []
+            albums[album].append(track)
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "albums": albums,
+            "total_tracks": len(tracks),
+            "album_count": len(albums)
+        })
+    except Exception as e:
+        logging.error(f"Error fetching artist main tracks: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/artist/stats", methods=["GET"])
+def api_artist_stats():
+    """Get artist statistics (main tracks, compilations, collaborators)"""
+    artist = request.args.get("name", "").strip()
+    
+    if not artist:
+        return jsonify({"error": "Artist name required"}), 400
+    
+    try:
+        stats = get_artist_stats(artist)
+        return jsonify({
+            "success": True,
+            "stats": stats
+        })
+    except Exception as e:
+        logging.error(f"Error fetching artist stats: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/compilations/import/track", methods=["POST"])
+def api_compilations_import_track():
+    """Import featured artists from MP3 for a single track"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    title = data.get("title", "").strip()
+    
+    if not (artist and album and title):
+        return jsonify({"error": "artist, album, and title required"}), 400
+    
+    try:
+        result = import_featured_artists_for_track(artist, album, title)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Error importing featured artists for track: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
+
+
+@app.route("/api/compilations/import/album", methods=["POST"])
+def api_compilations_import_album():
+    """Import featured artists from MP3s for all tracks in an album"""
+    data = request.json or {}
+    artist = data.get("artist", "").strip()
+    album = data.get("album", "").strip()
+    
+    if not (artist and album):
+        return jsonify({"error": "artist and album required"}), 400
+    
+    try:
+        result = import_featured_artists_for_album(artist, album)
+        return jsonify(result)
+    except Exception as e:
+        logging.error(f"Error importing featured artists for album: {e}")
+        return jsonify({"success": False, "message": str(e)}), 500
 
 
 @app.route("/api/artist/add", methods=["POST"])

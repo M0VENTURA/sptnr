@@ -78,6 +78,11 @@ required_columns = {
     "composer": "TEXT",                     # Composer/songwriter
     "comment": "TEXT",                      # Comment field from file
     "lyrics": "TEXT",                       # Song lyrics if embedded
+    # ✅ Artist Credits and Collaborations (for compilations)
+    "featured_artists": "TEXT",             # JSON array of featured/collaborating artists (from ARTISTS raw tag)
+    "performers": "TEXT",                   # JSON array of performers (from PERFORMER raw tag)
+    "is_compilation_track": "INTEGER",      # 1 if track has multiple artists (featured artists differ from album artist)
+    "compilation_artists": "TEXT",          # JSON array of all non-album-artist artists for this track
     # ✅ Additional Navidrome metadata fields
     "arranger": "TEXT",                     # Track arranger
     "artists": "TEXT",                      # JSON array of artist names
@@ -103,7 +108,12 @@ required_columns = {
     "musicbrainz_albumtype": "TEXT",        # Release type from MusicBrainz
     "musicbrainz_releasegroupid": "TEXT",   # MusicBrainz release group ID
     "musicbrainz_releasetrackid": "TEXT",   # MusicBrainz release track ID
+    "musicbrainz_trackid": "TEXT",          # MusicBrainz track/recording ID (raw from MP3 tag)
     "musicbrainz_workid": "TEXT",           # MusicBrainz work ID
+    "musicbrainz_track_artistid": "TEXT",   # MusicBrainz track artist ID (raw from MP3 tag)
+    "musicbrainz_releasecountry": "TEXT",   # MusicBrainz release country code
+    "musicbrainz_releasestatus": "TEXT",    # MusicBrainz release status (distinct from albumstatus)
+    "musicbrainz_releasetype": "TEXT",      # MusicBrainz release type (distinct from albumtype)
     # ✅ Date fields with more granularity
     "originaldate": "TEXT",                 # Original release date (YYYY-MM-DD)
     "originalyear": "INTEGER",              # Original release year

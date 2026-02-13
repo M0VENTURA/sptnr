@@ -32,7 +32,27 @@ MP3_FIELDS = {
 
 # MusicBrainz-specific TXXX frame tags (ID3v2 user-defined text frames)
 # These follow Navidrome's mapping conventions: https://github.com/navidrome/navidrome/blob/master/resources/mappings.yaml
+# Comprehensive mapping of all MusicBrainz raw tags found in MP3 metadata
 MB_TXXX_FIELDS = {
+    # Artist IDs
+    'musicbrainz_artistid': 'MUSICBRAINZ ARTIST ID',                           # Artist ID
+    'musicbrainz_albumartistid': 'MUSICBRAINZ ALBUM ARTIST ID',                # Album artist ID
+    
+    # Album/Release IDs
+    'musicbrainz_albumid': 'MUSICBRAINZ ALBUM ID',                             # Release ID
+    'musicbrainz_releasegroupid': 'MUSICBRAINZ RELEASE GROUP ID',              # Release group ID
+    
+    # Track IDs
+    'musicbrainz_trackid': 'MUSICBRAINZ TRACK ID',                             # Track/Recording ID
+    'musicbrainz_releasetrackid': 'MUSICBRAINZ RELEASE TRACK ID',              # Track on specific release ID
+    'musicbrainz_workid': 'MUSICBRAINZ WORK ID',                               # Musical work ID
+    
+    # Release metadata
+    'musicbrainz_releasestatus': 'MUSICBRAINZ RELEASE STATUS',                 # Release status (Official, Promotion, Bootleg, etc.)
+    'musicbrainz_releasetype': 'MUSICBRAINZ RELEASE TYPE',                     # Release type (Album, EP, Single, Compilation, etc.)
+    'musicbrainz_releasecountry': 'MUSICBRAINZ RELEASE COUNTRY',               # Release country (2-letter code)
+    
+    # Legacy/Alternative field names (some tools use these)
     'musicbrainz_album_release_country': 'MUSICBRAINZ ALBUM RELEASE COUNTRY',  # Release country (2-letter code or full name)
     'musicbrainz_album_status': 'MUSICBRAINZ ALBUM STATUS',                    # Release status (Official, Promotion, Bootleg, etc.)
     'musicbrainz_album_type': 'MUSICBRAINZ ALBUM TYPE',                        # Release type (Album, EP, Single, etc.)
@@ -126,19 +146,24 @@ def write_musicbrainz_tags_to_mp3(file_path, release_country=None, release_statu
 
 def read_musicbrainz_tags_from_mp3(file_path):
     """
-    Read MusicBrainz TXXX tags from MP3 file.
+    Read ALL MusicBrainz TXXX tags from MP3 file.
     
     Args:
         file_path: Path to MP3 file
         
     Returns:
-        dict: Dictionary with release_country, release_status, release_type
+        dict: Dictionary with all available MusicBrainz tags found
+        
+    Example return:
+        {
+            'musicbrainz_artistid': 'xxxxx-xxxx-xxxx-xxxx-xxxxxx',
+            'musicbrainz_trackid': 'xxxxx-xxxx-xxxx-xxxx-xxxxxx',
+            'musicbrainz_releasetype': 'Album',
+            'musicbrainz_releasestatus': 'Official',
+            ...
+        }
     """
-    result = {
-        'release_country': None,
-        'release_status': None,
-        'release_type': None
-    }
+    result = {}
     
     if not file_path or not os.path.exists(file_path):
         return result
@@ -146,18 +171,18 @@ def read_musicbrainz_tags_from_mp3(file_path):
     try:
         audio = ID3(file_path)
         
-        # Look for TXXX frames with MusicBrainz tags
+        # Look for all TXXX frames with MusicBrainz tags
         for key in audio.keys():
             if key.startswith('TXXX'):
                 frame = audio[key]
                 desc = frame.desc.upper() if hasattr(frame, 'desc') else ''
+                text_value = frame.text[0] if frame.text else None
                 
-                if 'MUSICBRAINZ ALBUM RELEASE COUNTRY' in desc:
-                    result['release_country'] = frame.text[0] if frame.text else None
-                elif 'MUSICBRAINZ ALBUM STATUS' in desc:
-                    result['release_status'] = frame.text[0] if frame.text else None
-                elif 'MUSICBRAINZ ALBUM TYPE' in desc:
-                    result['release_type'] = frame.text[0] if frame.text else None
+                # Map descriptors to field names using reverse lookup
+                for field_name, field_desc in MB_TXXX_FIELDS.items():
+                    if field_desc.upper() == desc and text_value:
+                        result[field_name] = str(text_value)
+                        break
     
     except Exception as e:
         pass
@@ -189,11 +214,11 @@ def read_mp3_metadata(file_path):
             # Extract common fields from ID3
             if 'TIT2' in audio:  # Title
                 metadata['title'] = str(audio['TIT2'].text[0]) if audio['TIT2'].text else ''
-            if 'TPE1' in audio:  # Artist
+            if 'TPE1' in audio:  # Artist (track artist)
                 metadata['artist'] = str(audio['TPE1'].text[0]) if audio['TPE1'].text else ''
             if 'TALB' in audio:  # Album
                 metadata['album'] = str(audio['TALB'].text[0]) if audio['TALB'].text else ''
-            if 'TPE2' in audio:  # Album Artist
+            if 'TPE2' in audio:  # Album Artist (preferred source for album artist)
                 metadata['album_artist'] = str(audio['TPE2'].text[0]) if audio['TPE2'].text else ''
             if 'TCOM' in audio:  # Composer
                 metadata['composer'] = str(audio['TCOM'].text[0]) if audio['TCOM'].text else ''
@@ -211,6 +236,24 @@ def read_mp3_metadata(file_path):
                 metadata['copyright'] = str(audio['TCOP'].text[0]) if audio['TCOP'].text else ''
             if 'TPUB' in audio:  # Publisher
                 metadata['publisher'] = str(audio['TPUB'].text[0]) if audio['TPUB'].text else ''
+            
+            # Extract TXXX (user-defined) frame for raw artists field (from Navidrome/beets)
+            # This field contains featured artists, performers, and collaborators
+            for key in audio.keys():
+                if key.startswith('TXXX'):
+                    frame = audio[key]
+                    desc = frame.desc.upper() if hasattr(frame, 'desc') else ''
+                    text_value = frame.text[0] if frame.text else None
+                    
+                    # Extract ARTISTS field (JSON array of artist names)
+                    if 'ARTISTS' in desc and text_value:
+                        metadata['artists_raw'] = str(text_value)
+                    # Extract ALBUMARTIST field (raw from tags, may differ from TPE2)
+                    elif 'ALBUMARTIST' in desc and text_value and 'album_artist' not in metadata:
+                        metadata['album_artist'] = str(text_value)
+                    # Extract PERFORMER field (could have multiple values)
+                    elif 'PERFORMER' in desc and text_value:
+                        metadata['performer_raw'] = str(text_value)
             
             # Get audio properties (duration, bitrate, sample rate)
             try:
