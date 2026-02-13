@@ -627,6 +627,8 @@ let currentPlaylistData = null;
 // ===============================
 function switchTab(tabName) {
   try {
+    console.log('[Playlist Manager] Switching to tab:', tabName);
+    
     // Hide all sections
     document.querySelectorAll('.tab-section').forEach(section => {
       section.style.display = 'none';
@@ -647,24 +649,43 @@ function switchTab(tabName) {
       'listenbrainz': ['listenbrainzSection', 'listenbrainzTab']
     };
     
-    if (sectionMap[tabName]) {
-      const [sectionId, tabId] = sectionMap[tabName];
-      const section = document.getElementById(sectionId);
-      const tab = document.getElementById(tabId);
-      
-      if (section) {
-        section.style.display = 'block';
-        section.classList.add('tab-active');
-        console.debug(`[Tab Switch] Showing ${sectionId}`);
-      } else {
-        console.warn(`[Tab Switch] Section not found: ${sectionId}`);
-      }
-      if (tab) {
-        tab.classList.add('active');
-      }
+    if (!sectionMap[tabName]) {
+      console.error('[Playlist Manager] Unknown tab:', tabName);
+      return;
     }
+
+    const [sectionId, tabId] = sectionMap[tabName];
+    console.log('[Playlist Manager] Looking for section:', sectionId, 'and tab:', tabId);
+    
+    const section = document.getElementById(sectionId);
+    const tab = document.getElementById(tabId);
+    
+    if (!section) {
+      console.error('[Playlist Manager] Section not found:', sectionId);
+      // List all available sections for debugging
+      document.querySelectorAll('.tab-section').forEach(s => {
+        console.log('[Playlist Manager] Available section:', s.id);
+      });
+      return;
+    }
+    
+    if (!tab) {
+      console.warn('[Playlist Manager] Tab button not found:', tabId);
+    }
+
+    // Force display the section
+    section.style.display = 'block';
+    section.style.visibility = 'visible';
+    section.classList.add('tab-active');
+    
+    if (tab) {
+      tab.classList.add('active');
+    }
+
+    console.log('[Playlist Manager] Successfully switched to:', tabName);
+    
   } catch (error) {
-    console.error('[Tab Switch] Error:', error);
+    console.error('[Playlist Manager] Error in switchTab:', error);
   }
 }
 
@@ -674,6 +695,8 @@ function switchTab(tabName) {
 
 document.addEventListener('DOMContentLoaded', function() {
   try {
+    console.log('[Playlist Manager] DOMContentLoaded starting');
+    
     // Initialize first tab
     switchTab('browse');
     
@@ -689,12 +712,42 @@ document.addEventListener('DOMContentLoaded', function() {
         console.error('Error loading smart playlists:', e);
       })
     ]).then(() => {
-      console.log('Initialization complete');
+      console.log('[Playlist Manager] Initialization complete');
     }).catch(e => {
-      console.error('Initialization error:', e);
+      console.error('[Playlist Manager] Initialization error:', e);
     });
+
+    // Setup event listeners safely
+    try {
+      const smartPlaylistSelect = document.getElementById('smartPlaylistSelect');
+      if (smartPlaylistSelect) {
+        smartPlaylistSelect.addEventListener('change', function() {
+          if (this.value) {
+            document.getElementById('regularPlaylistSelect').value = '';
+            loadNavidromePlaylistDetail(this.value, 'smart');
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Playlist Manager] Could not set up smartPlaylistSelect listener:', e);
+    }
+
+    try {
+      const regularPlaylistSelect = document.getElementById('regularPlaylistSelect');
+      if (regularPlaylistSelect) {
+        regularPlaylistSelect.addEventListener('change', function() {
+          if (this.value) {
+            document.getElementById('smartPlaylistSelect').value = '';
+            loadNavidromePlaylistDetail(this.value, 'regular');
+          }
+        });
+      }
+    } catch (e) {
+      console.warn('[Playlist Manager] Could not set up regularPlaylistSelect listener:', e);
+    }
+
   } catch (error) {
-    console.error('DOMContentLoaded error:', error);
+    console.error('[Playlist Manager] DOMContentLoaded error:', error);
   }
 });
 
@@ -704,12 +757,18 @@ async function loadNavidromePlaylists() {
     const data = await response.json();
     const smartSelect = document.getElementById('smartPlaylistSelect');
     const regularSelect = document.getElementById('regularPlaylistSelect');
+    
+    if (!smartSelect || !regularSelect) {
+      console.error('[Playlist Manager] Could not find playlist select elements');
+      return;
+    }
+
     smartSelect.innerHTML = '<option value="">Select a smart playlist...</option>';
     regularSelect.innerHTML = '<option value="">Select a regular playlist...</option>';
     
     // Check for API error response
     if (data.error) {
-      console.error('API Error:', data.error);
+      console.error('[Playlist Manager] API Error:', data.error);
       smartSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
       regularSelect.innerHTML = '<option value="">Error: ' + data.error + '</option>';
       return;
@@ -732,28 +791,16 @@ async function loadNavidromePlaylists() {
       });
     }
     if ((!data.smart || data.smart.length === 0) && (!data.regular || data.regular.length === 0)) {
-      console.warn('No playlists found in Navidrome');
+      console.warn('[Playlist Manager] No playlists found in Navidrome');
     }
   } catch (e) {
-    console.error('Failed to load Navidrome playlists:', e);
-    document.getElementById('smartPlaylistSelect').innerHTML = '<option value="">Error: Network failure</option>';
-    document.getElementById('regularPlaylistSelect').innerHTML = '<option value="">Error: Network failure</option>';
+    console.error('[Playlist Manager] Failed to load Navidrome playlists:', e);
+    const smartSelect = document.getElementById('smartPlaylistSelect');
+    const regularSelect = document.getElementById('regularPlaylistSelect');
+    if (smartSelect) smartSelect.innerHTML = '<option value="">Error: Network failure</option>';
+    if (regularSelect) regularSelect.innerHTML = '<option value="">Error: Network failure</option>';
   }
 }
-
-document.getElementById('smartPlaylistSelect').addEventListener('change', function() {
-  if (this.value) {
-    document.getElementById('regularPlaylistSelect').value = '';
-    loadNavidromePlaylistDetail(this.value, 'smart');
-  }
-});
-
-document.getElementById('regularPlaylistSelect').addEventListener('change', function() {
-  if (this.value) {
-    document.getElementById('smartPlaylistSelect').value = '';
-    loadNavidromePlaylistDetail(this.value, 'regular');
-  }
-});
 
 async function loadNavidromePlaylistDetail(playlistId, type) {
   currentPlaylistId = playlistId;
@@ -1654,10 +1701,12 @@ async function createPlaylistFromListenBrainz() {
 /* Tab Section Styling */
 .tab-section {
   animation: fadeIn 0.3s ease-in;
+  display: none !important;  /* Initially hidden */
 }
 
 .tab-section.tab-active {
   display: block !important;
+  visibility: visible !important;
 }
 
 @keyframes fadeIn {
