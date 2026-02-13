@@ -272,6 +272,37 @@ def should_resume_scan(scan_type: str = "navidrome") -> Tuple[bool, Optional[str
     return True, current_artist
 
 
+def get_last_scanned_artist(scan_type: str = "navidrome", db_path: str = "/database/sptnr.db") -> Optional[str]:
+    """
+    Get the last scanned artist from either progress file or database.
+    
+    First checks progress file for interrupted scans, then falls back to database
+    to find the most recently scanned artist based on last_scanned timestamp.
+    
+    Args:
+        scan_type: Type of scan ('navidrome' or 'popularity')
+        db_path: Path to database
+        
+    Returns:
+        Artist name or None
+    """
+    # First check progress file for interrupted scan
+    progress = load_scan_progress(scan_type)
+    if progress and progress.get('current_artist'):
+        artist = progress.get('current_artist')
+        log_info(f"Last scanned artist from progress file: {artist}")
+        return artist
+    
+    # Fall back to database query
+    artist = get_last_scanned_artist_from_db(db_path)
+    if artist:
+        log_info(f"Last scanned artist from database: {artist}")
+        return artist
+    
+    log_debug(f"No last scanned artist found for {scan_type}")
+    return None
+
+
 def mark_scan_completed(scan_type: str = "navidrome") -> bool:
     """
     Mark scan as completed and clear progress.
