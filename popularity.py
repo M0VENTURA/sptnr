@@ -3320,6 +3320,9 @@ def popularity_scan(
                             rest_of_album.append((track_title, stars_str, method_str))
                     
                     # Log categorized results
+                    total_logged = len(detected_singles) + len(standout_tracks) + len(possible_singles) + len(rest_of_album)
+                    log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, possible={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
+                    
                     if detected_singles:
                         log_unified(f"Single Detection Scan - ===== Detected Singles =====")
                         for title, stars, method in detected_singles:
