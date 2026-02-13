@@ -351,15 +351,34 @@ def is_non_canonical_version_strict(title: str) -> bool:
     Check if title contains non-canonical version markers per Stage 6.
     Reject: remix, remaster, acoustic, live, unplugged, orchestral, symphonic,
             demo, instrumental, edit, extended, version, alt, alternate, mix
+    
+    EXCEPTION: Allow (radio edit), (single), and (remastered) in brackets/parentheses
+    as these are canonical single versions that should not be excluded.
     """
     title_lower = title.lower()
+    
+    # Check for allowed parenthetical tags that should NOT cause rejection
+    # These are canonical single versions
+    allowed_parenthetical_tags = [
+        r'\(radio\s+edit\)',
+        r'\(single\)',
+        r'\(remastered\)',
+    ]
+    
+    # First, temporarily remove allowed parenthetical tags from the title
+    # so they don't trigger rejection
+    temp_title = title_lower
+    for allowed_pattern in allowed_parenthetical_tags:
+        temp_title = re.sub(allowed_pattern, '', temp_title)
+    
+    # Now check for non-canonical version markers in the modified title
     patterns = [
         r'\bremix\b', r'\bremaster(ed)?\b', r'\bacoustic\b', r'\blive\b',
         r'\bunplugged\b', r'\borchestral\b', r'\bsymphonic\b',
         r'\bdemo\b', r'\binstrumental\b', r'\bedit\b', r'\bextended\b',
         r'\bversion\b', r'\balt\b', r'\balternate\b', r'\bmix\b'
     ]
-    return any(re.search(p, title_lower) for p in patterns)
+    return any(re.search(p, temp_title) for p in patterns)
 
 
 def duration_matches_strict(duration1: Optional[float], duration2: Optional[float]) -> bool:
