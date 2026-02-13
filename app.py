@@ -2,16 +2,8 @@
 from db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
 import os
 # Import table creation functions
-try:
-    from create_lastfm_recommendations_table import create_lastfm_recommendations_table
-except (ImportError, ModuleNotFoundError):
-    def create_lastfm_recommendations_table():
-        return False
-try:
-    from create_upcoming_releases_table import create_upcoming_releases_schema
-except (ImportError, ModuleNotFoundError):
-    def create_upcoming_releases_schema():
-        return False
+from create_lastfm_recommendations_table import create_lastfm_recommendations_table
+from create_upcoming_releases_table import create_upcoming_releases_schema
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
 ALL_ENV_VARS = [
