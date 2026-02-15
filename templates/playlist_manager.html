@@ -1195,17 +1195,27 @@ let currentSmartPlaylistData = null;
 
 async function loadSmartPlaylists() {
   try {
+    console.log('[Playlist Manager] Loading smart playlists dropdown');
     const response = await fetch('/api/navidrome/playlists');
     const data = await response.json();
+    console.log('[Playlist Manager] Smart playlists API response:', data);
+    
     const select = document.getElementById('smartPlaylistDropdown');
+    if (!select) {
+      console.warn('[Playlist Manager] smartPlaylistDropdown element not found');
+      return;
+    }
+    
     select.innerHTML = '<option value="">Select a smart playlist...</option>';
     
     // Check for API error response
     if (data.error) {
-      console.error('API Error:', data.error);
+      console.error('[Playlist Manager] API Error:', data.error);
       select.innerHTML = '<option value="">Error: ' + data.error + '</option>';
       return;
     }
+    
+    console.log('[Playlist Manager] Smart playlists count:', data.smart?.length || 0);
     
     if (data.smart && data.smart.length > 0) {
       data.smart.forEach(playlist => {
@@ -1214,12 +1224,17 @@ async function loadSmartPlaylists() {
         option.textContent = playlist.name;
         select.appendChild(option);
       });
+      console.log('[Playlist Manager] Populated smartPlaylistDropdown with', data.smart.length, 'playlists');
     } else {
       select.innerHTML = '<option value="">No smart playlists found</option>';
+      console.log('[Playlist Manager] No smart playlists in API response');
     }
   } catch (error) {
-    console.error('Error loading smart playlists:', error);
-    document.getElementById('smartPlaylistDropdown').innerHTML = '<option value="">Error: Network failure</option>';
+    console.error('[Playlist Manager] Error loading smart playlists:', error);
+    const select = document.getElementById('smartPlaylistDropdown');
+    if (select) {
+      select.innerHTML = '<option value="">Error: Network failure</option>';
+    }
   }
 }
 
@@ -1648,6 +1663,61 @@ async function createPlaylistFromListenBrainz() {
     console.error('Error creating playlist:', error);
     alert('Error: ' + error.message);
   }
+}
+
+// ===============================
+// TAB SWITCHING EVENT LISTENERS
+// ===============================
+// Initialize tab event handlers to load data when tabs are switched
+
+// Smart Playlists Tab
+const smartTab = document.getElementById('smartTab');
+if (smartTab) {
+  smartTab.addEventListener('show.bs.tab', function(e) {
+    console.log('[Playlist Manager] Smart tab shown');
+    loadSmartPlaylists().catch(err => {
+      console.error('[Playlist Manager] Error loading smart playlists on tab switch:', err);
+    });
+  });
+}
+
+// Spotify Tab
+const spotifyTab = document.getElementById('spotifyTab');
+if (spotifyTab) {
+  spotifyTab.addEventListener('show.bs.tab', function(e) {
+    console.log('[Playlist Manager] Spotify tab shown');
+    // No automatic load - users click button to load
+    // But we could initialize the form here if needed
+  });
+}
+
+// Last.fm Tab
+const lastfmTab = document.getElementById('lastfmTab');
+if (lastfmTab) {
+  lastfmTab.addEventListener('show.bs.tab', function(e) {
+    console.log('[Playlist Manager] Last.fm tab shown');
+    // No automatic load - users click button to load
+    // But we could initialize the form here if needed
+  });
+}
+
+// ListenBrainz Tab
+const listenbrainzTab = document.getElementById('listenbrainzTab');
+if (listenbrainzTab) {
+  listenbrainzTab.addEventListener('show.bs.tab', function(e) {
+    console.log('[Playlist Manager] ListenBrainz tab shown');
+    // No automatic load - users click button to load
+    // But we could initialize the form here if needed
+  });
+}
+
+// Browse Tab
+const browseTab = document.getElementById('browseTab');
+if (browseTab) {
+  browseTab.addEventListener('show.bs.tab', function(e) {
+    console.log('[Playlist Manager] Browse tab shown');
+    // Already loaded on init, but ensure it's available
+  });
 }
 </script>
 
