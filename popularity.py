@@ -3319,62 +3319,70 @@ def popularity_scan(
                             
                             # Format sources for display
                             formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
-                            sources_str = ", ".join(formatted_sources) if formatted_sources else ""
+                            sources_str = "; ".join(formatted_sources) if formatted_sources else ""
                             
                             # Create star rating string (max 5 stars)
                             stars_str = "★" * min(track_stars, 5)
                             
-                            # Determine detection method(s) for display
-                            detection_methods = []
+                            # Build reason string for categorization
+                            reasons = []
                             if track_is_single and sources_str:
-                                detection_methods.append(sources_str)
-                            if track_is_standout:
-                                detection_methods.append(f"Standout (z-score: {track_zscore:.2f})")
-                            if track_single_confidence and not track_is_single:
-                                detection_methods.append(f"Possible Single ({track_single_confidence})")
-                            
-                            method_str = " - " + " | ".join(detection_methods) if detection_methods else ""
-                            
-                            # Categorize track
-                            if track_is_single and track_stars == 5:
-                                detected_singles.append((track_title, stars_str, method_str))
+                                reasons.append(sources_str)
                             elif track_is_standout and track_stars == 5:
-                                standout_tracks.append((track_title, stars_str, method_str))
-                            elif track_single_confidence == "medium" and not track_is_single:
-                                possible_singles.append((track_title, stars_str, method_str))
+                                reasons.append("Standout Track")
+                            elif track_single_confidence == "medium" and sources_str:
+                                reasons.append(sources_str)
+                            elif track_single_confidence == "medium" and track_is_standout:
+                                reasons.append(f"Standout Track, below Z Score rating")
+                            
+                            reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
+                            
+                            # Categorize track for display
+                            # Priority: 
+                            # 1. Detected Singles (is_single=1, stars=5, has sources)
+                            # 2. Popular Track Match (stars=5, standout, not single)
+                            # 3. Close Matches (medium confidence or has sources but not single)
+                            # 4. Rest of Album (everything else)
+                            
+                            if track_is_single and track_stars == 5:
+                                detected_singles.append((track_title, stars_str, reason_str))
+                            elif track_is_standout and track_stars == 5 and not track_is_single:
+                                standout_tracks.append((track_title, stars_str, reason_str))
+                            elif track_single_confidence == "medium" or (sources_str and not track_is_single):
+                                possible_singles.append((track_title, stars_str, reason_str))
                             else:
-                                rest_of_album.append((track_title, stars_str, method_str))
+                                rest_of_album.append((track_title, stars_str, reason_str))
                         
-                        # Log categorized results
+                        # Log categorized results with improved spacing
                         total_logged = len(detected_singles) + len(standout_tracks) + len(possible_singles) + len(rest_of_album)
-                        log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, possible={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
+                        log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, close_matches={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
                         
                         if detected_singles:
                             log_unified(f"Single Detection Scan - ===== Detected Singles =====")
                             log_debug(f"Logging {len(detected_singles)} detected singles for {album}")
-                            for title, stars, method in detected_singles:
-                                log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{method}"
+                            for title, stars, reason in detected_singles:
+                                log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}"
                                 log_debug(f"About to log: {log_entry}")
                                 log_unified(log_entry)
                         
                         if standout_tracks:
-                            log_unified(f"Single Detection Scan - ===== Standout Tracks =====")
-                            for title, stars, method in standout_tracks:
-                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                            log_unified(f"Single Detection Scan - ===== Popular Track Match =====")
+                            for title, stars, reason in standout_tracks:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
                         
                         if possible_singles:
-                            log_unified(f"Single Detection Scan - ===== Possible Singles (Medium Confidence) =====")
-                            for title, stars, method in possible_singles:
-                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                            log_unified(f"Single Detection Scan - ===== Close Matches =====")
+                            for title, stars, reason in possible_singles:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
                         
-                        # Always log rest of album tracks if there are any or if this is the only category
+                        # Log rest of album tracks if there are any
                         if rest_of_album:
                             # Only show header if there were detected singles/standout/possible singles
                             if detected_singles or standout_tracks or possible_singles:
                                 log_unified(f"Single Detection Scan - ===== Rest of Album =====")
-                            # Log individual rest-of-album tracks
-                            for title, stars, method in rest_of_album:
-                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{method}")
+                            # Log individual rest-of-album tracks (no reasons shown for regular tracks)
+                            for title, stars, _ in rest_of_album:
+                                log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
                         
                         log_debug(f"Successfully logged all categorized tracks for album {album}")
                         
