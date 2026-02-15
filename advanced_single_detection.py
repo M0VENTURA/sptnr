@@ -406,21 +406,23 @@ def detect_single_advanced(
     popularity: float,
     album_type: Optional[str],
     zscore_threshold: float = 0.20,
-    verbose: bool = False
+    verbose: bool = False,
+    discogs_client=None
 ) -> Dict:
     """
     Advanced single detection using comprehensive rules.
     
     Implementation of the 8 rules from the problem statement:
     
-    1. Match track versions by ISRC or title+duration
-    2. Exclude alternate versions
-    3. Handle live/unplugged context
-    4. Deduplicate album releases
-    5. Determine metadata single status
-    6. Calculate global popularity across versions
-    7. Apply z-score threshold (metadata single + z-score >= threshold)
-    8. Special handling for compilations
+    1. Discogs artist releases endpoint check (early exit if confirmed)
+    2. Match track versions by ISRC or title+duration
+    3. Exclude alternate versions
+    4. Handle live/unplugged context
+    5. Deduplicate album releases
+    6. Determine metadata single status
+    7. Calculate global popularity across versions
+    8. Apply z-score threshold (metadata single + z-score >= threshold)
+    9. Special handling for compilations
     
     Args:
         conn: Database connection
@@ -434,6 +436,7 @@ def detect_single_advanced(
         album_type: Spotify album type (optional)
         zscore_threshold: Z-score threshold for singles (default 0.20)
         verbose: Enable verbose logging
+        discogs_client: Optional DiscogsClient instance for Discogs single detection
         
     Returns:
         Dict with keys:
@@ -447,7 +450,7 @@ def detect_single_advanced(
     """
     cursor = conn.cursor()
     
-    # Check if track is an alternate version (Rule 2)
+    # Check if track is an alternate version (Rule 3)
     if is_alternate_version(title):
         if verbose:
             logger.info(f"Excluding alternate version: {title}")
@@ -461,19 +464,46 @@ def detect_single_advanced(
             'is_compilation': False
         }
     
-    # Determine live/unplugged context (Rule 3)
+    # Determine live/unplugged context (Rule 4)
     is_live = is_live_version(title, album)
     
-    # Check if album is compilation (Rule 8)
+    # Check if album is compilation (Rule 9)
     is_comp = is_compilation_album(album_type, album)
     
-    # Find all matching versions (Rule 1)
+    # EARLY EXIT CONDITION:
+    # Try Discogs first (Rule 1) - if confirmed as single, exit with high confidence
+    if discogs_client:
+        try:
+            album_context = {
+                "is_live": is_live,
+                "is_unplugged": False,  # TODO: detect unplugged from title if needed
+                "is_special_edition": False,  # Skip this check for now, can be added later
+                "album_name": album
+            }
+            if discogs_client.is_single(title, artist, album_context):
+                if verbose:
+                    logger.info(f"Discogs confirmed '{title}' as single for artist '{artist}'")
+                return {
+                    'is_single': True,
+                    'confidence': 'high',
+                    'sources': ['discogs'],
+                    'global_popularity': popularity,
+                    'zscore': 0.0,
+                    'metadata_single': True,  # Treat Discogs confirmation as metadata
+                    'is_compilation': is_comp
+                }
+        except Exception as e:
+            if verbose:
+                logger.debug(f"Discogs check failed (will continue with other sources): {e}")
+            # Continue with other detection methods if Discogs fails
+    
+    # Find all matching versions (Rule 2)
     versions = find_matching_versions(conn, title, artist, isrc, duration, is_live)
     
     if verbose:
         logger.info(f"Found {len(versions)} matching versions for: {title}")
     
-    # Calculate global popularity (Rule 6)
+    # Calculate global popularity (Rule 7)
     # For compilations, use album-version popularity only
     if is_comp:
         global_pop = popularity
@@ -484,7 +514,7 @@ def detect_single_advanced(
         if verbose:
             logger.info(f"Global popularity: {global_pop}")
     
-    # Determine metadata single status (Rule 5)
+    # Determine metadata single status (Rule 6)
     metadata_single = is_metadata_single(versions) if versions else False
     if verbose:
         logger.info(f"Metadata single: {metadata_single}")
@@ -498,19 +528,19 @@ def detect_single_advanced(
     
     album_pops = [row[0] for row in cursor.fetchall() if row[0]]
     
-    # Calculate z-score (Rule 6, 7)
+    # Calculate z-score (Rule 7, 8)
     # Use global popularity for z-score calculation (unless compilation)
     zscore = calculate_zscore(global_pop, album_pops) if album_pops else 0.0
     if verbose:
         logger.info(f"Z-score: {zscore:.3f} (threshold: {zscore_threshold})")
     
-    # Final single detection (Rule 7)
+    # Final single detection (Rule 8)
     # Both conditions must be true:
     # 1. Is metadata single (Spotify OR MusicBrainz)
     # 2. Z-score >= threshold
     is_single = metadata_single and (zscore >= zscore_threshold)
     
-    # Special case for compilations (Rule 8)
+    # Special case for compilations (Rule 9)
     if is_comp:
         # Only detect singles released FROM the compilation
         # This requires the single to be on the compilation itself
@@ -554,7 +584,8 @@ def batch_update_advanced_singles(
     artist: Optional[str] = None,
     album: Optional[str] = None,
     zscore_threshold: float = 0.20,
-    verbose: bool = False
+    verbose: bool = False,
+    discogs_client=None
 ) -> int:
     """
     Batch update all tracks with advanced single detection.
@@ -568,6 +599,7 @@ def batch_update_advanced_singles(
         album: Optional album filter
         zscore_threshold: Z-score threshold for singles
         verbose: Enable verbose logging
+        discogs_client: Optional DiscogsClient for early single detection
         
     Returns:
         Number of tracks updated
@@ -602,7 +634,7 @@ def batch_update_advanced_singles(
     for row in tracks:
         track_id, title, artist, album, isrc, duration, pop, album_type = row
         
-        # Run advanced detection
+        # Run advanced detection with optional Discogs client for early detection
         result = detect_single_advanced(
             conn=conn,
             track_id=track_id,
@@ -614,7 +646,8 @@ def batch_update_advanced_singles(
             popularity=pop or 0.0,
             album_type=album_type,
             zscore_threshold=zscore_threshold,
-            verbose=verbose
+            verbose=verbose,
+            discogs_client=discogs_client
         )
         
         # Queue update
