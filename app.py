@@ -4423,6 +4423,84 @@ def _run_artist_scan_pipeline(artist_name: str):
         log_unified(f"Traceback: {traceback.format_exc()}")
 
 
+def _auto_detect_album_type(artist_name: str, album_name: str):
+    """
+    Auto-detect and update album type based on detected singles and track count.
+    
+    Logic:
+    - If == 1 track → Single
+    - If >= 70% singles with < 5 total tracks → Single
+    - If >= 50% singles with 3-6 total tracks → EP  
+    - If >= 40% singles with 6-10 tracks → EP
+    - Otherwise → Album (or keep existing type if already set)
+    
+    Args:
+        artist_name: Name of the artist
+        album_name: Name of the album
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get current album type and track counts
+        cursor.execute("""
+            SELECT 
+                COUNT(*) as total_tracks,
+                SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
+                MAX(spotify_album_type) as current_type
+            FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+        """, (artist_name, album_name))
+        
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return
+        
+        total_tracks = result['total_tracks'] or 0
+        singles_count = result['singles_count'] or 0
+        current_type = result['current_type']
+        
+        if total_tracks == 0:
+            conn.close()
+            return
+        
+        # Don't override if already explicitly set to something other than empty/unknown
+        if current_type and current_type not in ['', 'unknown']:
+            conn.close()
+            return
+        
+        # Calculate singles percentage
+        singles_percent = (singles_count / total_tracks * 100) if total_tracks > 0 else 0
+        
+        # Determine new type
+        new_type = None
+        if total_tracks == 1:
+            new_type = 'single'
+        elif singles_percent >= 70 and total_tracks < 5:
+            new_type = 'single'
+        elif singles_percent >= 50 and 3 <= total_tracks <= 6:
+            new_type = 'ep'
+        elif singles_percent >= 40 and 6 < total_tracks <= 10:
+            new_type = 'ep'
+        else:
+            new_type = 'album'
+        
+        # Update album type in database
+        if new_type:
+            cursor.execute("""
+                UPDATE tracks 
+                SET spotify_album_type = ?
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
+            """, (new_type, artist_name, album_name))
+            conn.commit()
+            log_unified(f"✓ Album type set to '{new_type}' (singles: {singles_count}/{total_tracks}, {singles_percent:.0f}%)")
+        
+        conn.close()
+    except Exception as e:
+        log_unified(f"Warning: Failed to auto-detect album type: {e}")
+
+
 def _run_album_scan_pipeline(artist_name: str, album_name: str):
     """
     Helper function to run the complete scan pipeline for a specific album:
@@ -4485,6 +4563,10 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             log_unified(f"Skipping Navidrome import (Step 1/2) - album metadata already imported via album artist")
             log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
             popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+            
+            # Step 3: Auto-detect and set album type
+            log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
+            _auto_detect_album_type(artist_name, album_name)
         else:
             # Normal flow: artist_id found, run both steps
             # Step 1: Import metadata from Navidrome for this specific album
@@ -4495,6 +4577,10 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
             log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
             popularity_scan(verbose=True, force=True, artist_filter=artist_name, album_filter=album_name)
+        
+        # Step 3: Auto-detect and set album type based on singles detection
+        log_unified(f"Step 3/3: Auto-detecting album type for '{album_display}'")
+        _auto_detect_album_type(artist_name, album_name)
         
         log_unified(f"✅ Scan complete for album '{album_display}'")
     except Exception as e:
@@ -8334,10 +8420,16 @@ def api_metadata():
                 music_root = os.environ.get("MUSIC_ROOT", "/music")
                 file_path = None
                 
-                # First try using stored file path from Navidrome
+                # First try using stored file path from Navidrome (which provides absolute paths)
                 if stored_file_path:
-                    # Navidrome stores paths relative to music root
-                    full_path = os.path.join(music_root, stored_file_path)
+                    # Navidrome provides absolute paths, check if they already start with music_root
+                    if stored_file_path.startswith(music_root):
+                        # Already absolute path
+                        full_path = stored_file_path
+                    else:
+                        # Relative path, join with music_root
+                        full_path = os.path.join(music_root, stored_file_path)
+                    
                     if os.path.exists(full_path):
                         file_path = full_path
                 
@@ -8345,7 +8437,7 @@ def api_metadata():
                 if not file_path:
                     try:
                         # Use timeout to prevent hanging
-                        file_path = find_track_file(artist, album, title, music_root, timeout_seconds=3)
+                        file_path = find_track_file(artist, album, title, music_root, timeout_seconds=5)
                     except Exception as e:
                         # If file search fails, continue without file metadata
                         pass
