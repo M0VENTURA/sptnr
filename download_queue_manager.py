@@ -53,30 +53,51 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
         conn = get_db()
         cursor = conn.cursor()
         
+        # Validate inputs
+        if not artist or not title:
+            logger.error("Artist and title are required")
+            conn.close()
+            return None
+        
         search_query = f"{artist} - {title}"
         if album:
             search_query = f"{artist} {album} {title}"
         
-        cursor.execute("""
-            INSERT INTO download_queue 
-            (artist, title, album, search_query, source, status, priority, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, 'queued', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-        """, (artist, title, album, search_query, source, priority))
+        try:
+            cursor.execute("""
+                INSERT INTO download_queue 
+                (artist, title, album, search_query, source, status, priority, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (artist, title, album, search_query, source, priority))
+            
+            conn.commit()
+            queue_id = cursor.lastrowid
+            
+            logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source})")
+            
+            # Return the item
+            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            item = cursor.fetchone()
+            
+            if item:
+                return dict(item)
+            else:
+                logger.error(f"Failed to retrieve inserted item with ID: {queue_id}")
+                return None
+                
+        finally:
+            conn.close()
         
-        conn.commit()
-        queue_id = cursor.lastrowid
-        
-        logger.info(f"Added to queue: {search_query} (ID: {queue_id}, source: {source})")
-        
-        # Return the item
-        cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
-        item = cursor.fetchone()
-        conn.close()
-        
-        return dict(item) if item else None
-        
+    except sqlite3.IntegrityError as e:
+        logger.error(f"Database integrity error adding to queue: {e}")
+        return None
+    except sqlite3.DatabaseError as e:
+        logger.error(f"Database error adding to queue: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Error adding to queue: {e}")
+        logger.error(f"Error adding to queue: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 
@@ -96,11 +117,30 @@ def get_queue(status=None, source='soulseek', limit=50):
         conn = get_db()
         cursor = conn.cursor()
         
-        query = "SELECT * FROM download_queue WHERE source = ?"
-        params = [source]
+        # First ensure source column exists
+        cursor.execute("PRAGMA table_info(download_queue);")
+        columns = [row[1] for row in cursor.fetchall()]
         
-        if status:
-            query += " AND status = ?"
+        if 'source' not in columns:
+            logger.warning("'source' column missing from download_queue, attempting to add it")
+            try:
+                cursor.execute("ALTER TABLE download_queue ADD COLUMN source TEXT DEFAULT 'soulseek';")
+                conn.commit()
+            except Exception as e:
+                logger.warning(f"Could not add source column: {e}")
+        
+        query = "SELECT * FROM download_queue"
+        params = []
+        
+        # Only filter by source if column exists
+        if 'source' in columns:
+            query += " WHERE source = ?"
+            params.append(source)
+            if status:
+                query += " AND status = ?"
+                params.append(status)
+        elif status:
+            query += " WHERE status = ?"
             params.append(status)
         
         query += " ORDER BY priority ASC, created_at DESC LIMIT ?"
@@ -113,7 +153,9 @@ def get_queue(status=None, source='soulseek', limit=50):
         return items
         
     except Exception as e:
-        logger.error(f"Error getting queue: {e}")
+        logger.error(f"Error getting queue: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 

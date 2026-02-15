@@ -500,6 +500,39 @@ def update_schema(db_path):
         );
     """)
     
+    # ✅ Add missing columns to download_queue if they don't exist
+    cursor.execute("PRAGMA table_info(download_queue);")
+    existing_queue_columns = [row[1] for row in cursor.fetchall()]
+    
+    download_queue_new_columns = {
+        "search_query": "TEXT",
+        "source": "TEXT DEFAULT 'soulseek'",
+        "source_id": "TEXT",
+        "found_filename": "TEXT",
+        "metadata": "TEXT",
+        "retry_count": "INTEGER DEFAULT 0",
+        "max_retries": "INTEGER DEFAULT 5",
+        "failure_reason": "TEXT",
+        "last_failure_time": "TIMESTAMP",
+        "retry_delay_minutes": "INTEGER DEFAULT 30",
+        "next_retry_at": "TIMESTAMP",
+        "imported_at": "TIMESTAMP"
+    }
+    
+    queue_columns_added = []
+    for col, col_type in download_queue_new_columns.items():
+        if col not in existing_queue_columns:
+            try:
+                cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                queue_columns_added.append(col)
+            except sqlite3.OperationalError as e:
+                # Column might already exist due to race condition
+                if "duplicate column name" not in str(e).lower():
+                    logger.warning(f"Could not add column {col} to download_queue: {e}")
+    
+    if queue_columns_added:
+        print(f"✅ Added {len(queue_columns_added)} missing download_queue column(s): {', '.join(queue_columns_added)}")
+    
     # ✅ Add missing columns to managed_downloads for persistent search feature
     cursor.execute("PRAGMA table_info(managed_downloads);")
     existing_download_columns = [row[1] for row in cursor.fetchall()]

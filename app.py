@@ -9921,14 +9921,19 @@ def api_queue_add():
         from download_queue_manager import add_to_queue, check_downloads_folder
         
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
         artist = data.get('artist', '').strip()
         title = data.get('title', '').strip()
-        album = data.get('album', '').strip()
+        album = data.get('album', '').strip() if data.get('album') else None
         source = data.get('source', 'soulseek')  # 'soulseek' or 'qbittorrent'
         priority = int(data.get('priority', 5))
         
         if not artist or not title:
             return jsonify({"error": "Artist and title are required"}), 400
+        
+        logging.info(f"Adding to queue: {artist} - {title} (album: {album}, source: {source})")
         
         # Add to queue
         item = add_to_queue(artist, title, album, source, priority)
@@ -9941,11 +9946,18 @@ def api_queue_add():
                 "item": item
             })
         else:
-            return jsonify({"error": "Failed to add to queue"}), 400
+            error_msg = "Failed to add to queue - check server logs for details"
+            logging.error(f"add_to_queue returned None for: {artist} - {title}")
+            return jsonify({"error": error_msg}), 400
             
+    except ValueError as e:
+        logging.error(f"Invalid input for queue add: {e}")
+        return jsonify({"error": f"Invalid input: {str(e)}"}), 400
     except Exception as e:
-        logging.error(f"Error adding to queue: {e}")
-        return jsonify({"error": str(e)}), 400
+        logging.error(f"Error adding to queue: {type(e).__name__}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
 
 
 @app.route("/api/queue/status", methods=["GET"])
