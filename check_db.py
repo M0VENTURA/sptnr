@@ -508,6 +508,7 @@ def update_schema(db_path):
         "search_query": "TEXT",
         "source": "TEXT DEFAULT 'soulseek'",
         "source_id": "TEXT",
+        "priority": "INTEGER DEFAULT 5",
         "found_filename": "TEXT",
         "metadata": "TEXT",
         "retry_count": "INTEGER DEFAULT 0",

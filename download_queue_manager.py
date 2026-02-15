@@ -59,6 +59,25 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
             conn.close()
             return None
         
+        # Ensure all required columns exist
+        cursor.execute("PRAGMA table_info(download_queue);")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        required_cols = {
+            'search_query': "TEXT",
+            'source': "TEXT DEFAULT 'soulseek'",
+            'priority': "INTEGER DEFAULT 5"
+        }
+        
+        for col, col_type in required_cols.items():
+            if col not in columns:
+                logger.info(f"Adding missing column '{col}' to download_queue")
+                try:
+                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"Could not add {col} column: {e}")
+        
         search_query = f"{artist} - {title}"
         if album:
             search_query = f"{artist} {album} {title}"
@@ -117,17 +136,26 @@ def get_queue(status=None, source='soulseek', limit=50):
         conn = get_db()
         cursor = conn.cursor()
         
-        # First ensure source column exists
+        # First ensure required columns exist
         cursor.execute("PRAGMA table_info(download_queue);")
         columns = [row[1] for row in cursor.fetchall()]
         
-        if 'source' not in columns:
-            logger.warning("'source' column missing from download_queue, attempting to add it")
-            try:
-                cursor.execute("ALTER TABLE download_queue ADD COLUMN source TEXT DEFAULT 'soulseek';")
-                conn.commit()
-            except Exception as e:
-                logger.warning(f"Could not add source column: {e}")
+        # Add missing columns if needed
+        missing_cols = {
+            'source': "TEXT DEFAULT 'soulseek'",
+            'priority': "INTEGER DEFAULT 5",
+            'search_query': "TEXT"
+        }
+        
+        for col, col_type in missing_cols.items():
+            if col not in columns:
+                logger.warning(f"'{col}' column missing from download_queue, attempting to add it")
+                try:
+                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                    conn.commit()
+                    columns.append(col)
+                except Exception as e:
+                    logger.warning(f"Could not add {col} column: {e}")
         
         query = "SELECT * FROM download_queue"
         params = []
@@ -143,7 +171,11 @@ def get_queue(status=None, source='soulseek', limit=50):
             query += " WHERE status = ?"
             params.append(status)
         
-        query += " ORDER BY priority ASC, created_at DESC LIMIT ?"
+        # Only use priority in ORDER BY if column exists
+        if 'priority' in columns:
+            query += " ORDER BY priority ASC, created_at DESC LIMIT ?"
+        else:
+            query += " ORDER BY created_at DESC LIMIT ?"
         params.append(limit)
         
         cursor.execute(query, params)

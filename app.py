@@ -265,6 +265,13 @@ def split_genres(s):
     genres = re.split(r'[\\,]+', str(s))
     return [g.strip() for g in genres if g.strip()]
 
+# Add Jinja2 filter for regex replacement
+@app.template_filter('regex_replace')
+def regex_replace(s, pattern, replacement):
+    """Replace pattern in string using regex"""
+    import re
+    return re.sub(pattern, replacement, str(s))
+
 # Add cache-control headers to prevent browser caching of HTML templates
 @app.after_request
 def set_cache_headers(response):
