@@ -370,109 +370,7 @@
                 </button>
             </div>
             
-            <!-- Genre Track Coverage -->
-            {% if tracks or tracks_by_disc %}
-            <div>
-                <h6 class="mb-3"><i class="bi bi-music-note-list"></i> Genre Coverage Across Tracks</h6>
-                <p class="text-muted small mb-2">Shows which genres from the album are present in each track's metadata. <small>Click genre badges to remove, or use the + button to add genres. Suggested genres appear below when available.</small></p>
-                <div class="table-responsive" style="max-height: 500px; overflow-y: auto;">
-                    <table class="table table-sm mb-0" style="font-size: 0.85rem;">
-                        <thead style="position: sticky; top: 0; background-color: #f8f9fa; z-index: 10;">
-                            <tr>
-                                <th style="width: 200px;">Track</th>
-                                <th class="text-center" style="width: 60px;">Fit %</th>
-                                <th>Genres & Recommendations</th>
-                            </tr>
-                        </thead>
-                        <tbody>
-                            {% if tracks_by_disc %}
-                                {% for disc_num in tracks_by_disc|dictsort %}
-                                    {% for track in disc_num[1] %}
-                                    <tr>
-                                        <td class="align-top" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
-                                            <small class="text-muted">{{ disc_num[0] }}.{{ track.track_number or loop.index }}</small>
-                                            {{ track.title }}
-                                        </td>
-                                        <td class="text-center align-top">
-                                            {% if track.genre_fit_percent > 0 %}
-                                            <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
-                                                {{ track.genre_fit_percent }}%
-                                            </span>
-                                            {% else %}
-                                            <span class="text-muted">—</span>
-                                            {% endif %}
-                                        </td>
-                                        <td class="align-top">
-                                            <div class="d-flex flex-column gap-2">
-                                                <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
-                                                    {% if track.matching_genres %}
-                                                        {% for genre in track.matching_genres %}
-                                                        <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
-                                                            {{ genre }}
-                                                            <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
-                                                        </span>
-                                                        {% endfor %}
-                                                    {% else %}
-                                                    <span class="text-muted small">No album genres</span>
-                                                    {% endif %}
-                                                    <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
-                                                        <i class="bi bi-plus-circle"></i> Add
-                                                    </button>
-                                                </div>
-                                                <!-- Suggested Genres for Track -->
-                                                <div class="d-flex align-items-center gap-2 flex-wrap ps-2" id="suggestions-{{ track.id }}" style="display: none; border-left: 2px solid #dee2e6; padding-left: 0.5rem;">
-                                                </div>
-                                            </div>
-                                        </td>
-                                    </tr>
-                                    {% endfor %}
-                                {% endfor %}
-                            {% else %}
-                                {% for track in tracks %}
-                                <tr>
-                                    <td class="align-top" style="white-space: nowrap; overflow: hidden; text-overflow: ellipsis;" title="{{ track.title }}">
-                                        <small class="text-muted">{{ loop.index }}</small>
-                                        {{ track.title }}
-                                    </td>
-                                    <td class="text-center align-top">
-                                        {% if track.genre_fit_percent > 0 %}
-                                        <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-warning bg-opacity-75{% else %}bg-secondary{% endif %}">
-                                            {{ track.genre_fit_percent }}%
-                                        </span>
-                                        {% else %}
-                                        <span class="text-muted">—</span>
-                                        {% endif %}
-                                    </td>
-                                    <td class="align-top">
-                                        <div class="d-flex flex-column gap-2">
-                                            <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
-                                                {% if track.matching_genres %}
-                                                    {% for genre in track.matching_genres %}
-                                                    <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer; position: relative;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
-                                                        {{ genre }}
-                                                        <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
-                                                    </span>
-                                                    {% endfor %}
-                                                {% else %}
-                                                <span class="text-muted small">No album genres</span>
-                                                {% endif %}
-                                                <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
-                                                    <i class="bi bi-plus-circle"></i> Add
-                                                </button>
-                                            </div>
-                                            <!-- Suggested Genres for Track -->
-                                            <div class="d-flex align-items-center gap-2 flex-wrap ps-2" id="suggestions-{{ track.id }}" style="display: none; border-left: 2px solid #dee2e6; padding-left: 0.5rem;">
-                                            </div>
-                                        </div>
-                                    </td>
-                                </tr>
-                                {% endfor %}
-                            {% endif %}
-                        </tbody>
-                    </table>
-                </div>
-            </div>
-            {% endif %}
+
             
             <!-- Add Genre Modal -->
             <div class="modal fade" id="addGenreModal" tabindex="-1">
@@ -538,6 +436,7 @@
                         <th class="text-center" style="width: 4rem;" title="Star Rating">Rating</th>
                         <th class="text-center d-none d-lg-table-cell" title="Is this a single?">Single</th>
                         <th class="text-center d-none d-lg-table-cell" title="Single Detection Confidence">Confidence</th>
+                        <th class="d-none d-lg-table-cell" title="Album genres matching this track">Genres</th>
                         <th class="text-center" style="width: 3rem;">Actions</th>
                     </tr>
                 </thead>
@@ -546,8 +445,8 @@
                         <!-- Multi-disc album view -->
                         {% for disc_num in tracks_by_disc|dictsort %}
                             <tr class="table-secondary">
-                                <!-- Colspan = 9 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Confidence, Actions -->
-                                <td colspan="9" style="padding: 0.75rem 0.5rem;">
+                                <!-- Colspan = 10 columns: Checkbox, #, Title, Artist, Duration, Rating, Single, Confidence, Genres, Actions -->
+                                <td colspan="10" style="padding: 0.75rem 0.5rem;">
                                     <strong style="font-size: 1.1rem;">
                                         <i class="bi bi-disc"></i> Disc {{ disc_num[0] or 1 }}
                                     </strong>
@@ -621,6 +520,28 @@
                                     {% else %}
                                         <span class="text-muted">—</span>
                                     {% endif %}
+                                </td>
+                                <td class="d-none d-lg-table-cell">
+                                    <div class="d-flex flex-column gap-2">
+                                        <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
+                                            {% if track.matching_genres %}
+                                                {% for genre in track.matching_genres %}
+                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                    {{ genre }}
+                                                    <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
+                                                </span>
+                                                {% endfor %}
+                                            {% endif %}
+                                            <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                                <i class="bi bi-plus-circle"></i> Add  
+                                            </button>
+                                        </div>
+                                        {% if track.genre_fit_percent %}
+                                        <small class="text-muted">
+                                            Fit: <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.7rem;">{{ track.genre_fit_percent }}%</span>
+                                        </small>
+                                        {% endif %}
+                                    </div>
                                 </td>
                                 <td class="d-flex justify-content-end gap-1 d-md-table-cell">
                                     <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">
@@ -703,6 +624,28 @@
                                 {% else %}
                                     <span class="text-muted">—</span>
                                 {% endif %}
+                            </td>
+                            <td class="d-none d-lg-table-cell">
+                                <div class="d-flex flex-column gap-2">
+                                    <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
+                                        {% if track.matching_genres %}
+                                            {% for genre in track.matching_genres %}
+                                            <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                {{ genre }}
+                                                <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
+                                            </span>
+                                            {% endfor %}
+                                        {% endif %}
+                                        <button class="btn btn-sm btn-link p-0" style="font-size: 0.75rem; text-decoration: none;" onclick="openAddGenreModal('{{ track.id }}', '{{ track.title }}')">
+                                            <i class="bi bi-plus-circle"></i> Add
+                                        </button>
+                                    </div>
+                                    {% if track.genre_fit_percent %}
+                                    <small class="text-muted">
+                                        Fit: <span class="badge {% if track.genre_fit_percent >= 75 %}bg-success{% elif track.genre_fit_percent >= 50 %}bg-warning{% elif track.genre_fit_percent >= 25 %}bg-info{% else %}bg-secondary{% endif %}" style="font-size: 0.7rem;">{{ track.genre_fit_percent }}%</span>
+                                    </small>
+                                    {% endif %}
+                                </div>
                             </td>
                             <td class="d-flex justify-content-end gap-1 d-md-table-cell">
                                 <button class="btn btn-sm btn-outline-primary" onclick="lookupMetadata('track', '{{ track.id }}')" title="View metadata">

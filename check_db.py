@@ -697,7 +697,15 @@ def update_schema(db_path):
         ("idx_tracks_zscore", "tracks(zscore)")
     ]
     for idx_name, idx_target in indexes:
-        cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
+        try:
+            cursor.execute(f"CREATE INDEX IF NOT EXISTS {idx_name} ON {idx_target};")
+        except sqlite3.OperationalError as e:
+            # Silently skip if column doesn't exist - it may be added later
+            if "no such column" in str(e).lower() or "no such table" in str(e).lower():
+                pass
+            else:
+                raise
+
 
     # ✅ Ensure lastfm_recommendations table exists (for caching Last.fm recommendations)
     cursor.execute("""
