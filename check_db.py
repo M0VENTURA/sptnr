@@ -623,25 +623,30 @@ def update_schema(db_path):
         );
     """)
 
-    # ✅ Ensure download_queue table exists (for tracking incomplete/failed downloads with retry logic)
+    # ✅ Ensure download_queue table exists (for tracking user-initiated downloads with retry logic)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS download_queue (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            file_path TEXT NOT NULL UNIQUE,
-            filename TEXT NOT NULL,
-            artist TEXT,
+            artist TEXT NOT NULL,
             album TEXT,
-            title TEXT,
-            duration REAL,
-            status TEXT DEFAULT 'incomplete',
+            title TEXT NOT NULL,
+            search_query TEXT,
+            source TEXT DEFAULT 'soulseek',
+            source_id TEXT,
+            status TEXT DEFAULT 'queued',
+            priority INTEGER DEFAULT 5,
+            found_filename TEXT,
+            file_path TEXT UNIQUE,
+            metadata JSON,
             retry_count INTEGER DEFAULT 0,
-            max_retries INTEGER DEFAULT 3,
+            max_retries INTEGER DEFAULT 5,
             failure_reason TEXT,
-            exists_in_library INTEGER DEFAULT 0,
+            last_failure_time TIMESTAMP,
+            retry_delay_minutes INTEGER DEFAULT 30,
+            next_retry_at TIMESTAMP,
+            imported_at TIMESTAMP,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            last_retry_at TIMESTAMP,
-            next_retry_at TIMESTAMP
+            updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         );
     """)
 
@@ -667,8 +672,10 @@ def update_schema(db_path):
         ("idx_slskd_search_results_selected", "slskd_search_results(selected)"),
         # Download queue indexes
         ("idx_download_queue_status", "download_queue(status)"),
+        ("idx_download_queue_source", "download_queue(source)"),
         ("idx_download_queue_next_retry", "download_queue(next_retry_at)"),
-        ("idx_download_queue_exists_in_library", "download_queue(exists_in_library)"),
+        ("idx_download_queue_artist_album", "download_queue(artist, album)"),
+        ("idx_download_queue_created", "download_queue(created_at DESC)"),
         # Per-user love indexes
         ("idx_user_loved_tracks_user", "user_loved_tracks(user_id)"),
         ("idx_user_loved_tracks_track", "user_loved_tracks(track_id)"),

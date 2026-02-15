@@ -9912,6 +9912,189 @@ def api_downloads_scheduler_status():
         }), 500
 
 
+# ===== Download Queue Management (New Dynamic Queue System) =====
+
+@app.route("/api/queue/add", methods=["POST"])
+def api_queue_add():
+    """Add song/album to download queue"""
+    try:
+        from download_queue_manager import add_to_queue, check_downloads_folder
+        
+        data = request.get_json()
+        artist = data.get('artist', '').strip()
+        title = data.get('title', '').strip()
+        album = data.get('album', '').strip()
+        source = data.get('source', 'soulseek')  # 'soulseek' or 'qbittorrent'
+        priority = int(data.get('priority', 5))
+        
+        if not artist or not title:
+            return jsonify({"error": "Artist and title are required"}), 400
+        
+        # Add to queue
+        item = add_to_queue(artist, title, album, source, priority)
+        
+        if item:
+            return jsonify({
+                "success": True,
+                "queue_id": item['id'],
+                "message": f"Added to queue: {artist} - {title}",
+                "item": item
+            })
+        else:
+            return jsonify({"error": "Failed to add to queue"}), 400
+            
+    except Exception as e:
+        logging.error(f"Error adding to queue: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/status", methods=["GET"])
+def api_queue_status():
+    """Get queue status and items"""
+    try:
+        from download_queue_manager import get_queue, get_completed_queue, check_downloads_folder
+        
+        status = request.args.get('status')
+        source = request.args.get('source', 'soulseek')
+        limit = int(request.args.get('limit', 50))
+        
+        # Get queue items
+        active_queue = get_queue(status=status, source=source, limit=limit)
+        
+        # Get completed items
+        completed = get_completed_queue(limit=20)
+        
+        # Check downloads folder for new files
+        newly_completed = check_downloads_folder()
+        
+        return jsonify({
+            "success": True,
+            "active": active_queue,
+            "completed": completed,
+            "newly_completed": newly_completed,
+            "total_active": len(active_queue),
+            "total_completed": len(completed)
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting queue status: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/<int:queue_id>/update", methods=["POST"])
+def api_queue_update(queue_id):
+    """Update queue item status"""
+    try:
+        from download_queue_manager import update_queue_item, mark_as_failed
+        
+        data = request.get_json()
+        action = data.get('action')  # 'searching', 'downloading', 'failed', 'completed'
+        
+        if action == 'failed':
+            reason = data.get('reason', 'Unknown error')
+            retry_delay = int(data.get('retry_delay_minutes', 30))
+            item = mark_as_failed(queue_id, reason, retry_delay)
+        else:
+            # Generic update
+            item = update_queue_item(queue_id, status=action)
+        
+        if item:
+            return jsonify({
+                "success": True,
+                "message": f"Queue item updated to: {action}",
+                "item": item
+            })
+        else:
+            return jsonify({"error": "Queue item not found"}), 404
+            
+    except Exception as e:
+        logging.error(f"Error updating queue item: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/<int:queue_id>/delete", methods=["DELETE"])
+def api_queue_delete(queue_id):
+    """Delete queue item"""
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+        conn.commit()
+        
+        deleted = cursor.rowcount > 0
+        conn.close()
+        
+        if deleted:
+            return jsonify({"success": True, "message": "Queue item deleted"})
+        else:
+            return jsonify({"error": "Queue item not found"}), 404
+            
+    except Exception as e:
+        logging.error(f"Error deleting queue item: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
+@app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
+def api_queue_organize(queue_id):
+    """Move file from /downloads to /music using beets"""
+    try:
+        import subprocess
+        from download_queue_manager import update_queue_item
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, file_path, artist, album, title FROM download_queue WHERE id = ?
+        """, (queue_id,))
+        
+        item = cursor.fetchone()
+        conn.close()
+        
+        if not item or not item['file_path']:
+            return jsonify({"error": "Queue item not found or file path missing"}), 404
+        
+        file_path = item['file_path']
+        
+        if not os.path.exists(file_path):
+            update_queue_item(queue_id, status='failed', failure_reason='File no longer exists')
+            return jsonify({"error": "File not found"}), 404
+        
+        try:
+            # Use beets to import/organize the file
+            result = subprocess.run(
+                ['beet', 'import', '-s', file_path],
+                capture_output=True,
+                text=True,
+                timeout=60
+            )
+            
+            if result.returncode == 0:
+                # Successful import
+                update_queue_item(queue_id, status='imported')
+                return jsonify({
+                    "success": True,
+                    "message": "File organized successfully using beets",
+                    "output": result.stdout
+                })
+            else:
+                error_msg = result.stderr or "Beets import failed"
+                update_queue_item(queue_id, status='failed', failure_reason=error_msg)
+                return jsonify({"error": error_msg}), 400
+                
+        except subprocess.TimeoutExpired:
+            update_queue_item(queue_id, status='failed', failure_reason='Beets timeout')
+            return jsonify({"error": "Beets import timed out"}), 400
+        except Exception as e:
+            update_queue_item(queue_id, status='failed', failure_reason=str(e))
+            return jsonify({"error": str(e)}), 400
+            
+    except Exception as e:
+        logging.error(f"Error organizing file: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 # ===== Last.fm Scheduler/Sync Endpoints =====
 
 @app.route("/api/lastfm/sync/status", methods=["GET"])
