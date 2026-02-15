@@ -191,23 +191,6 @@
         </div>
       </div>
     </div>
-    {% if stats.musicbrainz_artist_id %}
-    <div class="col-6 col-md-3">
-      <div class="card h-100">
-        <div class="card-body text-center">
-          <div class="text-muted mb-2" style="font-size: 0.85rem;">
-            <i class="bi bi-database-check"></i> MusicBrainz
-          </div>
-          <div class="h6 mb-0">
-            <a href="https://musicbrainz.org/artist/{{ stats.musicbrainz_artist_id }}" target="_blank" class="text-decoration-none" style="font-size: 0.7rem;">
-              {{ stats.musicbrainz_artist_id[:10] }}...
-              <i class="bi bi-box-arrow-up-right" style="font-size: 0.6rem;"></i>
-            </a>
-          </div>
-        </div>
-      </div>
-    </div>
-    {% endif %}
   </div>
 
   <!-- Artist IDs Section -->

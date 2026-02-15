@@ -1472,6 +1472,61 @@ def artist_detail(name):
         
         artist_stats = cursor.fetchone()
         
+        # If artist ID not found in tracks, try to get it from album MusicBrainz IDs as fallback
+        if artist_stats and not dict(artist_stats).get('musicbrainz_artist_id'):
+            try:
+                # Look for any album with a MusicBrainz release ID
+                cursor.execute("""
+                    SELECT DISTINCT beets_album_mbid 
+                    FROM tracks 
+                    WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? 
+                    AND beets_album_mbid IS NOT NULL AND beets_album_mbid != ''
+                    LIMIT 1
+                """, (name,))
+                album_mbid_row = cursor.fetchone()
+                
+                if album_mbid_row:
+                    album_mbid = album_mbid_row[0] if isinstance(album_mbid_row, tuple) else album_mbid_row['beets_album_mbid']
+                    
+                    # Fetch the artist ID from this album's MusicBrainz release
+                    try:
+                        import requests
+                        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+                        release_url = f"https://musicbrainz.org/ws/2/release/{album_mbid}"
+                        params = {"fmt": "json", "inc": "artist-credits"}
+                        resp = requests.get(release_url, params=params, headers=headers, timeout=5)
+                        
+                        if resp.status_code == 200:
+                            release_data = resp.json()
+                            artist_credits = release_data.get("artist-credit", [])
+                            if artist_credits:
+                                # Get the first artist credit
+                                first_artist = artist_credits[0]
+                                if isinstance(first_artist, dict):
+                                    artist_id = first_artist.get("artist", {}).get("id")
+                                    if artist_id:
+                                        logging.info(f"Found artist ID {artist_id} for {name} via album {album_mbid}")
+                                        # Update stats dict with the found artist ID
+                                        artist_stats = dict(artist_stats) if artist_stats else {}
+                                        artist_stats['musicbrainz_artist_id'] = artist_id
+                                        
+                                        # Save to database so it persists
+                                        try:
+                                            cursor.execute("""
+                                                UPDATE tracks
+                                                SET musicbrainz_artist_id = ?, lastfm_artist_mbid = ?
+                                                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                                                AND (musicbrainz_artist_id IS NULL OR musicbrainz_artist_id = '')
+                                            """, (artist_id, artist_id, name))
+                                            conn.commit()
+                                            logging.debug(f"Saved artist ID {artist_id} to {name} tracks")
+                                        except Exception as e:
+                                            logging.debug(f"Failed to save artist ID to database: {e}")
+                    except Exception as e:
+                        logging.debug(f"Failed to get artist ID from album MBID: {e}")
+            except Exception as e:
+                logging.debug(f"Fallback artist ID lookup failed: {e}")
+        
         # Get missing releases from database cache
         cursor.execute("""
             SELECT release_id, title, primary_type, first_release_date, cover_art_url, category
