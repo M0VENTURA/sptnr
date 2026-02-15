@@ -214,7 +214,9 @@ required_artist_columns = {
     "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
     "genre_display": "TEXT",                # Primary display genre (aggregated)
     "country": "TEXT",                      # Artist country/origin from MusicBrainz
-    "musicbrainz_area_id": "TEXT"           # MusicBrainz area ID for geographical data
+    "musicbrainz_area_id": "TEXT",          # MusicBrainz area ID for geographical data
+    "image_url": "TEXT",                    # Cached artist image URL from MusicBrainz
+    "bio": "TEXT"                           # Cached artist bio from MusicBrainz
 }
 
 # ✅ Define columns for the artist_stats table

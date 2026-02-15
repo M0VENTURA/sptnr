@@ -71,13 +71,37 @@
               </button>
             </div>
           </div>
-          <!-- Artist Bio -->
+          <!-- Artist Bio and Country/Origin -->
           <div class="col-12 col-md-9">
             <h5 class="mb-3"><i class="bi bi-info-circle"></i> Artist Bio</h5>
-            <div id="artistBio" class="text-muted" style="min-height: 150px;">
-              <p class="text-center mt-4">
+            <div id="artistBio" class="text-muted" style="min-height: 120px;">
+              <p class="text-center mt-2">
                 <small>Loading artist information from MusicBrainz...</small>
               </p>
+            </div>
+            
+            <!-- Country/Origin under Bio -->
+            <div class="mt-4 pt-3" style="border-top: 1px solid var(--border-color);">
+              <h6 class="mb-3"><i class="bi bi-globe"></i> Country/Origin</h6>
+              <div id="artistCountryDisplay">
+                {% if artist_country %}
+                  <div class="d-flex align-items-center gap-2 mb-2">
+                    <span class="badge bg-info" style="font-size: 0.95rem; padding: 0.4rem 0.8rem;">
+                      {{ artist_country }}
+                    </span>
+                  </div>
+                {% else %}
+                  <span class="text-muted small">No country information available.</span>
+                {% endif %}
+              </div>
+              <div class="btn-group btn-group-sm mt-2">
+                <button class="btn btn-outline-primary btn-sm" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
+                  <i class="bi bi-cloud-download"></i> Get from MusicBrainz
+                </button>
+                <button class="btn btn-outline-secondary btn-sm" onclick="editArtistCountry()" id="editArtistCountryBtn">
+                  <i class="bi bi-pencil"></i> Edit Manually
+                </button>
+              </div>
             </div>
           </div>
         </div>
@@ -122,44 +146,6 @@
           <button class="btn btn-sm btn-success" onclick="applySelectedArtistGenres()" id="applyArtistGenresBtn" style="display: none;">
             <i class="bi bi-check-circle"></i> Apply Selected to All Artist Tracks (MP3 Files)
           </button>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <!-- Artist Country/Origin -->
-  <div class="mb-4">
-    <div class="card">
-      <div class="card-header d-flex justify-content-between align-items-center">
-        <h5 class="card-title mb-0">
-          <i class="bi bi-globe"></i> Country/Origin
-        </h5>
-        <div class="btn-group btn-group-sm">
-          <button class="btn btn-outline-primary" onclick="fetchArtistCountry()" id="fetchArtistCountryBtn">
-            <i class="bi bi-cloud-download"></i> Get from MusicBrainz
-          </button>
-          <button class="btn btn-outline-secondary" onclick="editArtistCountry()" id="editArtistCountryBtn">
-            <i class="bi bi-pencil"></i> Edit Manually
-          </button>
-        </div>
-      </div>
-      <div class="card-body">
-        <div id="artistCountryDisplay">
-          {% if artist_country %}
-            <div class="d-flex align-items-center gap-2 mb-2">
-              <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
-                <i class="bi bi-geo-alt"></i> {{ artist_country }}
-              </span>
-            </div>
-            <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
-            <button class="btn btn-sm btn-success mt-2" onclick="applyCountryAsGenre()">
-              <i class="bi bi-tag"></i> Apply as Genre to All Tracks
-            </button>
-          {% else %}
-            <span class="text-muted small">No country information available. Click "Get from MusicBrainz" to fetch it or add manually.</span>
-          {% endif %}
-        </div>
-      </div>
     </div>
   </div>
 
@@ -1734,14 +1720,10 @@ function saveArtistCountry() {
         const container = document.getElementById('artistCountryDisplay');
         container.innerHTML = `
           <div class="d-flex align-items-center gap-2 mb-2">
-            <span class="badge bg-info" style="font-size: 1rem; padding: 0.5rem 1rem;">
-              <i class="bi bi-geo-alt"></i> ${escapeHtml(country)}
+            <span class="badge bg-info" style="font-size: 0.95rem; padding: 0.4rem 0.8rem;">
+              ${escapeHtml(country)}
             </span>
           </div>
-          <p class="text-muted small mt-2 mb-0">This can be used as a genre tag for classification</p>
-          <button class="btn btn-sm btn-success mt-2" onclick="applyCountryAsGenre()">
-            <i class="bi bi-tag"></i> Apply as Genre to All Tracks
-          </button>
         `;
         alert('✅ Country updated successfully!');
       } else {

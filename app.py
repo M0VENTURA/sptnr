@@ -1522,15 +1522,19 @@ def artist_detail(name):
             except Exception as e:
                 logging.debug(f"Error checking MusicBrainz type for {name} - {album_name}: {e}")
         
-        # Get artist country from artists table if it exists
+        # Get artist metadata (country, image, bio) from artists table if it exists
         artist_country = None
+        artist_image_url = None
+        artist_bio = None
         try:
-            cursor.execute("SELECT country FROM artists WHERE name = ?", (name,))
+            cursor.execute("SELECT country, image_url, bio FROM artists WHERE name = ?", (name,))
             artist_row = cursor.fetchone()
-            if artist_row and artist_row[0]:
-                artist_country = artist_row[0]
+            if artist_row:
+                artist_country = artist_row[0] if artist_row[0] else None
+                artist_image_url = artist_row[1] if artist_row[1] else None
+                artist_bio = artist_row[2] if artist_row[2] else None
         except Exception as e:
-            logging.debug(f"Error fetching artist country: {e}")
+            logging.debug(f"Error fetching artist metadata: {e}")
         
         conn.close()
         
@@ -1656,6 +1660,8 @@ def artist_detail(name):
                              stats=artist_stats,
                              genres=genres,
                              artist_country=artist_country,
+                             artist_image_url=artist_image_url,
+                             artist_bio=artist_bio,
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
@@ -2586,7 +2592,7 @@ def api_artist_bio():
             except Exception as e:
                 logging.debug(f"Discogs bio fetch failed: {e}")
         
-        # Save the MusicBrainz artist ID to the database if we found it
+        # Save the MusicBrainz artist ID and bio to the database
         if artist_mbid and mbid_newly_found:
             try:
                 conn = get_db()
@@ -2603,6 +2609,22 @@ def api_artist_bio():
                 logging.info(f"Saved MusicBrainz artist ID {artist_mbid} for {artist_name}")
             except Exception as e:
                 logging.error(f"Failed to save MusicBrainz artist ID: {e}")
+        
+        # Cache the bio in the artists table
+        if bio:
+            try:
+                conn = get_db()
+                cursor = conn.cursor()
+                cursor.execute("""
+                    UPDATE artists
+                    SET bio = ?
+                    WHERE name = ?
+                """, (bio, artist_name))
+                conn.commit()
+                conn.close()
+                logging.debug(f"Cached artist bio for {artist_name}")
+            except Exception as e:
+                logging.debug(f"Failed to cache artist bio: {e}")
         
         return jsonify({
             "bio": bio,
