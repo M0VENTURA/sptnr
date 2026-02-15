@@ -2932,10 +2932,13 @@ def popularity_scan(
                     
                     # Queue single detection results for batch update
                     if is_single or single_sources:
+                        # Automatically set stars to 5 for detected singles
+                        stars_for_single = 5 if is_single else None
                         singles_updates.append((
                             1 if is_single else 0,
                             single_confidence,
                             json.dumps(single_sources),
+                            stars_for_single,
                             track_id
                         ))
                         if is_single:
@@ -2965,12 +2968,24 @@ def popularity_scan(
                 
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
-                    cursor.executemany(
-                        """UPDATE tracks 
-                        SET is_single = ?, single_confidence = ?, single_sources = ?
-                        WHERE id = ?""",
-                        singles_updates
-                    )
+                    # Update with conditional stars setting - only set stars if value is provided (detected singles)
+                    for is_single, single_confidence, single_sources, stars_value, track_id in singles_updates:
+                        if stars_value is not None:
+                            # Set both single status and stars for detected singles
+                            cursor.execute(
+                                """UPDATE tracks 
+                                SET is_single = ?, single_confidence = ?, single_sources = ?, stars = ?
+                                WHERE id = ?""",
+                                (is_single, single_confidence, single_sources, stars_value, track_id)
+                            )
+                        else:
+                            # Only set single status if no stars update needed
+                            cursor.execute(
+                                """UPDATE tracks 
+                                SET is_single = ?, single_confidence = ?, single_sources = ?
+                                WHERE id = ?""",
+                                (is_single, single_confidence, single_sources, track_id)
+                            )
                     conn.commit()
                     log_debug(f"Batch committed {len(singles_updates)} singles detection results for album '{album}'")
                 
@@ -3233,10 +3248,10 @@ def popularity_scan(
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
                         cursor.executemany(
-                            """UPDATE tracks SET is_single = 1 WHERE id = ?""",
+                            """UPDATE tracks SET is_single = 1, stars = 5 WHERE id = ?""",
                             ((track_id,) for track_id in single_upgrades)
                         )
-                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources)")
+                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) with 5★ rating")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
                     
                     conn.commit()

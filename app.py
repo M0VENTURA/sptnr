@@ -11573,9 +11573,9 @@ def api_album_apply_discogs_id():
                 
                 # Update all tracks in this album with Discogs ID and is_single flag if detected
                 if is_single:
-                    # If Discogs detected this as a Single, mark tracks as singles with high confidence
+                    # If Discogs detected this as a Single, mark tracks as singles with high confidence and set 5★ rating
                     cursor.execute(
-                        "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END WHERE artist = ? AND album = ?",
+                        "UPDATE tracks SET discogs_album_id = ?, is_single = 1, single_confidence = 'high', single_sources = CASE WHEN single_sources IS NULL THEN 'discogs' ELSE single_sources || ',discogs' END, stars = 5 WHERE artist = ? AND album = ?",
                         (discogs_id, artist, album)
                     )
                 else:
@@ -11590,13 +11590,13 @@ def api_album_apply_discogs_id():
                 conn.close()
                 
                 if is_single:
-                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} and marked as single for {artist} - {album}")
+                    logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} and marked as single with 5★ rating for {artist} - {album}")
                 else:
                     logger.info(f"Updated {rows_updated} tracks with Discogs ID {discogs_id} for {artist} - {album}")
                 
                 return jsonify({
                     "success": True,
-                    "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single" if is_single else ""),
+                    "message": f"Updated {rows_updated} tracks with Discogs ID" + (" and marked as single with 5★ rating" if is_single else ""),
                     "rows_updated": rows_updated
                 }), 200
             except sqlite3.OperationalError as e:
