@@ -345,7 +345,28 @@
                     <span class="text-muted small">Loading...</span>
                 </div>
                 <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
-                    <i class="bi bi-check-circle"></i> Apply Selected to All MP3 Files
+                    <i class="bi bi-check-circle"></i> Apply Selected to All MP3/FLAC Files
+                </button>
+            </div>
+            
+            <!-- Album Genres Cleanup Section -->
+            <div class="mb-4 pb-4" style="border-bottom: 1px solid var(--border-color);">
+                <h6 class="mb-3"><i class="bi bi-trash"></i> Remove Incorrect Genres</h6>
+                <p class="text-muted small mb-3">Select genre badges to remove from all tracks in this album and trigger a Navidrome rescan.</p>
+                <div class="d-flex flex-wrap gap-2 mb-3" id="albumGenresForRemoval">
+                    {% if album_genres %}
+                        {% for genre in album_genres %}
+                        <label class="badge bg-danger" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
+                            <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('albumGenresForRemoval', 'removeSelectedAlbumGenresBtn')">
+                            {{ genre }}
+                        </label>
+                        {% endfor %}
+                    {% else %}
+                        <span class="text-muted small">No genres to remove</span>
+                    {% endif %}
+                </div>
+                <button class="btn btn-sm btn-danger" id="removeSelectedAlbumGenresBtn" style="display: none;" onclick="removeSelectedAlbumGenres()">
+                    <i class="bi bi-trash"></i> Remove Selected Genres
                 </button>
             </div>
             
@@ -1428,6 +1449,27 @@
         });
     }
     
+    // Remove single genre from all album tracks (uses shared utilities)
+    function removeGenreFromAlbum(genre) {
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        handleGenreRemoval(artistName, albumName, [genre], 'album');
+    }
+
+    // Remove selected genres from all album tracks (batch removal)
+    function removeSelectedAlbumGenres() {
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        const selectedGenres = getSelectedGenres('albumGenresForRemoval');
+        
+        if (selectedGenres.length === 0) {
+            alert('No genres selected');
+            return;
+        }
+        
+        handleGenreRemoval(artistName, albumName, selectedGenres, 'album');
+    }
+    
     // Load track-level recommendations when page loads
     async function loadTrackRecommendations() {
         const artistName = {{ artist_name|tojson }};
@@ -2050,5 +2092,8 @@
             alert('❌ Network error: ' + err.message);
         });
     }
+
+    // Note: Scan monitoring functions are now provided by shared genre-utils.js
 </script>
+<script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 {% endblock %}

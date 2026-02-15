@@ -125,17 +125,19 @@
         <div class="mb-3">
           <h6 class="mb-2"><i class="bi bi-music-note-beamed"></i> Genres Across All Tracks</h6>
           <p class="text-muted small mb-2">These are aggregated from all track metadata in your library for this artist. Click the × to remove incorrect genres.</p>
-          <div class="d-flex flex-wrap gap-2" id="currentArtistGenres">
+          <div id="artistGenresContainer">
             {% if genres %}
+            <div class="d-flex flex-wrap gap-2 mb-3" id="currentArtistGenres">
               {% for genre in genres %}
-              <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem; cursor: pointer; user-select: none;" 
-                    data-genre="{{ genre }}"
-                    title="Click × to remove this genre from all artist tracks">
+              <label class="badge bg-primary" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
+                <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('currentArtistGenres', 'removeSelectedArtistGenresBtn')">
                 {{ genre }}
-                <span class="ms-2 badge bg-danger" style="cursor: pointer; padding: 0.2rem 0.4rem;" 
-                      onclick="removeGenreFromArtist('{{ genre }}')" title="Remove from all tracks">×</span>
-              </span>
+              </label>
               {% endfor %}
+            </div>
+            <button class="btn btn-sm btn-warning" id="removeSelectedArtistGenresBtn" style="display: none; margin-bottom: 1rem;" onclick="removeSelectedArtistGenres()">
+              <i class="bi bi-trash"></i> Remove Selected Genres
+            </button>
             {% else %}
               <span class="text-muted small">No genres found in library</span>
             {% endif %}
@@ -1756,154 +1758,23 @@ function applyCountryAsGenre() {
     .catch(err => alert('❌ Network error: ' + err.message));
 }
 
-// Genre removal with Navidrome scan triggering
+// Remove single genre from all artist tracks (uses shared utilities)
 function removeGenreFromArtist(genre) {
   const artistName = {{ artist_name|tojson }};
+  handleGenreRemoval(artistName, null, [genre], 'artist');
+}
+
+// Remove selected genres from all artist tracks (batch removal)
+function removeSelectedArtistGenres() {
+  const artistName = {{ artist_name|tojson }};
+  const selectedGenres = getSelectedGenres('currentArtistGenres');
   
-  if (!confirm(`Remove "${genre}" from ALL tracks by ${artistName}?\n\nThis will update the MP3/FLAC files and trigger a Navidrome scan.`)) {
+  if (selectedGenres.length === 0) {
+    alert('No genres selected');
     return;
   }
   
-  // Show scan progress modal
-  showScanProgressModal();
-  
-  fetch('/api/genres/remove', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({
-      artist_name: artistName,
-      genres: [genre]
-    })
-  })
-    .then(r => r.json())
-    .then(data => {
-      if (data.success) {
-        updateScanProgress(`Removed "${genre}" from ${data.affected_tracks} track(s)!`);
-        
-        // Start monitoring scan if triggered
-        if (data.scan_triggered) {
-          monitorNavidromeScan();
-        } else {
-          setTimeout(() => {
-            closeScanProgressModal();
-            location.reload();
-          }, 2000);
-        }
-      } else {
-        updateScanProgress(`❌ Error: ${data.error}`);
-        setTimeout(closeScanProgressModal, 3000);
-      }
-    })
-    .catch(error => {
-      updateScanProgress(`❌ Network error: ${error.message}`);
-      setTimeout(closeScanProgressModal, 3000);
-    });
-}
-
-// Monitor Navidrome scan progress
-function monitorNavidromeScan() {
-  updateScanProgress('Starting Navidrome scan...');
-  
-  let scanAttempts = 0;
-  const maxAttempts = 120; // 2 minutes with 1s polling
-  
-  const pollInterval = setInterval(() => {
-    scanAttempts++;
-    
-    if (scanAttempts > maxAttempts) {
-      clearInterval(pollInterval);
-      updateScanProgress('⏱️ Scan timed out. Please check Navidrome for progress.');
-      setTimeout(closeScanProgressModal, 5000);
-      return;
-    }
-    
-    fetch('/api/navidrome/scan/status')
-      .then(r => r.json())
-      .then(data => {
-        if (!data.success) {
-          clearInterval(pollInterval);
-          updateScanProgress('❌ Could not connect to Navidrome');
-          setTimeout(closeScanProgressModal, 3000);
-          return;
-        }
-        
-        if (data.scanning) {
-          updateScanProgress(`Scanning Navidrome library... ${data.count || '0'} items processed`);
-        } else {
-          // Scan completed
-          clearInterval(pollInterval);
-          updateScanProgress('✅ Navidrome scan completed! Genres are now updated.');
-          setTimeout(() => {
-            closeScanProgressModal();
-            location.reload();
-          }, 3000);
-        }
-      })
-      .catch(error => {
-        // Navidrome may not be configured or accessible
-        if (scanAttempts > 5) {
-          clearInterval(pollInterval);
-          updateScanProgress('⚠️ Could not verify scan status. Genres have been updated.');
-          setTimeout(() => {
-            closeScanProgressModal();
-            location.reload();
-          }, 3000);
-        }
-      });
-  }, 1000);
-}
-
-// Modal management for scan progress
-function showScanProgressModal() {
-  const modalHtml = `
-    <div class="modal fade" id="scanProgressModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
-      <div class="modal-dialog modal-dialog-centered">
-        <div class="modal-content" style="background-color: #1a1a1a; border-color: #333;">
-          <div class="modal-header border-secondary">
-            <h5 class="modal-title">
-              <i class="bi bi-hourglass-split"></i> Updating Genres
-            </h5>
-          </div>
-          <div class="modal-body text-center py-4">
-            <div class="spinner-border text-info mb-3" role="status">
-              <span class="visually-hidden">Loading...</span>
-            </div>
-            <p id="scanProgressText" class="text-muted mb-0">Updating tracks...</p>
-          </div>
-        </div>
-      </div>
-    </div>
-  `;
-  
-  // Remove existing modal if present
-  const existingModal = document.getElementById('scanProgressModal');
-  if (existingModal) existingModal.remove();
-  
-  // Add new modal to DOM
-  document.body.insertAdjacentHTML('beforeend', modalHtml);
-  
-  // Show modal
-  const modal = new bootstrap.Modal(document.getElementById('scanProgressModal'), {
-    backdrop: 'static',
-    keyboard: false
-  });
-  modal.show();
-}
-
-function updateScanProgress(message) {
-  const progressText = document.getElementById('scanProgressText');
-  if (progressText) {
-    progressText.textContent = message;
-  }
-}
-
-function closeScanProgressModal() {
-  const modal = document.getElementById('scanProgressModal');
-  if (modal) {
-    const bsModal = bootstrap.Modal.getInstance(modal);
-    if (bsModal) bsModal.hide();
-    modal.remove();
-  }
+  handleGenreRemoval(artistName, null, selectedGenres, 'artist');
 }
 
 // Toggle tracklist visibility
@@ -2234,6 +2105,7 @@ function initializeMissingToggle() {
 // Initialize on page load
 document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 </script>
+<script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 <style>
 /* Dark theme improvements for artist page */
 
