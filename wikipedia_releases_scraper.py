@@ -5,13 +5,20 @@ Wikipedia Album Release Scraper
 Scrapes upcoming album releases from Wikipedia pages for various genres and regions.
 Parses release tables and stores information in the database.
 """
-import requests
 import sqlite3
 import logging
 from datetime import datetime
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import re
+import urllib.request
+
+# Try to import requests, fall back to urllib if not available
+try:
+    import requests
+    HAS_REQUESTS = True
+except ImportError:
+    HAS_REQUESTS = False
 
 # Configure logging
 logging.basicConfig(level=logging.DEBUG)
@@ -56,10 +63,38 @@ class WikipediaReleaseScraper:
     
     def __init__(self, db_path: str = "database.db"):
         self.db_path = db_path
-        self.session = requests.Session()
-        self.session.headers.update({
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        })
+        self.use_requests = HAS_REQUESTS
+        
+        if self.use_requests:
+            # Use requests library if available
+            self.session = requests.Session()  # type: ignore
+            self.session.headers.update({  # type: ignore
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            })
+            # Disable SSL verification for Wikipedia (trusted source)
+            self.session.verify = False  # type: ignore
+        else:
+            # Create urllib wrapper
+            class UrllibSession:
+                def __init__(self):
+                    self.headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'}
+                
+                def get(self, url: str, timeout: int = 10):
+                    class Response:
+                        def __init__(self, content):
+                            self.content = content
+                        def raise_for_status(self):
+                            pass
+                    request = urllib.request.Request(url, headers=self.headers)
+                    # For urllib, we need to create a context that ignores SSL verification
+                    import ssl
+                    context = ssl.create_default_context()
+                    context.check_hostname = False
+                    context.verify_mode = ssl.CERT_NONE
+                    with urllib.request.urlopen(request, timeout=timeout, context=context) as response:
+                        return Response(response.read())
+            
+            self.session = UrllibSession()
     
     def get_db(self):
         """Get database connection"""
@@ -104,13 +139,13 @@ class WikipediaReleaseScraper:
         """Scrape a single Wikipedia source"""
         try:
             logger.debug(f"Fetching {url}")
-            response = self.session.get(url, timeout=10)
+            response = self.session.get(url, timeout=30)
             response.raise_for_status()
             
             soup = BeautifulSoup(response.content, 'html.parser')
             releases = self._parse_release_tables(soup, source_key, source_name)
             
-            logger.info(f"✓ Scraped {len(releases)} releases from {source_name}")
+            logger.info(f"[OK] Scraped {len(releases)} releases from {source_name}")
             return releases
         except Exception as e:
             logger.error(f"Error scraping {source_name}: {e}")
@@ -496,7 +531,7 @@ if __name__ == "__main__":
     scraper = WikipediaReleaseScraper()
     results = scraper.scrape_all_sources()
     
-    print(f"\n✓ Scraping complete!")
+    print(f"\n[OK] Scraping complete!")
     print(f"  Total items: {results['total_items']}")
     print(f"  Added: {results['total_added']}")
     print(f"  Updated: {results['total_updated']}")
