@@ -794,6 +794,36 @@ def update_schema(db_path):
         ON upcoming_releases(release_year)
     """)
     
+    # ✅ Create genre_updates table for tracking genre changes
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS genre_updates (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            artist_name TEXT,
+            album_name TEXT,
+            track_id TEXT,
+            genres_before TEXT,
+            genres_after TEXT,
+            action_type TEXT,
+            affected_track_count INTEGER,
+            change_summary TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    """)
+    
+    # ✅ Create indexes for genre_updates
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_genre_updates_artist 
+        ON genre_updates(artist_name, created_at DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_genre_updates_album 
+        ON genre_updates(album_name, created_at DESC)
+    """)
+    cursor.execute("""
+        CREATE INDEX IF NOT EXISTS idx_genre_updates_date 
+        ON genre_updates(created_at DESC)
+    """)
+    
     # ✅ Ensure release_scrape_history table exists (to track when we last scraped)
     cursor.execute("""
         CREATE TABLE IF NOT EXISTS release_scrape_history (

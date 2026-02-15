@@ -93,6 +93,89 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     except:
         pass
     return sorted(list(genres))
+
+def correct_genre_capitalization(genre_str):
+    """
+    Auto-correct genre capitalization for consistency.
+    Examples: "rock" → "Rock", "hIP-hOP" → "Hip-Hop"
+    """
+    if not genre_str:
+        return genre_str
+    
+    genre_lower = genre_str.lower().strip()
+    
+    # Common genre capitalization rules
+    genre_map = {
+        # Standard genres
+        'rock': 'Rock',
+        'pop': 'Pop',
+        'jazz': 'Jazz',
+        'classical': 'Classical',
+        'hip-hop': 'Hip-Hop',
+        'hiphop': 'Hip-Hop',
+        'r&b': 'R&B',
+        'electronic': 'Electronic',
+        'blues': 'Blues',
+        'country': 'Country',
+        'soul': 'Soul',
+        'funk': 'Funk',
+        'metal': 'Metal',
+        'punk': 'Punk',
+        'alternative': 'Alternative',
+        'indie': 'Indie',
+        'folk': 'Folk',
+        'reggae': 'Reggae',
+        'latin': 'Latin',
+        'dance': 'Dance',
+        'house': 'House',
+        'techno': 'Techno',
+        'trance': 'Trance',
+        'dubstep': 'Dubstep',
+        'rap': 'Rap',
+        'gospel': 'Gospel',
+        'rnb': 'R&B',
+        'edm': 'EDM',
+        'ambient': 'Ambient',
+        'experimental': 'Experimental',
+        'avant-garde': 'Avant-Garde',
+        'world': 'World',
+        'afrobeat': 'Afrobeat',
+        'reggaeton': 'Reggaeton',
+        'trap': 'Trap',
+        'grime': 'Grime',
+    }
+    
+    # Check if exact match exists
+    if genre_lower in genre_map:
+        return genre_map[genre_lower]
+    
+    # Default: capitalize first letter of each word
+    return ' '.join(word.capitalize() for word in genre_str.split())
+
+def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_before='', 
+                     genres_after='', action_type='manual', affected_count=1, 
+                     change_summary='', db_path="/database/sptnr.db"):
+    """
+    Log genre changes to genre_updates table for audit trail.
+    """
+    try:
+        import sqlite3
+        conn = sqlite3.connect(db_path, timeout=120.0)
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            INSERT INTO genre_updates 
+            (artist_name, album_name, track_id, genres_before, genres_after, 
+             action_type, affected_track_count, change_summary, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (artist_name, album_name, track_id, genres_before, genres_after, 
+              action_type, affected_count, change_summary))
+        
+        conn.commit()
+        conn.close()
+    except Exception as e:
+        print(f"[ERROR] Failed to log genre update: {e}")
+
 from check_db import update_schema
 from popularity_helpers import save_to_db
 
@@ -12114,6 +12197,235 @@ def api_track_musicbrainz_lookup():
             
     except Exception as e:
         logger.error(f"MusicBrainz track lookup error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+# ==========================================================================
+# GENRE MANAGEMENT API ROUTES
+# ==========================================================================
+
+@app.route("/api/genres/remove", methods=["POST"])
+def api_remove_genres():
+    """
+    Remove specific genres from artist or album's tracks
+    Accepts: artist_name OR (album_name + artist_name)
+    Returns affected track count and confirmation details
+    Then triggers Navidrome scan in background
+    """
+    try:
+        data = request.get_json() or {}
+        artist_name = data.get("artist_name", "").strip()
+        album_name = data.get("album_name", "").strip()
+        genres_to_remove = data.get("genres", [])
+        
+        if not artist_name and not album_name:
+            return jsonify({"error": "artist_name or album_name required"}), 400
+        
+        if not genres_to_remove or not isinstance(genres_to_remove, list):
+            return jsonify({"error": "genres must be a non-empty list"}), 400
+        
+        conn = sqlite3.connect(DB_PATH, timeout=120.0)
+        cursor = conn.cursor()
+        
+        # Build WHERE clause
+        if album_name:
+            cursor.execute("SELECT id, genres FROM tracks WHERE artist = ? AND album = ?", 
+                          (artist_name, album_name))
+        else:
+            cursor.execute("SELECT id, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
+                          (artist_name,))
+        
+        rows = cursor.fetchall()
+        affected_count = 0
+        
+        for track_id, genres_str in rows:
+            if not genres_str:
+                continue
+            
+            # Parse genres
+            genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
+            original_genres = genre_list.copy()
+            
+            # Remove specified genres (case-insensitive)
+            genre_list_lower = [g.lower() for g in genre_list]
+            genres_to_remove_lower = [g.lower() for g in genres_to_remove]
+            
+            filtered_genres = [
+                g for g, g_lower in zip(genre_list, genre_list_lower)
+                if g_lower not in genres_to_remove_lower
+            ]
+            
+            # Only update if changes were made
+            if len(filtered_genres) != len(original_genres):
+                new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
+                cursor.execute("UPDATE tracks SET genres = ? WHERE id = ?", 
+                              (new_genres_str, track_id))
+                affected_count += 1
+                
+                # Log the change
+                log_genre_update(
+                    artist_name=artist_name,
+                    album_name=album_name,
+                    track_id=track_id,
+                    genres_before='\\'.join(original_genres),
+                    genres_after=new_genres_str,
+                    action_type='remove_from_album' if album_name else 'remove_from_artist',
+                    affected_count=1,
+                    change_summary=f"Removed: {', '.join(genres_to_remove)}"
+                )
+        
+        conn.commit()
+        conn.close()
+        
+        # Trigger Navidrome scan in background
+        def trigger_scan():
+            try:
+                from api_clients.navidrome import NavidromeClient
+                cfg, _ = _read_yaml(CONFIG_PATH)
+                navidrome_config = cfg.get("navidrome", {})
+                
+                if navidrome_config.get("base_url"):
+                    client = NavidromeClient(
+                        navidrome_config.get("base_url"),
+                        navidrome_config.get("user"),
+                        navidrome_config.get("password")
+                    )
+                    client.start_scan()
+            except Exception as e:
+                logging.error(f"Failed to trigger Navidrome scan: {e}")
+        
+        # Run scan in background thread
+        scan_thread = threading.Thread(target=trigger_scan, daemon=True)
+        scan_thread.start()
+        
+        return jsonify({
+            "success": True,
+            "affected_tracks": affected_count,
+            "message": f"Removed genres from {affected_count} track(s)",
+            "scan_triggered": True,
+            "next_step": "Navidrome is now scanning your collection for the updated genres"
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error removing genres: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/navidrome/scan/start", methods=["POST"])
+def api_start_navidrome_scan():
+    """
+    Trigger a library scan in Navidrome
+    """
+    try:
+        from api_clients.navidrome import NavidromeClient
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        
+        if not navidrome_config.get("base_url"):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        
+        client = NavidromeClient(
+            navidrome_config.get("base_url"),
+            navidrome_config.get("user"),
+            navidrome_config.get("password")
+        )
+        
+        success = client.start_scan()
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "message": "Navidrome scan started successfully"
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": "Failed to start Navidrome scan"
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"Error starting Navidrome scan: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/navidrome/scan/status", methods=["GET"])
+def api_get_navidrome_scan_status():
+    """
+    Get the current Navidrome library scan status
+    """
+    try:
+        from api_clients.navidrome import NavidromeClient
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        navidrome_config = cfg.get("navidrome", {})
+        
+        if not navidrome_config.get("base_url"):
+            return jsonify({"error": "Navidrome not configured"}), 400
+        
+        client = NavidromeClient(
+            navidrome_config.get("base_url"),
+            navidrome_config.get("user"),
+            navidrome_config.get("password")
+        )
+        
+        status = client.get_scan_status()
+        
+        return jsonify(status), 200
+            
+    except Exception as e:
+        logging.error(f"Error getting Navidrome scan status: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/genres/recent-updates", methods=["GET"])
+def api_recent_genre_updates():
+    """
+    Get recent genre updates for the logs page
+    Returns last 50 updates with pagination support
+    """
+    try:
+        limit = request.args.get("limit", 50, type=int)
+        offset = request.args.get("offset", 0, type=int)
+        
+        conn = sqlite3.connect(DB_PATH, timeout=120.0)
+        cursor = conn.cursor()
+        
+        # Get total count
+        cursor.execute("SELECT COUNT(*) FROM genre_updates")
+        total_count = cursor.fetchone()[0]
+        
+        # Get recent updates
+        cursor.execute("""
+            SELECT 
+                id, artist_name, album_name, track_id, genres_before, genres_after,
+                action_type, affected_track_count, change_summary, created_at
+            FROM genre_updates
+            ORDER BY created_at DESC
+            LIMIT ? OFFSET ?
+        """, (limit, offset))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        updates = []
+        for row in rows:
+            updates.append({
+                "id": row[0],
+                "artist": row[1],
+                "album": row[2],
+                "track_id": row[3],
+                "genres_before": row[4],
+                "genres_after": row[5],
+                "action_type": row[6],
+                "affected_count": row[7],
+                "summary": row[8],
+                "timestamp": row[9]
+            })
+        
+        return jsonify({
+            "updates": updates,
+            "total": total_count,
+            "limit": limit,
+            "offset": offset
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error fetching genre updates: {e}")
         return jsonify({"error": str(e)}), 500
 
 # ==========================================================================
