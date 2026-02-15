@@ -35,10 +35,10 @@ Welcome to the SPTNR documentation! This guide will help you navigate all availa
 
 ### Integration & APIs
 - [MusicBrainz Integration](ARTIST_SCAN_MUSICBRAINZ_FIXES.md) - MusicBrainz API usage
-- [Discogs API](DISCOGS_TOKEN_FIX.md) - Discogs integration
 - [Artist ID Caching](ARTIST_ID_CACHING.md) - Performance optimization
 
 ### Development & Implementation
+
 - [Implementation Guide](IMPLEMENTATION_GUIDE.md) - Development guidelines
 - [Unified Scan System](UNIFIED_SCAN_README.md) - Scan architecture
 - [Scan History](SCAN_HISTORY_IMPLEMENTATION.md) - Tracking scan history
@@ -46,30 +46,19 @@ Welcome to the SPTNR documentation! This guide will help you navigate all availa
 ## 🐛 Troubleshooting
 
 - [Quick Fix Reference](QUICK_FIX_REFERENCE.md) - Common issues and solutions
-- [Verification Checklist](VERIFICATION_CHECKLIST.md) - Testing and verification
 
 ## 📊 Technical Documentation
 
-### Architecture & Analysis
-- [Refactor Analysis](REFACTOR_ANALYSIS.md) - Code structure analysis
-- [Function Call Analysis](FUNCTION_CALL_ANALYSIS.md) - API call patterns
-- [Analysis Summary](ANALYSIS_SUMMARY.md) - System analysis
-
 ### Features & Improvements
+
 - [Artist Page Improvements](ARTIST_PAGE_IMPROVEMENTS.md) - Artist page enhancements
 - [Album Rescan Prevention](ALBUM_RESCAN_PREVENTION.md) - Avoiding duplicate scans
 - [User Features Design](USER_FEATURES_DESIGN.md) - Per-user feature design
 
-## 📝 Release Notes & Summaries
-
-- [Completion Summary](COMPLETION_SUMMARY.md) - Project milestones
-- [Final Status Report](FINAL_STATUS_REPORT.md) - Current status
-- [Deliverables Summary](DELIVERABLES_SUMMARY.md) - What has been delivered
-- [Fixes Summary](FIXES_SUMMARY.md) - Bug fixes and improvements
-
 ## 🔍 Finding What You Need
 
 ### By Topic
+
 - **Installation**: See [Installation & Setup](INSTALLATION.md)
 - **Web Interface**: See [Web UI Guide](WEB_UI_README.md)
 - **Configuration**: See [Multi-User Configuration](MULTI_USER_CONFIG_GUIDE.md)
@@ -77,6 +66,7 @@ Welcome to the SPTNR documentation! This guide will help you navigate all availa
 - **Problems**: See [Troubleshooting](#-troubleshooting)
 
 ### By User Role
+
 - **New Users**: Start with [README](README.md) → [Installation](INSTALLATION.md) → [Web UI Guide](WEB_UI_README.md)
 - **Administrators**: [Multi-User Configuration](MULTI_USER_CONFIG_GUIDE.md) → [Quick Reference](QUICK_REFERENCE.md)
 - **Developers**: [Implementation Guide](IMPLEMENTATION_GUIDE.md) → [Refactor Analysis](REFACTOR_ANALYSIS.md)
