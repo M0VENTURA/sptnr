@@ -1,4 +1,6 @@
 {% macro render_album_row(album, artist_name, is_missing=False) %}
+{% set safe_artist = artist_name|regex_replace(' +', '_') %}
+{% set safe_album = (album.album or album.title)|regex_replace(' +', '_') %}
 <tr class="album-row" data-year="{{ album.get('album_year') or album.get('first_release_date', '')[:4] or 9999 }}" data-status="{{ 'missing' if is_missing else 'discovered' }}" data-album="{{ album.album or album.title }}">
   <!-- Album Art -->
   <td class="text-center" style="width: 100px; padding: 0.5rem;">
@@ -71,7 +73,7 @@
           <i class="bi bi-search"></i>
         </button>
       {% else %}
-        <button class="btn btn-outline-info" onclick="toggleTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})" title="Show tracklist" id="toggle-btn-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}">
+        <button class="btn btn-outline-info" onclick="toggleTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }})" title="Show tracklist" id="toggle-btn-{{ safe_artist }}-{{ safe_album }}">
           <i class="bi bi-list-ul"></i>
         </button>
         <button class="btn btn-outline-primary" onclick="lookupMetadata('album', {{ (artist_name + '/' + album.album)|tojson }})" title="Lookup metadata">
@@ -85,14 +87,14 @@
   </td>
 </tr>
 <!-- Tracklist row for EPs and Singles (hidden by default, expandable) -->
-<tr class="tracklist-row" id="tracklist-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}" style="display: none;">
+<tr class="tracklist-row" id="tracklist-{{ safe_artist }}-{{ safe_album }}" style="display: none;">
   <td colspan="7" style="padding: 1rem;">
     <div class="tracklist-container">
       <button class="btn btn-sm btn-outline-info me-2" onclick="loadTracklist({{ artist_name|tojson }}, {{ (album.album or album.title)|tojson }}, this)">
         <span class="spinner-border spinner-border-sm me-2" style="display:none;"></span>
         <i class="bi bi-list-ul"></i> Load Tracklist
       </button>
-      <div id="tracklist-content-{{ artist_name|replace(' ', '_') }}-{{ (album.album or album.title)|replace(' ', '_') }}" class="mt-3"></div>
+      <div id="tracklist-content-{{ safe_artist }}-{{ safe_album }}" class="mt-3"></div>
     </div>
   </td>
 </tr>

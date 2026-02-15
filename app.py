@@ -65,6 +65,7 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
     genres = set()
     try:
         import sqlite3
+        import re
         conn = sqlite3.connect(db_path)
         cursor = conn.cursor()
         # Use navidrome_genres which are populated from Navidrome during import
@@ -83,7 +84,9 @@ def aggregate_genres_from_tracks(artist_name, db_path="/database/sptnr.db"):
                         if isinstance(genre_list, list):
                             genres.update(genre_list)
                     except:
-                        for g in genre_str.split(','):
+                        # Split on both backslash and comma separators (same as split_genres filter)
+                        genre_list = re.split(r'[\\,]+', genre_str)
+                        for g in genre_list:
                             g = g.strip().strip('"\'[]')
                             if g:
                                 genres.add(g)
