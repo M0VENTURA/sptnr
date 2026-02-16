@@ -547,9 +547,9 @@ class DiscogsClient:
                 cached_singles = cache.get_cached_titles(artist)
                 
                 if cached_singles:
-                    # Cache hit: use cached track list
+                    # Cache hit: use cached track list (convert set to list)
                     logger.debug(f"Discogs: Using cached singles list for artist '{artist}' ({len(cached_singles)} tracks)")
-                    self._artist_singles_cache[artist_lower] = {"singles": cached_singles, "eps": []}
+                    self._artist_singles_cache[artist_lower] = {"singles": list(cached_singles), "eps": []}
                 else:
                     # Cache miss: fetch from Discogs and populate cache
                     logger.debug(f"Discogs: Fetching artist releases for '{artist}'")
@@ -585,6 +585,8 @@ class DiscogsClient:
         
         except Exception as e:
             logger.debug(f"Discogs single check failed for '{title}' by '{artist}': {e}")
+            import traceback
+            logger.debug(f"   Error traceback: {traceback.format_exc()}")
             return False
     
     def has_official_video(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> bool:
