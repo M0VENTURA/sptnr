@@ -9347,7 +9347,7 @@ def api_album_tracklist():
         
         # Fetch releases for this release group
         releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
-        releases_params = {"fmt": "json", "inc": "recordings", "limit": 1}
+        releases_params = {"fmt": "json", "limit": 1}
         
         releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
         releases_resp.raise_for_status()
@@ -9436,7 +9436,7 @@ def api_album_tracklist_match():
         rg_id = rg.get("id")
         
         releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
-        releases_params = {"fmt": "json", "inc": "recordings", "limit": 1}
+        releases_params = {"fmt": "json", "limit": 1}
         
         releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
         releases_resp.raise_for_status()
