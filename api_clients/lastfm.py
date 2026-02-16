@@ -637,19 +637,23 @@ class LastFmClient:
             if use_cache and cache_key:
                 self.cache.set(cache_key, recommendations)
             
+            # Log detail about what was fetched if anything is empty
+            if not any([recommendations["artists"], recommendations["albums"], recommendations["tracks"]]):
+                logger.warning(f"Last.fm recommendations returned empty for {self.username or 'global'} - API may have returned no results or filtering removed all items")
+            
             return recommendations
         except (ConnectionError, ConnectionResetError) as e:
-            logger.error(f"Connection error fetching Last.fm recommendations: {e} - may indicate network issues")
+            logger.error(f"Connection error fetching Last.fm recommendations for {self.username or 'global'}: {e} - may indicate network issues")
             return {"artists": [], "albums": [], "tracks": []}
         except Timeout as e:
-            logger.error(f"Timeout fetching Last.fm recommendations: {e}")
+            logger.error(f"Timeout fetching Last.fm recommendations for {self.username or 'global'}: {e}")
             return {"artists": [], "albums": [], "tracks": []}
         except HTTPError as e:
             status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
-            logger.error(f"HTTP error {status_code} fetching Last.fm recommendations: {e}")
+            logger.error(f"HTTP error {status_code} fetching Last.fm recommendations for {self.username or 'global'}: {e}")
             return {"artists": [], "albums": [], "tracks": []}
         except Exception as e:
-            logger.error(f"Failed to fetch Last.fm recommendations: {e}")
+            logger.error(f"Failed to fetch Last.fm recommendations for {self.username or 'global'}: {e}", exc_info=True)
             return {"artists": [], "albums": [], "tracks": []}
     
     def _get_recommended_artists(self) -> list:

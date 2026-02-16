@@ -10381,8 +10381,16 @@ def api_lastfm_sync_now():
     # Fetch fresh recommendations from Last.fm
     recommendations = get_lastfm_recommendations(api_key, username=username)
     
-    if not recommendations:
-        return jsonify({"error": "Failed to fetch recommendations"}), 500
+    # Better check for empty recommendations (include checking if all lists are empty)
+    if not recommendations or not any([
+        recommendations.get("artists", []),
+        recommendations.get("albums", []),
+        recommendations.get("tracks", [])
+    ]):
+        return jsonify({
+            "error": "No recommendations from Last.fm (empty result)",
+            "success": False
+        }), 500
     
     # Helper function to normalize names
     def normalize_name(name):
@@ -10431,7 +10439,7 @@ def api_lastfm_sync_now():
     except Exception as e:
         logging.warning(f"Failed to check collection status: {e}")
     
-    # Store recommendations in database
+    # Store recommendations in database with batch insert to reduce lock contention
     conn = get_db()
     cursor = conn.cursor()
     
@@ -10441,40 +10449,35 @@ def api_lastfm_sync_now():
     filtered_count = 0
     
     sync_start = datetime.now()
+    sync_now = datetime.now()
     
     try:
-        # Clear old recommendations for this user  
-        cursor.execute("DELETE FROM lastfm_recommendations WHERE username = ?", (current_user or "default_user",))
+        # Prepare all insert data first to minimize transaction time
+        insert_data = []
+        username_val = current_user or "default_user"
         
-        # Store artists
+        # Process artists
         for artist in recommendations.get("artists", []):
             artist_name = artist.get("name", "")
             artist_norm = normalize_name(artist_name)
             
             if artist_norm and artist_norm not in existing_artists:
-                try:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO lastfm_recommendations 
-                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        current_user or "default_user",
-                        "artist",
-                        artist_name,
-                        None,
-                        artist.get("image", ""),
-                        artist.get("playcount", 0),
-                        artist.get("url", ""),
-                        None,
-                        datetime.now()
-                    ))
-                    artists_count += 1
-                except Exception as e:
-                    logging.warning(f"Failed to store artist {artist_name}: {e}")
+                insert_data.append((
+                    username_val,
+                    "artist",
+                    artist_name,
+                    None,
+                    artist.get("image", ""),
+                    artist.get("playcount", 0),
+                    artist.get("url", ""),
+                    None,
+                    sync_now
+                ))
+                artists_count += 1
             else:
                 filtered_count += 1
         
-        # Store albums
+        # Process albums
         for album in recommendations.get("albums", []):
             artist_name = album.get("artist", "")
             album_name = album.get("name", "")
@@ -10482,29 +10485,22 @@ def api_lastfm_sync_now():
             album_norm = normalize_name(album_name)
             
             if (artist_norm, album_norm) and (artist_norm, album_norm) not in existing_albums:
-                try:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO lastfm_recommendations 
-                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        current_user or "default_user",
-                        "album",
-                        album_name,
-                        artist_name,
-                        album.get("image", ""),
-                        album.get("playcount", 0),
-                        album.get("url", ""),
-                        None,
-                        datetime.now()
-                    ))
-                    albums_count += 1
-                except Exception as e:
-                    logging.warning(f"Failed to store album {album_name}: {e}")
+                insert_data.append((
+                    username_val,
+                    "album",
+                    album_name,
+                    artist_name,
+                    album.get("image", ""),
+                    album.get("playcount", 0),
+                    album.get("url", ""),
+                    None,
+                    sync_now
+                ))
+                albums_count += 1
             else:
                 filtered_count += 1
         
-        # Store tracks
+        # Process tracks
         for track in recommendations.get("tracks", []):
             artist_name = track.get("artist", "")
             track_name = track.get("name", "")
@@ -10512,69 +10508,90 @@ def api_lastfm_sync_now():
             track_norm = normalize_name(track_name)
             
             if (artist_norm, track_norm) and (artist_norm, track_norm) not in existing_tracks:
-                try:
-                    cursor.execute("""
-                        INSERT OR REPLACE INTO lastfm_recommendations 
-                        (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """, (
-                        current_user or "default_user",
-                        "track",
-                        track_name,
-                        artist_name,
-                        track.get("image", ""),
-                        track.get("playcount", 0),
-                        track.get("url", ""),
-                        None,
-                        datetime.now()
-                    ))
-                    tracks_count += 1
-                except Exception as e:
-                    logging.warning(f"Failed to store track {track_name}: {e}")
+                insert_data.append((
+                    username_val,
+                    "track",
+                    track_name,
+                    artist_name,
+                    track.get("image", ""),
+                    track.get("playcount", 0),
+                    track.get("url", ""),
+                    None,
+                    sync_now
+                ))
+                tracks_count += 1
             else:
                 filtered_count += 1
         
-        # Update sync history
-        sync_end = datetime.now()
-        cursor.execute("""
-            INSERT INTO lastfm_sync_history 
-            (username, sync_type, artists_count, albums_count, tracks_count, filtered_count, sync_start, sync_end)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-        """, (
-            current_user or "default_user",
-            "manual",
-            artists_count,
-            albums_count,
-            tracks_count,
-            filtered_count,
-            sync_start,
-            sync_end
-        ))
-        
-        # Update scheduler config with last sync time
-        cursor.execute("""
-            INSERT OR REPLACE INTO lastfm_scheduler_config 
-            (username, last_sync)
-            VALUES (?, ?)
-        """, (current_user or "default_user", datetime.now()))
-        
-        conn.commit()
-        conn.close()
-        
-        return jsonify({
-            "success": True,
-            "artists_synced": artists_count,
-            "albums_synced": albums_count,
-            "tracks_synced": tracks_count,
-            "filtered_count": filtered_count,
-            "total": artists_count + albums_count + tracks_count
-        })
+        # Now execute all operations in a single transaction to avoid lock contention
+        try:
+            # Clear old recommendations for this user
+            cursor.execute("DELETE FROM lastfm_recommendations WHERE username = ?", (username_val,))
+            
+            # Batch insert all recommendations using executemany
+            if insert_data:
+                cursor.executemany("""
+                    INSERT INTO lastfm_recommendations 
+                    (username, recommendation_type, item_name, artist_name, image_url, playcount, lastfm_url, metadata, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_data)
+            
+            # Update sync history
+            sync_end = datetime.now()
+            cursor.execute("""
+                INSERT INTO lastfm_sync_history 
+                (username, sync_type, artists_count, albums_count, tracks_count, filtered_count, sync_start, sync_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """, (
+                username_val,
+                "manual",
+                artists_count,
+                albums_count,
+                tracks_count,
+                filtered_count,
+                sync_start,
+                sync_end
+            ))
+            
+            # Update scheduler config with last sync time
+            cursor.execute("""
+                INSERT OR REPLACE INTO lastfm_scheduler_config 
+                (username, last_sync)
+                VALUES (?, ?)
+            """, (username_val, datetime.now()))
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"Last.fm sync complete for {username_val}: {artists_count} artists, {albums_count} albums, {tracks_count} tracks")
+            
+            return jsonify({
+                "success": True,
+                "artists_synced": artists_count,
+                "albums_synced": albums_count,
+                "tracks_synced": tracks_count,
+                "filtered_count": filtered_count,
+                "total": artists_count + albums_count + tracks_count
+            })
+            
+        except Exception as insert_error:
+            try:
+                conn.rollback()
+            except:
+                pass
+            conn.close()
+            logging.error(f"Database error during Last.fm sync: {insert_error}")
+            raise
     
     except Exception as e:
-        conn.close()
-        logging.error(f"Error syncing Last.fm recommendations: {e}")
+        try:
+            conn.close()
+        except:
+            pass
+        logging.error(f"Error syncing Last.fm recommendations: {e}", exc_info=True)
         return jsonify({
-            "error": str(e)
+            "error": str(e),
+            "success": False
         }), 500
 
 
