@@ -9498,35 +9498,54 @@ def api_album_tracklist_match():
         matched_tracks = []
         unmatched_tracks = []
         
-        # Fetch tracklist first
+        # Fetch tracklist first - try direct release search
         import requests
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-        search_url = "https://musicbrainz.org/ws/2/release-group"
+        search_url = "https://musicbrainz.org/ws/2/release"
         params = {
             "query": f'release:"{album}" AND artist:"{artist}"',
             "fmt": "json",
-            "limit": 1
+            "limit": 5
         }
         
         resp = requests.get(search_url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         
-        release_groups = data.get("release-groups", [])
-        if not release_groups:
-            return jsonify({"matched": [], "unmatched": []})
+        releases = data.get("releases", [])
         
-        rg = release_groups[0]
-        rg_id = rg.get("id")
+        # If no releases found, try release-group search
+        if not releases:
+            search_url = "https://musicbrainz.org/ws/2/release-group"
+            params = {
+                "query": f'"{album}" AND artist:"{artist}"',
+                "fmt": "json",
+                "limit": 1
+            }
+            
+            resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            release_groups = data.get("release-groups", [])
+            if not release_groups:
+                return jsonify({"matched": [], "unmatched": []})
+            
+            rg = release_groups[0]
+            rg_id = rg.get("id")
+            
+            if not rg_id:
+                return jsonify({"matched": [], "unmatched": []})
+            
+            releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
+            releases_params = {"fmt": "json", "limit": 5}
+            
+            releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
+            releases_resp.raise_for_status()
+            releases_data = releases_resp.json()
+            
+            releases = releases_data.get("releases", [])
         
-        releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
-        releases_params = {"fmt": "json", "limit": 1}
-        
-        releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
-        releases_resp.raise_for_status()
-        releases_data = releases_resp.json()
-        
-        releases = releases_data.get("releases", [])
         if releases:
             media = releases[0].get("media", [])
             if media:
