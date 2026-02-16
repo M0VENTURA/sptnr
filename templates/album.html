@@ -200,6 +200,22 @@
     </div>
     {% endif %}
     
+    <!-- Album Genres Section -->
+    {% if album_genres and album_genres|length > 0 %}
+    <div class="card mb-4">
+        <div class="card-header">
+            <h6 class="card-title mb-0"><i class="bi bi-tags"></i> Album Genres</h6>
+        </div>
+        <div class="card-body">
+            <div class="d-flex flex-wrap gap-2">
+                {% for genre in album_genres %}
+                <span class="badge bg-info" title="Genre tag for this album">{{ genre }}</span>
+                {% endfor %}
+            </div>
+        </div>
+    </div>
+    {% endif %}
+    
     <!-- Album Release IDs Section -->
     {% if album_data %}
     <div class="card mb-4">
@@ -349,8 +365,8 @@
                 </button>
             </div>
             
-            <!-- Album Genres Cleanup Section -->
-            <div class="mb-4 pb-4" style="border-bottom: 1px solid var(--border-color);">
+            <!-- Album Genres Cleanup Section (hidden - merged into Album Metadata) -->
+            <div class="mb-4 pb-4" style="border-bottom: 1px solid var(--border-color); display: none;">
                 <h6 class="mb-3"><i class="bi bi-trash"></i> Remove Incorrect Genres</h6>
                 <p class="text-muted small mb-3">Select genre badges to remove from all tracks in this album and trigger a Navidrome rescan.</p>
                 <div class="d-flex flex-wrap gap-2 mb-3" id="albumGenresForRemoval">

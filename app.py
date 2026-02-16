@@ -11550,10 +11550,35 @@ def api_get_track(track_id):
         if not row:
             return jsonify({"error": "Track not found"}), 404
         
-        track = dict(row)
+        # Safely convert row to dict
+        try:
+            if hasattr(row, 'keys'):
+                # Row is already a dict-like object (from Row factory)
+                track = dict(row)
+            else:
+                # Row is a tuple, build dict manually
+                track = {
+                    'id': row[0],
+                    'title': row[1],
+                    'artist': row[2],
+                    'album': row[3],
+                    'genre': row[4],
+                    'stars': row[5],
+                    'is_single': row[6],
+                    'single_confidence': row[7],
+                    'duration': row[8],
+                    'track_number': row[9],
+                    'disc_number': row[10]
+                }
+        except (IndexError, TypeError) as e:
+            logging.error(f"[API] Error converting track row to dict: {e}")
+            return jsonify({"error": "Failed to process track data"}), 500
+            
         return jsonify(track)
     except Exception as e:
         logging.error(f"[API] Error fetching track {track_id}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 500
 
 
