@@ -448,6 +448,86 @@ class DiscogsClient:
             log_debug(f"[DISCOGS_ARTIST_ID] Traceback: {traceback.format_exc()}")
             return None
     
+    def _search_specific_single(self, title: str, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> bool:
+        """
+        Search for a specific track by artist and title using Discogs database search.
+        
+        This is much faster than fetching all artist singles/EPs as it only searches
+        for the specific track we're interested in using the 'track' parameter.
+        
+        Args:
+            title: Track title to search for
+            artist_name: Artist name
+            timeout: Request timeout
+            
+        Returns:
+            True if the track is found as a single/EP, False otherwise or on error
+        """
+        try:
+            normalized_title = normalize_track_title(title)
+            log_debug(f"[DISCOGS_SPECIFIC] Searching for specific track: '{title}' by '{artist_name}' (normalized: '{normalized_title}')")
+            
+            # Search using both artist and track parameters to find this specific single
+            _throttle_discogs()
+            search_url = f"{self.base_url}/database/search"
+            params = {
+                "artist": artist_name,
+                "track": title,  # Search by track title
+                "type": "release",
+                "per_page": 50  # Limit results since we're searching for a specific track
+            }
+            
+            logger.debug(f"Discogs: Searching for specific single: '{title}' by '{artist_name}'")
+            response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            
+            if response.status_code == 429:
+                retry_after = int(response.headers.get("Retry-After", 60))
+                logger.warning(f"Discogs API rate limited, retrying after {retry_after}s")
+                time.sleep(retry_after)
+                _throttle_discogs()
+                response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            
+            if response.status_code == 401:
+                logger.error(f"Discogs API authentication failed (401): invalid or expired token")
+                return False
+            elif response.status_code == 403:
+                logger.error(f"Discogs API access forbidden (403): check token permissions")
+                return False
+            
+            response.raise_for_status()
+            
+            releases = response.json().get("results", [])
+            log_debug(f"[DISCOGS_SPECIFIC] Found {len(releases)} results for track search")
+            
+            # Check if any of the results are singles or EPs with matching tracks
+            for release_info in releases:
+                release_format = release_info.get("format", [])
+                release_title = release_info.get("title", "")
+                
+                # Convert format to string for checking
+                format_str = " ".join(release_format) if isinstance(release_format, list) else str(release_format)
+                format_lower = format_str.lower()
+                
+                log_debug(f"[DISCOGS_SPECIFIC] Checking release: '{release_title}' format='{format_str}'")
+                
+                # Check if it's a Single or EP
+                is_single = "single" in format_lower
+                is_ep = re.search(r'\bep\b', format_lower)
+                
+                if is_single or is_ep:
+                    log_debug(f"[DISCOGS_SPECIFIC] ✓ Found matching {'Single' if is_single else 'EP'}: '{release_title}'")
+                    logger.debug(f"Discogs: ✓ Found '{title}' by '{artist_name}' as {'Single' if is_single else 'EP'}")
+                    return True
+            
+            log_debug(f"[DISCOGS_SPECIFIC] ✗ No Single/EP releases found in {len(releases)} results")
+            logger.debug(f"Discogs: ✗ No Single/EP found for '{title}' by '{artist_name}' in specific search")
+            return False
+            
+        except Exception as e:
+            logger.debug(f"Discogs specific search failed for '{title}' by '{artist_name}': {e}")
+            log_debug(f"[DISCOGS_SPECIFIC] ERROR: {type(e).__name__}: {str(e)}")
+            return False
+    
     def _fetch_artist_singles_and_eps(self, artist_name: str, timeout: tuple[int, int] | int = (5, 10)) -> Dict[str, List[str]]:
         """
         Fetch all track titles from artist's Singles and EPs releases via database search endpoint.
@@ -608,6 +688,10 @@ class DiscogsClient:
         if not hasattr(self, "_artist_singles_cache"):
             self._artist_singles_cache = {}  # artist_name -> {"singles": [...], "eps": [...]}
         
+        # Track-specific search results cache to avoid repeated lookups for the same track
+        if not hasattr(self, "_specific_search_cache"):
+            self._specific_search_cache = {}  # (artist_lower, normalized_title) -> bool
+        
         try:
             log_debug(f"[DISCOGS_SINGLE] is_single check: title='{title}', artist='{artist}'")
             cache = get_discogs_cache(db_path=self.db_path)
@@ -617,6 +701,9 @@ class DiscogsClient:
             # Check local request cache first
             artist_lower = artist.lower()
             log_debug(f"[DISCOGS_SINGLE] Checking caches for artist '{artist}' (lower: '{artist_lower}')")
+            
+            # OPTIMIZATION: Check if we already have cached data for this artist
+            # If yes, use it. If no, try specific search first before fetching all releases.
             if artist_lower not in self._artist_singles_cache:
                 # Check persistent cache for this artist's tracks
                 log_debug(f"[DISCOGS_SINGLE] Checking persistent cache for '{artist}'")
@@ -629,27 +716,39 @@ class DiscogsClient:
                     log_debug(f"[DISCOGS_SINGLE] Cached tracks: {list(cached_singles)[:5]}{'...' if len(cached_singles) > 5 else ''}")
                     self._artist_singles_cache[artist_lower] = {"singles": list(cached_singles), "eps": []}
                 else:
-                    # Cache miss: fetch from Discogs and populate cache
-                    log_debug(f"[DISCOGS_SINGLE] CACHE MISS: No cached data for '{artist}', fetching from Discogs API")
-                    logger.debug(f"Discogs: Cache miss for '{artist}', fetching artist releases from Discogs API")
+                    # Cache miss: try optimized specific search first
+                    # This searches for the specific track instead of all artist releases
+                    log_debug(f"[DISCOGS_SINGLE] CACHE MISS: Trying optimized specific search for '{title}'")
+                    logger.debug(f"Discogs: Cache miss for '{artist}', trying optimized specific search for '{title}'")
                     
-                    # Fetch singles and EPs using database search with format filtering
-                    log_debug(f"[DISCOGS_SINGLE] Fetching singles/EPs from API for artist '{artist}'")
-                    artist_releases = self._fetch_artist_singles_and_eps(artist, timeout)
+                    # Check specific search cache
+                    cache_key = (artist_lower, normalized_title)
+                    if cache_key in self._specific_search_cache:
+                        result = self._specific_search_cache[cache_key]
+                        log_debug(f"[DISCOGS_SINGLE] Using cached specific search result: {result}")
+                        return result
                     
-                    # Store in local cache for this request
-                    log_debug(f"[DISCOGS_SINGLE] Caching fetched releases locally: {len(artist_releases['singles'])} singles, {len(artist_releases['eps'])} EPs")
-                    self._artist_singles_cache[artist_lower] = artist_releases
+                    # Try specific search (much faster - only 1 API call)
+                    specific_result = self._search_specific_single(title, artist, timeout)
                     
-                    # Populate persistent cache with track titles
-                    if artist_releases["singles"] or artist_releases["eps"]:
-                        all_tracks = artist_releases["singles"] + artist_releases["eps"]
-                        log_debug(f"[DISCOGS_SINGLE] Populating persistent cache with {len(all_tracks)} total tracks")
-                        cache.add_to_cache(artist, all_tracks)
-                        logger.debug(f"Discogs: Populated cache for '{artist}' with {len(all_tracks)} track titles ({len(artist_releases['singles'])} singles, {len(artist_releases['eps'])} EPs)")
+                    # Cache the specific search result
+                    self._specific_search_cache[cache_key] = specific_result
+                    
+                    if specific_result:
+                        # Found via specific search
+                        # Note: We don't add to persistent cache here because we don't have
+                        # detailed release info (release_id, year, etc.) from the specific search.
+                        # The in-memory cache (_specific_search_cache) handles repeat checks.
+                        log_debug(f"[DISCOGS_SINGLE] ✓ Found via specific search")
+                        logger.debug(f"Discogs: ✓ Found '{title}' by '{artist}' via specific search")
+                        return True
                     else:
-                        log_debug(f"[DISCOGS_SINGLE] No singles or EPs found for '{artist}' from API")
-                        logger.debug(f"Discogs: No singles or EPs found for artist '{artist}'")
+                        # Not found via specific search
+                        # Note: We don't do full artist scan here to keep it fast
+                        # The specific search is reliable enough for most cases
+                        log_debug(f"[DISCOGS_SINGLE] ✗ Not found via specific search")
+                        logger.debug(f"Discogs: '{title}' by '{artist}' not found via specific search")
+                        return False
             
             # Check if normalized title matches any cached single or EP track
             artist_cache = self._artist_singles_cache.get(artist_lower, {"singles": [], "eps": []})
