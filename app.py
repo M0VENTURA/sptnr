@@ -1348,6 +1348,42 @@ def dashboard():
                              error=str(e))
 
 
+def convert_row_to_json_serializable(obj):
+    """
+    Recursively convert database Row objects and other non-JSON-serializable types to JSON-safe formats.
+    Handles: Row objects, datetime, Decimal, None, etc.
+    """
+    if obj is None:
+        return None
+    
+    # Convert Row objects to dicts
+    if hasattr(obj, 'keys'):  # sqlite3.Row object
+        obj = dict(obj)
+    
+    # Recursively process dicts
+    if isinstance(obj, dict):
+        return {k: convert_row_to_json_serializable(v) for k, v in obj.items()}
+    
+    # Recursively process lists
+    if isinstance(obj, (list, tuple)):
+        return [convert_row_to_json_serializable(item) for item in obj]
+    
+    # Convert datetime to ISO format string
+    if isinstance(obj, datetime):
+        return obj.isoformat()
+    
+    # Convert Decimal to float
+    try:
+        from decimal import Decimal
+        if isinstance(obj, Decimal):
+            return float(obj)
+    except ImportError:
+        pass
+    
+    # Return as-is if it's already JSON-serializable (str, int, float, bool, None)
+    return obj
+
+
 @app.route("/artists")
 def artists():
     """List all album artists (not track artists). Only show albums where they are the album artist.
@@ -1817,8 +1853,13 @@ def artist_detail(name):
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
         slskd_config = cfg.get("slskd", {"enabled": False})
         
-        # Convert albums_data Row objects to dicts for template serialization
-        albums_data_dicts = [dict(album) for album in albums_data]
+        # Convert all template data to JSON-serializable format
+        # This ensures Row objects, datetime, Decimal, etc. are all properly converted
+        albums_data_dicts = convert_row_to_json_serializable(albums_data)
+        merged_albums_by_category = convert_row_to_json_serializable(merged_albums_by_category)
+        missing_by_category = convert_row_to_json_serializable(missing_by_category)
+        artist_stats = convert_row_to_json_serializable(artist_stats)
+        genres = convert_row_to_json_serializable(genres)
         
         return render_template("artist.html", 
                              artist_name=name,
