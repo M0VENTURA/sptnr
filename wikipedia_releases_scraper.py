@@ -152,7 +152,7 @@ class WikipediaReleaseScraper:
             return []
     
     def _parse_release_tables(self, soup: BeautifulSoup, source_key: str, source_name: str) -> List[Dict]:
-        """Parse release information from Wikipedia tables
+        """Parse release information from Wikipedia tables with proper rowspan/colspan handling
         
         Expected structure:
         - Month heading (h2/h3/text with month name)
@@ -218,50 +218,43 @@ class WikipediaReleaseScraper:
                 current_month = 1  # Default to January
                 logger.debug(f"Could not find month heading, defaulting to January")
             
-            # Initialize last_seen_day from heading day if found
-            if initial_day:
-                logger.debug(f"Using initial day {initial_day} extracted from section heading")
-            
-            # Parse table rows
+            # Parse table with rowspan/colspan handling
             rows = table.find_all('tr')
             if not rows:
                 continue
             
-            # Skip header row (first row usually has th elements)
+            # Reconstruct table accounting for rowspan/colspan
+            reconstructed_rows = self._reconstruct_table_rows(rows)
+            
+            # Skip header row (first row usually has th elements or column names)
             start_idx = 0
-            if rows and rows[0].find_all('th'):
-                start_idx = 1
-                logger.debug(f"Skipping header row (contains <th> elements) for month {current_month}")
-            elif rows and len(rows) > 1:
-                # Check if first row looks like a header by its content
-                first_row_cells = rows[0].find_all('td')
-                if first_row_cells:
-                    first_row_text = [c.get_text(strip=True).lower() for c in first_row_cells]
-                    is_header = any(keyword in text for text in first_row_text 
-                                  for keyword in ['date', 'artist', 'album', 'title', 'release', 'day', 'number'])
-                    if is_header:
-                        start_idx = 1
-                        logger.debug(f"Skipping header row (contains column names) for month {current_month}")
+            if reconstructed_rows and reconstructed_rows[0]:
+                first_row_has_header = any(
+                    cell and cell.name == 'th' for cell in rows[0].find_all(['td', 'th'])
+                )
+                if first_row_has_header:
+                    start_idx = 1
+                    logger.debug(f"Skipping header row (contains <th> elements) for month {current_month}")
             
             logger.debug(f"Starting data row parsing from index {start_idx}")
             
             # Track last seen day for handling rowspan (multiple rows with same day)
-            # Initialize with day extracted from section heading if available
             last_seen_day = initial_day if initial_day else None
             
             # Parse data rows
             row_num = 0
-            for row in rows[start_idx:]:
-                cells = row.find_all('td')
-                if len(cells) < 2:
+            for cells_list in reconstructed_rows[start_idx:]:
+                if len(cells_list) < 2:
                     row_num += 1
                     continue
                 
                 # Debug: show ALL rows to diagnose column alignment
-                cell_preview = [c.get_text(strip=True)[:40] for c in cells[:6]]
-                logger.info(f"[ROW {row_num}] cells={len(cells)} first 6: {cell_preview}")
+                cell_preview = [c[:40] if isinstance(c, str) else str(c)[:40] for c in cells_list[:6]]
+                logger.info(f"[ROW {row_num}] cells={len(cells_list)} first 6: {cell_preview}")
                 
-                release, had_date_cell = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order, last_seen_day)
+                release, had_date_cell = self._parse_row_for_month_from_strings(
+                    cells_list, source_key, source_name, current_month, year, column_order, last_seen_day
+                )
                 if release:
                     logger.info(f"[ROW {row_num}] SUCCESS: {release['artist_name']} - {release['album_name']} ({release['release_date']}) had_date={had_date_cell}")
                     releases.append(release)
@@ -281,6 +274,183 @@ class WikipediaReleaseScraper:
                 row_num += 1
         
         return releases
+    
+    def _reconstruct_table_rows(self, rows) -> List[List[str]]:
+        """Reconstruct table rows accounting for rowspan and colspan
+        
+        Returns a list of lists where each inner list contains cell values as strings.
+        Cells affected by rowspan from previous rows are carried forward.
+        """
+        reconstructed = []
+        col_tracking = {}  # {col_idx: (value, rows_remaining)}
+        
+        for row_idx, row in enumerate(rows):
+            cells = row.find_all(['td', 'th'])
+            row_cells = []
+            col_idx = 0
+            
+            for cell in cells:
+                # Skip columns that are still covered by rowspan from previous rows
+                while col_idx in col_tracking and col_tracking[col_idx][1] > 0:
+                    row_cells.append(col_tracking[col_idx][0])
+                    col_tracking[col_idx] = (col_tracking[col_idx][0], col_tracking[col_idx][1] - 1)
+                    col_idx += 1
+                
+                # Get cell value
+                cell_value = cell.get_text(strip=True)
+                row_cells.append(cell_value)
+                
+                # Handle rowspan and colspan
+                rowspan = int(cell.get('rowspan', 1))
+                colspan = int(cell.get('colspan', 1))
+                
+                # Track this cell for future rows (rowspan > 1)
+                if rowspan > 1:
+                    col_tracking[col_idx] = (cell_value, rowspan - 1)
+                
+                # Move col_idx forward by colspan
+                col_idx += colspan
+            
+            # Add any remaining tracked cells for this row
+            while col_idx in col_tracking and col_tracking[col_idx][1] > 0:
+                row_cells.append(col_tracking[col_idx][0])
+                col_tracking[col_idx] = (col_tracking[col_idx][0], col_tracking[col_idx][1] - 1)
+                col_idx += 1
+            
+            if row_cells:
+                reconstructed.append(row_cells)
+        
+        return reconstructed
+    
+    def _parse_row_for_month_from_strings(self, cell_texts: list, source_key: str, source_name: str, current_month: int, 
+                                          year: int, column_order: list, last_seen_day: Optional[int] = None) -> tuple:
+        """Parse a row using string values instead of cell objects
+        
+        Returns: (release_dict, had_date_cell) where had_date_cell indicates if actual date cell found
+        """
+        try:
+            if len(cell_texts) < 2:
+                return None, False
+            
+            # Remove citation brackets like [23], [1], etc. from all cell text
+            cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
+            
+            logger.debug(f"Parsing row for {source_name}: {len(cell_texts)} cells, {column_order} column order")
+            logger.debug(f"  Raw cells: {[f'{i}={repr(c[:50])}' for i, c in enumerate(cell_texts[:6])]}")
+            
+            # DETECT if first cell is a date or not
+            first_cell = cell_texts[0] if cell_texts else ""
+            date_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', first_cell)
+            has_date_in_first_cell = bool(date_match)
+            
+            actual_column_order = column_order.copy()
+            had_date_cell = False
+            
+            # If the first cell doesn't look like a date but column_order expects one, shift left
+            if 'day' in actual_column_order and not has_date_in_first_cell:
+                day_idx = actual_column_order.index('day')
+                actual_column_order = actual_column_order[:day_idx] + actual_column_order[day_idx+1:]
+                logger.debug(f"  Date cell missing, adjusted column order: {actual_column_order}")
+            else:
+                had_date_cell = True
+            
+            # Build a mapping of column types to values
+            col_values = {}
+            cell_idx = 0
+            
+            for col_idx, col_type in enumerate(actual_column_order):
+                if cell_idx >= len(cell_texts):
+                    break
+                
+                cell_value = cell_texts[cell_idx].strip()
+                
+                if not cell_value:
+                    cell_idx += 1
+                    continue
+                
+                logger.debug(f"  Column {cell_idx}: col_type='{col_type}', value='{cell_value[:50]}'")
+                
+                if col_type == 'genre':
+                    logger.debug(f"    Skipping genre cell: '{cell_value[:50]}'")
+                    cell_idx += 1
+                    continue
+                
+                col_values[col_type] = cell_value
+                cell_idx += 1
+            
+            logger.debug(f"  Final mapping: {col_values}")
+            
+            # Extract and process values
+            day = None
+            artist = col_values.get('artist')
+            album = col_values.get('album')
+            
+            day_str = col_values.get('day')
+            if day_str:
+                try:
+                    match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', day_str)
+                    if match:
+                        day = int(match.group(1))
+                        if not (1 <= day <= 31):
+                            logger.debug(f"    Day {day} out of range, ignoring")
+                            day = None
+                        else:
+                            logger.debug(f"    Extracted day: {day}")
+                except (ValueError, AttributeError) as e:
+                    logger.debug(f"    Could not extract day from '{day_str}': {e}")
+            
+            # Default day to last_seen_day if not found, otherwise default to 1
+            if not day:
+                if last_seen_day:
+                    day = last_seen_day
+                    logger.debug(f"  No day column in row, using last_seen_day: {day}")
+                else:
+                    day = 1
+                    if not day_str:
+                        logger.debug(f"  No day column in row, defaulting to 1")
+                    else:
+                        logger.debug(f"  Could not parse day, defaulting to 1")
+            
+            # Validate date
+            try:
+                datetime(year, current_month, day)
+            except ValueError as e:
+                logger.debug(f"  Invalid date: {year}-{current_month:02d}-{day:02d} - {e}")
+                logger.debug(f"  Defaulting to first day of month")
+                day = 1
+            
+            # Validate artist and album
+            if not artist or not album or len(artist) < 2 or len(album) < 2:
+                logger.debug(f"  Invalid: artist='{artist}', album='{album}'")
+                return None, had_date_cell
+            
+            # Skip wiki markup
+            for text in [artist, album]:
+                if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
+                    logger.debug(f"  Skipping due to wiki markup")
+                    return None, had_date_cell
+            
+            # Skip genre-like fields
+            if self._is_genre_column(artist) or self._is_genre_column(album):
+                logger.debug(f"  Skipping: one field looks like genre info")
+                return None, had_date_cell
+            
+            release_date = f"{year}-{current_month:02d}-{day:02d}"
+            
+            logger.debug(f"  Final: {artist} - {album} ({release_date})")
+            
+            return {
+                "artist_name": artist,
+                "album_name": album,
+                "release_date": release_date,
+                "release_year": year,
+                "source": source_name,
+            }, had_date_cell
+        except Exception as e:
+            logger.debug(f"Error parsing row for {source_name}: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            return None, False
     
     def _is_genre_column(self, cell_value: str) -> bool:
         """Detect if a cell contains genre/style information
@@ -309,155 +479,6 @@ class WikipediaReleaseScraper:
         
         return False
 
-    def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
-                             year: int, column_order: list, last_seen_day: Optional[int] = None) -> tuple:
-        """Parse a row using source-specific column order
-        
-        column_order: list like ['day', 'artist', 'genre', 'album']
-        Handles rows with or without date columns (Wikipedia omits dates for same-day follow-ups).
-        last_seen_day: Used when a row doesn't have a date cell (due to HTML rowspan)
-        
-        Returns: (release_dict, had_date_cell) where had_date_cell indicates if actual date cell found
-        """
-        try:
-            if len(cells) < 2:
-                return None, False
-            
-            cell_texts = [cell.get_text(strip=True) for cell in cells]
-            
-            # Remove citation brackets like [23], [1], etc. from all cell text
-            cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
-            
-            logger.debug(f"Parsing row for {source_name}: {len(cells)} cells, {column_order} column order")
-            logger.debug(f"  Raw cells: {[f'{i}={repr(c[:50])}' for i, c in enumerate(cell_texts[:6])]}")
-            
-            # DETECT if first cell is a date or not
-            # If row has one fewer cell than expected OR first cell is not a date, shift the mapping
-            first_cell = cell_texts[0] if cell_texts else ""
-            # Match day numbers even if mixed with month names (e.g., "January 2", "Jan 2", "2")
-            date_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', first_cell)
-            has_date_in_first_cell = bool(date_match)
-            
-            actual_column_order = column_order.copy()
-            had_date_cell = False  # Track whether this row has an actual date cell
-            
-            # If the first cell doesn't look like a date but column_order expects one, shift left
-            if 'day' in actual_column_order and not has_date_in_first_cell:
-                # Remove 'day' from the expected columns since this row doesn't have one
-                day_idx = actual_column_order.index('day')
-                actual_column_order = actual_column_order[:day_idx] + actual_column_order[day_idx+1:]
-                logger.debug(f"  Date cell missing, adjusted column order: {actual_column_order}")
-            else:
-                # First cell has a date, so we have a date cell
-                had_date_cell = True
-            
-            # Build a mapping of column types to values, skipping 'genre' columns
-            col_values = {}
-            cell_idx = 0
-            
-            for col_idx, col_type in enumerate(actual_column_order):
-                if cell_idx >= len(cell_texts):
-                    break
-                
-                cell_value = cell_texts[cell_idx].strip()
-                
-                # Skip empty cells
-                if not cell_value:
-                    cell_idx += 1
-                    continue
-                
-                logger.debug(f"  Column {cell_idx}: col_type='{col_type}', value='{cell_value[:50]}'")
-                
-                # Skip genre columns - they're in the column order but we don't extract them
-                if col_type == 'genre':
-                    logger.debug(f"    Skipping genre cell: '{cell_value[:50]}'")
-                    cell_idx += 1
-                    continue
-                
-                # Store the value
-                col_values[col_type] = cell_value
-                cell_idx += 1
-            
-            logger.debug(f"  Final mapping: {col_values}")
-            
-            # Extract and process the values we care about
-            day = None
-            artist = col_values.get('artist')
-            album = col_values.get('album')
-            
-            # Process day - if not in col_values, it's missing and defaults to 1
-            day_str = col_values.get('day')
-            if day_str:
-                try:
-                    # Use search() to find numbers anywhere in the string, including ordinal numbers
-                    # This handles cases like "January 2", "2", "Feb 2", "2nd", "31st", "1st", etc.
-                    match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', day_str)
-                    if match:
-                        day = int(match.group(1))
-                        if not (1 <= day <= 31):
-                            logger.debug(f"    Day {day} out of range, ignoring")
-                            day = None
-                        else:
-                            logger.debug(f"    Extracted day: {day}")
-                except (ValueError, AttributeError) as e:
-                    logger.debug(f"    Could not extract day from '{day_str}': {e}")
-            
-            # Default day to last_seen_day if not found, otherwise default to 1
-            if not day:
-                if last_seen_day:
-                    day = last_seen_day
-                    logger.debug(f"  No day column in row, using last_seen_day: {day}")
-                else:
-                    day = 1
-                    if not day_str:
-                        logger.debug(f"  No day column in row, defaulting to 1")
-                    else:
-                        logger.debug(f"  Could not parse day, defaulting to 1")
-            
-            # Validate that the day is valid for the given month/year combination
-            # This prevents invalid dates like February 30 or April 31
-            try:
-                datetime(year, current_month, day)
-            except ValueError as e:
-                logger.debug(f"  Invalid date: {year}-{current_month:02d}-{day:02d} - {e}")
-                logger.debug(f"  Defaulting to first day of month")
-                day = 1
-            
-            # Validate we have artist and album
-            if not artist or not album or len(artist) < 2 or len(album) < 2:
-                logger.debug(f"  Invalid: artist='{artist}', album='{album}'")
-                return None, had_date_cell
-            
-            # Skip entries with wiki markup
-            for text in [artist, album]:
-                if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
-                    logger.debug(f"  Skipping due to wiki markup")
-                    return None, had_date_cell
-            
-            # Skip if artist or album looks like it's full of genre info
-            if self._is_genre_column(artist) or self._is_genre_column(album):
-                logger.debug(f"  Skipping: one field looks like genre info")
-                return None, had_date_cell
-            
-            # Build date
-            release_date = f"{year}-{current_month:02d}-{day:02d}"
-            
-            logger.debug(f"  Final: {artist} - {album} ({release_date})")
-            
-            return {
-                "artist_name": artist,
-                "album_name": album,
-                "release_date": release_date,
-                "release_year": year,
-                "source": source_name,
-            }, had_date_cell
-        except Exception as e:
-            logger.debug(f"Error parsing row for {source_name}: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            return None, False
-    
-    
     def _extract_year_from_source_key(self, source_key: str) -> int:
         """Extract year from source key (e.g., '2026_albums' -> 2026)"""
         # Match years from 2020-2099 (202x, 203x, etc.)
