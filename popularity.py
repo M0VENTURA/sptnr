@@ -1972,6 +1972,7 @@ def popularity_scan(
                     log_info(f"Found resume artist: {artist} (skipping, already scanned)")
                     continue  # Skip this artist since it was already scanned
                 elif resume_from.lower() in artist.lower():
+                    resume_hit = True
                     log_info(f"Fuzzy resume match: {resume_from} → {artist} (skipping, already scanned)")
                     continue  # Skip this artist since it was already scanned
                 else:

@@ -497,7 +497,6 @@ class DiscogsClient:
                                 is_single = True
                             # Match EP as whole word or at word boundary to avoid matching "september", "step", etc.
                             # Match patterns: "EP", "12\" EP", "Mini EP", "Maxi-EP", etc.
-                            import re
                             desc_text = " ".join(fmt_descs)
                             if "ep" in fmt_name or re.search(r'\bep\b', desc_text):
                                 is_ep = True
