@@ -226,6 +226,9 @@ class WikipediaReleaseScraper:
             
             logger.debug(f"Starting data row parsing from index {start_idx}")
             
+            # Track last seen day for handling rowspan (multiple rows with same day)
+            last_seen_day = None
+            
             # Parse data rows
             for row in rows[start_idx:]:
                 cells = row.find_all('td')
@@ -237,9 +240,17 @@ class WikipediaReleaseScraper:
                     cell_preview = [c.get_text(strip=True)[:30] for c in cells[:4]]
                     logger.info(f"Row {len(releases)} preview: {cell_preview}")
                 
-                release = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order)
+                release = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order, last_seen_day)
                 if release:
                     releases.append(release)
+                    # Update last_seen_day if this release has a day number
+                    release_date = release.get('release_date', '')
+                    if release_date:
+                        try:
+                            day_from_date = int(release_date.split('-')[2])
+                            last_seen_day = day_from_date
+                        except (ValueError, IndexError):
+                            pass
                     if len(releases) <= 3:
                         logger.info(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
         
@@ -273,11 +284,12 @@ class WikipediaReleaseScraper:
         return False
 
     def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
-                             year: int, column_order: list) -> Optional[Dict]:
+                             year: int, column_order: list, last_seen_day: Optional[int] = None) -> Optional[Dict]:
         """Parse a row using source-specific column order
         
         column_order: list like ['day', 'artist', 'genre', 'album']
         Handles rows with or without date columns (Wikipedia omits dates for same-day follow-ups).
+        last_seen_day: Used when a row doesn't have a date cell (due to HTML rowspan)
         """
         try:
             if len(cells) < 2:
@@ -351,13 +363,17 @@ class WikipediaReleaseScraper:
                 except (ValueError, AttributeError) as e:
                     logger.debug(f"    Could not extract day from '{day_str}': {e}")
             
-            # Default day to 1 if not found or invalid (handles rows without date cells)
+            # Default day to last_seen_day if not found, otherwise default to 1
             if not day:
-                day = 1
-                if not day_str:
-                    logger.debug(f"  No day column in row, defaulting to 1")
+                if last_seen_day:
+                    day = last_seen_day
+                    logger.debug(f"  No day column in row, using last_seen_day: {day}")
                 else:
-                    logger.debug(f"  Could not parse day, defaulting to 1")
+                    day = 1
+                    if not day_str:
+                        logger.debug(f"  No day column in row, defaulting to 1")
+                    else:
+                        logger.debug(f"  Could not parse day, defaulting to 1")
             
             # Validate that the day is valid for the given month/year combination
             # This prevents invalid dates like February 30 or April 31

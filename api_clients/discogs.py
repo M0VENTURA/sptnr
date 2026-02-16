@@ -96,9 +96,12 @@ class DiscogsClient:
         # Only include Authorization header if token is provided and not a placeholder
         has_valid_token = token and token != "your_discogs_token"
         self.headers = {
-            "Authorization": f"Discogs token={token}" if has_valid_token else "",
             "User-Agent": "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
         }
+        if has_valid_token:
+            self.headers["Authorization"] = f"Discogs token={token}"
+        
+        logger.debug(f"[DISCOGS] Client initialized - token_valid={has_valid_token}, has_auth_header={'Authorization' in self.headers}")
         if not has_valid_token and enabled:
             logger.warning(f"Discogs client initialized without valid token - API calls will fail. Please set a valid token in config.yaml")
         self._single_cache = {}  # (artist, title, context) -> bool
