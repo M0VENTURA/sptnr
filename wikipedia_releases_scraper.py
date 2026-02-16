@@ -52,14 +52,13 @@ class WikipediaReleaseScraper:
     """Scrapes album releases from Wikipedia"""
     
     # Column order for each source: [position0, position1, position2, ...]
-    # Positions: 'day', 'artist', 'album', 'genre' (genre is skipped in parsing)
-    # Note: We skip genre/style columns in actual parsing as they clutter the data
+    # Note: Genre columns will be automatically skipped during parsing
     SOURCE_COLUMN_ORDERS = {
-        "2026_albums": ['genre', 'day', 'artist', 'album'],      # Genre, Number, Artist, Album
+        "2026_albums": ['day', 'artist', 'genre', 'album'],      # Day, Artist, Genre, Album
         "2026_heavy_metal": ['day', 'artist', 'album'],          # Day, Artist, Album
-        "2026_rock": ['day', 'artist', 'album'],                 # Number, Artist, Album
-        "2026_kpop": ['day', 'album', 'artist'],                 # Number, Album, Artist
-        "2026_american": ['day', 'album', 'artist'],             # Number, Album, Artist
+        "2026_rock": ['day', 'artist', 'album'],                 # Day, Artist, Album
+        "2026_kpop": ['day', 'album', 'artist'],                 # Day, Album, Artist
+        "2026_american": ['day', 'album', 'artist'],             # Day, Album, Artist
     }
     
     def __init__(self, db_path: str = "database.db"):
@@ -273,8 +272,8 @@ class WikipediaReleaseScraper:
                              column_order: list) -> Optional[Dict]:
         """Parse a row using source-specific column order
         
-        column_order: list like ['day', 'artist', 'album'] or ['genre', 'day', 'artist', 'album']
-        Genre columns are skipped in actual data extraction.
+        column_order: list like ['day', 'artist', 'genre', 'album']
+        Genre columns are automatically skipped.
         """
         try:
             if len(cells) < 2:
@@ -285,66 +284,63 @@ class WikipediaReleaseScraper:
             # Remove citation brackets like [23], [1], etc. from all cell text
             cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
             
-            # Skip first column if it's empty or looks like genre info
-            start_idx = 0
-            if cell_texts and (not cell_texts[0] or self._is_genre_column(cell_texts[0])):
-                start_idx = 1
-                logger.debug(f"Skipping first column (genre or empty): '{cell_texts[0][:30] if cell_texts[0] else 'EMPTY'}'")
+            # Build a mapping of column types to values, skipping 'genre' columns
+            col_values = {}
+            cell_idx = 0
             
-            # Adjust cell_texts and column_order to skip genre column
-            adjusted_order = [col for col in column_order if col != 'genre']
-            adjusted_cells = cell_texts[start_idx:]
+            logger.debug(f"Parsing row for {source_name}: {cell_texts[:5]}")  # Log first 5 cells
             
-            # Debug: log what we're parsing
-            logger.debug(f"Raw cells for {source_name} (after skipping): {adjusted_cells[:3]}")  # First 3 cells
-            logger.debug(f"Using column order (genre skipped): {adjusted_order}")
-            
-            # Extract fields based on adjusted column order
-            artist = None
-            album = None
-            day = None
-            
-            for col_idx, col_type in enumerate(adjusted_order):
-                if col_idx >= len(adjusted_cells):
+            for col_idx, col_type in enumerate(column_order):
+                if cell_idx >= len(cell_texts):
                     break
                 
-                cell_value = adjusted_cells[col_idx].strip()
+                cell_value = cell_texts[cell_idx].strip()
+                
+                # Skip empty cells
                 if not cell_value:
+                    cell_idx += 1
                     continue
                 
-                logger.debug(f"  Column {col_idx} ({col_type}): '{cell_value[:50]}'")
+                logger.debug(f"  Column {cell_idx}: col_type='{col_type}', value='{cell_value[:50]}'")
                 
-                if col_type == 'day':
-                    # Extract number from cell (handle cases like "9", "9.", etc.)
-                    try:
-                        # Use regex to extract the leading number
-                        match = re.match(r'(\d+)', cell_value)
-                        if match:
-                            day = int(match.group(1))
-                            if not (1 <= day <= 31):
-                                logger.debug(f"    Day {day} out of range, ignoring")
-                                day = None
-                            else:
-                                logger.debug(f"    Extracted day: {day} from '{cell_value}'")
-                        else:
-                            logger.debug(f"    No number found in '{cell_value}'")
-                    except (ValueError, AttributeError) as e:
-                        logger.debug(f"    Could not extract day from '{cell_value}': {e}")
-                elif col_type == 'artist':
-                    artist = cell_value
-                    logger.debug(f"    Artist: {artist[:50]}")
-                elif col_type == 'album':
-                    album = cell_value
-                    logger.debug(f"    Album: {album[:50]}")
+                # Skip genre columns - they're in the column order but we don't extract them
+                if col_type == 'genre':
+                    logger.debug(f"    Skipping genre cell: '{cell_value[:50]}'")
+                    cell_idx += 1
+                    continue
+                
+                # Store the value
+                col_values[col_type] = cell_value
+                cell_idx += 1
             
-            # If we didn't get a day, default to 1
+            # Extract and process the values we care about
+            day = None
+            artist = col_values.get('artist')
+            album = col_values.get('album')
+            
+            # Process day
+            day_str = col_values.get('day')
+            if day_str:
+                try:
+                    match = re.match(r'(\d+)', day_str)
+                    if match:
+                        day = int(match.group(1))
+                        if not (1 <= day <= 31):
+                            logger.debug(f"    Day {day} out of range, ignoring")
+                            day = None
+                        else:
+                            logger.debug(f"    Extracted day: {day}")
+                except (ValueError, AttributeError) as e:
+                    logger.debug(f"    Could not extract day from '{day_str}': {e}")
+            
+            # Default day to 1 if not found
             if not day:
                 day = 1
                 logger.debug(f"  No day found, defaulting to 1")
             
             # Validate we have artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
-                logger.debug(f"  Invalid: artist={artist}, album={album}")
+                logger.debug(f"  Invalid: artist='{artist}', album='{album}'")
                 return None
             
             # Skip entries with wiki markup
@@ -353,7 +349,7 @@ class WikipediaReleaseScraper:
                     logger.debug(f"  Skipping due to wiki markup")
                     return None
             
-            # Skip if artist or album looks like it's full of genre info (multi-word, all lowercase)
+            # Skip if artist or album looks like it's full of genre info
             if self._is_genre_column(artist) or self._is_genre_column(album):
                 logger.debug(f"  Skipping: one field looks like genre info")
                 return None
