@@ -1817,9 +1817,12 @@ def artist_detail(name):
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
         slskd_config = cfg.get("slskd", {"enabled": False})
         
+        # Convert albums_data Row objects to dicts for template serialization
+        albums_data_dicts = [dict(album) for album in albums_data]
+        
         return render_template("artist.html", 
                              artist_name=name,
-                             albums=albums_data,  # Keep for compatibility
+                             albums=albums_data_dicts,  # Keep for compatibility
                              albums_by_category=merged_albums_by_category,
                              missing_by_category=missing_by_category,  # Keep for backward compatibility
                              stats=artist_stats,
