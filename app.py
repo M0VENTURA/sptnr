@@ -3403,21 +3403,37 @@ def api_update_track_tags(track_id):
         from tag_manager import update_track_tags, sync_track_tags_to_file
         
         data = request.get_json()
+        if not data:
+            return jsonify({"error": "No data provided"}), 400
+            
         tag_updates = data.get("tags", {})
         sync_to_file = data.get("sync_to_file", False)
         
         if not tag_updates:
             return jsonify({"error": "No tags to update"}), 400
         
+        logging.debug(f"[TAGS] Updating track {track_id} with: {tag_updates}")
+        
         # Update database
-        success = update_track_tags(track_id, tag_updates)
-        if not success:
-            return jsonify({"error": "Failed to update tags"}), 500
+        try:
+            success = update_track_tags(track_id, tag_updates)
+            if not success:
+                logging.error(f"[TAGS] update_track_tags returned False for track {track_id}")
+                return jsonify({"error": "Failed to update tags in database"}), 500
+        except Exception as e:
+            logging.error(f"[TAGS] Error in update_track_tags: {type(e).__name__}: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return jsonify({"error": f"Database error: {str(e)}"}), 500
         
         # Optionally sync back to audio file
         file_synced = False
         if sync_to_file:
-            file_synced = sync_track_tags_to_file(track_id)
+            try:
+                file_synced = sync_track_tags_to_file(track_id)
+            except Exception as e:
+                logging.warning(f"[TAGS] Error syncing tags to file for track {track_id}: {e}")
+                # Don't fail the request, file sync is optional
         
         return jsonify({
             "success": True,
@@ -3427,8 +3443,10 @@ def api_update_track_tags(track_id):
             "message": f"Updated {len(tag_updates)} field(s) for track {track_id}"
         })
     except Exception as e:
-        logging.error(f"[TAGS] Error updating track tags: {e}")
-        return jsonify({"error": str(e)}), 500
+        logging.error(f"[TAGS] Unexpected error updating track tags: {type(e).__name__}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": f"Unexpected error: {str(e)}"}), 500
 
 
 @app.route("/api/tags/album/<path:album>/<path:artist>", methods=["GET"])
@@ -9929,39 +9947,52 @@ def api_queue_add():
         
         data = request.get_json()
         if not data:
+            logging.warning(f"Queue add called with no JSON data")
             return jsonify({"error": "No data provided"}), 400
+        
+        # Log received data for debugging
+        logging.debug(f"Queue add request data: {data}")
             
-        artist = data.get('artist', '').strip()
-        title = data.get('title', '').strip()
+        artist = data.get('artist', '').strip() if data.get('artist') else ''
+        title = data.get('title', '').strip() if data.get('title') else ''
         album = data.get('album', '').strip() if data.get('album') else None
         source = data.get('source', 'soulseek')  # 'soulseek' or 'qbittorrent'
-        priority = int(data.get('priority', 5))
+        
+        # Handle priority parsing
+        try:
+            priority = int(data.get('priority', 5))
+        except (ValueError, TypeError):
+            priority = 5
         
         if not artist or not title:
+            logging.warning(f"Queue add missing required fields: artist='{artist}', title='{title}'")
             return jsonify({"error": "Artist and title are required"}), 400
         
-        logging.info(f"Adding to queue: {artist} - {title} (album: {album}, source: {source})")
+        logging.info(f"Adding to queue: {artist} - {title} (album: {album}, source: {source}, priority: {priority})")
         
         # Add to queue
-        item = add_to_queue(artist, title, album, source, priority)
+        try:
+            item = add_to_queue(artist, title, album, source, priority)
+        except Exception as e:
+            logging.error(f"Error in add_to_queue: {type(e).__name__}: {e}")
+            import traceback
+            logging.error(traceback.format_exc())
+            return jsonify({"error": f"Failed to add to queue: {str(e)}"}), 500
         
         if item:
             return jsonify({
                 "success": True,
-                "queue_id": item['id'],
+                "queue_id": item.get('id') if isinstance(item, dict) else None,
                 "message": f"Added to queue: {artist} - {title}",
                 "item": item
             })
         else:
             error_msg = "Failed to add to queue - check server logs for details"
             logging.error(f"add_to_queue returned None for: {artist} - {title}")
-            return jsonify({"error": error_msg}), 400
+            return jsonify({"error": error_msg}), 500
             
-    except ValueError as e:
-        logging.error(f"Invalid input for queue add: {e}")
-        return jsonify({"error": f"Invalid input: {str(e)}"}), 400
     except Exception as e:
-        logging.error(f"Error adding to queue: {type(e).__name__}: {e}")
+        logging.error(f"Unexpected error adding to queue: {type(e).__name__}: {e}")
         import traceback
         logging.error(traceback.format_exc())
         return jsonify({"error": f"Server error: {type(e).__name__}"}), 500

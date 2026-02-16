@@ -616,6 +616,38 @@ const SLSKD_MAX_POLL_ATTEMPTS = 20;
 const SLSKD_POLL_INTERVAL_MS = 2000;
 const BYTES_TO_MB = 1024 * 1024;
 
+// Fallback functions if genre-utils.js fails to load
+if (typeof toggleGenreCheckbox === 'undefined') {
+    window.toggleGenreCheckbox = function(containerId, buttonId) {
+        const button = document.getElementById(buttonId);
+        const container = document.getElementById(containerId);
+        if (!container || !button) return;
+        const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+        const checkedBoxes = Array.from(checkboxes).filter(cb => cb.checked);
+        if (checkedBoxes.length > 0) {
+            button.style.display = 'inline-block';
+            button.textContent = `Remove ${checkedBoxes.length} Selected Genre${checkedBoxes.length > 1 ? 's' : ''}`;
+        } else {
+            button.style.display = 'none';
+        }
+    };
+}
+
+if (typeof getSelectedGenres === 'undefined') {
+    window.getSelectedGenres = function(containerId) {
+        const container = document.getElementById(containerId);
+        if (!container) return [];
+        return Array.from(container.querySelectorAll('input[type="checkbox"]:checked')).map(cb => cb.value);
+    };
+}
+
+if (typeof handleGenreRemoval === 'undefined') {
+    window.handleGenreRemoval = function(artistName, albumName, genres, contextType) {
+        // Fallback handler for genre removal
+        alert(`Would remove genres: ${genres.join(', ')}`);
+    };
+}
+
 // ===== Artist IDs Modal Functions (defined early for onclick handlers) =====
 function openEditArtistIdsModal() {
   const artistName = {{ artist_name|tojson }};
