@@ -11617,7 +11617,6 @@ def api_track_discogs_lookup():
     """Lookup track on Discogs for better metadata and genres"""
     try:
         from api_clients.discogs import DiscogsClient
-        import requests
         
         data = request.get_json()
         title = data.get("title", "")
@@ -11636,19 +11635,43 @@ def api_track_discogs_lookup():
         if not token:
             return jsonify({"error": "Discogs token not configured. Please add your Discogs token in config.yaml under api_integrations.discogs.token"}), 400
         
-        # Search Discogs API directly
-        headers = {
-            "Authorization": f"Discogs token={token}",
-            "User-Agent": "Sptnr/1.0"
-        }
+        # Use DiscogsClient with proper session and retry logic
+        client = DiscogsClient(token=token)
+        
+        # Prepare search query
+        from api_clients import session
         query = f"{artist} {album or title}"
         
-        response = requests.get(
+        # Search Discogs API using the shared session with retry logic
+        headers = {
+            "Authorization": f"Discogs token={token}",
+            "User-Agent": "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
+        }
+        
+        import time
+        response = session.get(
             "https://api.discogs.com/database/search",
             params={"q": query, "type": "release", "per_page": 5},
             headers=headers,
-            timeout=10
+            timeout=(5, 10)
         )
+        
+        # Handle rate limiting
+        if response.status_code == 429:
+            retry_after = int(response.headers.get("Retry-After", 60))
+            time.sleep(min(retry_after, 5))  # Cap at 5 seconds
+            response = session.get(
+                "https://api.discogs.com/database/search",
+                params={"q": query, "type": "release", "per_page": 5},
+                headers=headers,
+                timeout=(5, 10)
+            )
+        
+        # Check for auth errors
+        if response.status_code == 401:
+            return jsonify({"error": "Discogs API authentication failed: invalid or expired token"}), 401
+        elif response.status_code == 403:
+            return jsonify({"error": "Discogs API access forbidden: check token permissions"}), 403
         
         if not response.ok:
             return jsonify({"error": f"Discogs API error: {response.status_code}"}), 500
@@ -11681,8 +11704,8 @@ def api_track_discogs_lookup():
     except Exception as e:
         logger = logging.getLogger('sptnr')
         logger.error(f"Discogs lookup error: {e}")
-        return jsonify({"error": str(e)}), 500
-        logger.error(f"Discogs lookup error: {e}")
+        import traceback
+        logger.debug(f"Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 500
 
 
