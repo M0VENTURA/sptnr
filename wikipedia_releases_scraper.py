@@ -396,7 +396,8 @@ class WikipediaReleaseScraper:
     
     def _extract_year_from_source_key(self, source_key: str) -> int:
         """Extract year from source key (e.g., '2026_albums' -> 2026)"""
-        match = re.search(r'(20\d{2})', source_key)
+        # Match years from 2020-2099 (202x, 203x, etc.)
+        match = re.search(r'(20[2-9]\d)', source_key)
         if match:
             return int(match.group(1))
         # Default to current year if no year found
@@ -404,7 +405,8 @@ class WikipediaReleaseScraper:
     
     def _extract_year(self, date_str: str) -> int:
         """Extract year from date string"""
-        match = re.search(r'202[6-9]|202[0-9]', date_str)
+        # Match years from 2020-2029
+        match = re.search(r'202\d', date_str)
         if match:
             return int(match.group())
         # Default to current year if no year found
