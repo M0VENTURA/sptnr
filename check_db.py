@@ -529,7 +529,7 @@ def update_schema(db_path):
             except sqlite3.OperationalError as e:
                 # Column might already exist due to race condition
                 if "duplicate column name" not in str(e).lower():
-                    logger.warning(f"Could not add column {col} to download_queue: {e}")
+                    print(f"⚠ Could not add column {col} to download_queue: {e}")
     
     if queue_columns_added:
         print(f"✅ Added {len(queue_columns_added)} missing download_queue column(s): {', '.join(queue_columns_added)}")
