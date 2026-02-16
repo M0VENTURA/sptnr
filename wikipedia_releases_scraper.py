@@ -7,7 +7,7 @@ Parses release tables and stores information in the database.
 """
 import sqlite3
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import re
@@ -463,13 +463,9 @@ class WikipediaReleaseScraper:
                     else:
                         logger.debug(f"  Could not parse day, defaulting to 1")
             
-            # Validate date and check if it's in the past
+            # Validate date
             try:
                 release_dt = datetime(year, current_month, day)
-                # Skip releases that are in the past (more than 1 day ago to allow for timezone differences)
-                if release_dt < datetime.now() - timedelta(days=1):
-                    logger.debug(f"  Skipping past release date: {year}-{current_month:02d}-{day:02d}")
-                    return None, had_date_cell
             except ValueError as e:
                 logger.debug(f"  Invalid date: {year}-{current_month:02d}-{day:02d} - {e}")
                 logger.debug(f"  Defaulting to first day of month")
