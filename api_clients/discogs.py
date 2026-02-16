@@ -469,8 +469,9 @@ class DiscogsClient:
             
             # Use database search endpoint with format filtering
             # This is more efficient than fetching all artist releases
+            format_to_key = {"Single": "singles", "EP": "eps"}
             for format_type in ["Single", "EP"]:
-                result_key = "singles" if format_type == "Single" else "eps"
+                result_key = format_to_key[format_type]
                 try:
                     _throttle_discogs()
                     search_url = f"{self.base_url}/database/search"
