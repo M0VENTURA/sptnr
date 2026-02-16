@@ -55,7 +55,7 @@ class WikipediaReleaseScraper:
     # Column order for each source: [position0, position1, position2, ...]
     # Note: Genre columns will be automatically skipped during parsing
     SOURCE_COLUMN_ORDERS = {
-        "2026_albums": ['day', 'artist', 'album', 'genre'],      # Day, Artist, Album, Genre (matches Wikipedia table order)
+        "2026_albums": ['day', 'album', 'artist', 'genre'],      # Day, Album, Artist, Genre (Wikipedia general albums page)
         "2026_heavy_metal": ['day', 'artist', 'album'],          # Day, Artist, Album
         "2026_rock": ['day', 'artist', 'album'],                 # Day, Artist, Album
         "2026_kpop": ['day', 'album', 'artist'],                 # Day, Album, Artist
