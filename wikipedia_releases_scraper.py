@@ -305,7 +305,9 @@ class WikipediaReleaseScraper:
             # DETECT if first cell is a date or not
             # If row has one fewer cell than expected OR first cell is not a date, shift the mapping
             first_cell = cell_texts[0] if cell_texts else ""
-            has_date_in_first_cell = bool(re.match(r'^\d{1,2}$', first_cell))  # Just a number like "9" or "16"
+            # Match day numbers even if mixed with month names (e.g., "January 2", "Jan 2", "2")
+            date_match = re.search(r'\b(\d{1,2})\b', first_cell)
+            has_date_in_first_cell = bool(date_match)
             
             actual_column_order = column_order.copy()
             
@@ -352,7 +354,9 @@ class WikipediaReleaseScraper:
             day_str = col_values.get('day')
             if day_str:
                 try:
-                    match = re.match(r'(\d+)', day_str)
+                    # Use search() instead of match() to find numbers anywhere in the string
+                    # This handles cases like "January 2", "2", "Feb 2", etc.
+                    match = re.search(r'\b(\d{1,2})\b', day_str)
                     if match:
                         day = int(match.group(1))
                         if not (1 <= day <= 31):
