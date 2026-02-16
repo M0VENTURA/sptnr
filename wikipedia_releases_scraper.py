@@ -407,7 +407,8 @@ class WikipediaReleaseScraper:
         match = re.search(r'202[6-9]|202[0-9]', date_str)
         if match:
             return int(match.group())
-        return 2026
+        # Default to current year if no year found
+        return datetime.now().year
     
     def _parse_date_string(self, date_str: str) -> Optional[str]:
         """Parse various date formats and return YYYY-MM-DD"""
@@ -432,9 +433,9 @@ class WikipediaReleaseScraper:
         for fmt in formats:
             try:
                 parsed = datetime.strptime(date_str, fmt)
-                # If no year was in format, use 2026
+                # If no year was in format, use current year
                 if '%Y' not in fmt:
-                    parsed = parsed.replace(year=2026)
+                    parsed = parsed.replace(year=datetime.now().year)
                 return parsed.strftime('%Y-%m-%d')
             except ValueError:
                 continue
@@ -505,7 +506,7 @@ class WikipediaReleaseScraper:
                     artist_name,
                     release.get("album_name", "Unknown"),
                     release.get("release_date"),
-                    release.get("release_year", 2026),
+                    release.get("release_year", datetime.now().year),
                     source_name,
                     artist_in_collection,
                     album_in_collection,
