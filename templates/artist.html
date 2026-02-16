@@ -20,23 +20,23 @@
       <p class="text-muted mb-0">Artist overview</p>
     </div>
     <div class="d-flex flex-column flex-sm-row gap-2 w-100 w-md-auto">
-      <button class="btn btn-outline-info" id="singlesCountBtn" onclick="showArtistSingles({{ artist_name|tojson }})" title="View singles for this artist">
+      <button class="btn btn-outline-info" id="singlesCountBtn" onclick='showArtistSingles({{ artist_name|tojson }})' title="View singles for this artist">
         <i class="bi bi-single-music"></i> <span class="d-none d-sm-inline">Singles</span> <span class="badge bg-info" id="singlesCount">0</span>
       </button>
-      <button class="btn btn-outline-success" onclick="createEssentialPlaylist({{ artist_name|tojson }})" title="Create Essential Playlist based on single detection">
+      <button class="btn btn-outline-success" onclick='createEssentialPlaylist({{ artist_name|tojson }})' title="Create Essential Playlist based on single detection">
         <i class="bi bi-star-fill"></i> <span class="d-none d-sm-inline">Essential</span>
       </button>
-      <button class="btn btn-outline-success" onclick="addBookmark('artist', {{ artist_name|tojson }}, {{ artist_name|tojson }}, null, null)" title="Add to favourites">
+      <button class="btn btn-outline-success" onclick='addBookmark("artist", {{ artist_name|tojson }}, {{ artist_name|tojson }}, null, null)' title="Add to favourites">
         <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
       </button>
-      <button class="btn btn-outline-warning" onclick="checkMissingReleases({{ artist_name|tojson }})" title="Check MusicBrainz for missing releases">
+      <button class="btn btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz for missing releases">
         <i class="bi bi-flag"></i> <span class="d-none d-sm-inline">Missing</span>
       </button>
-      <button class="btn btn-outline-warning" onclick="updateArtistAlbumsWithBeets({{ artist_name|tojson }})" title="Update all albums with beets (write tags and organize files)">
+      <button class="btn btn-outline-warning" onclick='updateArtistAlbumsWithBeets({{ artist_name|tojson }})' title="Update all albums with beets (write tags and organize files)">
         <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
       </button>
       {% if (qbit_config.enabled and qbit_config.web_url) or slskd_config.enabled %}
-      <button class="btn btn-outline-info" onclick="openDownloadSearch({{ artist_name|tojson }})" title="Download {{ artist_name }} releases">
+      <button class="btn btn-outline-info" onclick='openDownloadSearch({{ artist_name|tojson }})' title="Download {{ artist_name }} releases">
         <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
       </button>
       {% endif %}
@@ -66,7 +66,7 @@
                    alt="{{ artist_name }}" 
                    style="width: 100%; height: 100%; object-fit: cover;"
                    onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Image%3C/text%3E%3C/svg%3E';">
-              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openArtistImageModal({{ artist_name|tojson }})" title="Change artist image">
+              <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick='openArtistImageModal({{ artist_name|tojson }})' title="Change artist image">
                 <i class="bi bi-pencil"></i> Change Image
               </button>
             </div>
@@ -341,7 +341,7 @@
             <i class="bi bi-eye-slash"></i> <span class="d-none d-sm-inline">Show Missing</span>
           </button>
         {% endif %}
-        <button class="btn btn-sm btn-outline-warning" onclick="checkMissingReleases({{ artist_name|tojson }})" title="Check MusicBrainz for missing releases">
+        <button class="btn btn-sm btn-outline-warning" onclick='checkMissingReleases({{ artist_name|tojson }})' title="Check MusicBrainz for missing releases">
           <i class="bi bi-flag"></i> Check for Missing
         </button>
       </div>
