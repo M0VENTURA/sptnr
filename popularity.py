@@ -3326,16 +3326,23 @@ def popularity_scan(
                             # Create star rating string (max 5 stars)
                             stars_str = "★" * min(track_stars, 5)
                             
+                            # Determine categorization first to know what reasons to show
+                            is_detected_single = track_is_single and track_stars == 5
+                            is_standout = track_is_standout and track_stars == 5 and not track_is_single
+                            is_close_match = track_single_confidence == "medium" or (sources_str and not track_is_single)
+                            
                             # Build reason string for categorization
                             reasons = []
-                            if track_is_single and sources_str:
+                            if is_detected_single and sources_str:
                                 reasons.append(sources_str)
-                            elif track_is_standout and track_stars == 5:
+                            elif is_standout:
                                 reasons.append("Standout Track")
-                            elif track_single_confidence == "medium" and sources_str:
-                                reasons.append(sources_str)
-                            elif track_single_confidence == "medium" and track_is_standout:
-                                reasons.append(f"Standout Track, below Z Score rating")
+                            elif is_close_match:
+                                # Always show sources for close matches
+                                if sources_str:
+                                    reasons.append(sources_str)
+                                elif track_single_confidence == "medium":
+                                    reasons.append("Medium Confidence")
                             
                             reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
                             
@@ -3346,11 +3353,11 @@ def popularity_scan(
                             # 3. Close Matches (medium confidence or has sources but not single)
                             # 4. Rest of Album (everything else)
                             
-                            if track_is_single and track_stars == 5:
+                            if is_detected_single:
                                 detected_singles.append((track_title, stars_str, reason_str))
-                            elif track_is_standout and track_stars == 5 and not track_is_single:
+                            elif is_standout:
                                 standout_tracks.append((track_title, stars_str, reason_str))
-                            elif track_single_confidence == "medium" or (sources_str and not track_is_single):
+                            elif is_close_match:
                                 possible_singles.append((track_title, stars_str, reason_str))
                             else:
                                 rest_of_album.append((track_title, stars_str, reason_str))
