@@ -431,11 +431,15 @@ class WikipediaReleaseScraper:
         return None
     
     def save_releases(self, releases: List[Dict], source_name: str) -> tuple:
-        """Save releases to database, avoiding duplicates"""
+        """Save releases to database, avoiding duplicates
+        
+        Only imports releases from artists in the user's collection.
+        """
         conn = self.get_db()
         cursor = conn.cursor()
         added = 0
         updated = 0
+        filtered_out = 0
         
         # Get list of artists in collection (gracefully handle if tracks table doesn't exist)
         artists_in_collection = set()
@@ -456,13 +460,24 @@ class WikipediaReleaseScraper:
             artists_in_collection = set()
             albums_in_collection = set()
         
+        logger.info(f"Filtering {len(releases)} releases against {len(artists_in_collection)} artists in collection")
+        
         for release in releases:
             if not release or not isinstance(release, dict):
                 logger.warning(f"Skipping invalid release: {release}")
                 continue
-                
-            artist_in_collection = release.get("artist_name", "").lower() in artists_in_collection if release.get("artist_name") else False
-            album_in_collection = (release.get("artist_name", "").lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("artist_name") and release.get("album_name") else False
+            
+            # Only import releases from artists in collection
+            artist_name = release.get("artist_name", "")
+            artist_in_collection = artist_name.lower() in artists_in_collection if artist_name else False
+            
+            # Skip releases from artists not in collection
+            if not artist_in_collection:
+                logger.debug(f"Filtered out: '{artist_name}' - {release.get('album_name')} (artist not in collection)")
+                filtered_out += 1
+                continue
+            
+            album_in_collection = (artist_name.lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("album_name") else False
             
             try:
                 cursor.execute("""
@@ -470,14 +485,12 @@ class WikipediaReleaseScraper:
                     (artist_name, album_name, release_date, release_year, source, 
                      artist_in_collection, album_in_collection)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(artist_name, album_name) DO UPDATE SET
-                    release_date = excluded.release_date,
-                    release_year = excluded.release_year,
+                    ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
                     updated_at = CURRENT_TIMESTAMP,
                     artist_in_collection = excluded.artist_in_collection,
                     album_in_collection = excluded.album_in_collection
                 """, (
-                    release.get("artist_name", "Unknown"),
+                    artist_name,
                     release.get("album_name", "Unknown"),
                     release.get("release_date"),
                     release.get("release_year", 2026),
@@ -486,10 +499,17 @@ class WikipediaReleaseScraper:
                     album_in_collection,
                 ))
                 added += 1
-            except sqlite3.IntegrityError:
-                # This shouldn't happen with the new UNIQUE constraint
-                logger.warning(f"Unexpected integrity error for {release.get('artist_name')} - {release.get('album_name')}")
-                updated += 1
+            except sqlite3.IntegrityError as e:
+                # Update existing record
+                try:
+                    cursor.execute("""
+                        UPDATE upcoming_releases
+                        SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
+                        WHERE artist_name = ? AND album_name = ? AND release_date = ?
+                    """, (artist_in_collection, album_in_collection, artist_name, release.get("album_name", ""), release.get("release_date")))
+                    updated += 1
+                except Exception as update_error:
+                    logger.warning(f"Failed to update release - {artist_name} / {release.get('album_name')}: {update_error}")
         
         # Log scrape
         try:
@@ -514,6 +534,7 @@ class WikipediaReleaseScraper:
         conn.commit()
         conn.close()
         
+        logger.info(f"{source_name}: {added} added, {updated} updated, {filtered_out} filtered out (from {len(releases)} total)")
         return added, updated
     
     def get_upcoming_releases(self, artist_in_collection: bool = False) -> List[Dict]:

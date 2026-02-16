@@ -40,7 +40,7 @@ def create_upcoming_releases_schema():
             url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(artist_name, album_name)
+            UNIQUE(artist_name, album_name, release_date)
         )
     """)
     print("✓ Created/verified upcoming_releases table successfully")

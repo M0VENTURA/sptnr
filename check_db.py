@@ -825,7 +825,7 @@ def update_schema(db_path):
             url TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            UNIQUE(artist_name, album_name)
+            UNIQUE(artist_name, album_name, release_date)
         )
     """)
     
