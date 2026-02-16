@@ -470,7 +470,9 @@ class WikipediaReleaseScraper:
                     (artist_name, album_name, release_date, release_year, source, 
                      artist_in_collection, album_in_collection)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
+                    ON CONFLICT(artist_name, album_name) DO UPDATE SET
+                    release_date = excluded.release_date,
+                    release_year = excluded.release_year,
                     updated_at = CURRENT_TIMESTAMP,
                     artist_in_collection = excluded.artist_in_collection,
                     album_in_collection = excluded.album_in_collection
@@ -485,13 +487,8 @@ class WikipediaReleaseScraper:
                 ))
                 added += 1
             except sqlite3.IntegrityError:
-                # Update existing
-                cursor.execute("""
-                    UPDATE upcoming_releases
-                    SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
-                    WHERE artist_name = ? AND album_name = ? AND release_date = ?
-                """, (artist_in_collection, album_in_collection, 
-                      release.get("artist_name", ""), release.get("album_name", ""), release.get("release_date")))
+                # This shouldn't happen with the new UNIQUE constraint
+                logger.warning(f"Unexpected integrity error for {release.get('artist_name')} - {release.get('album_name')}")
                 updated += 1
         
         # Log scrape
