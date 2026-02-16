@@ -56,7 +56,7 @@ api_integrations:
   
   discogs:
     enabled: true
-    token: "your_discogs_token"
+    token: "your_discogs_token"  # Get token from https://www.discogs.com/settings/developers (required for single detection)
   
   musicbrainz:
     enabled: true
