@@ -52,13 +52,14 @@ class WikipediaReleaseScraper:
     """Scrapes album releases from Wikipedia"""
     
     # Column order for each source: [position0, position1, position2, ...]
-    # Positions: 'day', 'artist', 'album'
+    # Positions: 'day', 'artist', 'album', 'genre' (genre is skipped in parsing)
+    # Note: We skip genre/style columns in actual parsing as they clutter the data
     SOURCE_COLUMN_ORDERS = {
-        "2026_albums": ['day', 'artist', 'album'],      # Number, Artist, Album
-        "2026_heavy_metal": ['day', 'artist', 'album'],  # Day, Artist, Album
-        "2026_rock": ['day', 'artist', 'album'],         # Number, Artist, Album
-        "2026_kpop": ['day', 'album', 'artist'],         # Number, Album, Artist
-        "2026_american": ['day', 'album', 'artist'],     # Number, Album, Artist
+        "2026_albums": ['genre', 'day', 'artist', 'album'],      # Genre, Number, Artist, Album
+        "2026_heavy_metal": ['day', 'artist', 'album'],          # Day, Artist, Album
+        "2026_rock": ['day', 'artist', 'album'],                 # Number, Artist, Album
+        "2026_kpop": ['day', 'album', 'artist'],                 # Number, Album, Artist
+        "2026_american": ['day', 'album', 'artist'],             # Number, Album, Artist
     }
     
     def __init__(self, db_path: str = "database.db"):
@@ -241,14 +242,42 @@ class WikipediaReleaseScraper:
         
         return releases
     
+    def _is_genre_column(self, cell_value: str) -> bool:
+        """Detect if a cell contains genre/style information
+        
+        Genre cells typically:
+        - Contain multiple items separated by commas
+        - Have words like "metal", "rock", "pop", "hip-hop", etc.
+        - Are comma-separated
+        - Often contain dashes (e.g., "Heavy-metal")
+        """
+        if not cell_value or len(cell_value) < 3:
+            return False
+        
+        # Check if cell has multiple comma-separated items (typical for genres)
+        if ',' in cell_value:
+            parts = [p.strip() for p in cell_value.split(',')]
+            # If we have 2+ parts, check if they look like genres
+            if len(parts) >= 2:
+                genre_keywords = ['metal', 'rock', 'pop', 'hip-hop', 'hip hop', 'punk', 'jazz', 
+                                'blues', 'country', 'folk', 'electronic', 'dance', 'soul', 'funk',
+                                'alternative', 'indie', 'ambient', 'experimental', 'classical']
+                for part in parts[:2]:  # Check first 2 parts
+                    if any(keyword in part.lower() for keyword in genre_keywords):
+                        logger.debug(f"  Detected genre column: {cell_value[:40]}")
+                        return True
+        
+        return False
+
     def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
                              column_order: list) -> Optional[Dict]:
         """Parse a row using source-specific column order
         
-        column_order: list like ['day', 'artist', 'album'] indicating what each column contains
+        column_order: list like ['day', 'artist', 'album'] or ['genre', 'day', 'artist', 'album']
+        Genre columns are skipped in actual data extraction.
         """
         try:
-            if len(cells) < len([c for c in column_order if c]):  # At least the important columns
+            if len(cells) < 2:
                 return None
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
@@ -256,19 +285,30 @@ class WikipediaReleaseScraper:
             # Remove citation brackets like [23], [1], etc. from all cell text
             cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
             
-            # Debug: log what we're parsing
-            logger.debug(f"Raw cells for {source_name}: {cell_texts[:4]}")  # First 4 cells
+            # Skip first column if it's empty or looks like genre info
+            start_idx = 0
+            if cell_texts and (not cell_texts[0] or self._is_genre_column(cell_texts[0])):
+                start_idx = 1
+                logger.debug(f"Skipping first column (genre or empty): '{cell_texts[0][:30] if cell_texts[0] else 'EMPTY'}'")
             
-            # Extract fields based on column order
+            # Adjust cell_texts and column_order to skip genre column
+            adjusted_order = [col for col in column_order if col != 'genre']
+            adjusted_cells = cell_texts[start_idx:]
+            
+            # Debug: log what we're parsing
+            logger.debug(f"Raw cells for {source_name} (after skipping): {adjusted_cells[:3]}")  # First 3 cells
+            logger.debug(f"Using column order (genre skipped): {adjusted_order}")
+            
+            # Extract fields based on adjusted column order
             artist = None
             album = None
             day = None
             
-            for col_idx, col_type in enumerate(column_order):
-                if col_idx >= len(cell_texts):
+            for col_idx, col_type in enumerate(adjusted_order):
+                if col_idx >= len(adjusted_cells):
                     break
                 
-                cell_value = cell_texts[col_idx].strip()
+                cell_value = adjusted_cells[col_idx].strip()
                 if not cell_value:
                     continue
                 
@@ -292,10 +332,10 @@ class WikipediaReleaseScraper:
                         logger.debug(f"    Could not extract day from '{cell_value}': {e}")
                 elif col_type == 'artist':
                     artist = cell_value
-                    logger.debug(f"    Artist: {artist[:40]}")
+                    logger.debug(f"    Artist: {artist[:50]}")
                 elif col_type == 'album':
                     album = cell_value
-                    logger.debug(f"    Album: {album[:40]}")
+                    logger.debug(f"    Album: {album[:50]}")
             
             # If we didn't get a day, default to 1
             if not day:
@@ -312,6 +352,11 @@ class WikipediaReleaseScraper:
                 if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
                     logger.debug(f"  Skipping due to wiki markup")
                     return None
+            
+            # Skip if artist or album looks like it's full of genre info (multi-word, all lowercase)
+            if self._is_genre_column(artist) or self._is_genre_column(album):
+                logger.debug(f"  Skipping: one field looks like genre info")
+                return None
             
             # Build date
             release_date = f"2026-{current_month:02d}-{day:02d}"
