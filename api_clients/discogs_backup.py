@@ -400,41 +400,22 @@ class DiscogsClient:
                 "per_page": 5
             }
             
-            logger.debug(f"Discogs: GET {search_url} with params={params}")
             response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            logger.debug(f"Discogs: Artist search response status={response.status_code}")
-            
             if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", 60))
-                logger.warning(f"Discogs API rate limited, retrying after {retry_after}s")
                 time.sleep(retry_after)
                 _throttle_discogs()
                 response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            
-            if response.status_code == 401:
-                logger.error(f"Discogs API authentication failed (401): invalid or expired token")
-                logger.debug(f"Discogs token used: {self.token[:20] if self.token else 'None'}{'...' if self.token and len(self.token) > 20 else ''}")
-                return None
-            elif response.status_code == 403:
-                logger.error(f"Discogs API access forbidden (403): check token permissions")
-                return None
-            elif response.status_code >= 400:
-                logger.error(f"Discogs API error {response.status_code}: {response.text[:200]}")
-                return None
-            
             response.raise_for_status()
             
             results = response.json().get("results", [])
-            logger.debug(f"Discogs: Found {len(results)} artist results for '{artist}'")
             if results:
                 # Return the ID of the first artist match
                 return results[0].get("id")
             return None
         
         except Exception as e:
-            logger.error(f"Failed to get artist ID for '{artist}': {e}")
-            import traceback
-            logger.debug(f"   Traceback: {traceback.format_exc()}")
+            logger.debug(f"Failed to get artist ID for '{artist}': {e}")
             return None
     
     def _fetch_artist_singles_and_eps(self, artist_id: int, timeout: tuple[int, int] | int = (5, 10)) -> Dict[str, List[str]]:
@@ -462,36 +443,18 @@ class DiscogsClient:
                 releases_url = f"{self.base_url}/artists/{artist_id}/releases"
                 params = {"per_page": 100}
                 
-                logger.debug(f"Discogs: GET {releases_url} for artist {artist_id}")
                 response = self.session.get(releases_url, headers=self.headers, params=params, timeout=timeout)
-                logger.debug(f"Discogs: Artist releases response status={response.status_code}")
-                
                 if response.status_code == 429:
                     retry_after = int(response.headers.get("Retry-After", 60))
-                    logger.warning(f"Discogs API rate limited, retrying after {retry_after}s")
                     time.sleep(retry_after)
                     _throttle_discogs()
                     response = self.session.get(releases_url, headers=self.headers, params=params, timeout=timeout)
-                
-                if response.status_code == 401:
-                    logger.error(f"Discogs API authentication failed (401): invalid or expired token")
-                    logger.debug(f"Discogs token used: {self.token[:20] if self.token else 'None'}{'...' if self.token and len(self.token) > 20 else ''}")
-                    return result
-                elif response.status_code == 403:
-                    logger.error(f"Discogs API access forbidden (403): check token permissions")
-                    return result
-                elif response.status_code >= 400:
-                    logger.error(f"Discogs API error {response.status_code}: {response.text[:200]}")
-                    return result
-                
                 response.raise_for_status()
                 
                 releases = response.json().get("releases", [])
                 logger.debug(f"Discogs: Fetched {len(releases)} total releases for artist {artist_id}")
                 
                 # Process each release and filter by format client-side
-                singles_found = 0
-                eps_found = 0
                 for release_info in releases:
                     release_id = release_info.get("id")
                     if not release_id:
@@ -514,11 +477,6 @@ class DiscogsClient:
                             time.sleep(retry_after)
                             _throttle_discogs()
                             rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
-                        
-                        if rel_response.status_code >= 400:
-                            logger.debug(f"Discogs: Failed to fetch release {release_id}: HTTP {rel_response.status_code}")
-                            continue
-                        
                         rel_response.raise_for_status()
                         
                         release_data = rel_response.json()
@@ -550,29 +508,19 @@ class DiscogsClient:
                                     if normalized and normalized not in result[result_key]:
                                         result[result_key].append(normalized)
                                         logger.debug(f"Discogs: Added {result_key}: '{normalized}' from '{release_title}'")
-                                        if result_key == "singles":
-                                            singles_found += 1
-                                        else:
-                                            eps_found += 1
                     
                     except Exception as e:
                         logger.debug(f"Failed to fetch release {release_id}: {e}")
                         continue
-                
-                logger.debug(f"Discogs: Processed releases - found {singles_found} singles and {eps_found} EPs")
             
             except Exception as e:
-                logger.error(f"Failed to fetch releases for artist {artist_id}: {e}")
-                import traceback
-                logger.debug(f"   Traceback: {traceback.format_exc()}")
+                logger.debug(f"Failed to fetch releases for artist {artist_id}: {e}")
             
             logger.debug(f"Discogs: Fetched {len(result['singles'])} singles and {len(result['eps'])} EPs for artist {artist_id}")
             return result
         
         except Exception as e:
-            logger.error(f"Failed to fetch artist Singles/EPs: {e}")
-            import traceback
-            logger.debug(f"   Traceback: {traceback.format_exc()}")
+            logger.debug(f"Failed to fetch artist Singles/EPs: {e}")
             return result
     
     def is_single(self, title: str, artist: str, album_context: dict | None = None, timeout: tuple[int, int] | int = (5, 10)) -> bool:

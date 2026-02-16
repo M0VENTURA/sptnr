@@ -2130,6 +2130,16 @@ def popularity_scan(
                 except Exception as e:
                     log_debug(f"Could not load Discogs token from config: {e}")
             
+            # Validate Discogs token - reject placeholder or empty tokens
+            if discogs_token and discogs_token.lower() in ("your_discogs_token", "your_token", "placeholder", ""):
+                log_info(f"⚠ Discogs token appears to be a placeholder - Discogs single detection will be disabled")
+                log_debug(f"Discogs token validation failed: token='{discogs_token}' is a placeholder value")
+                discogs_token = None  # Disable Discogs if placeholder detected
+            elif discogs_token and len(discogs_token) < 10:
+                log_info(f"⚠ Discogs token appears invalid (too short) - Discogs single detection will be disabled")
+                log_debug(f"Discogs token validation failed: token length={len(discogs_token)}, expected 20+ characters")
+                discogs_token = None  # Disable Discogs if token looks invalid
+            
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
