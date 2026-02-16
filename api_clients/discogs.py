@@ -495,7 +495,10 @@ class DiscogsClient:
                             
                             if "single" in fmt_name or "single" in " ".join(fmt_descs):
                                 is_single = True
-                            if "ep" in fmt_name or any("ep" in d for d in fmt_descs if len(d) <= 5):  # Avoid matching words containing "ep"
+                            # Match EP as whole word or at word boundary to avoid matching "september", "step", etc.
+                            # Match patterns: "EP", "12\" EP", "Mini EP", "Maxi-EP", etc.
+                            desc_text = " ".join(fmt_descs)
+                            if "ep" in fmt_name or re.search(r'\bep\b', desc_text):
                                 is_ep = True
                         
                         # Extract and normalize track titles

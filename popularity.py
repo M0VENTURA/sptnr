@@ -1965,14 +1965,16 @@ def popularity_scan(
             log_debug(f"Enabled APIs: {enabled_apis}")
         
         for artist, albums in artist_album_tracks.items():
-            # Skip until resume match
+            # Skip until resume match, then skip the matched artist itself
             if not resume_hit:
                 if artist.lower() == resume_from.lower():
                     resume_hit = True
-                    log_info(f"Resuming from: {artist}")
+                    log_info(f"Found resume artist: {artist} (skipping, already scanned)")
+                    continue  # Skip this artist since it was already scanned
                 elif resume_from.lower() in artist.lower():
                     resume_hit = True
-                    log_info(f"Fuzzy resume match: {resume_from} â†’ {artist}")
+                    log_info(f"Fuzzy resume match: {resume_from} → {artist} (skipping, already scanned)")
+                    continue  # Skip this artist since it was already scanned
                 else:
                     log_debug(f"Skipping {artist} (before resume point)")
                     continue
