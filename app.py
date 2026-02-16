@@ -12239,6 +12239,60 @@ def api_album_apply_genres():
         if conn:
             conn.close()
 
+
+@app.route("/api/album/add-to-missing-releases", methods=["POST"])
+def api_album_add_to_missing_releases():
+    """Add an album to the missing releases tracking list"""
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "").strip()
+        album = data.get("album", "").strip()
+        year = data.get("year", "").strip()
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album are required"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Check if missing_releases table exists
+        cursor.execute("""
+            SELECT name FROM sqlite_master 
+            WHERE type='table' AND name='missing_releases'
+        """)
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({"error": "Missing releases table not found"}), 500
+        
+        # Insert or update the album in missing_releases
+        cursor.execute("""
+            INSERT OR REPLACE INTO missing_releases 
+            (artist, release_id, title, first_release_date, category, last_checked)
+            VALUES (?, ?, ?, ?, 'Album', CURRENT_TIMESTAMP)
+        """, (
+            artist,
+            f"{artist}-{album}".lower().replace(" ", "-"),  # Use artist-album as release_id if MusicBrainz ID not available
+            album,
+            year if year else None
+        ))
+        
+        conn.commit()
+        conn.close()
+        
+        logging.info(f"Added {album} by {artist} to missing releases")
+        
+        return jsonify({
+            "success": True,
+            "message": f"Added '{album}' by {artist} to missing releases tracking"
+        }), 200
+        
+    except Exception as e:
+        logging.error(f"Error adding album to missing releases: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/artist/apply-genres", methods=["POST"])
 def api_artist_apply_genres():
     """Apply selected genres to all audio files for all tracks by an artist"""
