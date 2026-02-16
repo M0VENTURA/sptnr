@@ -241,18 +241,20 @@ class WikipediaReleaseScraper:
                 cell_preview = [c.get_text(strip=True)[:40] for c in cells[:6]]
                 logger.info(f"[ROW {row_num}] cells={len(cells)} first 6: {cell_preview}")
                 
-                release = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order, last_seen_day)
+                release, had_date_cell = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order, last_seen_day)
                 if release:
-                    logger.info(f"[ROW {row_num}] SUCCESS: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
+                    logger.info(f"[ROW {row_num}] SUCCESS: {release['artist_name']} - {release['album_name']} ({release['release_date']}) had_date={had_date_cell}")
                     releases.append(release)
-                    # Update last_seen_day if this release has a day number
-                    release_date = release.get('release_date', '')
-                    if release_date:
-                        try:
-                            day_from_date = int(release_date.split('-')[2])
-                            last_seen_day = day_from_date
-                        except (ValueError, IndexError):
-                            pass
+                    # Update last_seen_day ONLY if this row had an actual date cell (not a default)
+                    if had_date_cell:
+                        release_date = release.get('release_date', '')
+                        if release_date:
+                            try:
+                                day_from_date = int(release_date.split('-')[2])
+                                last_seen_day = day_from_date
+                                logger.debug(f"    Updated last_seen_day to {day_from_date}")
+                            except (ValueError, IndexError):
+                                pass
                 else:
                     logger.info(f"[ROW {row_num}] SKIPPED")
                 
@@ -288,16 +290,18 @@ class WikipediaReleaseScraper:
         return False
 
     def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
-                             year: int, column_order: list, last_seen_day: Optional[int] = None) -> Optional[Dict]:
+                             year: int, column_order: list, last_seen_day: Optional[int] = None) -> tuple:
         """Parse a row using source-specific column order
         
         column_order: list like ['day', 'artist', 'genre', 'album']
         Handles rows with or without date columns (Wikipedia omits dates for same-day follow-ups).
         last_seen_day: Used when a row doesn't have a date cell (due to HTML rowspan)
+        
+        Returns: (release_dict, had_date_cell) where had_date_cell indicates if actual date cell found
         """
         try:
             if len(cells) < 2:
-                return None
+                return None, False
             
             cell_texts = [cell.get_text(strip=True) for cell in cells]
             
@@ -311,10 +315,11 @@ class WikipediaReleaseScraper:
             # If row has one fewer cell than expected OR first cell is not a date, shift the mapping
             first_cell = cell_texts[0] if cell_texts else ""
             # Match day numbers even if mixed with month names (e.g., "January 2", "Jan 2", "2")
-            date_match = re.search(r'\b(\d{1,2})\b', first_cell)
+            date_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', first_cell)
             has_date_in_first_cell = bool(date_match)
             
             actual_column_order = column_order.copy()
+            had_date_cell = False  # Track whether this row has an actual date cell
             
             # If the first cell doesn't look like a date but column_order expects one, shift left
             if 'day' in actual_column_order and not has_date_in_first_cell:
@@ -322,6 +327,9 @@ class WikipediaReleaseScraper:
                 day_idx = actual_column_order.index('day')
                 actual_column_order = actual_column_order[:day_idx] + actual_column_order[day_idx+1:]
                 logger.debug(f"  Date cell missing, adjusted column order: {actual_column_order}")
+            else:
+                # First cell has a date, so we have a date cell
+                had_date_cell = True
             
             # Build a mapping of column types to values, skipping 'genre' columns
             col_values = {}
@@ -398,18 +406,18 @@ class WikipediaReleaseScraper:
             # Validate we have artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
                 logger.debug(f"  Invalid: artist='{artist}', album='{album}'")
-                return None
+                return None, had_date_cell
             
             # Skip entries with wiki markup
             for text in [artist, album]:
                 if any(x in text.lower() for x in ['cite', 'ref', 'edit', '</td>', '[citation']):
                     logger.debug(f"  Skipping due to wiki markup")
-                    return None
+                    return None, had_date_cell
             
             # Skip if artist or album looks like it's full of genre info
             if self._is_genre_column(artist) or self._is_genre_column(album):
                 logger.debug(f"  Skipping: one field looks like genre info")
-                return None
+                return None, had_date_cell
             
             # Build date
             release_date = f"{year}-{current_month:02d}-{day:02d}"
@@ -422,12 +430,12 @@ class WikipediaReleaseScraper:
                 "release_date": release_date,
                 "release_year": year,
                 "source": source_name,
-            }
+            }, had_date_cell
         except Exception as e:
             logger.debug(f"Error parsing row for {source_name}: {e}")
             import traceback
             logger.debug(traceback.format_exc())
-            return None
+            return None, False
     
     
     def _extract_year_from_source_key(self, source_key: str) -> int:
