@@ -210,7 +210,9 @@ class WikipediaReleaseScraper:
             
             # Walk backwards from table through all previous elements looking for month
             prev = table.find_previous()
-            while prev and not current_month:
+            search_depth = 0
+            max_search = 50  # Limit search depth
+            while prev and not current_month and search_depth < max_search:
                 text = prev.get_text(strip=True).lower()
                 text_original = prev.get_text(strip=True)
                 
@@ -218,7 +220,7 @@ class WikipediaReleaseScraper:
                 for month_name, month_num in months.items():
                     if month_name in text and len(text) < 100:  # Month heading is usually short
                         current_month = month_num
-                        logger.debug(f"Found month heading '{text_original}' -> month {month_num}")
+                        logger.info(f"✓ Found month heading '{text_original}' -> month {month_num}")
                         
                         # Extract day number from heading (e.g., "January 9" -> 9)
                         day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', text_original)
@@ -247,35 +249,36 @@ class WikipediaReleaseScraper:
             if not rows:
                 continue
             
-            # Reconstruct table accounting for rowspan/colspan
-            reconstructed_rows = self._reconstruct_table_rows(rows)
-            
-            # Skip header rows (first row may be navigation, actual headers are in a row with th elements)
+            # Skip header rows BEFORE reconstruction (TH/TD distinction is lost after)
             start_idx = 0
-            
-            # Check first few rows to find where data actually starts
-            for check_row_idx in range(min(3, len(rows))):
+            for check_row_idx in range(min(5, len(rows))):
                 cells_in_row = rows[check_row_idx].find_all(['td', 'th'])
                 if not cells_in_row:
                     continue
                     
-                # Count TH vs TD - if mostly TH, it's a header row
                 th_count = sum(1 for cell in cells_in_row if cell.name == 'th')
                 td_count = sum(1 for cell in cells_in_row if cell.name == 'td')
                 
-                # If row has mostly headers, skip it
-                if th_count > td_count and th_count >= 3:
+                # If mostly TH elements, it's a header row
+                if th_count >= 3 and th_count > td_count:
                     start_idx = check_row_idx + 1
-                    logger.debug(f"Skipping row {check_row_idx} (header row with {th_count} TH elements)")
+                    logger.info(f"  Skipping header row {check_row_idx} ({th_count} TH, {td_count} TD)")
+                    break
             
-            logger.debug(f"Starting data row parsing from index {start_idx}")
+            # Reconstruct table accounting for rowspan/colspan, skipping header rows
+            reconstructed_rows = self._reconstruct_table_rows(rows[start_idx:])
+            
+            logger.debug(f"Starting data row parsing from row index {start_idx}, {len(reconstructed_rows)} data rows")
             
             # Track last seen day for handling rowspan (multiple rows with same day)
             last_seen_day = initial_day if initial_day else None
             
             # Parse data rows
             row_num = 0
-            for cells_list in reconstructed_rows[start_idx:]:
+            for cells_list in reconstructed_rows:
+                if len(cells_list) < 2:
+                    row_num += 1
+                    continue
                 if len(cells_list) < 2:
                     row_num += 1
                     continue
@@ -369,11 +372,15 @@ class WikipediaReleaseScraper:
             
             logger.debug(f"Parsing row for {source_name}: {len(cell_texts)} cells, {column_order} column order")
             logger.debug(f"  Raw cells: {[f'{i}={repr(c[:50])}' for i, c in enumerate(cell_texts[:6])]}")
+            logger.debug(f"  Raw cells (first 3): [{repr(cell_texts[0][:40])}, {repr(cell_texts[1][:40] if len(cell_texts) > 1 else 'N/A')}, {repr(cell_texts[2][:40] if len(cell_texts) > 2 else 'N/A')}]")
             
             # DETECT if first cell is a date or not
             first_cell = cell_texts[0] if cell_texts else ""
-            date_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', first_cell)
+            # Match day numbers with or without "January" prefix (e.g., "January1", "1st", "1")
+            date_match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?(?:\s|$)', first_cell)
             has_date_in_first_cell = bool(date_match)
+            
+            logger.debug(f"  First cell: {repr(first_cell[:40])}, has_date={has_date_in_first_cell}")
             
             actual_column_order = column_order.copy()
             had_date_cell = has_date_in_first_cell
@@ -388,27 +395,34 @@ class WikipediaReleaseScraper:
             col_values = {}
             cell_idx = 0
             
+            logger.debug(f"  Processing {len(actual_column_order)} columns from {len(cell_texts)} cells")
+            logger.debug(f"  Column order: {actual_column_order}")
+            logger.debug(f"  Cell texts: {[f'{i}={repr(c[:30])}' for i, c in enumerate(cell_texts[:6])]}")
+            
             for col_idx, col_type in enumerate(actual_column_order):
                 if cell_idx >= len(cell_texts):
+                    logger.debug(f"  col_idx={col_idx}, col_type={col_type}: OUT OF CELLS (cell_idx={cell_idx})")
                     break
                 
                 cell_value = cell_texts[cell_idx].strip()
                 
+                logger.debug(f"  col_idx={col_idx}, col_type={col_type}, cell_idx={cell_idx}: value={repr(cell_value[:40])}")
+                
                 if not cell_value:
+                    logger.debug(f"    -> Empty, skipping")
                     cell_idx += 1
                     continue
-                
-                logger.debug(f"  Column {cell_idx}: col_type='{col_type}', value='{cell_value[:50]}'")
                 
                 if col_type == 'genre':
-                    logger.debug(f"    Skipping genre cell: '{cell_value[:50]}'")
+                    logger.debug(f"    -> Skipping genre")
                     cell_idx += 1
                     continue
                 
+                logger.debug(f"    -> Mapping {col_type} = {repr(cell_value[:50])}")
                 col_values[col_type] = cell_value
                 cell_idx += 1
             
-            logger.debug(f"  Final mapping: {col_values}")
+            logger.debug(f"  Final col_values: {col_values}")
             
             # Extract and process values
             day = None
@@ -418,7 +432,7 @@ class WikipediaReleaseScraper:
             day_str = col_values.get('day')
             if day_str:
                 try:
-                    match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', day_str)
+                    match = re.search(r'(\d{1,2})(?:st|nd|rd|th)?(?:\s|$)', day_str)
                     if match:
                         day = int(match.group(1))
                         if not (1 <= day <= 31):
