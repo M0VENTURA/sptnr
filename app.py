@@ -12469,45 +12469,48 @@ def api_remove_genres():
         
         rows = cursor.fetchall()
         affected_count = 0
+        update_records = []
         
+        # Build list of updates in memory first
         for track_id, genres_str in rows:
             if not genres_str:
                 continue
             
             # Parse genres
             genre_list = [g.strip() for g in re.split(r'[\\,]+', genres_str)]
-            original_genres = genre_list.copy()
             
             # Remove specified genres (case-insensitive)
-            genre_list_lower = [g.lower() for g in genre_list]
             genres_to_remove_lower = [g.lower() for g in genres_to_remove]
-            
             filtered_genres = [
-                g for g, g_lower in zip(genre_list, genre_list_lower)
-                if g_lower not in genres_to_remove_lower
+                g for g in genre_list
+                if g.lower() not in genres_to_remove_lower
             ]
             
             # Only update if changes were made
-            if len(filtered_genres) != len(original_genres):
+            if len(filtered_genres) != len(genre_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
-                cursor.execute("UPDATE tracks SET genres = ? WHERE id = ?", 
-                              (new_genres_str, track_id))
+                update_records.append((new_genres_str, track_id))
                 affected_count += 1
-                
-                # Log the change
-                log_genre_update(
-                    artist_name=artist_name,
-                    album_name=album_name,
-                    track_id=track_id,
-                    genres_before='\\'.join(original_genres),
-                    genres_after=new_genres_str,
-                    action_type='remove_from_album' if album_name else 'remove_from_artist',
-                    affected_count=1,
-                    change_summary=f"Removed: {', '.join(genres_to_remove)}"
-                )
         
-        conn.commit()
+        # Execute all updates in a batch
+        if update_records:
+            cursor.executemany("UPDATE tracks SET genres = ? WHERE id = ?", update_records)
+            conn.commit()
+        
         conn.close()
+        
+        # Log bulk change once (don't log individual tracks)
+        if affected_count > 0:
+            log_genre_update(
+                artist_name=artist_name,
+                album_name=album_name,
+                track_id=None,
+                genres_before='',
+                genres_after='',
+                action_type='remove_from_album' if album_name else 'remove_from_artist',
+                affected_count=affected_count,
+                change_summary=f"Removed genres from {affected_count} tracks: {', '.join(genres_to_remove)}"
+            )
         
         # Trigger Navidrome scan in background
         def trigger_scan():
