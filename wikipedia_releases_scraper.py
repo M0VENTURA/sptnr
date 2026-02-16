@@ -7,7 +7,7 @@ Parses release tables and stores information in the database.
 """
 import sqlite3
 import logging
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import re
@@ -87,6 +87,10 @@ class WikipediaReleaseScraper:
                     self.db_path = "/database/sptnr.db"
                 else:
                     self.db_path = "database.db"
+        
+        # Initialize MusicBrainz lookup cache
+        self._mbz_cache = {}
+        
         self.use_requests = HAS_REQUESTS
         
         if self.use_requests:
@@ -455,13 +459,23 @@ class WikipediaReleaseScraper:
                     else:
                         logger.debug(f"  Could not parse day, defaulting to 1")
             
-            # Validate date
+            # Validate date and check if it's in the past
             try:
-                datetime(year, current_month, day)
+                release_dt = datetime(year, current_month, day)
+                # Skip releases that are in the past (more than 1 day ago to allow for timezone differences)
+                if release_dt < datetime.now() - timedelta(days=1):
+                    logger.debug(f"  Skipping past release date: {year}-{current_month:02d}-{day:02d}")
+                    return None, had_date_cell
             except ValueError as e:
                 logger.debug(f"  Invalid date: {year}-{current_month:02d}-{day:02d} - {e}")
                 logger.debug(f"  Defaulting to first day of month")
                 day = 1
+            
+            # Skip TBA (To Be Announced) entries
+            if artist and album:
+                if artist.upper() == 'TBA' or album.upper() == 'TBA':
+                    logger.debug(f"  Skipping TBA entry: artist='{artist}', album='{album}'")
+                    return None, had_date_cell
             
             # Validate artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
@@ -481,6 +495,14 @@ class WikipediaReleaseScraper:
             
             release_date = f"{year}-{current_month:02d}-{day:02d}"
             
+            # Attempt MusicBrainz lookup to validate and enrich artist/album names
+            mb_result = self._lookup_musicbrainz(artist, album, release_date)
+            if mb_result:
+                # Use corrected names from MusicBrainz if found
+                artist = mb_result.get('artist_name', artist)
+                album = mb_result.get('album_name', album)
+                logger.debug(f"  MusicBrainz match applied: {artist} - {album}")
+            
             logger.debug(f"  Final: {artist} - {album} ({release_date})")
             
             return {
@@ -495,6 +517,86 @@ class WikipediaReleaseScraper:
             import traceback
             logger.debug(traceback.format_exc())
             return None, False
+    
+    def _lookup_musicbrainz(self, artist: str, album: str, release_date: str) -> dict | None:
+        """Look up artist and album in MusicBrainz to validate/correct names.
+        
+        Args:
+            artist: Artist name to look up
+            album: Album name to look up  
+            release_date: Release date for context (YYYY-MM-DD format)
+        
+        Returns:
+            Dict with corrected artist_name and album_name, or None if not found
+        """
+        # Use cache to avoid repeated lookups for the same artist/album combination
+        cache_key = f"{artist.lower()}|{album.lower()}"
+        if cache_key in self._mbz_cache:
+            return self._mbz_cache[cache_key]
+        
+        try:
+            from api_clients.musicbrainz import MusicBrainzClient
+            from requests.exceptions import RequestException, Timeout
+            
+            mb = MusicBrainzClient()
+            
+            # Try to find the release by artist + album + date
+            try:
+                releases = mb.search_releases(artist=artist, album=album, date=release_date)
+                if releases:
+                    release = releases[0]
+                    corrected_artist = release.get('artist-credit-phrase') or artist
+                    corrected_album = release.get('title') or album
+                    
+                    if corrected_artist != artist or corrected_album != album:
+                        logger.debug(f"    MusicBrainz release match: '{artist}' -> '{corrected_artist}', '{album}' -> '{corrected_album}'")
+                        result = {
+                            'artist_name': corrected_artist,
+                            'album_name': corrected_album,
+                            'mbid': release.get('id')
+                        }
+                        self._mbz_cache[cache_key] = result
+                        return result
+                    else:
+                        logger.debug(f"    MusicBrainz confirmed: {artist} - {album}")
+                        result = {
+                            'artist_name': corrected_artist,
+                            'album_name': corrected_album,
+                            'mbid': release.get('id')
+                        }
+                        self._mbz_cache[cache_key] = result
+                        return result
+            except (RequestException, Timeout) as e:
+                logger.debug(f"    MusicBrainz release search network error: {type(e).__name__}")
+            except Exception as e:
+                logger.debug(f"    MusicBrainz release search failed: {e}")
+            
+            # If release search didn't work, try artist lookup to validate name
+            try:
+                artists = mb.search_artists(artist)
+                if artists:
+                    corrected_artist = artists[0].get('name') or artist
+                    if corrected_artist != artist:
+                        logger.debug(f"    MusicBrainz artist correction: '{artist}' -> '{corrected_artist}'")
+                        result = {
+                            'artist_name': corrected_artist,
+                            'album_name': album
+                        }
+                        self._mbz_cache[cache_key] = result
+                        return result
+            except (RequestException, Timeout) as e:
+                logger.debug(f"    MusicBrainz artist search network error: {type(e).__name__}")
+            except Exception as e:
+                logger.debug(f"    MusicBrainz artist search failed: {e}")
+        
+        except ImportError:
+            logger.debug("    MusicBrainz client not available")
+        except Exception as e:
+            logger.debug(f"    MusicBrainz lookup error: {e}")
+        
+        # Cache the None result to avoid repeated failed lookups
+        self._mbz_cache[cache_key] = None
+        return None
     
     def _is_genre_column(self, cell_value: str) -> bool:
         """Detect if a cell contains genre/style information
