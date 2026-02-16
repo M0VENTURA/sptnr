@@ -273,7 +273,7 @@ class WikipediaReleaseScraper:
         """Parse a row using source-specific column order
         
         column_order: list like ['day', 'artist', 'genre', 'album']
-        Genre columns are automatically skipped.
+        Handles rows with or without date columns (Wikipedia omits dates for same-day follow-ups).
         """
         try:
             if len(cells) < 2:
@@ -284,13 +284,27 @@ class WikipediaReleaseScraper:
             # Remove citation brackets like [23], [1], etc. from all cell text
             cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
             
+            logger.debug(f"Parsing row for {source_name}: {cell_texts[:5]}")  # Log first 5 cells
+            
+            # DETECT if first cell is a date or not
+            # If row has one fewer cell than expected OR first cell is not a date, shift the mapping
+            first_cell = cell_texts[0] if cell_texts else ""
+            has_date_in_first_cell = bool(re.match(r'^\d{1,2}$', first_cell))  # Just a number like "9" or "16"
+            
+            actual_column_order = column_order.copy()
+            
+            # If the first cell doesn't look like a date but column_order expects one, shift left
+            if 'day' in actual_column_order and not has_date_in_first_cell:
+                # Remove 'day' from the expected columns since this row doesn't have one
+                day_idx = actual_column_order.index('day')
+                actual_column_order = actual_column_order[:day_idx] + actual_column_order[day_idx+1:]
+                logger.debug(f"  Date cell missing, adjusted column order: {actual_column_order}")
+            
             # Build a mapping of column types to values, skipping 'genre' columns
             col_values = {}
             cell_idx = 0
             
-            logger.debug(f"Parsing row for {source_name}: {cell_texts[:5]}")  # Log first 5 cells
-            
-            for col_idx, col_type in enumerate(column_order):
+            for col_idx, col_type in enumerate(actual_column_order):
                 if cell_idx >= len(cell_texts):
                     break
                 
@@ -318,7 +332,7 @@ class WikipediaReleaseScraper:
             artist = col_values.get('artist')
             album = col_values.get('album')
             
-            # Process day
+            # Process day - if not in col_values, it's missing and defaults to 1
             day_str = col_values.get('day')
             if day_str:
                 try:
@@ -333,10 +347,13 @@ class WikipediaReleaseScraper:
                 except (ValueError, AttributeError) as e:
                     logger.debug(f"    Could not extract day from '{day_str}': {e}")
             
-            # Default day to 1 if not found
+            # Default day to 1 if not found (handles rows without date cells)
             if not day:
                 day = 1
-                logger.debug(f"  No day found, defaulting to 1")
+                if not day_str:
+                    logger.debug(f"  No day column in row, defaulting to 1")
+                else:
+                    logger.debug(f"  Could not parse day, defaulting to 1")
             
             # Validate we have artist and album
             if not artist or not album or len(artist) < 2 or len(album) < 2:
