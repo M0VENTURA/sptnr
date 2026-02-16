@@ -315,7 +315,12 @@
                     
                     <!-- Genre Multi-Select -->
                     <div class="col-12">
-                        <label for="album_genres" class="form-label">Genres</label>
+                        <label for="album_genres" class="form-label d-flex justify-content-between align-items-center">
+                            <span>Genres</span>
+                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                                <i class="bi bi-cloud-download"></i> Get Online Suggestions
+                            </button>
+                        </label>
                         <div id="albumGenresContainer" class="mb-2">
                             {% if album_genres %}
                                 {% for genre in album_genres %}
@@ -327,6 +332,14 @@
                             {% else %}
                                 <span class="text-muted small">No genres set</span>
                             {% endif %}
+                        </div>
+                        <!-- Recommended Genres from External Sources (inline) -->
+                        <div class="mb-3" id="recommendedGenresSection" style="display: none;">
+                            <h6 class="mb-2 mt-3"><i class="bi bi-stars"></i> Suggested Genres from Spotify, MusicBrainz, and Discogs</h6>
+                            <p class="text-muted small mb-2">Click genres to add them to the list above</p>
+                            <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
+                                <span class="text-muted small">Loading...</span>
+                            </div>
                         </div>
                         <div class="input-group">
                             <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
@@ -342,81 +355,8 @@
         </div>
     </form>
     
-    <!-- Genre Information -->
-    <div class="card mb-4">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-tags"></i> Genre Information
-            </h5>
-            <button class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
-                <i class="bi bi-cloud-download"></i> Get Online Suggestions
-            </button>
-        </div>
-        <div class="card-body">
-            <!-- Recommended Genres from External Sources -->
-            <div class="mb-4" id="recommendedGenresSection" style="display: none;">
-                <h6 class="mb-2"><i class="bi bi-stars"></i> Suggested Genres from Spotify, MusicBrainz, and Discogs</h6>
-                <p class="text-muted small mb-2">Click genres to select, then apply to all tracks</p>
-                <div class="d-flex flex-wrap gap-2 mb-3" id="recommendedGenres">
-                    <span class="text-muted small">Loading...</span>
-                </div>
-                <button class="btn btn-sm btn-success" onclick="applySelectedGenres()" id="applyGenresBtn" style="display: none;">
-                    <i class="bi bi-check-circle"></i> Apply Selected to All MP3/FLAC Files
-                </button>
-            </div>
-            
-            <!-- Album Genres Cleanup Section (hidden - merged into Album Metadata) -->
-            <div class="mb-4 pb-4" style="border-bottom: 1px solid var(--border-color); display: none;">
-                <h6 class="mb-3"><i class="bi bi-trash"></i> Remove Incorrect Genres</h6>
-                <p class="text-muted small mb-3">Select genre badges to remove from all tracks in this album and trigger a Navidrome rescan.</p>
-                <div class="d-flex flex-wrap gap-2 mb-3" id="albumGenresForRemoval">
-                    {% if album_genres %}
-                        {% for genre in album_genres %}
-                        <label class="badge bg-danger" style="font-size: 0.9rem; cursor: pointer; user-select: none; display: inline-flex; align-items: center; padding: 0.35rem 0.55rem;">
-                            <input type="checkbox" value="{{ genre }}" style="margin-right: 0.5rem; cursor: pointer;" onchange="toggleGenreCheckbox('albumGenresForRemoval', 'removeSelectedAlbumGenresBtn')">
-                            {{ genre }}
-                        </label>
-                        {% endfor %}
-                    {% else %}
-                        <span class="text-muted small">No genres to remove</span>
-                    {% endif %}
-                </div>
-                <button class="btn btn-sm btn-danger" id="removeSelectedAlbumGenresBtn" style="display: none;" onclick="removeSelectedAlbumGenres()">
-                    <i class="bi bi-trash"></i> Remove Selected Genres
-                </button>
-            </div>
-            
-
-            
-            <!-- Add Genre Modal -->
-            <div class="modal fade" id="addGenreModal" tabindex="-1">
-                <div class="modal-dialog modal-dialog-centered">
-                    <div class="modal-content">
-                        <div class="modal-header">
-                            <h5 class="modal-title">
-                                <i class="bi bi-plus-circle"></i> Add Genre to <span id="modalTrackTitle"></span>
-                            </h5>
-                            <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                        </div>
-                        <div class="modal-body">
-                            <div class="mb-3">
-                                <label class="form-label">Select genres to add:</label>
-                                <div id="genreOptionsContainer" style="max-height: 300px; overflow-y: auto;">
-                                    <!-- Will be populated dynamically -->
-                                </div>
-                            </div>
-                        </div>
-                        <div class="modal-footer">
-                            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                            <button type="button" class="btn btn-primary" onclick="addSelectedGenresToTrack()">
-                                <i class="bi bi-check"></i> Add Selected
-                            </button>
-                        </div>
-                    </div>
-                </div>
-            </div>
-        </div>
-    </div>
+    <!-- Genre Information section removed - moved to Album Metadata section -->
+    
     
     <div class="card">
         <div class="card-header d-flex justify-content-between align-items-center">
@@ -807,6 +747,12 @@
 </div>
 
 <script>
+    // Global variables for album page
+    let currentEditTrackId = null;
+    let currentEditTrackTitle = null;
+    let addGenreModalInstance = null;
+    let currentAlbumGenres = new Set();
+
     function openAlbumLookupModal() {
         const modal = new bootstrap.Modal(document.getElementById('albumLookupModal'));
         modal.show();
@@ -1299,12 +1245,6 @@
                 spotifyData.genres.forEach(g => genres.add(g));
             }
             
-            // Extract genres from MusicBrainz results
-            if (mbData.results && mbData.results.length > 0) {
-                // MusicBrainz doesn't typically include genres in release-group results
-                // So we'll mainly rely on Spotify and Discogs
-            }
-            
             // Extract genres from Discogs results
             if (discogsData.results && discogsData.results.length > 0) {
                 discogsData.results.forEach(result => {
@@ -1324,13 +1264,14 @@
                 return;
             }
             
-            // Display genres as selectable badges
+            // Display genres as selectable badges - clicking adds to form
             let html = '';
             Array.from(genres).sort().forEach(genre => {
-                html += `<span class="badge badge-outline-primary genre-badge" 
+                const isAlreadyAdded = currentAlbumGenres.has(genre);
+                html += `<span class="badge ${isAlreadyAdded ? 'bg-success' : 'badge-outline-primary'} genre-badge" 
                     onclick="toggleGenreSelection('${escapeHtml(genre)}')" 
                     data-genre="${escapeHtml(genre)}"
-                    style="cursor: pointer; border: 2px solid #0d6efd; background-color: transparent; color: #0d6efd;">
+                    style="cursor: pointer; border: 2px solid #0d6efd; ${isAlreadyAdded ? 'background-color: #198754 !important; color: #fff !important; border-color: #198754 !important;' : 'background-color: transparent; color: #0d6efd;'}; padding: 0.35rem 0.65rem;">
                     ${escapeHtml(genre)}
                 </span>`;
             });
@@ -1338,7 +1279,6 @@
             
             btn.disabled = false;
             btn.innerHTML = '<i class="bi bi-cloud-download"></i> Get Online Suggestions';
-            document.getElementById('applyGenresBtn').style.display = 'inline-block';
         })
         .catch(error => {
             container.innerHTML = '<span class="text-danger small">Error: ' + error.message + '</span>';
@@ -1351,63 +1291,24 @@
         const badge = document.querySelector(`[data-genre="${escapeHtml(genre)}"]`);
         if (!badge) return;
         
-        if (selectedGenres.has(genre)) {
-            selectedGenres.delete(genre);
-            badge.style.backgroundColor = 'transparent';
-            badge.style.color = '#0d6efd';
-        } else {
-            selectedGenres.add(genre);
+        // Add genre to the album genres list
+        if (!currentAlbumGenres.has(genre)) {
+            currentAlbumGenres.add(genre);
+            updateAlbumGenresDisplay();
+            
+            // Visual feedback - highlight the selected badge
             badge.style.backgroundColor = '#0d6efd';
             badge.style.color = '#fff';
+        } else {
+            // Remove if already selected
+            currentAlbumGenres.delete(genre);
+            updateAlbumGenresDisplay();
+            
+            badge.style.backgroundColor = 'transparent';
+            badge.style.color = '#0d6efd';
         }
     }
 
-    function applySelectedGenres() {
-        if (selectedGenres.size === 0) {
-            alert('Please select at least one genre to apply');
-            return;
-        }
-        
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
-        const genresArray = Array.from(selectedGenres);
-        
-        if (!confirm(`Apply genres [${genresArray.join(', ')}] to all MP3 files in this album?`)) {
-            return;
-        }
-        
-        const btn = document.getElementById('applyGenresBtn');
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Applying...';
-        
-        fetch('/api/album/apply-genres', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                artist: artistName,
-                album: albumName,
-                genres: genresArray
-            })
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.success) {
-                alert(`✅ ${data.message || 'Genres applied successfully'}`);
-                // Refresh the page to show updated genres
-                location.reload();
-            } else {
-                alert('❌ Error: ' + (data.error || 'Failed to apply genres'));
-                btn.disabled = false;
-                btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
-            }
-        })
-        .catch(error => {
-            alert('❌ Network error: ' + error.message);
-            btn.disabled = false;
-            btn.innerHTML = '<i class="bi bi-check-circle"></i> Apply Selected Genres to MP3 Files';
-        });
-    }
-    
     // Remove single genre from all album tracks (uses shared utilities)
     function removeGenreFromAlbum(genre) {
         const artistName = {{ artist_name|tojson }};
@@ -1551,8 +1452,7 @@
         document.getElementById('albumMetadataForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
     
-    // Album genre management
-    let currentAlbumGenres = new Set();
+    // Album genre management (currentAlbumGenres declared at top of script)
     
     // Initialize album genres
     document.addEventListener('DOMContentLoaded', function() {
@@ -1979,6 +1879,8 @@
         });
     }
 
+    let addGenreModalInstance = null;
+    
     function openAddGenreModal(trackId, trackTitle) {
         currentEditTrackId = trackId;
         currentEditTrackTitle = trackTitle;
@@ -1988,6 +1890,11 @@
         
         // Get current genres for this track from the badges
         const genesContainer = document.getElementById(`genres-${trackId}`);
+        if (!genesContainer) {
+            alert('Error: Could not find track genres container');
+            return;
+        }
+        
         const currentGenres = Array.from(genesContainer.querySelectorAll('.genre-badge')).map(el => {
             let text = el.textContent.trim();
             // Remove the X icon if present
@@ -2014,9 +1921,17 @@
         
         document.getElementById('genreOptionsContainer').innerHTML = genreHtml;
         
-        // Show modal
-        const modal = new bootstrap.Modal(document.getElementById('addGenreModal'));
-        modal.show();
+        // Get or create modal instance (reuse if already exists)
+        const modalElement = document.getElementById('addGenreModal');
+        if (!addGenreModalInstance) {
+            addGenreModalInstance = new bootstrap.Modal(modalElement, {
+                backdrop: true,
+                keyboard: true
+            });
+        }
+        
+        // Show the modal
+        addGenreModalInstance.show();
     }
 
     function addSelectedGenresToTrack() {
@@ -2068,10 +1983,12 @@
             if (data.success || data.message) {
                 alert(`✅ Added ${selected.length} genre(s) to the track${data.file_synced ? ' and updated MP3 file' : ''}`);
                 
-                // Close modal
-                bootstrap.Modal.getInstance(document.getElementById('addGenreModal')).hide();
+                // Properly close the modal
+                if (addGenreModalInstance) {
+                    addGenreModalInstance.hide();
+                }
                 
-                // Reload to show updated genres
+                // Reload to show updated genres after a short delay
                 setTimeout(() => {
                     location.reload();
                 }, 500);
