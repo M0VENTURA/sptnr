@@ -437,64 +437,86 @@ class DiscogsClient:
         try:
             cache = get_discogs_cache()
             
-            # Query artist releases endpoint with format filter for Singles
-            for release_format in ["Single", "EP"]:
-                try:
+            # Fetch all artist releases (Discogs API doesn't support format parameter)
+            try:
+                _throttle_discogs()
+                releases_url = f"{self.base_url}/artists/{artist_id}/releases"
+                params = {"per_page": 100}
+                
+                response = self.session.get(releases_url, headers=self.headers, params=params, timeout=timeout)
+                if response.status_code == 429:
+                    retry_after = int(response.headers.get("Retry-After", 60))
+                    time.sleep(retry_after)
                     _throttle_discogs()
-                    releases_url = f"{self.base_url}/artists/{artist_id}/releases"
-                    params = {
-                        "format": release_format,
-                        "per_page": 100
-                    }
-                    
                     response = self.session.get(releases_url, headers=self.headers, params=params, timeout=timeout)
-                    if response.status_code == 429:
-                        retry_after = int(response.headers.get("Retry-After", 60))
-                        time.sleep(retry_after)
+                response.raise_for_status()
+                
+                releases = response.json().get("releases", [])
+                logger.debug(f"Discogs: Fetched {len(releases)} total releases for artist {artist_id}")
+                
+                # Process each release and filter by format client-side
+                for release_info in releases:
+                    release_id = release_info.get("id")
+                    if not release_id:
+                        continue
+                    
+                    release_type = release_info.get("type", "").lower()
+                    release_role = release_info.get("role", "").lower()
+                    
+                    # Skip if not a primary release or wrong type
+                    if release_role and "primary" not in release_role:
+                        continue
+                    
+                    try:
+                        # Fetch full release details with tracklist and format info
                         _throttle_discogs()
-                        response = self.session.get(releases_url, headers=self.headers, params=params, timeout=timeout)
-                    response.raise_for_status()
-                    
-                    releases = response.json().get("releases", [])
-                    result_key = "singles" if release_format == "Single" else "eps"
-                    
-                    # Extract tracklists from each release
-                    for release_info in releases:
-                        release_id = release_info.get("id")
-                        if not release_id:
-                            continue
-                        
-                        try:
-                            # Fetch full release details with tracklist
+                        rel_url = f"{self.base_url}/releases/{release_id}"
+                        rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
+                        if rel_response.status_code == 429:
+                            retry_after = int(rel_response.headers.get("Retry-After", 60))
+                            time.sleep(retry_after)
                             _throttle_discogs()
-                            rel_url = f"{self.base_url}/releases/{release_id}"
                             rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
-                            if rel_response.status_code == 429:
-                                retry_after = int(rel_response.headers.get("Retry-After", 60))
-                                time.sleep(retry_after)
-                                _throttle_discogs()
-                                rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
-                            rel_response.raise_for_status()
+                        rel_response.raise_for_status()
+                        
+                        release_data = rel_response.json()
+                        release_title = release_data.get("title", "")
+                        formats = release_data.get("formats", []) or []
+                        tracks = release_data.get("tracklist", []) or []
+                        
+                        # Check if this release is a Single or EP based on format data
+                        is_single = False
+                        is_ep = False
+                        
+                        for fmt in formats:
+                            fmt_name = (fmt.get("name") or "").lower()
+                            fmt_descs = fmt.get("descriptions") or []
+                            fmt_descs = [d.lower() for d in fmt_descs if d]
                             
-                            release_data = rel_response.json()
-                            tracks = release_data.get("tracklist", []) or []
-                            
-                            # Extract and normalize track titles
+                            if "single" in fmt_name or "single" in " ".join(fmt_descs):
+                                is_single = True
+                            if "ep" in fmt_name or any("ep" in d for d in fmt_descs if len(d) <= 5):  # Avoid matching words containing "ep"
+                                is_ep = True
+                        
+                        # Extract and normalize track titles
+                        if is_single or is_ep:
+                            result_key = "singles" if is_single else "eps"
                             for track in tracks:
                                 track_title = track.get("title", "").strip()
                                 if track_title:
                                     normalized = normalize_track_title(track_title)
                                     if normalized and normalized not in result[result_key]:
                                         result[result_key].append(normalized)
-                        
-                        except Exception as e:
-                            logger.debug(f"Failed to fetch release {release_id}: {e}")
-                            continue
-                
-                except Exception as e:
-                    logger.debug(f"Failed to fetch {release_format} releases for artist {artist_id}: {e}")
-                    continue
+                                        logger.debug(f"Discogs: Added {result_key}: '{normalized}' from '{release_title}'")
+                    
+                    except Exception as e:
+                        logger.debug(f"Failed to fetch release {release_id}: {e}")
+                        continue
             
+            except Exception as e:
+                logger.debug(f"Failed to fetch releases for artist {artist_id}: {e}")
+            
+            logger.debug(f"Discogs: Fetched {len(result['singles'])} singles and {len(result['eps'])} EPs for artist {artist_id}")
             return result
         
         except Exception as e:
@@ -552,13 +574,15 @@ class DiscogsClient:
                     self._artist_singles_cache[artist_lower] = {"singles": list(cached_singles), "eps": []}
                 else:
                     # Cache miss: fetch from Discogs and populate cache
-                    logger.debug(f"Discogs: Fetching artist releases for '{artist}'")
+                    logger.debug(f"Discogs: Cache miss for '{artist}', fetching artist releases from Discogs API")
                     artist_id = self._get_artist_id(artist, timeout)
                     
                     if not artist_id:
                         logger.debug(f"Discogs: Could not find artist ID for '{artist}'")
                         self._artist_singles_cache[artist_lower] = {"singles": [], "eps": []}
                         return False
+                    
+                    logger.debug(f"Discogs: Found artist ID {artist_id} for '{artist}'")
                     
                     # Fetch singles and EPs from artist releases endpoint
                     artist_releases = self._fetch_artist_singles_and_eps(artist_id, timeout)
@@ -570,17 +594,21 @@ class DiscogsClient:
                     if artist_releases["singles"] or artist_releases["eps"]:
                         all_tracks = artist_releases["singles"] + artist_releases["eps"]
                         cache.add_to_cache(artist, all_tracks)
-                        logger.debug(f"Discogs: Cached {len(all_tracks)} track titles for artist '{artist}'")
+                        logger.debug(f"Discogs: Populated cache for '{artist}' with {len(all_tracks)} track titles ({len(artist_releases['singles'])} singles, {len(artist_releases['eps'])} EPs)")
+                    else:
+                        logger.debug(f"Discogs: No singles or EPs found for artist '{artist}'")
             
             # Check if normalized title matches any cached single or EP track
             artist_cache = self._artist_singles_cache.get(artist_lower, {"singles": [], "eps": []})
             all_cached_titles = artist_cache["singles"] + artist_cache["eps"]
             
+            logger.debug(f"Discogs: Checking if '{normalized_title}' matches any of {len(all_cached_titles)} cached tracks for '{artist}'")
+            
             if normalized_title in all_cached_titles:
-                logger.debug(f"Discogs: Found '{title}' in artist '{artist}' Singles/EPs")
+                logger.debug(f"Discogs: ✓ Found '{title}' in artist '{artist}' Singles/EPs")
                 return True
             
-            logger.debug(f"Discogs: '{title}' not found in artist '{artist}' Singles/EPs")
+            logger.debug(f"Discogs: ✗ '{title}' not found in artist '{artist}' Singles/EPs (searched {len(all_cached_titles)} tracks)")
             return False
         
         except Exception as e:
