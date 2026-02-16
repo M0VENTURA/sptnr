@@ -376,15 +376,13 @@ class WikipediaReleaseScraper:
             has_date_in_first_cell = bool(date_match)
             
             actual_column_order = column_order.copy()
-            had_date_cell = False
+            had_date_cell = has_date_in_first_cell
             
             # If the first cell doesn't look like a date but column_order expects one, shift left
             if 'day' in actual_column_order and not has_date_in_first_cell:
                 day_idx = actual_column_order.index('day')
                 actual_column_order = actual_column_order[:day_idx] + actual_column_order[day_idx+1:]
                 logger.debug(f"  Date cell missing, adjusted column order: {actual_column_order}")
-            else:
-                had_date_cell = True
             
             # Build a mapping of column types to values
             col_values = {}
