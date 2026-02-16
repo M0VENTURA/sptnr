@@ -167,6 +167,10 @@ class WikipediaReleaseScraper:
             'september': 9, 'october': 10, 'november': 11, 'december': 12
         }
         
+        # Extract year from source_key (e.g., "2026_albums" -> 2026)
+        year = self._extract_year_from_source_key(source_key)
+        logger.debug(f"Extracted year {year} from source_key '{source_key}'")
+        
         # Get column order for this source
         column_order = self.SOURCE_COLUMN_ORDERS.get(source_key, ['day', 'artist', 'album'])
         logger.debug(f"Using column order for {source_name}: {column_order}")
@@ -233,7 +237,7 @@ class WikipediaReleaseScraper:
                     cell_preview = [c.get_text(strip=True)[:30] for c in cells[:4]]
                     logger.info(f"Row {len(releases)} preview: {cell_preview}")
                 
-                release = self._parse_row_for_month(cells, source_key, source_name, current_month, column_order)
+                release = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order)
                 if release:
                     releases.append(release)
                     if len(releases) <= 3:
@@ -269,7 +273,7 @@ class WikipediaReleaseScraper:
         return False
 
     def _parse_row_for_month(self, cells, source_key: str, source_name: str, current_month: int, 
-                             column_order: list) -> Optional[Dict]:
+                             year: int, column_order: list) -> Optional[Dict]:
         """Parse a row using source-specific column order
         
         column_order: list like ['day', 'artist', 'genre', 'album']
@@ -372,7 +376,7 @@ class WikipediaReleaseScraper:
                 return None
             
             # Build date
-            release_date = f"2026-{current_month:02d}-{day:02d}"
+            release_date = f"{year}-{current_month:02d}-{day:02d}"
             
             logger.debug(f"  Final: {artist} - {album} ({release_date})")
             
@@ -380,7 +384,7 @@ class WikipediaReleaseScraper:
                 "artist_name": artist,
                 "album_name": album,
                 "release_date": release_date,
-                "release_year": 2026,
+                "release_year": year,
                 "source": source_name,
             }
         except Exception as e:
@@ -389,6 +393,14 @@ class WikipediaReleaseScraper:
             logger.debug(traceback.format_exc())
             return None
     
+    
+    def _extract_year_from_source_key(self, source_key: str) -> int:
+        """Extract year from source key (e.g., '2026_albums' -> 2026)"""
+        match = re.search(r'(20\d{2})', source_key)
+        if match:
+            return int(match.group(1))
+        # Default to current year if no year found
+        return datetime.now().year
     
     def _extract_year(self, date_str: str) -> int:
         """Extract year from date string"""
