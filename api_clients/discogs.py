@@ -418,10 +418,8 @@ class DiscogsClient:
             elif response.status_code == 403:
                 logger.error(f"Discogs API access forbidden (403): check token permissions")
                 return None
-            elif response.status_code >= 400:
-                logger.error(f"Discogs API error {response.status_code}: {response.text[:200]}")
-                return None
             
+            # Let response.raise_for_status() handle other errors (404, 500, etc.)
             response.raise_for_status()
             
             results = response.json().get("results", [])
@@ -480,10 +478,8 @@ class DiscogsClient:
                 elif response.status_code == 403:
                     logger.error(f"Discogs API access forbidden (403): check token permissions")
                     return result
-                elif response.status_code >= 400:
-                    logger.error(f"Discogs API error {response.status_code}: {response.text[:200]}")
-                    return result
                 
+                # Let response.raise_for_status() handle other errors (404, 500, etc.)
                 response.raise_for_status()
                 
                 releases = response.json().get("releases", [])
@@ -515,10 +511,7 @@ class DiscogsClient:
                             _throttle_discogs()
                             rel_response = self.session.get(rel_url, headers=self.headers, timeout=timeout)
                         
-                        if rel_response.status_code >= 400:
-                            logger.debug(f"Discogs: Failed to fetch release {release_id}: HTTP {rel_response.status_code}")
-                            continue
-                        
+                        # Let response.raise_for_status() handle errors
                         rel_response.raise_for_status()
                         
                         release_data = rel_response.json()
