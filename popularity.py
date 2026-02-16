@@ -66,7 +66,7 @@ def _get_timeout_safe_discogs_client(token: str):
     if not HAVE_DISCOGS:
         return None
     if token not in _timeout_safe_discogs_clients:
-        _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True)
+        _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True, db_path=DB_PATH)
     return _timeout_safe_discogs_clients.get(token)
 
 # Module-level logger
@@ -2049,7 +2049,7 @@ def popularity_scan(
                             discogs_config = config.get("api_integrations", {}).get("discogs", {})
                             if discogs_config.get("enabled") and discogs_config.get("token"):
                                 try:
-                                    discogs_client = DiscogsClient(token=discogs_config.get("token"))
+                                    discogs_client = DiscogsClient(token=discogs_config.get("token"), db_path=DB_PATH)
                                     discogs_artist_id = _run_with_timeout(
                                         discogs_client.get_artist_id,
                                         12,  # 12 second timeout for Discogs artist lookup
@@ -2615,7 +2615,7 @@ def popularity_scan(
                                 if discogs_release_id:
                                     # Try to get genres directly from release
                                     log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
-                                    discogs_client = DiscogsClient(token=discogs_token)
+                                    discogs_client = DiscogsClient(token=discogs_token, db_path=DB_PATH)
                                     # Search for release by ID to get genres
                                     discogs_genres = discogs_client.get_genres(title, artist)
                                     if discogs_genres:
