@@ -12,6 +12,7 @@ from typing import List, Dict, Optional
 from bs4 import BeautifulSoup
 import re
 import urllib.request
+import os
 
 # Try to import requests, fall back to urllib if not available
 try:
@@ -61,8 +62,31 @@ class WikipediaReleaseScraper:
         "2026_american": ['day', 'album', 'artist'],             # Day, Album, Artist
     }
     
-    def __init__(self, db_path: str = "database.db"):
-        self.db_path = db_path
+    def __init__(self, db_path: str = None):
+        # Use provided db_path, environment variable, or default paths
+        if db_path:
+            self.db_path = db_path
+        else:
+            # Try environment variable first
+            self.db_path = os.environ.get("DB_PATH")
+            
+            # If not set, try config file
+            if not self.db_path:
+                try:
+                    import yaml
+                    if os.path.exists("config.yaml"):
+                        with open("config.yaml", "r") as f:
+                            cfg = yaml.safe_load(f) or {}
+                            self.db_path = cfg.get("database", {}).get("path")
+                except Exception:
+                    pass
+            
+            # Fall back to Docker path, then local path
+            if not self.db_path:
+                if os.path.exists("/database/sptnr.db"):
+                    self.db_path = "/database/sptnr.db"
+                else:
+                    self.db_path = "database.db"
         self.use_requests = HAS_REQUESTS
         
         if self.use_requests:
@@ -571,11 +595,9 @@ class WikipediaReleaseScraper:
             artist_name = release.get("artist_name", "")
             artist_in_collection = artist_name.lower() in artists_in_collection if artist_name else False
             
-            # Skip releases from artists not in collection
+            # Mark releases not in collection, but still add them so they can be viewed
             if not artist_in_collection:
-                logger.debug(f"Filtered out: '{artist_name}' - {release.get('album_name')} (artist not in collection)")
-                filtered_out += 1
-                continue
+                logger.debug(f"Adding release from artist not in collection: '{artist_name}' - {release.get('album_name')}")
             
             album_in_collection = (artist_name.lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("album_name") else False
             
@@ -704,7 +726,16 @@ class WikipediaReleaseScraper:
 
 
 if __name__ == "__main__":
-    scraper = WikipediaReleaseScraper()
+    import sys
+    
+    # Parse command-line arguments
+    db_path = None
+    if len(sys.argv) > 1:
+        db_path = sys.argv[1]
+    
+    scraper = WikipediaReleaseScraper(db_path)
+    logger.info(f"Using database: {scraper.db_path}")
+    
     results = scraper.scrape_all_sources()
     
     print(f"\n[OK] Scraping complete!")
