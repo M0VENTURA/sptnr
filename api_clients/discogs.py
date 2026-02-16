@@ -80,7 +80,7 @@ def _retry_on_500(func, max_retries: int = 3, retry_delay: float = 2.0):
 class DiscogsClient:
     """Discogs API wrapper for single detection and metadata."""
     
-    def __init__(self, token: str, http_session=None, enabled: bool = True):
+    def __init__(self, token: str, http_session=None, enabled: bool = True, db_path: str = "/database/sptnr.db"):
         """
         Initialize Discogs client.
         
@@ -88,10 +88,12 @@ class DiscogsClient:
             token: Discogs API token
             http_session: Optional requests.Session (uses shared if not provided)
             enabled: Whether Discogs is enabled
+            db_path: Path to database for cache storage (default: /database/sptnr.db)
         """
         self.token = token
         self.session = http_session or session
         self.enabled = enabled
+        self.db_path = db_path
         self.base_url = "https://api.discogs.com"
         self.headers = {
             "Authorization": f"Discogs token={token}" if token else "",
@@ -463,7 +465,7 @@ class DiscogsClient:
         result = {"singles": [], "eps": []}
         
         try:
-            cache = get_discogs_cache()
+            cache = get_discogs_cache(db_path=self.db_path)
             
             # Fetch all artist releases (Discogs API doesn't support format parameter)
             try:
@@ -635,7 +637,7 @@ class DiscogsClient:
         
         try:
             log_debug(f"[DISCOGS_SINGLE] is_single check: title='{title}', artist='{artist}'")
-            cache = get_discogs_cache()
+            cache = get_discogs_cache(db_path=self.db_path)
             normalized_title = normalize_track_title(title)
             log_debug(f"[DISCOGS_SINGLE] Normalized title: '{normalized_title}'")
             
