@@ -392,6 +392,7 @@ class DiscogsClient:
             Discogs artist ID or None if not found
         """
         try:
+            log_debug(f"[DISCOGS_ARTIST_ID] Starting artist ID lookup for: {artist}")
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {
@@ -401,8 +402,10 @@ class DiscogsClient:
             }
             
             logger.debug(f"Discogs: GET {search_url} with params={params}")
+            log_debug(f"[DISCOGS_ARTIST_ID] Sending request: GET {search_url}")
             response = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             logger.debug(f"Discogs: Artist search response status={response.status_code}")
+            log_debug(f"[DISCOGS_ARTIST_ID] Response status: {response.status_code}")
             
             if response.status_code == 429:
                 retry_after = int(response.headers.get("Retry-After", 60))
@@ -424,15 +427,23 @@ class DiscogsClient:
             
             results = response.json().get("results", [])
             logger.debug(f"Discogs: Found {len(results)} artist results for '{artist}'")
+            log_debug(f"[DISCOGS_ARTIST_ID] Found {len(results)} results for '{artist}'")
             if results:
                 # Return the ID of the first artist match
-                return results[0].get("id")
+                first_result = results[0]
+                artist_id = first_result.get("id")
+                artist_name = first_result.get("title", "Unknown")
+                log_debug(f"[DISCOGS_ARTIST_ID] Using first match: ID={artist_id}, name={artist_name}")
+                return artist_id
+            log_debug(f"[DISCOGS_ARTIST_ID] No artist results found for '{artist}'")
             return None
         
         except Exception as e:
             logger.error(f"Failed to get artist ID for '{artist}': {e}")
+            log_debug(f"[DISCOGS_ARTIST_ID] ERROR: {type(e).__name__}: {str(e)}")
             import traceback
             logger.debug(f"   Traceback: {traceback.format_exc()}")
+            log_debug(f"[DISCOGS_ARTIST_ID] Traceback: {traceback.format_exc()}")
             return None
     
     def _fetch_artist_singles_and_eps(self, artist_id: int, timeout: tuple[int, int] | int = (5, 10)) -> Dict[str, List[str]]:
@@ -484,10 +495,12 @@ class DiscogsClient:
                 
                 releases = response.json().get("releases", [])
                 logger.debug(f"Discogs: Fetched {len(releases)} total releases for artist {artist_id}")
+                log_debug(f"[DISCOGS_RELEASES] Fetched {len(releases)} total releases for artist ID {artist_id}")
                 
                 # Process each release and filter by format client-side
                 singles_found = 0
                 eps_found = 0
+                skipped_releases = 0
                 for release_info in releases:
                     release_id = release_info.get("id")
                     if not release_id:
@@ -519,39 +532,53 @@ class DiscogsClient:
                         formats = release_data.get("formats", []) or []
                         tracks = release_data.get("tracklist", []) or []
                         
+                        log_debug(f"[DISCOGS_RELEASES] Processing release {release_id}: '{release_title}' with {len(formats)} format(s), {len(tracks)} track(s)")
+                        
                         # Check if this release is a Single or EP based on format data
                         is_single = False
                         is_ep = False
+                        format_details = []
                         
                         for fmt in formats:
                             fmt_name = (fmt.get("name") or "").lower()
                             fmt_descs = fmt.get("descriptions") or []
                             fmt_descs = [d.lower() for d in fmt_descs if d]
+                            format_details.append(f"name={fmt_name}, descs={fmt_descs}")
                             
                             if "single" in fmt_name or "single" in " ".join(fmt_descs):
                                 is_single = True
                             if "ep" in fmt_name or any("ep" in d for d in fmt_descs if len(d) <= 5):  # Avoid matching words containing "ep"
                                 is_ep = True
                         
+                        log_debug(f"[DISCOGS_RELEASES] Format details: {format_details} -> is_single={is_single}, is_ep={is_ep}")
+                        
                         # Extract and normalize track titles
                         if is_single or is_ep:
                             result_key = "singles" if is_single else "eps"
+                            log_debug(f"[DISCOGS_RELEASES] Release is {result_key}: extracting {len(tracks)} tracks")
                             for track in tracks:
                                 track_title = track.get("title", "").strip()
                                 if track_title:
                                     normalized = normalize_track_title(track_title)
+                                    log_debug(f"[DISCOGS_RELEASES]   Track: '{track_title}' -> normalized: '{normalized}'")
                                     if normalized and normalized not in result[result_key]:
                                         result[result_key].append(normalized)
                                         logger.debug(f"Discogs: Added {result_key}: '{normalized}' from '{release_title}'")
+                                        log_debug(f"[DISCOGS_RELEASES]   Added to {result_key} list (total: {len(result[result_key])})")
                                         if result_key == "singles":
                                             singles_found += 1
                                         else:
                                             eps_found += 1
+                                else:
+                                    log_debug(f"[DISCOGS_RELEASES]   Track title empty after strip")
+                        else:
+                            log_debug(f"[DISCOGS_RELEASES] Skipping release - not single or EP")
                     
                     except Exception as e:
                         logger.debug(f"Failed to fetch release {release_id}: {e}")
                         continue
                 
+                log_debug(f"[DISCOGS_RELEASES] Summary: {singles_found} singles, {eps_found} EPs, {skipped_releases} skipped")
                 logger.debug(f"Discogs: Processed releases - found {singles_found} singles and {eps_found} EPs")
             
             except Exception as e:
@@ -559,6 +586,9 @@ class DiscogsClient:
                 import traceback
                 logger.debug(f"   Traceback: {traceback.format_exc()}")
             
+            log_debug(f"[DISCOGS_RELEASES] Final result: {len(result['singles'])} singles and {len(result['eps'])} EPs")
+            log_debug(f"[DISCOGS_RELEASES] Singles: {result['singles'][:5]}{'...' if len(result['singles']) > 5 else ''}")
+            log_debug(f"[DISCOGS_RELEASES] EPs: {result['eps'][:5]}{'...' if len(result['eps']) > 5 else ''}")
             logger.debug(f"Discogs: Fetched {len(result['singles'])} singles and {len(result['eps'])} EPs for artist {artist_id}")
             return result
         
@@ -604,62 +634,82 @@ class DiscogsClient:
             self._artist_singles_cache = {}  # artist_name -> {"singles": [...], "eps": [...]}
         
         try:
+            log_debug(f"[DISCOGS_SINGLE] is_single check: title='{title}', artist='{artist}'")
             cache = get_discogs_cache()
             normalized_title = normalize_track_title(title)
+            log_debug(f"[DISCOGS_SINGLE] Normalized title: '{normalized_title}'")
             
             # Check local request cache first
             artist_lower = artist.lower()
+            log_debug(f"[DISCOGS_SINGLE] Checking caches for artist '{artist}' (lower: '{artist_lower}')")
             if artist_lower not in self._artist_singles_cache:
                 # Check persistent cache for this artist's tracks
+                log_debug(f"[DISCOGS_SINGLE] Checking persistent cache for '{artist}'")
                 cached_singles = cache.get_cached_titles(artist)
                 
                 if cached_singles:
                     # Cache hit: use cached track list (convert set to list)
                     logger.debug(f"Discogs: Using cached singles list for artist '{artist}' ({len(cached_singles)} tracks)")
+                    log_debug(f"[DISCOGS_SINGLE] CACHE HIT: {len(cached_singles)} cached tracks for '{artist}'")
+                    log_debug(f"[DISCOGS_SINGLE] Cached tracks: {list(cached_singles)[:5]}{'...' if len(cached_singles) > 5 else ''}")
                     self._artist_singles_cache[artist_lower] = {"singles": list(cached_singles), "eps": []}
                 else:
                     # Cache miss: fetch from Discogs and populate cache
+                    log_debug(f"[DISCOGS_SINGLE] CACHE MISS: No cached data for '{artist}', fetching from Discogs API")
                     logger.debug(f"Discogs: Cache miss for '{artist}', fetching artist releases from Discogs API")
                     artist_id = self._get_artist_id(artist, timeout)
                     
                     if not artist_id:
+                        log_debug(f"[DISCOGS_SINGLE] Could not find artist ID for '{artist}'")
                         logger.debug(f"Discogs: Could not find artist ID for '{artist}'")
                         self._artist_singles_cache[artist_lower] = {"singles": [], "eps": []}
                         return False
                     
+                    log_debug(f"[DISCOGS_SINGLE] Found artist ID: {artist_id}")
                     logger.debug(f"Discogs: Found artist ID {artist_id} for '{artist}'")
                     
                     # Fetch singles and EPs from artist releases endpoint
+                    log_debug(f"[DISCOGS_SINGLE] Fetching singles/EPs from API for artist ID {artist_id}")
                     artist_releases = self._fetch_artist_singles_and_eps(artist_id, timeout)
                     
                     # Store in local cache for this request
+                    log_debug(f"[DISCOGS_SINGLE] Caching fetched releases locally: {len(artist_releases['singles'])} singles, {len(artist_releases['eps'])} EPs")
                     self._artist_singles_cache[artist_lower] = artist_releases
                     
                     # Populate persistent cache with track titles
                     if artist_releases["singles"] or artist_releases["eps"]:
                         all_tracks = artist_releases["singles"] + artist_releases["eps"]
+                        log_debug(f"[DISCOGS_SINGLE] Populating persistent cache with {len(all_tracks)} total tracks")
                         cache.add_to_cache(artist, all_tracks)
                         logger.debug(f"Discogs: Populated cache for '{artist}' with {len(all_tracks)} track titles ({len(artist_releases['singles'])} singles, {len(artist_releases['eps'])} EPs)")
                     else:
+                        log_debug(f"[DISCOGS_SINGLE] No singles or EPs found for '{artist}' from API")
                         logger.debug(f"Discogs: No singles or EPs found for artist '{artist}'")
             
             # Check if normalized title matches any cached single or EP track
             artist_cache = self._artist_singles_cache.get(artist_lower, {"singles": [], "eps": []})
             all_cached_titles = artist_cache["singles"] + artist_cache["eps"]
             
+            log_debug(f"[DISCOGS_SINGLE] Checking against {len(all_cached_titles)} cached tracks")
             logger.debug(f"Discogs: Checking if '{normalized_title}' matches any of {len(all_cached_titles)} cached tracks for '{artist}'")
             
             if normalized_title in all_cached_titles:
+                log_debug(f"[DISCOGS_SINGLE] ✓ MATCH FOUND: '{normalized_title}' matches cached track")
                 logger.debug(f"Discogs: ✓ Found '{title}' in artist '{artist}' Singles/EPs")
                 return True
             
+            log_debug(f"[DISCOGS_SINGLE] ✗ NO MATCH: checking normalized '{normalized_title}' against:")
+            log_debug(f"[DISCOGS_SINGLE]   Singles ({len(artist_cache['singles'])}): {artist_cache['singles'][:10]}")
+            log_debug(f"[DISCOGS_SINGLE]   EPs ({len(artist_cache['eps'])}): {artist_cache['eps'][:10]}")
             logger.debug(f"Discogs: ✗ '{title}' not found in artist '{artist}' Singles/EPs (searched {len(all_cached_titles)} tracks)")
             return False
         
         except Exception as e:
+            log_debug(f"[DISCOGS_SINGLE] ERROR: {type(e).__name__}: {str(e)}")
             logger.debug(f"Discogs single check failed for '{title}' by '{artist}': {e}")
             import traceback
             logger.debug(f"   Error traceback: {traceback.format_exc()}")
+            log_debug(f"[DISCOGS_SINGLE] Traceback: {traceback.format_exc()}")
             return False
     
     def has_official_video(self, title: str, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> bool:
