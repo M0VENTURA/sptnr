@@ -2195,9 +2195,19 @@ def api_scan_all_missing_releases():
             
             logging.info(f"[MISSING_RELEASES] Starting scan for {total_artists} artists")
             
-            # Clear old missing releases data
-            cursor.execute("DELETE FROM missing_releases")
+            # Clean up any releases that are NOW in the database (were imported since last scan)
+            cursor.execute("""
+                DELETE FROM missing_releases mr
+                WHERE EXISTS (
+                    SELECT 1 FROM tracks t
+                    WHERE LOWER(t.artist) = LOWER(mr.artist)
+                    AND LOWER(TRIM(t.album)) = LOWER(TRIM(mr.title))
+                )
+            """)
+            imported_count = cursor.rowcount
             conn.commit()
+            if imported_count > 0:
+                logging.info(f"[MISSING_RELEASES] Cleaned up {imported_count} releases that were imported since last scan")
             
             processed = 0
             total_missing = 0

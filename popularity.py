@@ -1788,7 +1788,8 @@ def popularity_scan(
     skip_header: bool = False,
     force: bool = False,
     filter_missing: bool = False,
-    singles_only: bool = False
+    singles_only: bool = False,
+    clear_single_detection_sources: list = None
 ):
     """
     Detect track popularity from external sources.
@@ -1799,9 +1800,11 @@ def popularity_scan(
         artist_filter: Only scan tracks for this specific artist
         album_filter: Only scan tracks for this specific album (requires artist_filter)
         skip_header: Skip logging the header (useful when called from unified_scan)
-        force: Force re-scan of albums even if they were already scanned
+        force: Force re-scan of albums even if they were already scanned (also clears single detection cache)
         filter_missing: Only scan artists/albums with missing popularity data
         singles_only: Only rescan singles detection, skip popularity scoring
+        clear_single_detection_sources: List of sources to clear from cache (e.g., ['discogs', 'spotify'])
+                                       If force=True, all sources are cleared automatically
     """
     if not skip_header:
         log_unified("Popularity Scan - Starting Popularity Scan")
@@ -1830,6 +1833,44 @@ def popularity_scan(
             log_info(f"Filtering: artist='{artist_filter}'")
     elif resume_from:
         log_info(f"Resuming from artist: '{resume_from}'")
+
+    # Handle single detection cache invalidation
+    conn_for_cache = None
+    try:
+        if force or clear_single_detection_sources:
+            conn_for_cache = get_db_connection()
+            cursor_for_cache = conn_for_cache.cursor()
+            
+            if force:
+                # Clear entire single detection cache on --force
+                log_info("Clearing ALL single detection cache (force scan enabled)")
+                cursor_for_cache.execute("""
+                    UPDATE tracks 
+                    SET single_detection_last_updated = NULL
+                    WHERE single_manual_override = 0
+                """)
+                cleared_count = cursor_for_cache.rowcount
+                conn_for_cache.commit()
+                log_info(f"Cleared single detection cache for {cleared_count} tracks")
+            elif clear_single_detection_sources:
+                # Clear cache only for specific sources that were changed
+                for source in clear_single_detection_sources:
+                    log_info(f"Clearing single detection cache for source: {source}")
+                    cursor_for_cache.execute("""
+                        UPDATE tracks 
+                        SET single_detection_last_updated = NULL
+                        WHERE single_manual_override = 0
+                        AND single_sources LIKE ?
+                    """, (f'%{source}%',))
+                    cleared_count = cursor_for_cache.rowcount
+                    conn_for_cache.commit()
+                    log_info(f"Cleared single detection cache for {cleared_count} tracks using source '{source}'")
+            
+            conn_for_cache.close()
+    except Exception as e:
+        log_debug(f"Failed to clear single detection cache: {e}")
+        if conn_for_cache:
+            conn_for_cache.close()
 
     # Initialize popularity helpers to configure Spotify client
     from popularity_helpers import configure_popularity_helpers
@@ -2892,6 +2933,36 @@ def popularity_scan(
                     
                     log_debug(f"Processing single detection for track: {title} (ID: {track_id})")
                     
+                    # Check single detection cache before running detection
+                    single_manual_override = row_get(track, "single_manual_override", 0)
+                    single_detection_last_updated = row_get(track, "single_detection_last_updated", None)
+                    
+                    # Skip re-detection if manually set by user
+                    if single_manual_override:
+                        log_debug(f"Single detection skipped (user override): {title}")
+                        continue
+                    
+                    # Check cache age unless force scanning
+                    if not (FORCE_RESCAN or force) and single_detection_last_updated:
+                        try:
+                            last_run = datetime.fromisoformat(single_detection_last_updated)
+                            age_hours = (datetime.now() - last_run).total_seconds() / 3600
+                            
+                            # Use confidence-based cache TTL
+                            current_confidence = row_get(track, "single_confidence", "low")
+                            if current_confidence == "high":
+                                cache_ttl = 168  # 7 days
+                            elif current_confidence == "medium":
+                                cache_ttl = 72   # 3 days
+                            else:
+                                cache_ttl = 24   # 1 day for low confidence
+                            
+                            if age_hours < cache_ttl:
+                                log_debug(f"Single detection cached: {title} (age: {age_hours:.1f}h, TTL: {cache_ttl}h, confidence: {current_confidence})")
+                                continue
+                        except Exception as e:
+                            log_debug(f"Failed to parse single detection timestamp: {e}")
+                    
                     # Get additional fields for advanced detection
                     track_isrc = row_get(track, "isrc", None)
                     track_duration = row_get(track, "duration", None)
@@ -2935,6 +3006,13 @@ def popularity_scan(
                     is_single = detection_result["is_single"]
                     
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
+                    
+                    # Update single detection timestamp after running detection
+                    cursor.execute("""
+                        UPDATE tracks 
+                        SET single_detection_last_updated = ?
+                        WHERE id = ?
+                    """, (datetime.now().isoformat(), track_id))
                     
                     # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
                     if track_id in user_set_singles and not is_single:
