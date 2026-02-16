@@ -354,9 +354,9 @@ class WikipediaReleaseScraper:
             day_str = col_values.get('day')
             if day_str:
                 try:
-                    # Use search() instead of match() to find numbers anywhere in the string
-                    # This handles cases like "January 2", "2", "Feb 2", etc.
-                    match = re.search(r'\b(\d{1,2})\b', day_str)
+                    # Use search() to find numbers anywhere in the string, including ordinal numbers
+                    # This handles cases like "January 2", "2", "Feb 2", "2nd", "31st", "1st", etc.
+                    match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', day_str)
                     if match:
                         day = int(match.group(1))
                         if not (1 <= day <= 31):
