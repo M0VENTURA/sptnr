@@ -1687,9 +1687,25 @@ def artist_detail(name):
         
         conn.close()
         
-        # Convert Row to dict for template access
+        # Convert Row to dict for template access with defaults
         if artist_stats:
             artist_stats = dict(artist_stats)
+        else:
+            # Provide default values if no stats found (artist has no tracks)
+            artist_stats = {
+                'track_count': 0,
+                'album_count': 0,
+                'avg_stars': None,
+                'five_star_count': 0,
+                'total_duration': 0,
+                'earliest_year': None,
+                'latest_year': None,
+                'musicbrainz_artist_id': None,
+                'spotify_artist_id': None,
+                'lastfm_artist_mbid': None,
+                'discogs_artist_id': None,
+                'discogs_release_id': None
+            }
         
         # Categorize discovered albums by type
         albums_by_category = {
