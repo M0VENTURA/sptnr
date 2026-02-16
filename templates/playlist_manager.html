@@ -635,6 +635,16 @@ document.addEventListener('DOMContentLoaded', function() {
   try {
     console.log('[Playlist Manager] DOMContentLoaded starting');
     
+    // Initialize Bootstrap tabs
+    const tabElements = document.querySelectorAll('button[data-bs-toggle="tab"]');
+    console.log(`[Playlist Manager] Found ${tabElements.length} tab buttons`);
+    tabElements.forEach(tabElement => {
+      const tab = new bootstrap.Tab(tabElement);
+      tabElement.addEventListener('shown.bs.tab', function (e) {
+        console.log(`[Playlist Manager] Tab shown: ${e.target.id}`);
+      });
+    });
+    
     // Load initial data for all tabs with error isolation
     Promise.all([
       loadNavidromePlaylists().catch(e => {
