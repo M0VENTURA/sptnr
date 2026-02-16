@@ -250,15 +250,23 @@ class WikipediaReleaseScraper:
             # Reconstruct table accounting for rowspan/colspan
             reconstructed_rows = self._reconstruct_table_rows(rows)
             
-            # Skip header row (first row usually has th elements or column names)
+            # Skip header rows (first row may be navigation, actual headers are in a row with th elements)
             start_idx = 0
-            if reconstructed_rows and reconstructed_rows[0]:
-                first_row_has_header = any(
-                    cell and cell.name == 'th' for cell in rows[0].find_all(['td', 'th'])
-                )
-                if first_row_has_header:
-                    start_idx = 1
-                    logger.debug(f"Skipping header row (contains <th> elements) for month {current_month}")
+            
+            # Check first few rows to find where data actually starts
+            for check_row_idx in range(min(3, len(rows))):
+                cells_in_row = rows[check_row_idx].find_all(['td', 'th'])
+                if not cells_in_row:
+                    continue
+                    
+                # Count TH vs TD - if mostly TH, it's a header row
+                th_count = sum(1 for cell in cells_in_row if cell.name == 'th')
+                td_count = sum(1 for cell in cells_in_row if cell.name == 'td')
+                
+                # If row has mostly headers, skip it
+                if th_count > td_count and th_count >= 3:
+                    start_idx = check_row_idx + 1
+                    logger.debug(f"Skipping row {check_row_idx} (header row with {th_count} TH elements)")
             
             logger.debug(f"Starting data row parsing from index {start_idx}")
             
