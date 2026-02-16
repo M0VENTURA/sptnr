@@ -3060,6 +3060,17 @@ def popularity_scan(
                         log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
                         singles_milestones_logged.add(75)
                 
+                # CRITICAL: Close/reset the read cursor to release any READ locks before attempting WRITE operations
+                # This is especially important with early-stop detection which completes quickly and immediately
+                # tries to write results. Without this, SQLite waits for the read lock to expire (120s timeout)
+                try:
+                    cursor.close()
+                    cursor = conn.cursor()
+                    log_debug(f"Reset cursor after single detection loop to release read locks")
+                except Exception as e:
+                    log_debug(f"Warning: Failed to reset cursor: {e}")
+                    # Continue anyway, the connection will still work
+                
                 # Batch update all singles detection results for this album in one commit
                 if singles_updates:
                     # Update with conditional stars setting - only set stars if value is provided (detected singles)

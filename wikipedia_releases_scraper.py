@@ -14,6 +14,10 @@ import re
 import urllib.request
 import os
 
+# Suppress SSL warnings from urllib3 (Wikipedia requests work fine without verification)
+import urllib3
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+
 # Try to import requests, fall back to urllib if not available
 try:
     import requests
