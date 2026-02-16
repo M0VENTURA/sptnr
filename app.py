@@ -9383,45 +9383,69 @@ def api_album_tracklist():
         
         # Fallback: Search MusicBrainz if no MBID provided or MBID lookup failed
         log_debug(f"Fetching tracklist for {artist} - {album} via search")
-        search_url = "https://musicbrainz.org/ws/2/release-group"
+        
+        # Try searching for releases directly
+        search_url = "https://musicbrainz.org/ws/2/release"
         params = {
             "query": f'release:"{album}" AND artist:"{artist}"',
             "fmt": "json",
-            "limit": 1
+            "limit": 5  # Get multiple results in case first isn't right
         }
         
         resp = requests.get(search_url, params=params, headers=headers, timeout=5)
         resp.raise_for_status()
         data = resp.json()
         
-        release_groups = data.get("release-groups", [])
-        if not release_groups:
-            log_debug(f"No MusicBrainz results for {artist} - {album}")
-            return jsonify({"error": "Album not found on MusicBrainz"}), 404
+        releases = data.get("releases", [])
         
-        rg = release_groups[0]
-        rg_id = rg.get("id")
-        
-        if not rg_id:
-            return jsonify({"error": "Cannot get release ID"}), 400
-        
-        # Fetch releases for this release group
-        releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
-        releases_params = {"fmt": "json", "limit": 1}
-        
-        releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
-        releases_resp.raise_for_status()
-        releases_data = releases_resp.json()
-        
-        releases = releases_data.get("releases", [])
+        # If no releases found with direct search, try release-group search
         if not releases:
-            return jsonify({"error": "No releases found for this release group"}), 404
+            log_debug(f"No direct releases found for {artist} - {album}, trying release-group search")
+            search_url = "https://musicbrainz.org/ws/2/release-group"
+            params = {
+                "query": f'"{album}" AND artist:"{artist}"',
+                "fmt": "json",
+                "limit": 1
+            }
+            
+            resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+            resp.raise_for_status()
+            data = resp.json()
+            
+            release_groups = data.get("release-groups", [])
+            if not release_groups:
+                log_debug(f"No MusicBrainz results for {artist} - {album}")
+                return jsonify({"error": "Album not found on MusicBrainz"}), 404
+            
+            rg = release_groups[0]
+            rg_id = rg.get("id")
+            
+            if not rg_id:
+                return jsonify({"error": "Cannot get release ID"}), 400
+            
+            # Fetch releases for this release group
+            releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}/releases"
+            releases_params = {"fmt": "json", "limit": 5}
+            
+            releases_resp = requests.get(releases_url, params=releases_params, headers=headers, timeout=5)
+            releases_resp.raise_for_status()
+            releases_data = releases_resp.json()
+            
+            releases = releases_data.get("releases", [])
+            if not releases:
+                log_debug(f"No releases found for release group {rg_id}")
+                return jsonify({"error": "No releases found for this release group"}), 404
+        
+        if not releases:
+            return jsonify({"error": "No releases found"}), 404
         
         # Get first release with media/tracks
         tracklist = []
+        release_id = None
         for release in releases:
             media = release.get("media", [])
             if media:
+                release_id = release.get("id", "")
                 for track_obj in media[0].get("tracks", []):
                     recording = track_obj.get("recording", {})
                     tracklist.append({
@@ -9440,7 +9464,7 @@ def api_album_tracklist():
             "artist": artist,
             "album": album,
             "tracklist": tracklist,
-            "release_id": rg_id
+            "release_id": release_id or ""
         })
     
     except Exception as e:
