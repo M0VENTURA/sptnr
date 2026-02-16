@@ -93,10 +93,14 @@ class DiscogsClient:
         self.session = http_session or session
         self.enabled = enabled
         self.base_url = "https://api.discogs.com"
+        # Only include Authorization header if token is provided and not a placeholder
+        has_valid_token = token and token != "your_discogs_token"
         self.headers = {
-            "Authorization": f"Discogs token={token}" if token else "",
+            "Authorization": f"Discogs token={token}" if has_valid_token else "",
             "User-Agent": "sptnr-cli/1.0 +https://github.com/M0VENTURA/sptnr"
         }
+        if not has_valid_token and enabled:
+            logger.warning(f"Discogs client initialized without valid token - API calls will fail. Please set a valid token in config.yaml")
         self._single_cache = {}  # (artist, title, context) -> bool
         self._metadata_cache = {}  # (artist, title) -> metadata dict
     
@@ -454,6 +458,10 @@ class DiscogsClient:
                 releases = response.json().get("releases", [])
                 logger.debug(f"Discogs: Fetched {len(releases)} total releases for artist {artist_id}")
                 
+                if not releases:
+                    logger.debug(f"Discogs: No releases found in API response for artist {artist_id}")
+                    return result
+                
                 # Process each release and filter by format client-side
                 for release_info in releases:
                     release_id = release_info.get("id")
@@ -465,6 +473,7 @@ class DiscogsClient:
                     
                     # Skip if not a primary release or wrong type
                     if release_role and "primary" not in release_role:
+                        logger.debug(f"Discogs: Skipping release {release_id} - role is '{release_role}', not primary")
                         continue
                     
                     try:
@@ -484,6 +493,9 @@ class DiscogsClient:
                         formats = release_data.get("formats", []) or []
                         tracks = release_data.get("tracklist", []) or []
                         
+                        if not formats:
+                            logger.debug(f"Discogs: Release {release_id} ({release_title}) has no format data")
+                        
                         # Check if this release is a Single or EP based on format data
                         is_single = False
                         is_ep = False
@@ -493,14 +505,20 @@ class DiscogsClient:
                             fmt_descs = fmt.get("descriptions") or []
                             fmt_descs = [d.lower() for d in fmt_descs if d]
                             
+                            logger.debug(f"Discogs: Release {release_id} format: name='{fmt_name}', descriptions={fmt_descs}")
+                            
                             if "single" in fmt_name or "single" in " ".join(fmt_descs):
                                 is_single = True
-                            if "ep" in fmt_name or any("ep" in d for d in fmt_descs if len(d) <= 5):  # Avoid matching words containing "ep"
+                                logger.debug(f"Discogs: Release {release_id} identified as SINGLE")
+                            if "ep" in fmt_name or any("ep" in d for d in fmt_descs):  # Removed len(d) <= 5 restriction
                                 is_ep = True
+                                logger.debug(f"Discogs: Release {release_id} identified as EP")
                         
                         # Extract and normalize track titles
                         if is_single or is_ep:
                             result_key = "singles" if is_single else "eps"
+                            if not tracks:
+                                logger.debug(f"Discogs: {result_key.upper()} release {release_id} ({release_title}) has no tracklist!")
                             for track in tracks:
                                 track_title = track.get("title", "").strip()
                                 if track_title:
@@ -508,6 +526,8 @@ class DiscogsClient:
                                     if normalized and normalized not in result[result_key]:
                                         result[result_key].append(normalized)
                                         logger.debug(f"Discogs: Added {result_key}: '{normalized}' from '{release_title}'")
+                        else:
+                            logger.debug(f"Discogs: Release {release_id} ({release_title}) is not a Single or EP - skipping")
                     
                     except Exception as e:
                         logger.debug(f"Failed to fetch release {release_id}: {e}")
@@ -546,7 +566,11 @@ class DiscogsClient:
         Returns:
             True if track found in artist's Singles & EPs releases
         """
-        if not self.enabled or not self.token:
+        if not self.enabled:
+            return False
+        
+        if not self.token or self.token == "your_discogs_token":
+            logger.debug(f"Discogs: No valid token configured - cannot check for single '{title}'")
             return False
         
         # Reject single detection for special edition albums via Discogs
@@ -603,6 +627,10 @@ class DiscogsClient:
             all_cached_titles = artist_cache["singles"] + artist_cache["eps"]
             
             logger.debug(f"Discogs: Checking if '{normalized_title}' matches any of {len(all_cached_titles)} cached tracks for '{artist}'")
+            if artist_cache["singles"]:
+                logger.debug(f"Discogs: Available singles ({len(artist_cache['singles'])}): {artist_cache['singles'][:5]}{'...' if len(artist_cache['singles']) > 5 else ''}")
+            if artist_cache["eps"]:
+                logger.debug(f"Discogs: Available EPs ({len(artist_cache['eps'])}): {artist_cache['eps'][:5]}{'...' if len(artist_cache['eps']) > 5 else ''}")
             
             if normalized_title in all_cached_titles:
                 logger.debug(f"Discogs: ✓ Found '{title}' in artist '{artist}' Singles/EPs")
