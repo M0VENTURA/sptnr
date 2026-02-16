@@ -6,14 +6,33 @@ Your Discogs API searches are returning no results because your config file has 
 
 ## Root Cause
 
-The system is detecting the placeholder token and rejecting API requests:
+The system has built-in validation to detect and reject placeholder Discogs tokens:
 
-```python
-if not self.token or self.token == "your_discogs_token":
-    return False  # No valid token - skip Discogs checks
-```
+- Detects: "your_discogs_token", "your_token", "placeholder", or empty token
+- When detected: Logs warning and disables Discogs single detection
+- This prevents wasted API calls with invalid credentials
 
-This is a safety feature to prevent invalid requests, but it means Discogs single detection won't work until you provide a valid token.
+**Why Discogs appears to work but returns no results**: If a real-but-invalid token is used, the Discogs API returns HTTP 401 (Unauthorized). The error is caught and single detection returns False silently.
+
+## Recent Improvements (Commit 878741d)
+
+Enhanced error logging and validation:
+
+1. **Placeholder Token Detection**: Now explicitly warns when a placeholder token prevents Discogs use
+
+   ```
+   ⚠ Discogs token appears to be a placeholder - Discogs single detection will be disabled
+   ```
+
+2. **HTTP Error Logging**: Shows clear error messages for auth failures
+
+   ```
+   ERROR: Discogs API authentication failed (401): invalid or expired token
+   ```
+
+3. **Debug Logging**: Full tracebacks available in debug mode to diagnose API issues
+
+4. **Token Validation**: Checks that token is long enough (20+ characters) to be valid
 
 ## Solution: Get and Configure Your Discogs Token
 

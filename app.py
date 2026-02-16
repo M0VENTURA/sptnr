@@ -1351,13 +1351,19 @@ def dashboard():
 def convert_row_to_json_serializable(obj):
     """
     Recursively convert database Row objects and other non-JSON-serializable types to JSON-safe formats.
-    Handles: Row objects, datetime, Decimal, None, etc.
+    Handles: Row objects, datetime, Decimal, Jinja2 Undefined, None, etc.
     """
+    from jinja2 import Undefined
+    
     if obj is None:
         return None
     
+    # Handle Jinja2 Undefined objects
+    if isinstance(obj, Undefined):
+        return None
+    
     # Convert Row objects to dicts
-    if hasattr(obj, 'keys'):  # sqlite3.Row object
+    if hasattr(obj, 'keys') and not isinstance(obj, dict):  # sqlite3.Row object
         obj = dict(obj)
     
     # Recursively process dicts
@@ -1874,7 +1880,9 @@ def artist_detail(name):
                              qbit_config=qbit_config,
                              slskd_config=slskd_config)
     except Exception as e:
+        import traceback
         logging.error(f"Error loading artist details: {str(e)}")
+        logging.error(f"Traceback: {traceback.format_exc()}")
         flash(f"Error loading artist: {str(e)}", "error")
         return redirect(url_for("artists"))
 

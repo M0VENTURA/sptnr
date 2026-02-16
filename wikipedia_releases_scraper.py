@@ -182,16 +182,31 @@ class WikipediaReleaseScraper:
         for table in tables:
             # Find the month heading before this table
             current_month = None
+            initial_day = None
             
             # Walk backwards from table through all previous elements looking for month
             prev = table.find_previous()
             while prev and not current_month:
                 text = prev.get_text(strip=True).lower()
+                text_original = prev.get_text(strip=True)
+                
                 # Check if this element contains a month name
                 for month_name, month_num in months.items():
                     if month_name in text and len(text) < 100:  # Month heading is usually short
                         current_month = month_num
-                        logger.debug(f"Found month heading '{text}' -> month {month_num}")
+                        logger.debug(f"Found month heading '{text_original}' -> month {month_num}")
+                        
+                        # Extract day number from heading (e.g., "January 9" -> 9)
+                        day_match = re.search(r'\b(\d{1,2})(?:st|nd|rd|th)?\b', text_original)
+                        if day_match:
+                            try:
+                                initial_day = int(day_match.group(1))
+                                if not (1 <= initial_day <= 31):
+                                    initial_day = None
+                                else:
+                                    logger.debug(f"  Extracted initial day from heading: {initial_day}")
+                            except (ValueError, AttributeError):
+                                pass
                         break
                 
                 # Don't search too far back (stop at next table or major heading)
@@ -202,6 +217,10 @@ class WikipediaReleaseScraper:
             if not current_month:
                 current_month = 1  # Default to January
                 logger.debug(f"Could not find month heading, defaulting to January")
+            
+            # Initialize last_seen_day from heading day if found
+            if initial_day:
+                logger.debug(f"Using initial day {initial_day} extracted from section heading")
             
             # Parse table rows
             rows = table.find_all('tr')
@@ -227,7 +246,8 @@ class WikipediaReleaseScraper:
             logger.debug(f"Starting data row parsing from index {start_idx}")
             
             # Track last seen day for handling rowspan (multiple rows with same day)
-            last_seen_day = None
+            # Initialize with day extracted from section heading if available
+            last_seen_day = initial_day if initial_day else None
             
             # Parse data rows
             row_num = 0
