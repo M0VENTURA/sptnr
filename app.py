@@ -2794,7 +2794,7 @@ def api_artist_bio():
                 discogs_token = discogs_config.get("token", "") or os.environ.get("DISCOGS_TOKEN", "")
                 
                 if discogs_token:
-                    discogs_client = DiscogsClient(discogs_token, db_path=DB_PATH)
+                    discogs_client = DiscogsClient(discogs_token)
                     # Use session to search since search_artist is not available
                     search_url = f"https://api.discogs.com/database/search"
                     params = {"q": artist_name, "type": "artist", "per_page": 1}
@@ -3091,7 +3091,7 @@ def api_artist_search_images():
             discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
             discogs_token = discogs_config.get("token", "")
 
-            client = DiscogsClient(discogs_token, db_path=DB_PATH)
+            client = DiscogsClient(discogs_token)
             # Discogs API does not have a direct 'search_artist', so use database/search with type=artist
             search_url = f"https://api.discogs.com/database/search"
             params = {"q": artist_name, "type": "artist", "per_page": 5}
@@ -8915,7 +8915,7 @@ def _fetch_album_art_from_discogs(artist_name: str, album_name: str) -> bytes | 
             log_debug(f"Discogs: No token configured")
             return None
             
-        discogs = DiscogsClient(discogs_token, db_path=DB_PATH)
+        discogs = DiscogsClient(discogs_token)
         
         # Search for album
         search_url = f"https://api.discogs.com/database/search"
@@ -11636,7 +11636,7 @@ def api_track_discogs_lookup():
             return jsonify({"error": "Discogs token not configured. Please add your Discogs token in config.yaml under api_integrations.discogs.token"}), 400
         
         # Use DiscogsClient with proper session and retry logic
-        client = DiscogsClient(token=token, db_path=DB_PATH)
+        client = DiscogsClient(token=token)
         
         # Prepare search query
         from api_clients import session
