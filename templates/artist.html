@@ -1951,7 +1951,7 @@ function downloadSlskdFile(username, filename, size, btn, originalHTML) {
   });
 }
 
-function loadTracklist(artist, album, button) {
+function loadTracklist(artist, album, button, mbid) {
   const contentId = `tracklist-content-${artist.replace(/\s+/g, '_')}-${album.replace(/\s+/g, '_')}`;
   const contentDiv = document.getElementById(contentId);
   const spinner = button.querySelector('.spinner-border');
@@ -1962,9 +1962,15 @@ function loadTracklist(artist, album, button) {
   if (spinner) spinner.style.display = 'inline-block';
   button.disabled = true;
   
+  // Build the tracklist fetch URL
+  let tracklistUrl = `/api/album/tracklist?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`;
+  if (mbid) {
+    tracklistUrl += `&mbid=${encodeURIComponent(mbid)}`;
+  }
+  
   // Fetch and match tracklist
   Promise.all([
-    fetch(`/api/album/tracklist?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`).then(r => r.json()),
+    fetch(tracklistUrl).then(r => r.json()),
     fetch(`/api/album/tracklist/match?artist=${encodeURIComponent(artist)}&album=${encodeURIComponent(album)}`).then(r => r.json())
   ])
   .then(([tracklistResponse, matchResponse]) => {

@@ -1534,6 +1534,7 @@ def artist_detail(name):
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
                 MAX(album_artist) as album_artist,
+                MAX(beets_album_mbid) as beets_album_mbid,
                 MAX(discogs_release_id) as discogs_release_id
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
@@ -9314,15 +9315,58 @@ def api_album_tracklist():
     """Get tracklist for an EP/Single from MusicBrainz"""
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
+    mbid = request.args.get("mbid", "").strip()  # Optional MusicBrainz Release ID
     
     if not artist or not album:
         return jsonify({"error": "Artist and album parameters required"}), 400
     
     try:
-        log_debug(f"Fetching tracklist for {artist} - {album}")
         import requests
-        
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        
+        # If MBID is provided, use it directly instead of searching
+        if mbid:
+            log_debug(f"Fetching tracklist for {artist} - {album} using provided MBID: {mbid}")
+            
+            # Fetch the release directly using the provided MBID
+            release_url = f"https://musicbrainz.org/ws/2/releases/{mbid}"
+            release_params = {"fmt": "json", "inc": "recordings"}
+            
+            try:
+                release_resp = requests.get(release_url, params=release_params, headers=headers, timeout=5)
+                release_resp.raise_for_status()
+                release_data = release_resp.json()
+                
+                # Extract tracklist from the release
+                tracklist = []
+                media = release_data.get("media", [])
+                if media:
+                    for track_obj in media[0].get("tracks", []):
+                        recording = track_obj.get("recording", {})
+                        tracklist.append({
+                            "position": track_obj.get("position", ""),
+                            "title": recording.get("title", "Unknown"),
+                            "artist": " feat. ".join([a.get("name", "") for a in recording.get("artist-credit", []) if a.get("name")])
+                        })
+                
+                if tracklist:
+                    log_info(f"Found {len(tracklist)} tracks for {artist} - {album} (Release ID: {mbid})")
+                    return jsonify({
+                        "success": True,
+                        "artist": artist,
+                        "album": album,
+                        "tracklist": tracklist,
+                        "release_id": mbid
+                    })
+                else:
+                    log_debug(f"Release {mbid} has no tracklist")
+                    return jsonify({"error": "No tracks found in release"}), 404
+            except Exception as e:
+                log_debug(f"Error fetching release {mbid}: {e}. Falling back to search...")
+                # Fall through to search method
+        
+        # Fallback: Search MusicBrainz if no MBID provided or MBID lookup failed
+        log_debug(f"Fetching tracklist for {artist} - {album} via search")
         search_url = "https://musicbrainz.org/ws/2/release-group"
         params = {
             "query": f'release:"{album}" AND artist:"{artist}"',
