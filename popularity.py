@@ -1051,7 +1051,7 @@ def sync_track_rating_to_navidrome(track_id: str, stars: int) -> bool:
         log_basic(f"Failed to sync rating to Navidrome for track {track_id}: {e}")
         return False
 
-def save_popularity_progress(processed_artists: int, total_artists: int):
+def save_popularity_progress(processed_artists: int, total_artists: int, current_artist: str = None):
     """Save popularity scan progress to file"""
     try:
         progress_data = {
@@ -1059,7 +1059,9 @@ def save_popularity_progress(processed_artists: int, total_artists: int):
             "scan_type": "popularity_scan",
             "processed_artists": processed_artists,
             "total_artists": total_artists,
-            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0
+            "percent_complete": int((processed_artists / total_artists * 100)) if total_artists > 0 else 0,
+            "current_artist": current_artist,
+            "last_updated": datetime.now().isoformat()
         }
         with open(POPULARITY_PROGRESS_FILE, 'w') as f:
             json.dump(progress_data, f)
@@ -3444,8 +3446,8 @@ def popularity_scan(
             # progress visibility while reducing file I/O by orders of magnitude.
             # If scan is interrupted, it can resume from the last completed artist.
             processed_artists += 1
-            save_popularity_progress(processed_artists, total_artists)
-            log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed")
+            save_popularity_progress(processed_artists, total_artists, current_artist=artist)
+            log_debug(f"Progress saved - {processed_artists}/{total_artists} artists processed (current: {artist})")
 
         log_debug("Committing final changes to database")
         conn.commit()

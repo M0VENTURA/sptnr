@@ -218,7 +218,11 @@ def get_artists_to_scan(all_artists: List[str], resume_from: Optional[str] = Non
 
 def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Optional[str]:
     """
-    Get the last scanned artist from the database based on last_scanned timestamp.
+    Get the last scanned artist that NEEDS TO BE RESUMED (not completed).
+    
+    Priority:
+    1. Check scan_history for incomplete scans (status != 'completed')
+    2. Fall back to most recently scanned artist
     
     Args:
         db_path: Path to database
@@ -230,7 +234,25 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
         conn = sqlite3.connect(db_path, timeout=120)
         cursor = conn.cursor()
         
-        # Get the most recently scanned track's artist
+        # First, try to find an artist with an incomplete scan in scan_history
+        # This handles the case where a scan was interrupted mid-way through an artist
+        cursor.execute("""
+            SELECT artist
+            FROM scan_history
+            WHERE status != 'completed'
+            ORDER BY scan_timestamp DESC
+            LIMIT 1
+        """)
+        
+        row = cursor.fetchone()
+        if row:
+            artist = row[0]
+            log_debug(f"Found incomplete scan for artist: {artist}")
+            conn.close()
+            return artist
+        
+        # Fall back to the most recently scanned track's artist
+        # (for cases where scan_history doesn't have data)
         cursor.execute("""
             SELECT artist, MAX(last_scanned) as latest
             FROM tracks
@@ -245,7 +267,7 @@ def get_last_scanned_artist_from_db(db_path: str = "/database/sptnr.db") -> Opti
         
         if row:
             artist = row[0]
-            log_debug(f"Last scanned artist from DB: {artist} at {row[1]}")
+            log_debug(f"Last scanned artist from DB (fallback): {artist} at {row[1]}")
             return artist
         
     except Exception as e:
@@ -283,10 +305,12 @@ def should_resume_scan(scan_type: str = "navidrome") -> Tuple[bool, Optional[str
 
 def get_last_scanned_artist(scan_type: str = "navidrome", db_path: str = "/database/sptnr.db") -> Optional[str]:
     """
-    Get the last scanned artist from either progress file or database.
+    Get the last scanned artist that needs to be RESUMED (incomplete scans only).
     
-    First checks progress file for interrupted scans, then falls back to database
-    to find the most recently scanned artist based on last_scanned timestamp.
+    Strategy:
+    1. First check progress file for interrupted scan (current_artist in progress)
+    2. Then check scan_history for incomplete scans (artist with status != 'completed')
+    3. Fall back to most recently scanned artist from database
     
     Args:
         scan_type: Type of scan ('navidrome', 'popularity', or 'combined')
@@ -302,7 +326,7 @@ def get_last_scanned_artist(scan_type: str = "navidrome", db_path: str = "/datab
         log_info(f"Last scanned artist from progress file: {artist}")
         return artist
     
-    # Fall back to database query
+    # Fall back to database query - check for incomplete scans
     artist = get_last_scanned_artist_from_db(db_path)
     if artist:
         log_info(f"Last scanned artist from database: {artist}")
