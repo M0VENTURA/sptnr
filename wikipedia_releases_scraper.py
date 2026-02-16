@@ -230,18 +230,20 @@ class WikipediaReleaseScraper:
             last_seen_day = None
             
             # Parse data rows
+            row_num = 0
             for row in rows[start_idx:]:
                 cells = row.find_all('td')
                 if len(cells) < 2:
+                    row_num += 1
                     continue
                 
-                # Debug first few rows to understand structure
-                if len(releases) < 3:
-                    cell_preview = [c.get_text(strip=True)[:30] for c in cells[:4]]
-                    logger.info(f"Row {len(releases)} preview: {cell_preview}")
+                # Debug: show ALL rows to diagnose column alignment
+                cell_preview = [c.get_text(strip=True)[:40] for c in cells[:6]]
+                logger.info(f"[ROW {row_num}] cells={len(cells)} first 6: {cell_preview}")
                 
                 release = self._parse_row_for_month(cells, source_key, source_name, current_month, year, column_order, last_seen_day)
                 if release:
+                    logger.info(f"[ROW {row_num}] SUCCESS: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
                     releases.append(release)
                     # Update last_seen_day if this release has a day number
                     release_date = release.get('release_date', '')
@@ -251,8 +253,10 @@ class WikipediaReleaseScraper:
                             last_seen_day = day_from_date
                         except (ValueError, IndexError):
                             pass
-                    if len(releases) <= 3:
-                        logger.info(f"Parsed: {release['artist_name']} - {release['album_name']} ({release['release_date']})")
+                else:
+                    logger.info(f"[ROW {row_num}] SKIPPED")
+                
+                row_num += 1
         
         return releases
     
@@ -300,7 +304,8 @@ class WikipediaReleaseScraper:
             # Remove citation brackets like [23], [1], etc. from all cell text
             cell_texts = [re.sub(r'\s*\[\d+\]\s*', ' ', text).strip() for text in cell_texts]
             
-            logger.debug(f"Parsing row for {source_name}: {cell_texts[:5]}")  # Log first 5 cells
+            logger.debug(f"Parsing row for {source_name}: {len(cells)} cells, {column_order} column order")
+            logger.debug(f"  Raw cells: {[f'{i}={repr(c[:50])}' for i, c in enumerate(cell_texts[:6])]}")
             
             # DETECT if first cell is a date or not
             # If row has one fewer cell than expected OR first cell is not a date, shift the mapping
@@ -344,6 +349,8 @@ class WikipediaReleaseScraper:
                 # Store the value
                 col_values[col_type] = cell_value
                 cell_idx += 1
+            
+            logger.debug(f"  Final mapping: {col_values}")
             
             # Extract and process the values we care about
             day = None
