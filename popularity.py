@@ -960,9 +960,11 @@ if __name__ == "__main__":
 
 def get_db_connection():
     """Get database connection with WAL mode and extended timeout for concurrent access"""
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
+    conn = sqlite3.connect(DB_PATH, timeout=120.0, isolation_level='DEFERRED')
     conn.execute("PRAGMA journal_mode=WAL")
     conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
+    conn.execute("PRAGMA synchronous = NORMAL")  # Reduces fsync calls, improves throughput with WAL
+    conn.execute("PRAGMA wal_autocheckpoint = 1000")  # More aggressive checkpointing
     conn.row_factory = sqlite3.Row
     return conn
 

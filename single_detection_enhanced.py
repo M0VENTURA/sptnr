@@ -1895,15 +1895,23 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
     import time
     import random
     
-    max_retries = 3
+    max_retries = 5
     retry_count = 0
     base_delay = 0.5  # Start with 500ms
     
     while retry_count < max_retries:
         cursor = None
         try:
-            # Ensure proper timeout handling on the connection itself
+            # Ensure proper timeout handling on the connection BEFORE any operations
             conn.execute("PRAGMA busy_timeout = 120000")  # 120 seconds
+            conn.execute("PRAGMA journal_mode = WAL")  # Ensure WAL mode
+            
+            # Perform a checkpoint to free up commit logs and reduce lock contention
+            try:
+                conn.execute("PRAGMA wal_autocheckpoint = 1000")
+                conn.execute("PRAGMA optimize")
+            except:
+                pass  # These might fail if WAL isn't available, that's ok
             
             cursor = conn.cursor()
             
@@ -2007,7 +2015,7 @@ def store_single_detection_result(conn, track_id: str, result: Dict):
                 retry_count += 1
                 if retry_count >= max_retries:
                     # Final attempt failed - log and give up
-                    log_debug(f"Database lock timeout after {max_retries} retries for track {track_id}")
+                    log_debug(f"Database lock timeout after {max_retries} retries for track {track_id} (final error: {e})")
                     raise
                 
                 # Calculate exponential backoff with jitter
