@@ -1502,8 +1502,35 @@
     }
     
     function removeAlbumGenre(genre) {
-        currentAlbumGenres.delete(genre);
-        updateAlbumGenresDisplay();
+        const artistName = {{ artist_name|tojson }};
+        const albumName = {{ album_name|tojson }};
+        
+        // Call API to remove genre
+        fetch('/api/genres/remove', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                artist_name: artistName,
+                album_name: albumName,
+                genres: [genre]
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.error) {
+                console.error('Error removing genre:', data.error);
+                alert('❌ Error: ' + data.error);
+            } else {
+                // Remove from local Set and update display
+                currentAlbumGenres.delete(genre);
+                updateAlbumGenresDisplay();
+                alert(`✅ Genre "${genre}" removed from all tracks`);
+            }
+        })
+        .catch(error => {
+            console.error('Failed to remove genre:', error);
+            alert('❌ Failed to remove genre: ' + error.message);
+        });
     }
     
     function updateAlbumGenresDisplay() {
