@@ -2846,15 +2846,11 @@ def popularity_scan(
                 try:
                     if cursor is not None and not cursor._closed:
                         cursor.close()
-                    cursor = conn.cursor()
+                    cursor = None  # Don't create a new cursor yet - we'll need it after singles detection
                     log_debug(f"Closed read cursor before single detection to prevent lock contention")
                 except Exception as e:
                     log_debug(f"Warning: Failed to close cursor before single detection: {e}")
-                    # Continue anyway, create a fresh cursor
-                    try:
-                        cursor = conn.cursor()
-                    except:
-                        pass
+                    cursor = None
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
