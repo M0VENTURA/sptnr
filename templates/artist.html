@@ -865,7 +865,7 @@ function queueAlbumTracksToSlskd() {
       let queuedCount = 0;
       let html = `
         <div class="alert alert-info">
-          <strong>Queueing ${tracks.length} track${tracks.length !== 1 ? 's' : ''}...</strong>
+          <strong>Adding ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to download queue...</strong>
         </div>
         <div class="table-responsive">
           <table class="table table-sm">
@@ -906,7 +906,7 @@ function queueAlbumTracksToSlskd() {
           // Update summary
           const summary = document.querySelector('.alert-info strong');
           if (summary) {
-            summary.textContent = `✓ Queued ${queuedCount} of ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to Soulseek`;
+            summary.textContent = `✓ Added ${queuedCount} of ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to download queue`;
           }
           return;
         }
@@ -914,26 +914,33 @@ function queueAlbumTracksToSlskd() {
         const track = tracks[index];
         const statusEl = document.getElementById(`queue-status-${index}`);
         const trackTitle = track.title || `Track ${index + 1}`;
-        const searchQuery = `${currentDownloadAlbum.artist} ${trackTitle}`;
         
         statusEl.textContent = 'queuing...';
         statusEl.classList.add('text-warning');
         
-        fetch('/api/slskd/search-and-download', {
+        fetch('/api/queue/add', {
           method: 'POST',
           headers: {
             'Content-Type': 'application/json'
           },
           body: JSON.stringify({
-            query: searchQuery
+            artist: currentDownloadAlbum.artist,
+            title: trackTitle,
+            album: currentDownloadAlbum.album,
+            source: 'soulseek',
+            priority: 5
           })
         })
         .then(response => response.json())
-        .then(downloadData => {
-          queuedCount++;
-          statusEl.textContent = '✓ queued';
-          statusEl.classList.remove('text-warning');
-          statusEl.classList.add('text-success');
+        .then(queueData => {
+          if (queueData.success || queueData.queue_id) {
+            queuedCount++;
+            statusEl.textContent = '✓ queued';
+            statusEl.classList.remove('text-warning');
+            statusEl.classList.add('text-success');
+          } else {
+            throw new Error(queueData.error || 'Unknown error');
+          }
           index++;
           queueNextTrack();
         })
