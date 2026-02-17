@@ -12862,11 +12862,12 @@ def api_track_musicbrainz_lookup():
 def api_remove_genres():
     """
     Remove specific genres from artist or album's tracks
-    Accepts: artist_name OR (album_name + artist_name)
-    Returns affected track count and confirmation details
-    Then triggers Navidrome scan in background
+    Updates both database AND file tags (MP3/FLAC)
+    Special case: If removing "live" genre, also cleans "(live)" from track titles
     """
     try:
+        from track_tag_editor import update_track_file_tags, remove_genre_from_track_title
+        
         data = request.get_json() or {}
         artist_name = data.get("artist_name", "").strip()
         album_name = data.get("album_name", "").strip()
@@ -12883,18 +12884,20 @@ def api_remove_genres():
         
         # Build WHERE clause
         if album_name:
-            cursor.execute("SELECT id, genres FROM tracks WHERE artist = ? AND album = ?", 
+            cursor.execute("SELECT id, title, genres, file_path, beets_path FROM tracks WHERE artist = ? AND album = ?", 
                           (artist_name, album_name))
         else:
-            cursor.execute("SELECT id, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
+            cursor.execute("SELECT id, title, genres, file_path, beets_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
                           (artist_name,))
         
         rows = cursor.fetchall()
         affected_count = 0
-        update_records = []
+        files_updated = 0
+        is_removing_live = any(g.lower() == 'live' for g in genres_to_remove)
         
         # Build list of updates in memory first
-        for track_id, genres_str in rows:
+        for row in rows:
+            track_id, title, genres_str, file_path, beets_path = row
             if not genres_str:
                 continue
             
@@ -12911,17 +12914,34 @@ def api_remove_genres():
             # Only update if changes were made
             if len(filtered_genres) != len(genre_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
-                update_records.append((new_genres_str, track_id))
+                
+                # Check if we need to clean "(live)" from title
+                new_title = title
+                if is_removing_live:
+                    new_title = remove_genre_from_track_title(title)
+                
+                # Update database
+                cursor.execute("""
+                    UPDATE tracks SET genres = ?, title = ?
+                    WHERE id = ?
+                """, (new_genres_str, new_title, track_id))
+                
+                # Update file tags
+                actual_path = file_path or beets_path
+                if actual_path and os.path.exists(actual_path):
+                    result = update_track_file_tags(track_id, DB_PATH, {
+                        'genres': new_genres_str,
+                        'title': new_title
+                    })
+                    if result['success']:
+                        files_updated += 1
+                
                 affected_count += 1
         
-        # Execute all updates in a batch
-        if update_records:
-            cursor.executemany("UPDATE tracks SET genres = ? WHERE id = ?", update_records)
-            conn.commit()
-        
+        conn.commit()
         conn.close()
         
-        # Log bulk change once (don't log individual tracks)
+        # Log bulk change
         if affected_count > 0:
             log_genre_update(
                 artist_name=artist_name,
@@ -12931,7 +12951,7 @@ def api_remove_genres():
                 genres_after='',
                 action_type='remove_from_album' if album_name else 'remove_from_artist',
                 affected_count=affected_count,
-                change_summary=f"Removed genres from {affected_count} tracks: {', '.join(genres_to_remove)}"
+                change_summary=f"Removed genres from {affected_count} tracks and updated {files_updated} file(s): {', '.join(genres_to_remove)}"
             )
         
         # Trigger Navidrome scan in background
@@ -12958,13 +12978,70 @@ def api_remove_genres():
         return jsonify({
             "success": True,
             "affected_tracks": affected_count,
-            "message": f"Removed genres from {affected_count} track(s)",
+            "files_updated": files_updated,
+            "message": f"Removed genres from {affected_count} track(s), updated {files_updated} file(s)",
+            "titles_cleaned": affected_count if is_removing_live else 0,
             "scan_triggered": True,
             "next_step": "Navidrome is now scanning your collection for the updated genres"
         }), 200
         
     except Exception as e:
         logging.error(f"Error removing genres: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/track/update-metadata", methods=["POST"])
+def api_track_update_metadata():
+    """
+    Update track metadata (title, artist, genres) and file tags (MP3/FLAC)
+    
+    Request body:
+    {
+        "track_id": "track_id_from_db",
+        "title": "new title (optional)",
+        "artist": "new artist (optional)",
+        "genres": "new genres separated by backslash (optional)"
+    }
+    </param>
+    """
+    try:
+        from track_tag_editor import update_track_file_tags
+        
+        data = request.get_json() or {}
+        track_id = data.get("track_id", "").strip()
+        
+        if not track_id:
+            return jsonify({"error": "track_id required"}), 400
+        
+        # Build changes dict with only provided fields
+        changes = {}
+        if 'title' in data:
+            changes['title'] = data['title'].strip()
+        if 'artist' in data:
+            changes['artist'] = data['artist'].strip()
+        if 'genres' in data:
+            changes['genres'] = data['genres'].strip()
+        
+        if not changes:
+            return jsonify({"error": "At least one field (title, artist, or genres) required"}), 400
+        
+        # Update file tags and database
+        result = update_track_file_tags(track_id, DB_PATH, changes)
+        
+        if result['success']:
+            return jsonify({
+                "success": True,
+                "track_id": track_id,
+                "changes": result['changes'],
+                "message": "Track metadata updated successfully"
+            }), 200
+        else:
+            return jsonify({
+                "success": False,
+                "error": result.get('error', 'Failed to update track metadata')
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"Error updating track metadata: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/navidrome/scan/start", methods=["POST"])

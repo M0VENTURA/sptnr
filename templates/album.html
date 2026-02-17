@@ -537,16 +537,21 @@
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell align-items-center">
                                 <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Track</span>
-                                <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline">
-                                    {{ track.title }}
-                                </a>
+                                <span onclick="editTrackTitle('{{ track.id }}', '{{ track.title|escapejs }}')" class="flex-grow-1" style="cursor: pointer;" title="Click to edit">
+                                    <a href="{{ url_for('track_detail', track_id=track.id) }}" class="d-none d-md-inline track-title-display-{{ track.id }}">
+                                        {{ track.title }}
+                                    </a>
+                                    <span class="d-md-none track-title-display-{{ track.id }}">{{ track.title }}</span>
+                                </span>
                             </td>
                             <td class="d-none d-lg-table-cell">
-                                {% if track.artist and track.artist != artist_name %}
-                                <span class="text-muted" style="font-size: 0.85rem;">{{ track.artist }}</span>
-                                {% else %}
-                                <span class="text-muted">—</span>
-                                {% endif %}
+                                <span onclick="editTrackArtist('{{ track.id }}', '{{ track.artist|escapejs }}')" style="cursor: pointer;" title="Click to edit">
+                                    {% if track.artist and track.artist != artist_name %}
+                                    <span class="text-muted track-artist-display-{{ track.id }}" style="font-size: 0.85rem;">{{ track.artist }}</span>
+                                    {% else %}
+                                    <span class="text-muted track-artist-display-{{ track.id }}">—</span>
+                                    {% endif %}
+                                </span>
                             </td>
                             <td class="d-flex justify-content-between d-md-table-cell text-center">
                                 <span class="d-md-none text-muted fw-bold" style="font-size: 0.85rem;">Duration</span>
@@ -2063,6 +2068,64 @@
     }
 
     // Note: Scan monitoring functions are now provided by shared genre-utils.js
+
+    // Track inline editing functions
+    function editTrackTitle(trackId, currentTitle) {
+        const displayEl = document.querySelector(`.track-title-display-${trackId}`);
+        if (!displayEl) return;
+        
+        const newTitle = prompt('Edit track title:', currentTitle);
+        if (newTitle === null || newTitle.trim() === currentTitle) return;
+        
+        saveTrackMetadata(trackId, {title: newTitle.trim()}, currentTitle, null);
+    }
+
+    function editTrackArtist(trackId, currentArtist) {
+        const displayEl = document.querySelector(`.track-artist-display-${trackId}`);
+        if (!displayEl) return;
+        
+        // Handle empty artist (shown as "—")
+        const displayValue = currentArtist && currentArtist !== '—' ? currentArtist : '';
+        const newArtist = prompt('Edit track artist:', displayValue);
+        if (newArtist === null || newArtist === displayValue) return;
+        
+        saveTrackMetadata(trackId, {artist: newArtist.trim()}, null, currentArtist);
+    }
+
+    function saveTrackMetadata(trackId, changes, oldTitle, oldArtist) {
+        const payload = {
+            track_id: trackId,
+            ...changes
+        };
+        
+        fetch('/api/track/update-metadata', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify(payload)
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                // Update UI
+                if (changes.title) {
+                    document.querySelectorAll(`.track-title-display-${trackId}`).forEach(el => {
+                        el.textContent = changes.title;
+                    });
+                }
+                if (changes.artist) {
+                    document.querySelectorAll(`.track-artist-display-${trackId}`).forEach(el => {
+                        el.textContent = changes.artist || '—';
+                    });
+                }
+                alert('✅ Track metadata updated');
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update metadata'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
+    }
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>
 {% endblock %}
