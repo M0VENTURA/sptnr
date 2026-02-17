@@ -691,6 +691,61 @@ document.addEventListener('DOMContentLoaded', function() {
       console.warn('[Playlist Manager] Could not set up regularPlaylistSelect listener:', e);
     }
 
+    // ===============================
+    // TAB SWITCHING EVENT LISTENERS
+    // ===============================
+    // Initialize tab event handlers to load data when tabs are switched
+
+    // Smart Playlists Tab
+    const smartTab = document.getElementById('smartTab');
+    if (smartTab) {
+      smartTab.addEventListener('show.bs.tab', function(e) {
+        console.log('[Playlist Manager] Smart tab shown');
+        loadSmartPlaylists().catch(err => {
+          console.error('[Playlist Manager] Error loading smart playlists on tab switch:', err);
+        });
+      });
+    }
+
+    // Spotify Tab
+    const spotifyTab = document.getElementById('spotifyTab');
+    if (spotifyTab) {
+      spotifyTab.addEventListener('show.bs.tab', function(e) {
+        console.log('[Playlist Manager] Spotify tab shown');
+        // No automatic load - users click button to load
+        // But we could initialize the form here if needed
+      });
+    }
+
+    // Last.fm Tab
+    const lastfmTab = document.getElementById('lastfmTab');
+    if (lastfmTab) {
+      lastfmTab.addEventListener('show.bs.tab', function(e) {
+        console.log('[Playlist Manager] Last.fm tab shown');
+        // No automatic load - users click button to load
+        // But we could initialize the form here if needed
+      });
+    }
+
+    // ListenBrainz Tab
+    const listenbrainzTab = document.getElementById('listenbrainzTab');
+    if (listenbrainzTab) {
+      listenbrainzTab.addEventListener('show.bs.tab', function(e) {
+        console.log('[Playlist Manager] ListenBrainz tab shown');
+        // No automatic load - users click button to load
+        // But we could initialize the form here if needed
+      });
+    }
+
+    // Browse Tab
+    const browseTab = document.getElementById('browseTab');
+    if (browseTab) {
+      browseTab.addEventListener('show.bs.tab', function(e) {
+        console.log('[Playlist Manager] Browse tab shown');
+        // Already loaded on init, but ensure it's available
+      });
+    }
+
   } catch (error) {
     console.error('[Playlist Manager] DOMContentLoaded error:', error);
   }
@@ -1553,6 +1608,16 @@ async function searchLastfmMissingTracksOnSoulseek() {
   // TODO: Implement batch search on Soulseek for missing tracks
 }
 
+async function searchMissingTracksOnSoulseek() {
+  if (!lbRecommendationsData || !lbRecommendationsData.missing_tracks) {
+    alert('No missing tracks to search for');
+    return;
+  }
+  
+  alert('Soulseek search functionality coming soon!\n\nMissing ' + lbRecommendationsData.missing_tracks.length + ' tracks.');
+  // TODO: Implement batch search on Soulseek for missing tracks
+}
+
 // =============================================================================
 // LISTENBRAINZ RECOMMENDATIONS
 // =============================================================================
@@ -1675,60 +1740,6 @@ async function createPlaylistFromListenBrainz() {
   }
 }
 
-// ===============================
-// TAB SWITCHING EVENT LISTENERS
-// ===============================
-// Initialize tab event handlers to load data when tabs are switched
-
-// Smart Playlists Tab
-const smartTab = document.getElementById('smartTab');
-if (smartTab) {
-  smartTab.addEventListener('show.bs.tab', function(e) {
-    console.log('[Playlist Manager] Smart tab shown');
-    loadSmartPlaylists().catch(err => {
-      console.error('[Playlist Manager] Error loading smart playlists on tab switch:', err);
-    });
-  });
-}
-
-// Spotify Tab
-const spotifyTab = document.getElementById('spotifyTab');
-if (spotifyTab) {
-  spotifyTab.addEventListener('show.bs.tab', function(e) {
-    console.log('[Playlist Manager] Spotify tab shown');
-    // No automatic load - users click button to load
-    // But we could initialize the form here if needed
-  });
-}
-
-// Last.fm Tab
-const lastfmTab = document.getElementById('lastfmTab');
-if (lastfmTab) {
-  lastfmTab.addEventListener('show.bs.tab', function(e) {
-    console.log('[Playlist Manager] Last.fm tab shown');
-    // No automatic load - users click button to load
-    // But we could initialize the form here if needed
-  });
-}
-
-// ListenBrainz Tab
-const listenbrainzTab = document.getElementById('listenbrainzTab');
-if (listenbrainzTab) {
-  listenbrainzTab.addEventListener('show.bs.tab', function(e) {
-    console.log('[Playlist Manager] ListenBrainz tab shown');
-    // No automatic load - users click button to load
-    // But we could initialize the form here if needed
-  });
-}
-
-// Browse Tab
-const browseTab = document.getElementById('browseTab');
-if (browseTab) {
-  browseTab.addEventListener('show.bs.tab', function(e) {
-    console.log('[Playlist Manager] Browse tab shown');
-    // Already loaded on init, but ensure it's available
-  });
-}
 </script>
 
 <style>

@@ -192,6 +192,11 @@ class WikipediaReleaseScraper:
         # Also remove trailing (something) or [something] that remains
         normalized = re.sub(r'\s*[\[\(].*[\]\)]$', '', normalized)
         
+        # Also remove trailing format suffixes that are NOT in parentheses/brackets
+        # e.g. "Album Name EP" -> "Album Name", "Track Title - Single" -> "Track Title"
+        # This catches duplicates like "The Wilted EP" vs "The Wilted EP(EP)"
+        normalized = re.sub(r'\s+(EP|LP|Album|Deluxe Edition|Deluxe|Remaster|Remastered|Extended|Single|EP\s*EP)$', '', normalized, flags=re.IGNORECASE)
+        
         # Strip extra whitespace and convert to lowercase
         normalized = normalized.strip().lower()
         

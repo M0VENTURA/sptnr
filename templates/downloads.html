@@ -619,7 +619,7 @@
                 <small class="text-muted" id="lastfmSyncTime">Sync status: loading...</small>
               </div>
               <div class="btn-group" role="group">
-                <button class="btn btn-sm btn-outline-primary" onclick="loadLastfmRecommendations()" id="lastfmRefreshBtn">
+                <button class="btn btn-sm btn-outline-primary" onclick="loadLastfmRecommendations(true)" id="lastfmRefreshBtn">
                   <i class="bi bi-arrow-clockwise"></i> Refresh Now
                 </button>
               </div>
@@ -2625,17 +2625,20 @@ document.addEventListener('DOMContentLoaded', function() {
         });
     }
     
-    // Load Last.fm recommendations when tab is shown
+    // Load Last.fm recommendations when tab is shown  (auto-sync if cache is empty)
     const lastfmTab = document.getElementById('lastfmTab');
+    let lastfmTabFirstLoad = true;
     if (lastfmTab) {
         lastfmTab.addEventListener('shown.bs.tab', function() {
-            loadLastfmRecommendations();
+            // Force sync on first tab load to populate cache
+            loadLastfmRecommendations(lastfmTabFirstLoad);
+            lastfmTabFirstLoad = false;
         });
     }
 });
 
 // Last.fm Recommendations Functions
-async function loadLastfmRecommendations() {
+async function loadLastfmRecommendations(forceSync = false) {
   const loading = document.getElementById('lastfmLoading');
   const error = document.getElementById('lastfmError');
   const tabsContainer = document.getElementById('lastfmTabs');
@@ -2650,6 +2653,26 @@ async function loadLastfmRecommendations() {
   if (refreshBtn) refreshBtn.disabled = true;
   
   try {
+    // First, try to sync fresh data from Last.fm if forced or cache is empty
+    let syncAttempted = false;
+    if (forceSync) {
+      try {
+        loading.querySelector('p').textContent = 'Fetching fresh recommendations from Last.fm...';
+        const syncResponse = await fetch('/api/lastfm/sync/now', { method: 'POST' });
+        syncAttempted = true;
+        // Log response but continue to load cache regardless
+        if (syncResponse.ok) {
+          console.log('Last.fm sync successful');
+        } else {
+          console.warn('Last.fm sync returned status:', syncResponse.status);
+        }
+      } catch (syncErr) {
+        console.warn('Last.fm sync error (will load from cache):', syncErr);
+      }
+    }
+    
+    // Now load from cache (which will be populated by sync if successful)
+    loading.querySelector('p').textContent = 'Loading recommendations...';
     const response = await fetch('/api/lastfm/recommendations');
     const data = await response.json();
     
@@ -3318,9 +3341,9 @@ async function refreshUpcomingReleases() {
             <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
-              <button class="btn btn-sm btn-outline-primary" title="Search for downloads"
+              <button class="btn btn-sm btn-outline-success" title="Add to download queue"
                 onclick="searchReleaseDownloads('${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
-                <i class="bi bi-download"></i> Search
+                <i class="bi bi-plus-circle"></i> Download
               </button>
             </td>
           </tr>
@@ -3352,15 +3375,41 @@ async function refreshUpcomingReleases() {
 }
 
 function searchReleaseDownloads(artist, album) {
-  const query = `${artist} ${album}`;
+  // Add the album directly to download queue
+  addReleaseToQueue(artist, album);
+}
+
+async function addReleaseToQueue(artist, album) {
+  if (!artist || !album) {
+    alert('Missing artist or album information');
+    return;
+  }
   
-  // Switch to qBittorrent search tab
-  document.getElementById('qbitTab').click();
-  
-  setTimeout(() => {
-    document.getElementById('qbitSearchInput').value = query;
-    performQbitSearch();
-  }, 300);
+  try {
+    const response = await fetch('/api/queue/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        artist: artist,
+        title: album,  // Use album name as title for full album downloads
+        album: album,
+        source: 'qbittorrent',  // Albums are downloaded via qBittorrent
+        priority: 5  // Normal priority
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert(`✅ Added to queue: ${artist} - ${album}`);
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add to queue'));
+    }
+  } catch (error) {
+    console.error('Error adding release to queue:', error);
+    alert('❌ Network error: ' + error.message);
+  }
 }
 
 // Load upcoming releases when tab is shown
