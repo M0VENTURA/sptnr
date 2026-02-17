@@ -570,8 +570,72 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 else:
                     log_debug(f"[ALBUM_ART] No album art available from Navidrome for '{track_title}'")
                 
-                save_to_db(td)
-                imported_track_ids.add(track_id)  # Track this as successfully imported
+                # ✅ FORCE NAVIDROME UPDATES: Before calling save_to_db, check if track exists and do explicit update
+                # This ensures titles and genres from Navidrome ALWAYS overwrite existing data
+                conn = get_db_connection()
+                cursor = conn.cursor()
+                
+                # Find existing track by multiple methods (file_path takes priority)
+                existing_track = None
+                
+                # Method 1: Match by file_path (most reliable)
+                if navidrome_path:
+                    cursor.execute("SELECT id FROM tracks WHERE file_path = ? LIMIT 1", (navidrome_path,))
+                    row = cursor.fetchone()
+                    if row:
+                        existing_track = row['id']
+                        log_debug(f"[NAVIDROME_UPDATE] Found existing track by file_path: {existing_track}")
+                
+                # Method 2: Match by artist+album+track_number (track number won't change)
+                if not existing_track and td['track_number']:
+                    cursor.execute("""
+                        SELECT id FROM tracks 
+                        WHERE artist = ? AND album = ? AND track_number = ? LIMIT 1
+                    """, (artist_name, album_name, td['track_number']))
+                    row = cursor.fetchone()
+                    if row:
+                        existing_track = row['id']
+                        log_debug(f"[NAVIDROME_UPDATE] Found existing track by position: {existing_track}")
+                
+                # Method 3: Match by duration (if duration is unique enough)
+                if not existing_track and td['duration'] and td['duration'] > 0:
+                    cursor.execute("""
+                        SELECT id FROM tracks 
+                        WHERE artist = ? AND album = ? AND ABS(duration - ?) <= 2 
+                        AND title LIKE ? LIMIT 1
+                    """, (artist_name, album_name, td['duration'], f"%{track_title.split()[0]}%"))  # Match first word of title
+                    row = cursor.fetchone()
+                    if row:
+                        existing_track = row['id']
+                        log_debug(f"[NAVIDROME_UPDATE] Found existing track by duration match: {existing_track}")
+                
+                # If track exists, explicitly UPDATE title and genres (overwrite user edits from Navidrome)
+                if existing_track:
+                    try:
+                        # Update only the fields that Navidrome provides updates for
+                        cursor.execute("""
+                            UPDATE tracks 
+                            SET title = ?, genres = ?, navidrome_genre = ?, navidrome_genres = ?,
+                                last_scanned = ?, file_path = ?
+                            WHERE id = ?
+                        """, (track_title, navidrome_genre, navidrome_genre, navidrome_genre, 
+                              _now_local_iso(), navidrome_path if navidrome_path else None, 
+                              existing_track))
+                        conn.commit()
+                        log_info(f"Updated existing track {existing_track}: Title='{track_title}', Genres='{navidrome_genre}'")
+                        log_debug(f"[NAVIDROME_UPDATE] Overwrote title and genres for track {existing_track}")
+                        imported_track_ids.add(existing_track)
+                    except Exception as e:
+                        log_debug(f"[NAVIDROME_UPDATE] Failed to update track {existing_track}: {e}")
+                        # Fall back to save_to_db if update fails
+                        save_to_db(td)
+                        imported_track_ids.add(track_id)
+                else:
+                    # No existing track found, use normal insert/upsert logic
+                    save_to_db(td)
+                    imported_track_ids.add(track_id)
+                
+                conn.close()
                 
                 # If track is Christmas and has a file path, update the genre tag in the audio file
                 if is_christmas and navidrome_path:
