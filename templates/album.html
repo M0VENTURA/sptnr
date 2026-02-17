@@ -485,7 +485,7 @@
                                         <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
                                             {% if track.matching_genres %}
                                                 {% for genre in track.matching_genres %}
-                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                                <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" data-track-id="{{ track.id }}" data-genre="{{ genre }}" title="Click to remove">
                                                     {{ genre }}
                                                     <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
                                                 </span>
@@ -594,7 +594,7 @@
                                     <div class="d-flex align-items-center gap-2 flex-wrap" id="genres-{{ track.id }}">
                                         {% if track.matching_genres %}
                                             {% for genre in track.matching_genres %}
-                                            <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" title="Click to remove" onclick="removeTrackGenre('{{ track.id }}', '{{ genre }}', this)">
+                                            <span class="badge badge-light border border-secondary text-dark genre-badge" style="font-size: 0.75rem; cursor: pointer;" data-track-id="{{ track.id }}" data-genre="{{ genre }}" title="Click to remove">
                                                 {{ genre }}
                                                 <i class="bi bi-x ms-1" style="font-size: 0.65rem;"></i>
                                             </span>
@@ -725,6 +725,32 @@
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
                 <button type="button" class="btn btn-primary" onclick="applyBulkGenreTags()">
                     <i class="bi bi-check-circle"></i> Add Tags
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Edit Track Modal -->
+<div class="modal fade" id="editTrackModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Track Metadata</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <div class="mb-3">
+                    <label for="editTrackValue" class="form-label" id="editTrackLabel">Field</label>
+                    <input type="text" class="form-control" id="editTrackValue" placeholder="Enter value">
+                    <input type="hidden" id="editTrackId">
+                    <input type="hidden" id="editTrackCurrentField">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveEditedTrack()">
+                    <i class="bi bi-check-circle"></i> Save
                 </button>
             </div>
         </div>
@@ -1914,6 +1940,22 @@
         });
     }
 
+    // Set up event listeners for genre badges
+    document.addEventListener('DOMContentLoaded', function() {
+        // Delegate event handler for genre removal
+        document.addEventListener('click', function(e) {
+            if (e.target.closest('.genre-badge')) {
+                const badge = e.target.closest('.genre-badge');
+                const trackId = badge.getAttribute('data-track-id');
+                const genre = badge.getAttribute('data-genre');
+                if (trackId && genre) {
+                    removeTrackGenre(trackId, genre, badge);
+                }
+            }
+        });
+    });
+    }
+
     let addGenreModalInstance = null;
     
     function openAddGenreModal(trackId, trackTitle) {
@@ -2071,31 +2113,36 @@
 
     // Track inline editing functions
     function editTrackTitle(trackId, currentTitle) {
-        const displayEl = document.querySelector(`.track-title-display-${trackId}`);
-        if (!displayEl) return;
-        
-        const newTitle = prompt('Edit track title:', currentTitle);
-        if (newTitle === null || newTitle.trim() === currentTitle) return;
-        
-        saveTrackMetadata(trackId, {title: newTitle.trim()}, currentTitle, null);
+        const modal = new bootstrap.Modal(document.getElementById('editTrackModal'));
+        document.getElementById('editTrackId').value = trackId;
+        document.getElementById('editTrackCurrentField').value = 'title';
+        document.getElementById('editTrackLabel').textContent = 'Track Title';
+        document.getElementById('editTrackValue').value = currentTitle;
+        document.getElementById('editTrackValue').focus();
+        modal.show();
     }
 
     function editTrackArtist(trackId, currentArtist) {
-        const displayEl = document.querySelector(`.track-artist-display-${trackId}`);
-        if (!displayEl) return;
-        
-        // Handle empty artist (shown as "—")
+        const modal = new bootstrap.Modal(document.getElementById('editTrackModal'));
+        document.getElementById('editTrackId').value = trackId;
+        document.getElementById('editTrackCurrentField').value = 'artist';
+        document.getElementById('editTrackLabel').textContent = 'Track Artist';
         const displayValue = currentArtist && currentArtist !== '—' ? currentArtist : '';
-        const newArtist = prompt('Edit track artist:', displayValue);
-        if (newArtist === null || newArtist === displayValue) return;
-        
-        saveTrackMetadata(trackId, {artist: newArtist.trim()}, null, currentArtist);
+        document.getElementById('editTrackValue').value = displayValue;
+        document.getElementById('editTrackValue').focus();
+        modal.show();
     }
 
-    function saveTrackMetadata(trackId, changes, oldTitle, oldArtist) {
+    function saveEditedTrack() {
+        const trackId = document.getElementById('editTrackId').value;
+        const field = document.getElementById('editTrackCurrentField').value;
+        const value = document.getElementById('editTrackValue').value.trim();
+        
+        if (!trackId || !field) return;
+        
         const payload = {
             track_id: trackId,
-            ...changes
+            [field]: value
         };
         
         fetch('/api/track/update-metadata', {
@@ -2106,20 +2153,19 @@
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                // Update UI
-                if (changes.title) {
+                if (field === 'title') {
                     document.querySelectorAll(`.track-title-display-${trackId}`).forEach(el => {
-                        el.textContent = changes.title;
+                        el.textContent = value;
                     });
-                }
-                if (changes.artist) {
+                } else if (field === 'artist') {
                     document.querySelectorAll(`.track-artist-display-${trackId}`).forEach(el => {
-                        el.textContent = changes.artist || '—';
+                        el.textContent = value || '—';
                     });
                 }
+                bootstrap.Modal.getInstance(document.getElementById('editTrackModal')).hide();
                 alert('✅ Track metadata updated');
             } else {
-                alert('❌ Error: ' + (data.error || 'Failed to update metadata'));
+                alert('❌ Error: ' + (data.error || 'Failed to update'));
             }
         })
         .catch(err => {
