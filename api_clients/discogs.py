@@ -676,13 +676,17 @@ class DiscogsClient:
         Search Discogs for a track as a Single or EP.
         
         Tries format-specific searches:
-        1. format=Single search: artist + title
-        2. format=EP search: artist + title if Single not found
+        1. format=Single search: artist + normalized_title (to handle punctuation)
+        2. format=EP search: artist + normalized_title if Single not found
+        
+        Note: We use normalized_title for the API search to handle punctuation issues.
+        For example, "Janie's Got A Gun" is normalized to "janies got a gun" which
+        matches better in Discogs regardless of how they store apostrophes.
         
         Args:
             artist: Artist name
-            title: Track title
-            normalized_title: Normalized track title for comparison
+            title: Track title (original, for logging)
+            normalized_title: Normalized track title for search and comparison
             timeout: Request timeout
             
         Returns:
@@ -690,16 +694,17 @@ class DiscogsClient:
         """
         try:
             # Try searching with format=Single first (most common)
-            log_debug(f"[DISCOGS_SINGLE] Searching: artist='{artist}' track='{title}' format=Single")
+            # Use normalized_title to avoid issues with punctuation like apostrophes
+            log_debug(f"[DISCOGS_SINGLE] Searching: artist='{artist}' track='{title}' (normalized: '{normalized_title}') format=Single")
             
-            results_single = self._discogs_search_with_format(artist, title, "Single", timeout)
+            results_single = self._discogs_search_with_format(artist, normalized_title, "Single", timeout)
             if self._check_search_results(results_single, normalized_title):
                 log_debug(f"[DISCOGS_SINGLE] ✓ Found in Singles results")
                 return True
             
             # Try format=EP if no singles found
             log_debug(f"[DISCOGS_SINGLE] No Single found, searching format=EP")
-            results_ep = self._discogs_search_with_format(artist, title, "EP", timeout)
+            results_ep = self._discogs_search_with_format(artist, normalized_title, "EP", timeout)
             if self._check_search_results(results_ep, normalized_title):
                 log_debug(f"[DISCOGS_SINGLE] ✓ Found in EP results")
                 return True
