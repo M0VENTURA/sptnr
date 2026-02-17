@@ -1272,6 +1272,18 @@ def detect_single_for_track(
                 artist_median_popularity=artist_median_popularity
             )
             
+            # CRITICAL: Close any open cursors from detect_single_enhanced before storing result
+            # detect_single_enhanced() creates multiple cursors throughout the 8-stage detection but doesn't
+            # close most of them. Unclosed cursors hold READ locks on the database connection.
+            # When store_single_detection_result() tries to WRITE, it needs a WRITE lock, which SQLite
+            # cannot grant while READ locks exist, causing "Database is locked" errors.
+            # Solution: Commit any pending transactions and close the connection's cursors.
+            try:
+                conn.execute("COMMIT")  # Commit any pending transaction
+                log_debug("Committed pending transaction after single detection")
+            except Exception as e:
+                log_debug(f"Note: Commit after detection failed (may use autocommit): {e}")
+            
             # Store result in database
             store_single_detection_result(conn, track_id, result)
             
