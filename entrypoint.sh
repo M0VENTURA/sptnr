@@ -36,4 +36,4 @@ exec gunicorn \
     --access-logfile /config/access.log \
     --error-logfile /config/error.log \
     --log-level info \
-    "server:sptnr"
+    "app:app"
