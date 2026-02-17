@@ -13,6 +13,32 @@ DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
 if not os.path.exists(DB_PATH):
     DB_PATH = "database.db"
 
+def normalize_artist_name(artist_name: str) -> str:
+    """Normalize artist name by removing extra spaces, punctuation, and accents."""
+    if not artist_name:
+        return ""
+    
+    # Remove accents and diacritics
+    try:
+        import unicodedata
+        normalized = ''.join(
+            c for c in unicodedata.normalize('NFD', artist_name)
+            if unicodedata.category(c) != 'Mn'
+        )
+    except Exception:
+        normalized = artist_name
+    
+    # Remove common punctuation/symbols, keep alphanumeric and spaces
+    normalized = re.sub(r'[^\w\s]', '', normalized, flags=re.UNICODE)
+    
+    # Normalize whitespace
+    normalized = re.sub(r'\s+', ' ', normalized)
+    
+    # Convert to lowercase and strip
+    normalized = normalized.strip().lower()
+    
+    return normalized
+
 def normalize_album_name(album_name: str) -> str:
     """Normalize album name by removing common suffixes."""
     if not album_name:
@@ -40,15 +66,16 @@ def cleanup_duplicates():
         cursor.execute("SELECT * FROM upcoming_releases ORDER BY artist_name, release_date")
         all_releases = cursor.fetchall() or []
         
-        # Group by (artist, normalized_album, release_date)
+        # Group by (normalized_artist, normalized_album, release_date)
         groups = {}
         for release in all_releases:
             artist = release['artist_name']
             album = release['album_name']
             date = release['release_date']
-            normalized = normalize_album_name(album)
+            normalized_artist = normalize_artist_name(artist)
+            normalized_album = normalize_album_name(album)
             
-            key = (artist.lower(), normalized, date)
+            key = (normalized_artist, normalized_album, date)
             if key not in groups:
                 groups[key] = []
             groups[key].append(dict(release))
@@ -58,17 +85,17 @@ def cleanup_duplicates():
         # For each group with duplicates
         for key, releases_in_group in groups.items():
             if len(releases_in_group) > 1:
-                artist, normalized, date = key
-                print(f"\n🔍 Found {len(releases_in_group)} duplicates for {artist} - {date}:")
+                norm_artist, norm_album, date = key
+                print(f"\n🔍 Found {len(releases_in_group)} duplicates for {norm_artist} - {date}:")
                 
-                # Find the best record (shortest/cleanest name)
-                best_record = min(releases_in_group, key=lambda x: len(x['album_name']))
-                print(f"  Keeping: '{best_record['album_name']}'")
+                # Find the best record (shortest/cleanest names)
+                best_record = min(releases_in_group, key=lambda x: len(x['artist_name']) + len(x['album_name']))
+                print(f"  Keeping: '{best_record['artist_name']}' - '{best_record['album_name']}'")
                 
                 # Delete others
                 for record in releases_in_group:
                     if record['id'] != best_record['id']:
-                        print(f"  Removing: '{record['album_name']}'")
+                        print(f"  Removing: '{record['artist_name']}' - '{record['album_name']}'")
                         cursor.execute("DELETE FROM upcoming_releases WHERE id = ?", (record['id'],))
                         total_merged += 1
         

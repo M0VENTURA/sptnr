@@ -135,6 +135,43 @@ class WikipediaReleaseScraper:
         return conn
     
     @staticmethod
+    def normalize_artist_name(artist_name: str) -> str:
+        """Normalize artist name by removing extra spaces, punctuation, and accents.
+        
+        Examples:
+        - "Pale Face Swiss" -> "pale face swiss"
+        - "Paleface Swiss" -> "paleface swiss"
+        - "The Beatles" -> "the beatles"
+        - "A.F.I." -> "afi"
+        - "Mötley Crüe" -> "motley crue"
+        - "Ben Folds Five" -> "ben folds five"
+        """
+        if not artist_name:
+            return ""
+        
+        # Remove accents and diacritics
+        try:
+            import unicodedata
+            normalized = ''.join(
+                c for c in unicodedata.normalize('NFD', artist_name)
+                if unicodedata.category(c) != 'Mn'
+            )
+        except Exception:
+            normalized = artist_name
+        
+        # Remove common punctuation/symbols (dots, dashes within artist names)
+        # But keep alphanumeric and spaces
+        normalized = re.sub(r'[^\w\s]', '', normalized, flags=re.UNICODE)
+        
+        # Normalize whitespace (multiple spaces -> single space)
+        normalized = re.sub(r'\s+', ' ', normalized)
+        
+        # Convert to lowercase and strip
+        normalized = normalized.strip().lower()
+        
+        return normalized
+    
+    @staticmethod
     def normalize_album_name(album_name: str) -> str:
         """Normalize album name by removing common suffixes and annotations.
         
@@ -161,23 +198,29 @@ class WikipediaReleaseScraper:
         return normalized
     
     def find_existing_normalized_album(self, artist_name: str, album_name: str, release_date: str) -> Optional[Dict]:
-        """Find an existing album with the same normalized name and artist, ignoring exact suffixes.
+        """Find an existing album with normalized artist and album names.
+        
+        Uses both artist and album name normalization to catch duplicates where:
+        - "Pale Face Swiss" vs "Paleface Swiss"
+        - "Album (EP)" vs "Album EP(EP)"
         
         Returns the existing record if found, None otherwise.
         """
         try:
-            normalized_name = self.normalize_album_name(album_name)
-            if not normalized_name:
+            normalized_album = self.normalize_album_name(album_name)
+            normalized_artist = self.normalize_artist_name(artist_name)
+            
+            if not normalized_album or not normalized_artist:
                 return None
             
             conn = self.get_db()
             cursor = conn.cursor()
             
-            # Query all albums by same artist on same date and check normalized names
+            # Query all albums on same date and check normalized names
             cursor.execute("""
                 SELECT * FROM upcoming_releases 
-                WHERE LOWER(artist_name) = LOWER(?) AND release_date = ?
-            """, (artist_name, release_date))
+                WHERE release_date = ?
+            """, (release_date,))
             
             rows = cursor.fetchall() or []
             conn.close()
@@ -185,8 +228,13 @@ class WikipediaReleaseScraper:
             for row in rows:
                 if row is None:
                     continue
-                existing_name = row[2] if isinstance(row, tuple) else row.get('album_name')  # album_name is typically column 2
-                if self.normalize_album_name(existing_name) == normalized_name:
+                    
+                existing_artist = row[1] if isinstance(row, tuple) else row.get('artist_name')
+                existing_album = row[2] if isinstance(row, tuple) else row.get('album_name')
+                
+                # Compare normalized versions
+                if (self.normalize_artist_name(existing_artist) == normalized_artist and
+                    self.normalize_album_name(existing_album) == normalized_album):
                     return dict(row) if not isinstance(row, dict) else row
             
             return None
