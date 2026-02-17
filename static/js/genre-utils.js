@@ -211,3 +211,253 @@ function getSelectedGenres(containerId) {
     return Array.from(container.querySelectorAll('input[type="checkbox"]:checked'))
         .map(cb => cb.value);
 }
+
+// Remove selected genres from artist
+function removeSelectedArtistGenres() {
+    const selectedGenres = getSelectedGenres('currentArtistGenres');
+    if (selectedGenres.length === 0) return;
+    
+    if (!confirm(`Remove ${selectedGenres.length} genre(s)?`)) return;
+    
+    const artistName = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
+    const btn = document.getElementById('removeSelectedArtistGenresBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    
+    handleGenreRemoval(artistName, null, selectedGenres, 'artist');
+}
+
+// Apply selected genres (for artist genre management)
+function applySelectedArtistGenres() {
+    const selectedGenres = getSelectedGenres('recommendedGenres');
+    if (selectedGenres.length === 0) {
+        alert('Please select at least one genre');
+        return;
+    }
+    
+    const artistName = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
+    const btn = document.getElementById('applyArtistGenresBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    
+    fetch('/api/genres/apply', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+            artist_name: artistName,
+            genres: selectedGenres
+        })
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.error) {
+            alert('❌ Error: ' + data.error);
+        } else {
+            alert(`✅ Applied ${selectedGenres.length} genre(s)`);
+            setTimeout(() => location.reload(), 1000);
+        }
+    })
+    .catch(err => {
+        alert('❌ Error: ' + err.message);
+    })
+    .finally(() => {
+        btn.disabled = false;
+        btn.textContent = originalText;
+    });
+}
+
+// Remove individual album genre
+function removeAlbumGenre(genre, artistName, albumName) {
+    if (!artistName || !albumName) {
+        artistName = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
+        albumName = document.querySelector('[data-album-name]')?.dataset.albumName || '';
+    }
+    
+    if (!artistName || !albumName) {
+        alert('❌ Error: Could not determine artist or album');
+        return;
+    }
+    
+    handleGenreRemoval(artistName, albumName, [genre], 'album');
+}
+
+// Remove genre from a specific track
+function removeTrackGenre(trackId, genre, element) {
+    if (!confirm(`Remove "${genre}" from this track?`)) return;
+
+    fetch(`/api/track/${trackId}`)
+    .then(r => r.json())
+    .then(trackData => {
+        let currentGenres = [];
+        
+        if (trackData.genre) {
+            currentGenres = trackData.genre
+                .split(/[;,\\\/]/g)
+                .map(g => g.trim())
+                .filter(g => g && g !== genre);
+        }
+        
+        return fetch(`/api/tags/track/${trackId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                tags: {
+                    genre: currentGenres.join(';')
+                },
+                sync_to_file: true
+            })
+        });
+    })
+    .then(r => r.json())
+    .then(data => {
+        if (data.success || data.message) {
+            if (element) {
+                element.style.opacity = '0.5';
+                setTimeout(() => {
+                    element.remove();
+                }, 300);
+            }
+            alert(`✅ Genre removed${data.file_synced ? ' and MP3 updated' : ''}`);
+        } else {
+            alert('❌ Error: ' + (data.error || 'Failed to remove genre'));
+        }
+    })
+    .catch(err => {
+        alert('❌ Network error: ' + err.message);
+    });
+}
+
+// Edit track artist name
+function editTrackArtist(trackId, currentArtist) {
+    const isAlbumPage = document.getElementById('editTrackModal') !== null;
+    
+    if (isAlbumPage) {
+        const modal = new bootstrap.Modal(document.getElementById('editTrackModal'));
+        document.getElementById('editTrackId').value = trackId;
+        document.getElementById('editTrackCurrentField').value = 'artist';
+        document.getElementById('editTrackLabel').textContent = 'Track Artist';
+        const displayValue = currentArtist && currentArtist !== '—' ? currentArtist : '';
+        document.getElementById('editTrackValue').value = displayValue;
+        document.getElementById('editTrackValue').focus();
+        modal.show();
+    } else {
+        const newArtist = prompt('Enter new artist name:', currentArtist || '');
+        if (!newArtist) return;
+        
+        fetch('/api/track/update-metadata', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({
+                track_id: trackId,
+                artist: newArtist
+            })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ Track artist updated');
+                location.reload();
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
+    }
+}
+
+// Update bulk actions UI (checkboxes)
+function updateBulkActionsUI() {
+    const checkboxes = document.querySelectorAll('input[data-bulk-select]');
+    const bulkActionsBar = document.getElementById('bulkActionsBar');
+    const countLabel = document.getElementById('bulkSelectCount');
+    
+    if (!checkboxes.length) return;
+    
+    const selectedCount = Array.from(checkboxes).filter(cb => cb.checked).length;
+    
+    if (selectedCount > 0) {
+        if (bulkActionsBar) bulkActionsBar.style.display = 'block';
+        if (countLabel) countLabel.textContent = selectedCount;
+    } else {
+        if (bulkActionsBar) bulkActionsBar.style.display = 'none';
+    }
+}
+
+// Fetch artist genre recommendations
+function fetchArtistGenreRecommendations() {
+    const artistName = document.querySelector('[data-artist-name]')?.dataset.artistName || '';
+    if (!artistName) {
+        alert('Error: Could not determine artist name');
+        return;
+    }
+    
+    const btn = document.getElementById('fetchArtistGenresBtn');
+    const originalText = btn.textContent;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span>';
+    
+    fetch(`/api/genres/recommendations?artist=${encodeURIComponent(artistName)}`)
+    .then(r => r.json())
+    .then(data => {
+        const recommendedContainer = document.getElementById('recommendedGenres');
+        
+        if (data.error) {
+            recommendedContainer.innerHTML = `<p class="text-danger">${escapeHtml(data.error)}</p>`;
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+        
+        const genres = data.genres || [];
+        if (genres.length === 0) {
+            recommendedContainer.innerHTML = '<p class="text-muted">No recommendations found</p>';
+            btn.disabled = false;
+            btn.textContent = originalText;
+            return;
+        }
+        
+        let html = '';
+        genres.forEach(genre => {
+            const safeId = escapeHtml(genre).replace(/\s+/g, '_').replace(/[^a-zA-Z0-9_-]/g, '');
+            html += `
+                <div class="form-check">
+                    <input class="form-check-input" type="checkbox" value="${escapeHtml(genre)}" id="genre-${safeId}">
+                    <label class="form-check-label" for="genre-${safeId}">
+                        ${escapeHtml(genre)}
+                    </label>
+                </div>
+            `;
+        });
+        
+        recommendedContainer.innerHTML = html;
+        document.getElementById('applyArtistGenresBtn').style.display = 'inline-block';
+        
+        btn.disabled = false;
+        btn.textContent = originalText;
+    })
+    .catch(err => {
+        document.getElementById('recommendedGenres').innerHTML = `<p class="text-danger">Error: ${err.message}</p>`;
+        btn.disabled = false;
+        btn.textContent = originalText;
+    });
+}
+
+// Escape HTML special chars
+function escapeHtml(text) {
+    if (!text) return '';
+    const div = document.createElement('div');
+    div.textContent = text;
+    return div.innerHTML;
+}
+
+// Initialize bulk action listeners
+document.addEventListener('DOMContentLoaded', function() {
+    const checkboxes = document.querySelectorAll('input[data-bulk-select]');
+    checkboxes.forEach(checkbox => {
+        checkbox.addEventListener('change', updateBulkActionsUI);
+    });
+});
