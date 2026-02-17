@@ -134,6 +134,66 @@ class WikipediaReleaseScraper:
         conn.row_factory = sqlite3.Row
         return conn
     
+    @staticmethod
+    def normalize_album_name(album_name: str) -> str:
+        """Normalize album name by removing common suffixes and annotations.
+        
+        Examples:
+        - "The Wilted EP" -> "the wilted"
+        - "The Wilted EP(EP)" -> "the wilted"
+        - "Album Name (Deluxe Edition)" -> "album name"
+        - "Album Name [Remaster]" -> "album name"
+        - "Album Name (feat. Artist)" -> "album name"
+        """
+        if not album_name:
+            return ""
+        
+        # Remove common suffixes in parentheses or brackets
+        # Remove (EP), (LP), (Album), (Album EP), (Deluxe), (Deluxe Edition), etc.
+        normalized = re.sub(r'\s*[\[\(](EP|LP|Album|Deluxe|Deluxe Edition|Remaster|Remastered|Extended|Single|Feat|feat|Featuring|feat\.|Bonus|Expanded|Anniversary|Edition|Mix|Unofficial|Limited|Special)[\]\)].*$', '', album_name, flags=re.IGNORECASE)
+        
+        # Also remove trailing (something) or [something] that remains
+        normalized = re.sub(r'\s*[\[\(].*[\]\)]$', '', normalized)
+        
+        # Strip extra whitespace and convert to lowercase
+        normalized = normalized.strip().lower()
+        
+        return normalized
+    
+    def find_existing_normalized_album(self, artist_name: str, album_name: str, release_date: str) -> Optional[Dict]:
+        """Find an existing album with the same normalized name and artist, ignoring exact suffixes.
+        
+        Returns the existing record if found, None otherwise.
+        """
+        try:
+            normalized_name = self.normalize_album_name(album_name)
+            if not normalized_name:
+                return None
+            
+            conn = self.get_db()
+            cursor = conn.cursor()
+            
+            # Query all albums by same artist on same date and check normalized names
+            cursor.execute("""
+                SELECT * FROM upcoming_releases 
+                WHERE LOWER(artist_name) = LOWER(?) AND release_date = ?
+            """, (artist_name, release_date))
+            
+            rows = cursor.fetchall() or []
+            conn.close()
+            
+            for row in rows:
+                if row is None:
+                    continue
+                existing_name = row[2] if isinstance(row, tuple) else row.get('album_name')  # album_name is typically column 2
+                if self.normalize_album_name(existing_name) == normalized_name:
+                    return dict(row) if not isinstance(row, dict) else row
+            
+            return None
+        except Exception as e:
+            logger.warning(f"Error finding normalized album: {e}")
+            return None
+    
     def scrape_all_sources(self) -> Dict[str, any]:
         """Scrape all configured Wikipedia sources"""
         results = {
@@ -723,37 +783,60 @@ class WikipediaReleaseScraper:
             
             album_in_collection = (artist_name.lower(), release.get("album_name", "").lower()) in albums_in_collection if release.get("album_name") else False
             
+            album_name = release.get("album_name", "Unknown")
+            release_date = release.get("release_date")
+            
+            # Check if a normalized version of this album already exists
+            existing_normalized = self.find_existing_normalized_album(artist_name, album_name, release_date)
+            
             try:
-                cursor.execute("""
-                    INSERT INTO upcoming_releases 
-                    (artist_name, album_name, release_date, release_year, source, 
-                     artist_in_collection, album_in_collection)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
-                    updated_at = CURRENT_TIMESTAMP,
-                    artist_in_collection = excluded.artist_in_collection,
-                    album_in_collection = excluded.album_in_collection
-                """, (
-                    artist_name,
-                    release.get("album_name", "Unknown"),
-                    release.get("release_date"),
-                    release.get("release_year", datetime.now().year),
-                    source_name,
-                    artist_in_collection,
-                    album_in_collection,
-                ))
-                added += 1
+                if existing_normalized:
+                    # Update the existing normalized album record with better info if available
+                    existing_id = existing_normalized.get('id')
+                    logger.debug(f"Found normalized duplicate: '{existing_normalized.get('album_name')}' == '{album_name}' - updating record")
+                    
+                    # Use the shorter/better formatted name if the current one is better
+                    # (e.g., prefer "The Wilted EP" over "The Wilted EP(EP)")
+                    better_name = album_name if len(album_name) < len(existing_normalized.get('album_name', '')) else existing_normalized.get('album_name')
+                    
+                    cursor.execute("""
+                        UPDATE upcoming_releases
+                        SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP, album_name = ?
+                        WHERE id = ?
+                    """, (artist_in_collection, album_in_collection, better_name, existing_id))
+                    updated += 1
+                else:
+                    # Insert new record
+                    cursor.execute("""
+                        INSERT INTO upcoming_releases 
+                        (artist_name, album_name, release_date, release_year, source, 
+                         artist_in_collection, album_in_collection)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(artist_name, album_name, release_date) DO UPDATE SET
+                        updated_at = CURRENT_TIMESTAMP,
+                        artist_in_collection = excluded.artist_in_collection,
+                        album_in_collection = excluded.album_in_collection
+                    """, (
+                        artist_name,
+                        album_name,
+                        release_date,
+                        release.get("release_year", datetime.now().year),
+                        source_name,
+                        artist_in_collection,
+                        album_in_collection,
+                    ))
+                    added += 1
             except sqlite3.IntegrityError as e:
-                # Update existing record
+                # Update existing record on constraint violation
                 try:
                     cursor.execute("""
                         UPDATE upcoming_releases
                         SET artist_in_collection = ?, album_in_collection = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE artist_name = ? AND album_name = ? AND release_date = ?
-                    """, (artist_in_collection, album_in_collection, artist_name, release.get("album_name", ""), release.get("release_date")))
+                    """, (artist_in_collection, album_in_collection, artist_name, album_name, release_date))
                     updated += 1
                 except Exception as update_error:
-                    logger.warning(f"Failed to update release - {artist_name} / {release.get('album_name')}: {update_error}")
+                    logger.warning(f"Failed to update release - {artist_name} / {album_name}: {update_error}")
         
         # Log scrape
         try:
