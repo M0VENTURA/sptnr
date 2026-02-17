@@ -3341,8 +3341,8 @@ async function refreshUpcomingReleases() {
             <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
-              <button class="btn btn-sm btn-outline-success" title="Add to download queue"
-                onclick="searchReleaseDownloads('${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
+              <button type="button" class="btn btn-sm btn-outline-success" title="Add to download queue"
+                onclick="searchReleaseDownloads(event, '${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
                 <i class="bi bi-plus-circle"></i> Download
               </button>
             </td>
@@ -3374,7 +3374,11 @@ async function refreshUpcomingReleases() {
   }
 }
 
-function searchReleaseDownloads(artist, album) {
+function searchReleaseDownloads(event, artist, album) {
+  // Prevent any default behavior
+  event.preventDefault();
+  event.stopPropagation();
+  
   // Add the album directly to download queue
   addReleaseToQueue(artist, album);
 }
