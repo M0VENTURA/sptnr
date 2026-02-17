@@ -9437,8 +9437,8 @@ def api_album_tracklist():
                         "release_id": mbid
                     })
                 else:
-                    log_debug(f"Release {mbid} has no tracklist")
-                    return jsonify({"error": "No tracks found in release"}), 404
+                    log_debug(f"Release {mbid} has no tracklist, falling back to search...")
+                    # Don't return 404 - fall through to search method below
             except Exception as e:
                 log_debug(f"Error fetching release {mbid}: {e}. Falling back to search...")
                 # Fall through to search method
