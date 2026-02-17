@@ -1488,6 +1488,7 @@ def artists():
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
+        artists_data = [dict(row) for row in cursor.fetchall()]
     except:
         # Fallback for databases without album_artist column
         cursor.execute("""
@@ -1504,7 +1505,22 @@ def artists():
             HAVING album_count > 0
             ORDER BY display_name COLLATE NOCASE
         """)
-    artists_data = cursor.fetchall()
+        artists_data = [dict(row) for row in cursor.fetchall()]
+    
+    # Sort by display_name, handling special characters and numbers that should be grouped under '#'
+    def get_sort_key(artist):
+        name = artist.get('display_name', '')
+        if not name:
+            return ('~', '')  # Sort empty names to the end
+        first_char = name[0].upper()
+        # If first character is A-Z, use it; otherwise use '#' for sorting
+        if first_char in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+            return (first_char, name.lower())
+        else:
+            return ('#', name.lower())
+    
+    artists_data = sorted(artists_data, key=get_sort_key)
+    
     conn.close()
     
     return render_template("artists.html", artists=artists_data, total_stats=total_stats, DB_PATH=DB_PATH)
