@@ -40,10 +40,14 @@ def get_slskd_client():
     """Get configured SlskdClient instance"""
     try:
         import yaml
+        
+        # Try both .yml and .yaml extensions
         config_path = "/config/config.yml"
+        if not os.path.exists(config_path):
+            config_path = "/config/config.yaml"
         
         if not os.path.exists(config_path):
-            logger.error(f"Config file not found: {config_path}")
+            logger.error(f"Config file not found (tried config.yml and config.yaml)")
             return None
         
         with open(config_path, 'r') as f:
