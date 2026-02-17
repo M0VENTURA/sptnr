@@ -2998,11 +2998,18 @@ def popularity_scan(
                     track_album_type = row_get(track, "spotify_album_type", None)
                     
                     # Get the popularity score for this track (may have been calculated earlier)
+                    # Create cursor just-in-time, query, then close immediately - don't hold it
                     track_popularity = 0.0
-                    cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
-                    pop_row = cursor.fetchone()
-                    if pop_row and pop_row[0]:
-                        track_popularity = pop_row[0]
+                    try:
+                        temp_cursor = conn.cursor()
+                        temp_cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
+                        pop_row = temp_cursor.fetchone()
+                        if pop_row and pop_row[0]:
+                            track_popularity = pop_row[0]
+                        temp_cursor.close()  # Close immediately to release read lock
+                    except Exception as e:
+                        log_debug(f"Could not fetch popularity for {track_id}: {e}")
+                        track_popularity = 0.0
                     
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     
@@ -3037,11 +3044,22 @@ def popularity_scan(
                     log_debug(f"Single detection result - is_single: {is_single}, confidence: {single_confidence}, sources: {single_sources}")
                     
                     # Update single detection timestamp after running detection
-                    cursor.execute("""
-                        UPDATE tracks 
-                        SET single_detection_last_updated = ?
-                        WHERE id = ?
-                    """, (datetime.now().isoformat(), track_id))
+                    # Use temporary cursor to avoid holding read lock during next detection iteration
+                    try:
+                        timestamp_cursor = conn.cursor()
+                        timestamp_cursor.execute("""
+                            UPDATE tracks 
+                            SET single_detection_last_updated = ?
+                            WHERE id = ?
+                        """, (datetime.now().isoformat(), track_id))
+                        conn.commit()
+                        timestamp_cursor.close()
+                    except Exception as e:
+                        log_debug(f"Could not update detection timestamp for {track_id}: {e}")
+                        try:
+                            conn.rollback()
+                        except:
+                            pass
                     
                     # Preserve user-set singles: if track was user-marked and detection found nothing, keep it marked
                     if track_id in user_set_singles and not is_single:
