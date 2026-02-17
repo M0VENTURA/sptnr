@@ -1277,15 +1277,15 @@ def detect_single_for_track(
             # close most of them. Unclosed cursors hold READ locks on the database connection.
             # When store_single_detection_result() tries to WRITE, it needs a WRITE lock, which SQLite
             # cannot grant while READ locks exist, causing "Database is locked" errors.
-            # Solution: Commit any pending transactions and close the connection's cursors.
+            # Solution: Use a FRESH connection for the write to avoid any lock conflicts.
             try:
-                conn.execute("COMMIT")  # Commit any pending transaction
-                log_debug("Committed pending transaction after single detection")
-            except Exception as e:
-                log_debug(f"Note: Commit after detection failed (may use autocommit): {e}")
-            
-            # Store result in database
-            store_single_detection_result(conn, track_id, result)
+                write_conn = get_db_connection()  # Get fresh connection for write operations
+                store_single_detection_result(write_conn, track_id, result)
+                write_conn.close()
+            except Exception as write_error:
+                log_debug(f"Warning: Could not write single detection result for {track_id}: {write_error}")
+                import traceback
+                log_debug(f"Write error: {traceback.format_exc()}")
             
             # Return in expected format
             return {
