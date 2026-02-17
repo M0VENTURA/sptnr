@@ -465,11 +465,27 @@ def get_beets_stats(config_path: str = "/config", enabled: bool = True) -> dict:
 
 def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str = None) -> bool:
     """
-    Update track metadata in MP3 file using beets modify command.
+    Update track metadata in MP3/FLAC file using direct mutagen-based updates.
+    
+    This function replaces the previous beets-based approach that required files to be 
+    imported into beets' database. Instead, it directly updates the audio file tags using
+    mutagen, which is more reliable and doesn't have the dependency on beets import.
     
     Args:
         track_id: Track ID in the database
-        metadata: Dict of metadata fields to update (e.g., {'title': 'New Title', 'genre': 'Rock, Jazz'})
+        metadata: Dict of metadata fields to update. Supported fields:
+                 - title: Track title
+                 - artist: Track artist
+                 - album: Album name
+                 - albumartist: Album artist
+                 - genre: Genre (can be string or list)
+                 - year: Release year
+                 - composer: Composer name
+                 - track: Track number
+                 - disc: Disc number
+                 - comments: Comments field
+                 - mb_trackid: MusicBrainz track ID
+                 - mb_albumid: MusicBrainz album ID
         db_path: Path to the database
         
     Returns:
@@ -527,36 +543,186 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
             logger.error(f"File not found for track {track_id}: {full_file_path} (original: {file_path})")
             return False
         
-        # Build beets modify command
-        # Use the full file path to identify the track
-        cmd = ["beet", "modify", "-y", f"path:{full_file_path}"]
+        # Determine file type
+        file_ext = Path(full_file_path).suffix.lower()
         
-        # Add each metadata field to update
-        for key, value in metadata.items():
-            if value is not None:
-                # Escape values with spaces or special characters
-                if ' ' in str(value) or ',' in str(value):
-                    cmd.append(f"{key}='{value}'")
-                else:
-                    cmd.append(f"{key}={value}")
-        
-        logger.info(f"Running beets modify: {' '.join(cmd)}")
-        
-        # Run the command
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=30
-        )
-        
-        if result.returncode != 0:
-            logger.error(f"Beets modify failed: {result.stderr}")
+        # Update metadata using mutagen based on file type
+        if file_ext == '.mp3':
+            success = _update_mp3_metadata(full_file_path, metadata)
+        elif file_ext in ['.flac', '.fla']:
+            success = _update_flac_metadata(full_file_path, metadata)
+        else:
+            logger.warning(f"Unsupported file format for metadata update: {file_ext}")
             return False
         
-        logger.info(f"Successfully updated MP3 metadata for track {track_id}")
+        if success:
+            logger.info(f"Successfully updated metadata for track {track_id} at {full_file_path}")
+        else:
+            logger.error(f"Failed to update metadata for track {track_id}")
+        
+        return success
+        
+    except Exception as e:
+        logger.error(f"Error updating track metadata: {e}")
+        return False
+
+
+def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
+    """
+    Update MP3 file metadata using mutagen.
+    
+    Args:
+        file_path: Path to MP3 file
+        metadata: Dict of metadata fields to update
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TDRC, TCOM, TRCK, TPOS, COMM, TXXX
+        from mutagen.mp3 import MP3
+        
+        # Load the MP3 file
+        audio = MP3(file_path, ID3=ID3)
+        
+        # Create ID3 tags if they don't exist
+        if audio.tags is None:
+            audio.add_tags()
+        
+        # Map metadata fields to ID3 tags
+        if 'title' in metadata and metadata['title']:
+            audio.tags['TIT2'] = TIT2(encoding=3, text=metadata['title'])
+        
+        if 'artist' in metadata and metadata['artist']:
+            audio.tags['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
+        
+        if 'album' in metadata and metadata['album']:
+            audio.tags['TALB'] = TALB(encoding=3, text=metadata['album'])
+        
+        if 'albumartist' in metadata and metadata['albumartist']:
+            audio.tags['TPE2'] = TPE2(encoding=3, text=metadata['albumartist'])
+        
+        if 'genre' in metadata and metadata['genre']:
+            # Handle genre - can be string or list
+            genre_value = metadata['genre']
+            if isinstance(genre_value, str):
+                # Check if it's comma-separated or double-backslash separated
+                if '\\\\' in genre_value:
+                    genre_str = genre_value
+                else:
+                    # Split on comma and reconstruct with backslash
+                    genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
+                    genre_str = '\\'.join(genre_list)
+            else:
+                # It's a list
+                genre_str = '\\'.join(str(g).strip() for g in genre_value if g)
+            
+            audio.tags['TCON'] = TCON(encoding=3, text=[genre_str])
+        
+        if 'year' in metadata and metadata['year']:
+            audio.tags['TDRC'] = TDRC(encoding=3, text=str(metadata['year']))
+        
+        if 'composer' in metadata and metadata['composer']:
+            audio.tags['TCOM'] = TCOM(encoding=3, text=metadata['composer'])
+        
+        if 'track' in metadata and metadata['track']:
+            audio.tags['TRCK'] = TRCK(encoding=3, text=str(metadata['track']))
+        
+        if 'disc' in metadata and metadata['disc']:
+            audio.tags['TPOS'] = TPOS(encoding=3, text=str(metadata['disc']))
+        
+        if 'comments' in metadata and metadata['comments']:
+            audio.tags['COMM'] = COMM(encoding=3, lang='eng', desc='', text=metadata['comments'])
+        
+        # Handle MusicBrainz IDs using TXXX frames
+        if 'mb_trackid' in metadata and metadata['mb_trackid']:
+            audio.tags.add(TXXX(
+                encoding=3,
+                desc='MUSICBRAINZ TRACK ID',
+                text=[metadata['mb_trackid']]
+            ))
+        
+        if 'mb_albumid' in metadata and metadata['mb_albumid']:
+            audio.tags.add(TXXX(
+                encoding=3,
+                desc='MUSICBRAINZ ALBUM ID',
+                text=[metadata['mb_albumid']]
+            ))
+        
+        # Save changes
+        audio.save()
         return True
         
     except Exception as e:
-        logger.error(f"Error updating track metadata with beets: {e}")
+        logger.error(f"Failed to update MP3 metadata for {file_path}: {e}")
+        return False
+
+
+def _update_flac_metadata(file_path: str, metadata: dict) -> bool:
+    """
+    Update FLAC file metadata using mutagen.
+    
+    Args:
+        file_path: Path to FLAC file
+        metadata: Dict of metadata fields to update
+        
+    Returns:
+        bool: True if successful, False otherwise
+    """
+    try:
+        from mutagen.flac import FLAC
+        
+        # Load the FLAC file
+        audio = FLAC(file_path)
+        
+        # Map metadata fields to FLAC Vorbis comments
+        if 'title' in metadata and metadata['title']:
+            audio['title'] = metadata['title']
+        
+        if 'artist' in metadata and metadata['artist']:
+            audio['artist'] = metadata['artist']
+        
+        if 'album' in metadata and metadata['album']:
+            audio['album'] = metadata['album']
+        
+        if 'albumartist' in metadata and metadata['albumartist']:
+            audio['albumartist'] = metadata['albumartist']
+        
+        if 'genre' in metadata and metadata['genre']:
+            # Handle genre - can be string or list
+            genre_value = metadata['genre']
+            if isinstance(genre_value, str):
+                genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
+            else:
+                genre_list = genre_value if isinstance(genre_value, list) else [genre_value]
+            audio['genre'] = genre_list
+        
+        if 'year' in metadata and metadata['year']:
+            audio['date'] = str(metadata['year'])
+        
+        if 'composer' in metadata and metadata['composer']:
+            audio['composer'] = metadata['composer']
+        
+        if 'track' in metadata and metadata['track']:
+            audio['tracknumber'] = str(metadata['track'])
+        
+        if 'disc' in metadata and metadata['disc']:
+            audio['discnumber'] = str(metadata['disc'])
+        
+        if 'comments' in metadata and metadata['comments']:
+            audio['comment'] = metadata['comments']
+        
+        # Handle MusicBrainz IDs
+        if 'mb_trackid' in metadata and metadata['mb_trackid']:
+            audio['musicbrainz_trackid'] = metadata['mb_trackid']
+        
+        if 'mb_albumid' in metadata and metadata['mb_albumid']:
+            audio['musicbrainz_albumid'] = metadata['mb_albumid']
+        
+        # Save changes
+        audio.save()
+        return True
+        
+    except Exception as e:
+        logger.error(f"Failed to update FLAC metadata for {file_path}: {e}")
         return False
