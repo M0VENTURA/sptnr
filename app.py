@@ -272,6 +272,37 @@ def regex_replace(s, pattern, replacement):
     import re
     return re.sub(pattern, replacement, str(s))
 
+# Add Jinja2 filter for JavaScript escaping
+@app.template_filter('escapejs')
+def escapejs(value):
+    """Escape strings for use in JavaScript contexts"""
+    if value is None:
+        return ''
+    
+    # Convert to string
+    value = str(value)
+    
+    # Define escape mappings for JavaScript
+    escapes = {
+        '\\': '\\\\',
+        "'": "\\'",
+        '"': '\\"',
+        '\n': '\\n',
+        '\r': '\\r',
+        '\t': '\\t',
+        '\b': '\\b',
+        '\f': '\\f',
+        '<': '\\u003C',  # Prevent script injection
+        '>': '\\u003E',  # Prevent script injection
+        '&': '\\u0026',  # Prevent HTML entity issues
+    }
+    
+    # Apply escapes
+    for char, escape in escapes.items():
+        value = value.replace(char, escape)
+    
+    return value
+
 # Add cache-control headers to prevent browser caching of HTML templates
 @app.after_request
 def set_cache_headers(response):
