@@ -233,14 +233,16 @@ class WikipediaReleaseScraper:
             for row in rows:
                 if row is None:
                     continue
-                    
-                existing_artist = row[1] if isinstance(row, tuple) else row.get('artist_name')
-                existing_album = row[2] if isinstance(row, tuple) else row.get('album_name')
+                
+                # Convert sqlite3.Row to dict for consistent access
+                row_dict = dict(row) if not isinstance(row, dict) else row
+                existing_artist = row_dict.get('artist_name', '')
+                existing_album = row_dict.get('album_name', '')
                 
                 # Compare normalized versions
                 if (self.normalize_artist_name(existing_artist) == normalized_artist and
                     self.normalize_album_name(existing_album) == normalized_album):
-                    return dict(row) if not isinstance(row, dict) else row
+                    return row_dict
             
             return None
         except Exception as e:
