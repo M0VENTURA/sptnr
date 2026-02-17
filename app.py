@@ -9451,7 +9451,7 @@ def api_album_art(artist, album):
 
 @app.route("/api/album/tracklist")
 def api_album_tracklist():
-    """Get tracklist for an EP/Single from MusicBrainz"""
+    """Get tracklist for an album - from local database first, then MusicBrainz as fallback"""
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
     mbid = request.args.get("mbid", "").strip()  # Optional MusicBrainz Release ID
@@ -9460,6 +9460,42 @@ def api_album_tracklist():
         return jsonify({"error": "Artist and album parameters required"}), 400
     
     try:
+        # FIRST: Try to get tracklist from local database
+        log_debug(f"Checking local database for tracklist: {artist} - {album}")
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get tracks from the album in the database
+        cursor.execute("""
+            SELECT title, track_number, duration, artist FROM tracks 
+            WHERE artist = ? AND album = ? 
+            ORDER BY track_number ASC, title ASC
+        """, (artist, album))
+        
+        db_tracks = cursor.fetchall()
+        conn.close()
+        
+        if db_tracks:
+            # Found tracks in local database
+            log_info(f"Found {len(db_tracks)} tracks in local database for {artist} - {album}")
+            tracklist = []
+            for track in db_tracks:
+                tracklist.append({
+                    "position": str(track['track_number'] or '').strip() or '—',
+                    "title": track['title'],
+                    "artist": track['artist'] or ''
+                })
+            
+            return jsonify({
+                "success": True,
+                "artist": artist,
+                "album": album,
+                "tracklist": tracklist,
+                "source": "database"
+            })
+        
+        # FALLBACK: Search MusicBrainz if not found in database
+        log_debug(f"No database tracks found, falling back to MusicBrainz for {artist} - {album}")
         import requests
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         
@@ -9597,7 +9633,7 @@ def api_album_tracklist():
 
 @app.route("/api/album/tracklist/match")
 def api_album_tracklist_match():
-    """Check which tracks from a tracklist already exist in the library"""
+    """Check which tracks from an album already exist in the library"""
     artist = request.args.get("artist", "").strip()
     album = request.args.get("album", "").strip()
     
@@ -9609,19 +9645,37 @@ def api_album_tracklist_match():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get all tracks in library
+        # Get all tracks for this album from the database
         cursor.execute("""
-            SELECT title, artist FROM tracks WHERE artist = ? OR artist LIKE ?
-        """, (artist, f"%{artist}%"))
+            SELECT title FROM tracks WHERE artist = ? AND album = ?
+            ORDER BY track_number ASC, title ASC
+        """, (artist, album))
         
-        library_tracks = {row['title'].lower(): row['artist'] for row in cursor.fetchall()}
+        album_tracks = [row['title'] for row in cursor.fetchall()]
         conn.close()
         
-        # Match against tracklist
-        matched_tracks = []
-        unmatched_tracks = []
+        if album_tracks:
+            # All tracks in the album are already matched (they're in the database)
+            log_info(f"Found {len(album_tracks)} existing album tracks for {artist} - {album}")
+            matched_tracks = [{"title": t} for t in album_tracks]
+            
+            return jsonify({
+                "success": True,
+                "matched": matched_tracks,
+                "unmatched": []
+            })
         
-        # Fetch tracklist first - try direct release search
+        # If no tracks found in database, fall back to checking all artist tracks
+        log_debug(f"No album tracks found in database, checking all tracks for artist {artist}")
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT title FROM tracks WHERE artist = ?
+        """, (artist,))
+        
+        library_tracks = {row['title'].lower(): True for row in cursor.fetchall()}
+        conn.close()
+        
+        # Fetch tracklist from MusicBrainz to match against
         import requests
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         search_url = "https://musicbrainz.org/ws/2/release"
@@ -9669,6 +9723,9 @@ def api_album_tracklist_match():
             
             releases = releases_data.get("releases", [])
         
+        matched_tracks = []
+        unmatched_tracks = []
+        
         if releases:
             media = releases[0].get("media", [])
             if media:
@@ -9678,8 +9735,7 @@ def api_album_tracklist_match():
                     
                     if track_title in library_tracks:
                         matched_tracks.append({
-                            "title": recording.get("title", ""),
-                            "library_artist": library_tracks[track_title]
+                            "title": recording.get("title", "")
                         })
                     else:
                         unmatched_tracks.append({
