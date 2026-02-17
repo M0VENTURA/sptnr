@@ -55,7 +55,7 @@ def get_slskd_client():
             logger.warning("Soulseek (slskd) is not enabled in config")
             return None
         
-        from slskd_client import SlskdClient
+        from api_clients.slskd import SlskdClient
         
         web_url = slskd_config.get("web_url", "http://localhost:5030")
         api_key = slskd_config.get("api_key", "")
