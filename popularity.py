@@ -431,7 +431,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
     """
     Calculate artist-level popularity statistics from all albums.
     
-    This helps identify underperforming albums/singles within an artist's catalog.
+    This helps identify underperforming albums/singles within an artist's catalog
+    AND identify tracks that are standout popular even if not singles.
     
     NOTE: Filters out live/remix/alternate versions to ensure statistics reflect
     the core catalog and are not skewed by bonus tracks or alternate versions.
@@ -446,6 +447,8 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
         - median_popularity: Median popularity
         - stddev_popularity: Standard deviation
         - track_count: Total tracks analyzed
+        - top_15_percentile: Popularity threshold for top 15% of artist's tracks
+        - top_20_percentile: Popularity threshold for top 20% of artist's tracks
     """
     try:
         cursor = conn.cursor()
@@ -491,14 +494,31 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
                 'avg_popularity': 0,
                 'median_popularity': 0,
                 'stddev_popularity': 0,
-                'track_count': 0
+                'track_count': 0,
+                'top_15_percentile': 0,
+                'top_20_percentile': 0
             }
+        
+        # Sort scores to calculate percentiles
+        sorted_scores = sorted(scores, reverse=True)
+        track_count = len(sorted_scores)
+        
+        # Calculate percentile thresholds
+        # Top 15%: This is approximately 85th percentile (top artists of artist's work)
+        # Top 20%: This is approximately 80th percentile (broader standout tracks)
+        top_15_index = max(0, int(track_count * 0.15) - 1)  # -1 for 0-based index
+        top_20_index = max(0, int(track_count * 0.20) - 1)
+        
+        top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
+        top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
         
         return {
             'avg_popularity': mean(scores),
             'median_popularity': median(scores),
             'stddev_popularity': stdev(scores) if len(scores) > 1 else 0,
-            'track_count': len(scores)
+            'track_count': len(scores),
+            'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
+            'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
         }
     except Exception as e:
         log_verbose(f"   Error calculating artist stats: {e}")
@@ -506,7 +526,9 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             'avg_popularity': 0,
             'median_popularity': 0,
             'stddev_popularity': 0,
-            'track_count': 0
+            'track_count': 0,
+            'top_15_percentile': 0,
+            'top_20_percentile': 0
         }
 
 
@@ -949,6 +971,7 @@ from popularity_helpers import (
     get_lastfm_client,
     SPOTIFY_WEIGHT,
     LASTFM_WEIGHT,
+    LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
 from api_rate_limiter import get_rate_limiter
@@ -2263,6 +2286,49 @@ def popularity_scan(
                     else:
                         log_debug(f'No album art URL found for {artist} - {album}')
                 
+                # Batch-fetch ListenBrainz popularity data for all tracks with MBIDs
+                # This is more efficient than per-track calls and respects rate limits
+                album_listenbrainz_data = {}  # Map of track_id -> {"total_listen_count": int, "total_user_count": int}
+                if not singles_only:
+                    try:
+                        # Collect all MBIDs from this album's tracks
+                        mbids_to_fetch = []
+                        mbid_to_track_id = {}  # Map MBID -> track_id for results
+                        
+                        for track in album_tracks:
+                            track_mbid = row_get(track, 'mbid')
+                            if track_mbid:
+                                mbids_to_fetch.append(track_mbid)
+                                mbid_to_track_id[track_mbid] = track["id"]
+                        
+                        if mbids_to_fetch:
+                            log_debug(f'Batch-fetching ListenBrainz popularity for {len(mbids_to_fetch)} recording(s) in album "{album}"')
+                            
+                            # Import batch function
+                            from api_clients.audiodb_and_listenbrainz import get_recording_popularity_batch
+                            from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
+                            
+                            # Call batch API with MusicBrainz user agent for consistency
+                            lb_results = get_recording_popularity_batch(mbids_to_fetch, user_agent=MB_USER_AGENT)
+                            
+                            # Process results and store by track_id
+                            for mbid, data in lb_results.items():
+                                track_id = mbid_to_track_id.get(mbid)
+                                if track_id and data:
+                                    # Only store if we have valid listen count
+                                    if data.get('total_listen_count') is not None and data.get('total_listen_count') > 0:
+                                        album_listenbrainz_data[track_id] = {
+                                            "total_listen_count": data.get('total_listen_count', 0),
+                                            "total_user_count": data.get('total_user_count', 0)
+                                        }
+                                        log_debug(f'ListenBrainz data for track {track_id}: {data.get("total_listen_count")} listens, {data.get("total_user_count")} users')
+                            
+                            log_info(f'Fetched ListenBrainz popularity for {len(album_listenbrainz_data)} track(s) with MBID data')
+                            
+                    except Exception as e:
+                        log_debug(f'ListenBrainz batch fetch failed for album "{album}": {e}')
+                        log_info(f'Continuing without ListenBrainz data for this album')
+                
                 # Collect Last.fm data for all album tracks for z-score normalization
                 # This enables us to calculate z-scores relative to the album
                 album_lastfm_data = {}  # Map of track_id -> {"listeners": int, "playcount": int}
@@ -2706,6 +2772,7 @@ def popularity_scan(
                                 log_debug(f'Failed to extract MusicBrainz genres: {e}')
 
                         # Calculate weighted popularity score
+                        # Include 4 sources: Spotify, Last.fm, ListenBrainz, Age
                         # Only include sources that have data (score > 0)
                         scores = []
                         weights = []
@@ -2714,6 +2781,7 @@ def popularity_scan(
                         # This boosts Last.fm weight for tracks that are outliers in the artist's catalogue
                         dynamic_spotify_weight = SPOTIFY_WEIGHT
                         dynamic_lastfm_weight = LASTFM_WEIGHT
+                        dynamic_listenbrainz_weight = LISTENBRAINZ_WEIGHT
                         
                         if artist_lastfm_context and artist_lastfm_context.get('track_count', 0) > 0 and listeners > 0:
                             dynamic_spotify_weight, dynamic_lastfm_weight = get_dynamic_weights(
@@ -2734,6 +2802,24 @@ def popularity_scan(
                             scores.append(lastfm_score)
                             weights.append(dynamic_lastfm_weight)
                             log_debug(f'Including Last.fm score: {lastfm_score} (weight: {dynamic_lastfm_weight:.2f})')
+                        
+                        # NEW: Include ListenBrainz score if available
+                        listenbrainz_score = 0
+                        if track_id in album_listenbrainz_data:
+                            lb_data = album_listenbrainz_data[track_id]
+                            lb_listen_count = lb_data.get('total_listen_count', 0)
+                            lb_user_count = lb_data.get('total_user_count', 0)
+                            
+                            if lb_listen_count > 0:
+                                # Calculate ListenBrainz score using logarithmic scaling (similar to LastFm)
+                                # log10(100) = 2.0 → 25 points  
+                                # log10(1000) = 3.0 → 37.5 points
+                                # log10(10000) = 4.0 → 50 points
+                                listenbrainz_score = min(100.0, max(0.0, 12.5 * math.log10(lb_listen_count)))
+                                
+                                scores.append(listenbrainz_score)
+                                weights.append(dynamic_listenbrainz_weight)
+                                log_debug(f'Including ListenBrainz score: {listenbrainz_score:.1f} (listens: {lb_listen_count}, users: {lb_user_count}, weight: {dynamic_listenbrainz_weight:.2f})')
                     
                         if age_score > 0:
                             scores.append(age_score)
@@ -2748,7 +2834,7 @@ def popularity_scan(
                             scanned_count += 1
                             album_scanned += 1
                             log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
-                            log_debug(f'Weighted popularity calculation - spotify: {spotify_score}, lastfm: {lastfm_score}, age: {age_score}, final: {popularity_score:.1f}')
+                            log_debug(f'Weighted popularity calculation - spotify: {spotify_score:.1f}, lastfm: {lastfm_score:.1f}, listenbrainz: {listenbrainz_score:.1f}, age: {age_score:.1f}, final: {popularity_score:.1f}')
                         else:
                             log_info(f"No popularity score found for {artist} - {title}")
                             log_debug(f'No data sources available for scoring')
@@ -3305,15 +3391,23 @@ def popularity_scan(
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
                         
-                        # NEW: 5-STAR LOGIC WITH DUAL ARTIST + ALBUM CONTEXT
+                        # NEW: 5-STAR LOGIC WITH ARTIST + ALBUM CONTEXT
                         # A track becomes 5★ if ANY of these conditions are met:
-                        # 1. Artist-level standout (zscore >= 2.0) + top 10% of artist tracks globally
-                        # 2. High popularity + strong z-score (zscore >= 2.0 AND popularity significantly above album mean)
-                        # 3. User-set single
-                        # 4. High-confidence single detection
-                        # 5. Medium-confidence with 2+ sources
+                        # 1. **NEW**: Artist-level standout: Track popularity in top 15% of artist's full collection
+                        #    - Identifies genuinely popular non-singles (e.g., Deep album cuts that are fan favorites)
+                        # 2. Artist-level standout (zscore >= 2.0) + top 10% of artist tracks globally
+                        # 3. High popularity + strong z-score (zscore >= 2.0 AND popularity significantly above album mean)
+                        # 4. User-set single
+                        # 5. High-confidence single detection
+                        # 6. Medium-confidence with 2+ sources
                         #
-                        # Artist context: Dual criteria for maximum relevance
+                        # Artist context (new): Top 15% of artist's catalog = genuine standout content
+                        # - Uses artist's full collection popularity stats
+                        # - Works like an internal "chart" for the artist's work
+                        # - Identifies hidden gems and fan favorites not marketed as singles
+                        # - Applies to ALL genres (pop, rock, classical, etc.)
+                        #
+                        # Album context: Dual criteria for maximum relevance
                         # - Top 10% globally: Track is in artist's most-streamed catalogue (global significance)
                         # - Album outlier: Track stands out from its album peers (local significance)
                         # Both needed = meaningful standout content
@@ -3326,52 +3420,61 @@ def popularity_scan(
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
                             # Apply new 5-star rule
-                            # FIRST: Dual artist context check
-                            # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
-                            track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
-                            artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
-                            is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
-                            is_album_outlier = track_zscore >= 2.0
+                            # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
+                            artist_top_15_threshold = artist_stats.get('top_15_percentile', 0) or 0
+                            is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
                             
-                            if is_top_10_global and is_album_outlier:
+                            if is_top_15_artist:
                                 stars = 5
-                                log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
-                                log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                            # SECOND: High popularity + strong z-score (alternative 5-star method)
-                            # Track with z-score >= 2.0 AND popularity significantly above album mean gets 5 stars
-                            elif track_zscore >= 2.0 and popularity_score > popularity_mean * 1.5:
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (high popularity + strong outlier, pop={popularity_score:.1f} vs album_mean={popularity_mean:.1f}, zscore={track_zscore:.2f})")
-                                log_debug(f"High pop+zscore met - track_id: {track_id}, pop: {popularity_score}, album_mean: {popularity_mean}, zscore: {track_zscore:.2f}")
-                            # User-set singles always get 5 stars
-                            elif single_confidence == "user":
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (user-set single)")
-                                log_debug(f"User-set single - track_id: {track_id}")
-                            # High confidence always gets 5 stars
-                            elif single_confidence == "high":
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (high-confidence single)")
-                                log_debug(f"High confidence single detected - track_id: {track_id}")
-                            # Medium confidence with 2+ sources gets 5 stars
-                            elif single_confidence == "medium":
-                                # Count the number of medium-confidence sources
-                                # Each unique source in single_sources represents a medium-confidence method
-                                medium_conf_count = len(single_sources) if single_sources else 0
-                                if medium_conf_count >= 2:
+                                log_info(f"5-star assignment: {title} (top 15% of artist catalog, pop={popularity_score:.1f} >= artist_top_15={artist_top_15_threshold:.1f})")
+                                log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}")
+                            else:
+                                # SECOND: Dual artist context check (global + album outlier)
+                                # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
+                                track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
+                                artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
+                                is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
+                                is_album_outlier = track_zscore >= 2.0
+                                
+                                if is_top_10_global and is_album_outlier:
                                     stars = 5
-                                    # Upgrade is_single flag for medium confidence tracks with 2+ sources
-                                    if not is_single:
-                                        single_upgrades.append(track_id)
-                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
-                                    else:
-                                        log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
-                                    log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
-                            # Standout tracks (high Last.fm scrobbles) get 5 stars
-                            elif is_standout_track:
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (standout track - high Last.fm scrobbles)")
-                                log_debug(f"Standout track - track_id: {track_id}")
+                                    log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
+                                    log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
+                                # THIRD: High popularity + strong z-score (alternative 5-star method)
+                                # Track with z-score >= 2.0 AND popularity significantly above album mean gets 5 stars
+                                elif track_zscore >= 2.0 and popularity_score > popularity_mean * 1.5:
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (high popularity + strong outlier, pop={popularity_score:.1f} vs album_mean={popularity_mean:.1f}, zscore={track_zscore:.2f})")
+                                    log_debug(f"High pop+zscore met - track_id: {track_id}, pop: {popularity_score}, album_mean: {popularity_mean}, zscore: {track_zscore:.2f}")
+                                # User-set singles always get 5 stars
+                                elif single_confidence == "user":
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (user-set single)")
+                                    log_debug(f"User-set single - track_id: {track_id}")
+                                # High confidence always gets 5 stars
+                                elif single_confidence == "high":
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (high-confidence single)")
+                                    log_debug(f"High confidence single detected - track_id: {track_id}")
+                                # Medium confidence with 2+ sources gets 5 stars
+                                elif single_confidence == "medium":
+                                    # Count the number of medium-confidence sources
+                                    # Each unique source in single_sources represents a medium-confidence method
+                                    medium_conf_count = len(single_sources) if single_sources else 0
+                                    if medium_conf_count >= 2:
+                                        stars = 5
+                                        # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                                        if not is_single:
+                                            single_upgrades.append(track_id)
+                                            log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                        else:
+                                            log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
+                                        log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                                # Standout tracks (high Last.fm scrobbles) get 5 stars
+                                elif is_standout_track:
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (standout track - high Last.fm scrobbles)")
+                                    log_debug(f"Standout track - track_id: {track_id}")
                             
                             # NEW: Artist-level popularity context
                             # Downgrade singles from underperforming albums (only for medium confidence - high confidence singles are independently verified)

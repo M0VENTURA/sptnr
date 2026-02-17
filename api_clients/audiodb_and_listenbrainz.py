@@ -396,6 +396,91 @@ class AudioDbClient:
             return []
 
 
+def get_recording_popularity_batch(recording_mbids: list[str], user_agent: str = "") -> dict[str, dict]:
+    """
+    Fetch ListenBrainz popularity for multiple recordings in a single batch request.
+    
+    IMPORTANT: ListenBrainz and MusicBrainz share the same MetaBrainz infrastructure.
+    Both APIs enforce 1 request per second rate limit. This function shares rate limiting
+    with MusicBrainz API calls via api_rate_limiter.check_musicbrainz_limit().
+    
+    Args:
+        recording_mbids: List of MusicBrainz recording IDs (up to 100 per request)
+        user_agent: User-Agent header (should match MusicBrainz user agent for consistency)
+                   Falls back to app's user agent if not provided
+    
+    Returns:
+        Dict mapping recording_mbid → {'total_listen_count': int, 'total_user_count': int}
+        Returns null values for not-found recordings
+        Example: {
+            "13dd61c7-ce73-4e97-9f0c-9f0e53144411": {"total_listen_count": 1000, "total_user_count": 50},
+            "22ad712e-ce73-9f0c-4e97-9f0c-4e97": {"total_listen_count": null, "total_user_count": null}
+        }
+    """
+    try:
+        # Import here to avoid circular dependency
+        from api_rate_limiter import get_rate_limiter
+        from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
+        
+        # Use provided user agent or fall back to MusicBrainz user agent
+        ua = user_agent or MB_USER_AGENT or "sptnr/2.0"
+        
+        # Check rate limit before making request
+        rate_limiter = get_rate_limiter()
+        can_proceed, reason = rate_limiter.check_musicbrainz_limit()
+        
+        if not can_proceed:
+            logger.debug(f"[LB_POPULARITY] Rate limit check failed: {reason}")
+            # Return empty dict on rate limit
+            return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
+        
+        # Limit batch size to ListenBrainz API max (typically around 100)
+        if len(recording_mbids) > 100:
+            logger.warning(f"[LB_POPULARITY] Batch size {len(recording_mbids)} exceeds 100, truncating")
+            recording_mbids = recording_mbids[:100]
+        
+        # Prepare request
+        url = "https://api.listenbrainz.org/1/popularity/recording"
+        payload = {"recording_mbids": recording_mbids}
+        headers = {"User-Agent": ua}
+        
+        logger.debug(f"[LB_POPULARITY] Fetching popularity for {len(recording_mbids)} recordings")
+        
+        # Make request
+        res = session.post(url, json=payload, headers=headers, timeout=(5, 15))
+        res.raise_for_status()
+        
+        # Record the API request for rate limiting
+        rate_limiter.record_musicbrainz_request()
+        logger.debug(f"[LB_POPULARITY] Request successful, rate limit recorded")
+        
+        # Parse response - should be a list maintaining order of input MBIDs
+        data = res.json()
+        
+        if not isinstance(data, list):
+            logger.error(f"[LB_POPULARITY] Unexpected response format: {type(data)}")
+            return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
+        
+        # Convert list response to dict mapping MBID → popularity data
+        result = {}
+        for i, mbid in enumerate(recording_mbids):
+            if i < len(data):
+                item = data[i]
+                result[mbid] = {
+                    "total_listen_count": item.get("total_listen_count"),
+                    "total_user_count": item.get("total_user_count")
+                }
+            else:
+                result[mbid] = {"total_listen_count": None, "total_user_count": None}
+        
+        logger.debug(f"[LB_POPULARITY] Batch complete: {len(result)} recordings processed")
+        return result
+        
+    except Exception as e:
+        logger.debug(f"[LB_POPULARITY] Error fetching popularity: {e}")
+        return {mbid: {"total_listen_count": None, "total_user_count": None} for mbid in recording_mbids}
+
+
 def score_by_age(playcount: int | float, release_str: str) -> tuple[float, int]:
     """
     Apply age decay to score based on release date.

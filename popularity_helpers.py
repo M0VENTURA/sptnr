@@ -23,9 +23,10 @@ from api_clients import timeout_safe_session
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
 _DEFAULT_WEIGHTS = {
-    "spotify": 0.4,
-    "lastfm": 0.3,
-    "age": 0.3,
+    "spotify": 0.10,      # Minimal: Algorithm-driven, paid API, increasingly gamed
+    "lastfm": 0.30,       # Community choice: genuine scrobbles since 2002 (established metric)
+    "listenbrainz": 0.35, # Community choice: open-source, not influenced by artist payola (most authentic)
+    "age": 0.25,          # Recency and track maturity (slightly reduced for community primacy)
 }
 
 _DEFAULT_FEATURES = {
@@ -50,17 +51,19 @@ def _load_config() -> dict:
         return {}
 
 
-def _resolve_weights(cfg: dict) -> Tuple[float, float, float]:
+def _resolve_weights(cfg: dict) -> Tuple[float, float, float, float]:
+    """Resolve popularity weights from config (supports 4 sources: Spotify, Last.fm, ListenBrainz, Age)."""
     weights = cfg.get("weights") if isinstance(cfg, dict) else None
     weights = weights or {}
     return (
         float(weights.get("spotify", _DEFAULT_WEIGHTS["spotify"])),
         float(weights.get("lastfm", _DEFAULT_WEIGHTS["lastfm"])),
+        float(weights.get("listenbrainz", _DEFAULT_WEIGHTS["listenbrainz"])),
         float(weights.get("age", _DEFAULT_WEIGHTS["age"])),
     )
 
 
-SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
+SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(_load_config())
 
 
 def _worker_threads(cfg: dict) -> int:
@@ -81,12 +84,12 @@ def configure_popularity_helpers(
     """Configure shared clients and refresh weights based on provided config."""
     global _spotify_client, _lastfm_client
     global _spotify_enabled, _clients_configured
-    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT
+    global SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT
 
     cfg = config if config is not None else _load_config()
 
     # Refresh weights from config
-    SPOTIFY_WEIGHT, LASTFM_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
+    SPOTIFY_WEIGHT, LASTFM_WEIGHT, LISTENBRAINZ_WEIGHT, AGE_WEIGHT = _resolve_weights(cfg)
 
     api_cfg = cfg.get("api_integrations") if isinstance(cfg, dict) else None
     api_cfg = api_cfg or {}
@@ -721,6 +724,7 @@ __all__ = [
     "score_by_age",
     "SPOTIFY_WEIGHT",
     "LASTFM_WEIGHT",
+    "LISTENBRAINZ_WEIGHT",
     "AGE_WEIGHT",
     "fetch_artist_albums",
     "fetch_album_tracks",
