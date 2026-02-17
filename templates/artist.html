@@ -593,6 +593,9 @@
               <div class="form-text">Search for albums or tracks on Soulseek network</div>
             </div>
             
+            <!-- Track Queue Section -->
+            <div id="slskdTracksContainer" class="mb-3"></div>
+            
             <div id="slskdLoading" class="text-center py-4" style="display: none;">
               <div class="spinner-border text-primary" role="status">
                 <span class="visually-hidden">Searching...</span>
@@ -615,6 +618,18 @@
 const SLSKD_MAX_POLL_ATTEMPTS = 20;
 const SLSKD_POLL_INTERVAL_MS = 2000;
 const BYTES_TO_MB = 1024 * 1024;
+
+// Event listener for Soulseek tab - show track queue option when tab is clicked
+document.addEventListener('DOMContentLoaded', function() {
+  const slskdTab = document.getElementById('slskd-tab');
+  if (slskdTab) {
+    slskdTab.addEventListener('shown.bs.tab', function() {
+      if (currentDownloadAlbum.album) {
+        showSlskdTrackQueueOption();
+      }
+    });
+  }
+});
 
 // Fallback functions if genre-utils.js fails to load
 if (typeof toggleGenreCheckbox === 'undefined') {
@@ -747,7 +762,16 @@ function saveArtistIds() {
     });
 }
 
+// Store current album info for modal
+let currentDownloadAlbum = {
+  artist: null,
+  album: null
+};
+
 function openDownloadSearch(artistName, albumName) {
+  // Store for track queueing
+  currentDownloadAlbum = { artist: artistName, album: albumName };
+  
   document.getElementById('downloadArtistName').textContent = artistName + (albumName ? ' - ' + albumName : '');
   
   // Set search query for both tabs
@@ -763,6 +787,8 @@ function openDownloadSearch(artistName, albumName) {
   if (slskdInput) {
     slskdInput.value = query;
     document.getElementById('slskdResults').innerHTML = '';
+    // Clear track queue section
+    document.getElementById('slskdTracksContainer').innerHTML = '';
   }
   
   const modal = new bootstrap.Modal(document.getElementById('downloadModal'));
@@ -774,9 +800,161 @@ function openDownloadSearch(artistName, albumName) {
     if (activeTab && activeTab.id === 'qbit-tab') {
       performQbitSearch();
     } else if (activeTab && activeTab.id === 'slskd-tab') {
+      // Show track queue option for Soulseek
+      if (albumName) {
+        showSlskdTrackQueueOption();
+      }
       performSlskdSearch();
     }
   }, 300);
+}
+
+function showSlskdTrackQueueOption() {
+  const container = document.getElementById('slskdTracksContainer');
+  if (!container) return;
+  
+  container.innerHTML = `
+    <div class="alert alert-info d-flex justify-content-between align-items-center mb-3">
+      <div>
+        <i class="bi bi-info-circle"></i> 
+        Queue individual tracks from <strong>${escapeHtml(currentDownloadAlbum.album)}</strong> to Soulseek download queue
+      </div>
+      <button class="btn btn-sm btn-success" onclick="queueAlbumTracksToSlskd()">
+        <i class="bi bi-plus-circle"></i> Queue Tracks
+      </button>
+    </div>
+    <div id="slskdTrackQueueStatus"></div>
+  `;
+}
+
+function queueAlbumTracksToSlskd() {
+  if (!currentDownloadAlbum.album) {
+    alert('No album selected');
+    return;
+  }
+  
+  const statusDiv = document.getElementById('slskdTrackQueueStatus');
+  statusDiv.innerHTML = `
+    <div class="text-center py-3">
+      <div class="spinner-border spinner-border-sm text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+      <p class="mt-2">Fetching album tracklist...</p>
+    </div>
+  `;
+  
+  // Fetch album tracklist
+  const params = new URLSearchParams({
+    artist: currentDownloadAlbum.artist,
+    album: currentDownloadAlbum.album
+  });
+  
+  fetch(`/api/album/tracklist?${params}`)
+    .then(response => response.json())
+    .then(data => {
+      if (data.error || !data.tracks || data.tracks.length === 0) {
+        statusDiv.innerHTML = `
+          <div class="alert alert-danger">
+            <i class="bi bi-exclamation-triangle"></i> Could not fetch tracklist: ${escapeHtml(data.error || 'No tracks found')}
+          </div>
+        `;
+        return;
+      }
+      
+      const tracks = data.tracks;
+      let queuedCount = 0;
+      let html = `
+        <div class="alert alert-info">
+          <strong>Queueing ${tracks.length} track${tracks.length !== 1 ? 's' : ''}...</strong>
+        </div>
+        <div class="table-responsive">
+          <table class="table table-sm">
+            <thead>
+              <tr>
+                <th style="width: 40px;"></th>
+                <th>Track</th>
+                <th class="text-center">Status</th>
+              </tr>
+            </thead>
+            <tbody id="trackQueueTable">
+      `;
+      
+      // Display all tracks first
+      tracks.forEach((track, idx) => {
+        const trackTitle = track.title || `Track ${idx + 1}`;
+        html += `
+          <tr id="queue-track-${idx}">
+            <td class="text-center"><small class="text-muted">${idx + 1}</small></td>
+            <td><small>${escapeHtml(trackTitle)}</small></td>
+            <td class="text-center"><small id="queue-status-${idx}" class="text-muted">pending...</small></td>
+          </tr>
+        `;
+      });
+      
+      html += `
+            </tbody>
+          </table>
+        </div>
+      `;
+      
+      statusDiv.innerHTML = html;
+      
+      // Queue tracks sequentially
+      let index = 0;
+      const queueNextTrack = () => {
+        if (index >= tracks.length) {
+          // Update summary
+          const summary = document.querySelector('.alert-info strong');
+          if (summary) {
+            summary.textContent = `✓ Queued ${queuedCount} of ${tracks.length} track${tracks.length !== 1 ? 's' : ''} to Soulseek`;
+          }
+          return;
+        }
+        
+        const track = tracks[index];
+        const statusEl = document.getElementById(`queue-status-${index}`);
+        const trackTitle = track.title || `Track ${index + 1}`;
+        const searchQuery = `${currentDownloadAlbum.artist} ${trackTitle}`;
+        
+        statusEl.textContent = 'queuing...';
+        statusEl.classList.add('text-warning');
+        
+        fetch('/api/slskd/search-and-download', {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json'
+          },
+          body: JSON.stringify({
+            query: searchQuery
+          })
+        })
+        .then(response => response.json())
+        .then(downloadData => {
+          queuedCount++;
+          statusEl.textContent = '✓ queued';
+          statusEl.classList.remove('text-warning');
+          statusEl.classList.add('text-success');
+          index++;
+          queueNextTrack();
+        })
+        .catch(error => {
+          statusEl.textContent = '✗ failed';
+          statusEl.classList.remove('text-warning');
+          statusEl.classList.add('text-danger');
+          index++;
+          queueNextTrack();
+        });
+      };
+      
+      queueNextTrack();
+    })
+    .catch(error => {
+      statusDiv.innerHTML = `
+        <div class="alert alert-danger">
+          <i class="bi bi-exclamation-triangle"></i> Network error: ${escapeHtml(error.message)}
+        </div>
+      `;
+    });
 }
 
 function performSlskdSearch() {

@@ -7071,6 +7071,79 @@ def slskd_download_single():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/slskd/search-and-download", methods=["POST"])
+def slskd_search_and_download():
+    """Search Soulseek for a query and auto-download the top result"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    slskd_config = cfg.get("slskd", {})
+    
+    if not slskd_config.get("enabled"):
+        return jsonify({"error": "slskd integration not enabled"}), 400
+    
+    query = request.json.get("query", "").strip()
+    if not query:
+        return jsonify({"error": "Query required"}), 400
+    
+    web_url = slskd_config.get("web_url", "http://localhost:5030")
+    api_key = slskd_config.get("api_key", "")
+    
+    try:
+        import time
+        client = SlskdClient(web_url, api_key, enabled=True)
+        
+        # Start search
+        search_id = client.start_search(query)
+        if not search_id:
+            return jsonify({"error": "Failed to start search"}), 500
+        
+        # Wait for results - poll up to 10 times with 500ms intervals
+        best_result = None
+        for attempt in range(10):
+            time.sleep(0.5)
+            responses, state, is_complete = client.get_search_results(search_id)
+            
+            if responses:
+                # Get the first file from the first user (usually best match)
+                for resp in responses:
+                    if hasattr(resp, 'files') and resp.files:
+                        best_result = {
+                            "username": resp.username,
+                            "filename": resp.files[0].filename,
+                            "size": getattr(resp.files[0], 'size', 0)
+                        }
+                        break
+                
+                if best_result:
+                    break
+        
+        if not best_result:
+            return jsonify({
+                "status": "queued_no_results",
+                "message": f"Search '{query}' queued but no results found yet"
+            })
+        
+        # Download the best result
+        success = client.download_file(best_result["username"], best_result["filename"], best_result["size"])
+        
+        if success:
+            return jsonify({
+                "success": True,
+                "status": "queued",
+                "message": f"Download queued: {best_result['filename']}",
+                "filename": best_result["filename"]
+            })
+        else:
+            return jsonify({
+                "success": False,
+                "status": "found_but_failed",
+                "message": f"Found '{best_result['filename']}' but failed to queue download"
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"[SLSKD] Search and download error: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/musicbrainz/search", methods=["POST"])
 def api_musicbrainz_search():
     """Search MusicBrainz for releases + local cached missing releases"""
