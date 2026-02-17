@@ -8,11 +8,8 @@ services:
     # Uncomment the next line to build the Docker image locally
     # build: .
 
-    # Uncomment the next line to run the script
-    # entrypoint: ["python", "sptnr.py"]
-    
-    # Uncomment the next line to start the web server
-    # entrypoint: ["gunicorn", "-b", "0.0.0.0:5000", "server:sptnr"]
+    # Run both web server and queue processor
+    entrypoint: ["./entrypoint.sh"]
 
     environment:
       - NAV_BASE_URL=                      #URL That Navidrome is hosted
@@ -25,13 +22,24 @@ services:
       - SPOTIFY_WEIGHT=0.4                 #Adjust Spotify Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
       - LASTFM_WEIGHT=0.6                  #Adjust Last.FM Weighting 0.0 - 1.0 (Spotify and LastFM = 1.0)
       - MUSIC_FOLDER=/music                #Path to music folder inside container
+      - DB_PATH=/database/sptnr.db         #Path to SQLite database
+      - DOWNLOADS_DIR=/downloads           #Path to downloads folder
+      - MUSIC_ROOT=/music                  #Path to music library folder
+    
+    ports:
+      - "5000:5000"                        #Web UI port
+    
     volumes:
-      - ./logs:/usr/src/app/logs
-      - ./data:/usr/src/app/data           # Volume for cache files
-      - /path/to/your/music:/music         # Mount your music folder (update path)
+      - ./logs:/config                     # Config and log files
+      - ./data:/database                   # SQLite database
+      - /path/to/your/downloads:/downloads # Downloads folder for Soulseek
+      - /path/to/your/music:/music         # Music library folder
 
     # Example: Rate a single artist
     # command: ["--artist", "Orpheus Omega", "--sync"]
     
     # Example: Perpetual mode with MP3 and Navidrome scans
-    command: ["--perpetual", "--batchrate", "--sync"]
+    # command: ["--perpetual", "--batchrate", "--sync"]
+    
+    restart: unless-stopped
+

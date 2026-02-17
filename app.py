@@ -10310,9 +10310,147 @@ def api_queue_organize(queue_id):
         return jsonify({"error": str(e)}), 400
 
 
-# ===== Last.fm Scheduler/Sync Endpoints =====
+@app.route("/api/queue-processor/status", methods=["GET"])
+def api_queue_processor_status():
+    """Get queue processor status"""
+    try:
+        import subprocess
+        import psutil
+        
+        # Try to find the queue processor process
+        processor_running = False
+        processor_pid = None
+        processor_memory = 0
+        processor_uptime = None
+        
+        try:
+            # Check if queue_processor.py is running
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
+                        if 'queue_processor.py' in ' '.join(proc.info['cmdline']):
+                            processor_running = True
+                            processor_pid = proc.info['pid']
+                            processor_memory = proc.memory_info().rss / 1024 / 1024  # Convert to MB
+                            processor_uptime = datetime.now() - datetime.fromtimestamp(proc.create_time())
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        except ImportError:
+            # psutil not installed, try ps command
+            try:
+                result = subprocess.run(['ps', 'aux'], capture_output=True, text=True, timeout=5)
+                processor_running = 'queue_processor.py' in result.stdout
+            except:
+                pass
+        
+        # Check queue status
+        from download_queue_manager import get_queue
+        
+        queued_items = get_queue(status='queued', limit=100)
+        downloading_items = get_queue(status='downloading', limit=100)
+        failed_items = get_queue(status='failed', limit=100)
+        completed_items = get_queue(status='completed', limit=100)
+        
+        return jsonify({
+            "success": True,
+            "processor_running": processor_running,
+            "processor_pid": processor_pid,
+            "processor_memory_mb": round(processor_memory, 2) if processor_memory else 0,
+            "processor_uptime": str(processor_uptime) if processor_uptime else None,
+            "queue_stats": {
+                "queued": len(queued_items),
+                "downloading": len(downloading_items),
+                "failed": len(failed_items),
+                "completed": len(completed_items),
+                "total": len(queued_items) + len(downloading_items) + len(failed_items) + len(completed_items)
+            }
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting queue processor status: {e}")
+        return jsonify({
+            "success": False,
+            "processor_running": False,
+            "error": str(e)
+        }), 500
 
-@app.route("/api/lastfm/sync/status", methods=["GET"])
+
+@app.route("/api/queue-processor/restart", methods=["POST"])
+def api_queue_processor_restart():
+    """Restart queue processor"""
+    try:
+        import subprocess
+        import psutil
+        import signal
+        
+        # Try to kill existing process
+        killed = False
+        try:
+            for proc in psutil.process_iter(['pid', 'name', 'cmdline']):
+                try:
+                    if proc.info['cmdline'] and len(proc.info['cmdline']) > 1:
+                        if 'queue_processor.py' in ' '.join(proc.info['cmdline']):
+                            logging.info(f"Killing queue processor (PID: {proc.info['pid']})")
+                            proc.send_signal(signal.SIGTERM)
+                            killed = True
+                            # Wait up to 5 seconds for process to terminate
+                            try:
+                                proc.wait(timeout=5)
+                            except psutil.TimeoutExpired:
+                                proc.kill()
+                            break
+                except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+                    pass
+        except ImportError:
+            # psutil not installed, try killall
+            subprocess.run(['killall', 'queue_processor.py'], capture_output=True)
+            killed = True
+        
+        # Wait a bit for process to fully terminate
+        import time
+        time.sleep(1)
+        
+        # Try to start new process
+        try:
+            # Change to app directory
+            app_dir = os.path.dirname(os.path.abspath(__file__))
+            
+            # Start queue processor
+            subprocess.Popen(
+                ['python3', 'queue_processor.py', '30'],
+                cwd=app_dir,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                start_new_session=True
+            )
+            
+            logging.info("Queue processor restarted successfully")
+            
+            time.sleep(2)  # Wait for process to start
+            
+            return jsonify({
+                "success": True,
+                "message": "Queue processor restarted successfully",
+                "killed_previous": killed
+            })
+        except Exception as e:
+            logging.error(f"Error starting queue processor: {e}")
+            return jsonify({
+                "success": False,
+                "message": "Failed to start queue processor",
+                "error": str(e),
+                "killed_previous": killed
+            }), 500
+            
+    except Exception as e:
+        logging.error(f"Error restarting queue processor: {e}")
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 def api_lastfm_sync_status():
     """Get Last.fm sync status and next scheduled sync"""
     try:

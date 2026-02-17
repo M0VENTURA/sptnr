@@ -3,7 +3,7 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Australia/Melbourne
 
-# System deps + tzdata + vim
+# System deps + tzdata + vim + gunicorn
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     build-essential \
@@ -21,15 +21,19 @@ WORKDIR /app
 # Copy requirements first for caching
 COPY requirements.txt /app/
 
-# Install Python deps including beets for music tagging
+# Install Python deps including gunicorn, beets for music tagging, and pyyaml for config
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir flask beautifulsoup4 beets
+    pip install --no-cache-dir flask beautifulsoup4 beets gunicorn pyyaml
 
 # App files
 COPY . /app
 
+# Make entrypoint executable
+RUN chmod +x /app/entrypoint.sh
+
 RUN mkdir -p /config /database
 
 EXPOSE 5000
-CMD ["python", "app.py"]
+ENTRYPOINT ["./entrypoint.sh"]
+

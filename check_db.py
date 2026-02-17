@@ -534,6 +534,22 @@ def update_schema(db_path):
     if queue_columns_added:
         print(f"✅ Added {len(queue_columns_added)} missing download_queue column(s): {', '.join(queue_columns_added)}")
     
+    # ✅ Ensure download_queue has proper defaults for retry columns
+    try:
+        # Set default max_retries for existing records if NULL
+        cursor.execute("UPDATE download_queue SET max_retries = 5 WHERE max_retries IS NULL;")
+        if cursor.rowcount > 0:
+            print(f"✅ Set max_retries default (5) for {cursor.rowcount} download_queue records")
+        
+        # Set default retry_delay_minutes for existing records if NULL
+        cursor.execute("UPDATE download_queue SET retry_delay_minutes = 30 WHERE retry_delay_minutes IS NULL;")
+        if cursor.rowcount > 0:
+            print(f"✅ Set retry_delay_minutes default (30) for {cursor.rowcount} download_queue records")
+        
+        conn.commit()
+    except Exception as e:
+        print(f"⚠ Could not update download_queue defaults: {e}")
+    
     # ✅ Add missing columns to managed_downloads for persistent search feature
     cursor.execute("PRAGMA table_info(managed_downloads);")
     existing_download_columns = [row[1] for row in cursor.fetchall()]
