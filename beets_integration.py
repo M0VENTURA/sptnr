@@ -606,12 +606,14 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             # Handle genre - can be string or list
             genre_value = metadata['genre']
             if isinstance(genre_value, str):
-                # Split comma-separated or backslash-separated genres into a list
+                # Split on comma (standard format) or backslash (legacy format)
+                # Replace any double backslashes with single, then split
                 if '\\' in genre_value:
-                    # Split on backslash (single or double)
-                    genre_list = [g.strip() for g in genre_value.replace('\\\\', '\\').split('\\') if g.strip()]
+                    # Normalize double backslashes to single, then split
+                    normalized = genre_value.replace('\\\\', '\x00').replace('\\', '\x00')
+                    genre_list = [g.strip() for g in normalized.split('\x00') if g.strip()]
                 else:
-                    # Split on comma
+                    # Split on comma (standard format)
                     genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
             else:
                 # Already a list
@@ -695,12 +697,20 @@ def _update_flac_metadata(file_path: str, metadata: dict) -> bool:
             audio['albumartist'] = metadata['albumartist']
         
         if 'genre' in metadata and metadata['genre']:
-            # Handle genre - can be string or list
+            # Handle genre - can be string or list (consistent with MP3 handling)
             genre_value = metadata['genre']
             if isinstance(genre_value, str):
-                genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
+                # Split on comma (standard format) or backslash (legacy format)
+                if '\\' in genre_value:
+                    # Normalize double backslashes to single, then split
+                    normalized = genre_value.replace('\\\\', '\x00').replace('\\', '\x00')
+                    genre_list = [g.strip() for g in normalized.split('\x00') if g.strip()]
+                else:
+                    # Split on comma (standard format)
+                    genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
             else:
-                genre_list = genre_value if isinstance(genre_value, list) else [genre_value]
+                # Already a list
+                genre_list = [str(g).strip() for g in genre_value if g]
             audio['genre'] = genre_list
         
         if 'year' in metadata and metadata['year']:
