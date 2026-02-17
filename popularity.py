@@ -163,6 +163,12 @@ def is_live_or_alternate_album(album: str) -> bool:
     such as "Alice in Chains - Unplugged in New York" where tracks should not be matched
     with their studio counterparts.
     
+    Only matches format indicators, not "live" as part of the actual album title.
+    Examples:
+    - "Album (Live)" -> True
+    - "Album Live at Venue" -> True
+    - "(how to live) AS GHOSTS" -> False
+    
     Args:
         album: Album name to check
         
@@ -174,22 +180,28 @@ def is_live_or_alternate_album(album: str) -> bool:
     
     album_lower = album.lower()
     
-    # Live album indicators
-    # Note: 'unplugged' covers 'mtv unplugged', so no need for separate entry
-    live_keywords = [
-        'live',
-        'unplugged',
-        'acoustic',
-        'live at',
-        'live in',
-        'concert',
-        'live from',
-        'in concert',
-        'on stage',
-        'live tour'  # More specific than just 'tour' to avoid false positives
+    # More specific live album indicators (avoid matching "live" within titles)
+    live_patterns = [
+        r'\blive\s+at\b',          # "live at venue"
+        r'\blive\s+in\b',          # "live in city"
+        r'\blive\s+from\b',        # "live from venue"
+        r'\blive\s+session\b',     # "live session"
+        r'\blive\s+recording\b',   # "live recording"
+        r'\blive\s+tour\b',        # "live tour"
+        r'\(live\)',               # "(live)" format tag
+        r'\[live\]',               # "[live]" format tag
+        r'-\s*live\b',             # "- live" suffix
+        r'\s+live\s*$',            # ends with " live"
+        r'\s+live\s*[\)\]]',       # "live)" or "live]" format
+        r'\bunplugged\b',          # "unplugged"
+        r'\bacoustic\b',           # "acoustic"
+        r'\bconcert\b',            # "concert" album
+        r'\bon\s+stage\b',         # "on stage"
+        r'\bin\s+concert\b',       # "in concert"
     ]
     
-    return any(keyword in album_lower for keyword in live_keywords)
+    import re
+    return any(re.search(pattern, album_lower) for pattern in live_patterns)
 
 
 def detect_alternate_takes(tracks: list) -> dict:

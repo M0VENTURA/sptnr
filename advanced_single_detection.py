@@ -62,10 +62,18 @@ ALTERNATE_VERSION_PATTERNS = [
 
 # Live/acoustic/unplugged patterns
 LIVE_PATTERNS = [
-    r'\blive\b',
+    # More specific patterns to avoid matching "live" in titles like "(how to live)"
+    r'\blive\s+at\b',          # "live at venue"
+    r'\blive\s+in\b',          # "live in city"  
+    r'\blive\s+from\b',        # "live from"
+    r'\blive\s+session\b',     # "live session"
+    r'\blive\s+tour\b',        # "live tour"
+    r'\(live\)',               # "(live)" format
+    r'\[live\]',               # "[live]" format
+    r'-\s*live\b',             # "- live" suffix
+    r'\s+live\s*$',            # ends with " live"
     r'\bunplugged\b',
     r'\bacoustic\b',
-    r'\(live\)',
     r'\(unplugged\)',
     r'\(acoustic\)',
 ]

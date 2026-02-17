@@ -81,6 +81,13 @@ def detect_live_album(album_title: str) -> dict:
     """
     Detect if an album is a live or unplugged album based on its title.
     
+    Only matches format indicators, not "live" as part of the actual title.
+    Examples:
+    - "Album Live at Venue" -> live=True
+    - "(how to live) AS GHOSTS" -> live=False (live is part of title)
+    - "Album (Live)" -> live=True
+    - "Album - Live 2023" -> live=True
+    
     Args:
         album_title: Album title to analyze
         
@@ -92,16 +99,23 @@ def detect_live_album(album_title: str) -> dict:
     
     title_lower = album_title.lower()
     
-    # Check for live indicators
+    # Check for SPECIFIC live format indicators (not just any "live" word)
+    # These patterns are more restrictive to avoid matching "live" in titles like "(how to live)"
     live_patterns = [
-        r'\blive\b',
-        r'\bconcert\b',
-        r'\bon stage\b',
-        r'\bin concert\b',
-        r'\blive at\b',
-        r'\blive in\b',
-        r'\blive from\b',
-        r'\blive session\b',
+        r'\blive\s+at\b',          # "live at venue"
+        r'\blive\s+in\b',          # "live in city"
+        r'\blive\s+from\b',        # "live from venue"
+        r'\blive\s+session\b',     # "live session"
+        r'\blive\s+recording\b',   # "live recording"
+        r'\bconcert\b',            # "concert" album
+        r'\bon\s+stage\b',         # "on stage"
+        r'\bin\s+concert\b',       # "in concert"
+        r'\(live\)',               # "(live)" format tag
+        r'\[live\]',               # "[live]" format tag
+        r'-\s*live\b',             # "- live" suffix
+        r'\s+live\s*$',            # ends with " live"
+        r'\s+live\s*\)',           # "live)" format variant
+        r'\s+live\s*\]',           # "live]" format variant
     ]
     
     is_live = any(re.search(pattern, title_lower) for pattern in live_patterns)
@@ -110,7 +124,7 @@ def detect_live_album(album_title: str) -> dict:
     unplugged_patterns = [
         r'\bunplugged\b',
         r'\bacoustic\b',
-        r'\bacoustic session\b',
+        r'\bacoustic\s+session\b',
     ]
     
     is_unplugged = any(re.search(pattern, title_lower) for pattern in unplugged_patterns)

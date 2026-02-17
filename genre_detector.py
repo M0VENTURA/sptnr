@@ -33,8 +33,9 @@ class GenreDetector:
     }
     
     LIVE_KEYWORDS_ALBUM = {
-        "live", "unplugged", "live at", "live from", "in concert",
-        "live session", "bbc live"
+        # Removed standalone "live" to avoid matching "(how to live)" in titles
+        "unplugged", "live at", "live from", "in concert",
+        "live session", "bbc live", "live in", "live tour", "(live)", "[live]"
     }
     
     ACOUSTIC_KEYWORDS = {
@@ -167,17 +168,42 @@ class GenreDetector:
         Detect if track is a live recording.
         
         Rules:
-        - Track/album name contains live indicators
+        - Track/album name contains live indicators (specific format indicators)
         - Liveness audio feature > 0.8
+        
+        Note: Only matches "live" when it's clearly a format indicator, not in titles like "(how to live)"
         """
+        import re
+        
         # Check track name
         for keyword in self.LIVE_KEYWORDS_TITLE:
             if keyword in track_lower:
                 return True
         
-        # Check album name
+        # Check album name with regex patterns for more specific "live" detection
+        live_patterns = [
+            r'\blive\s+at\b',          # "live at venue"
+            r'\blive\s+in\b',          # "live in city"
+            r'\blive\s+from\b',        # "live from venue"
+            r'\blive\s+session\b',     # "live session"
+            r'\blive\s+tour\b',        # "live tour"
+            r'\(live\)',               # "(live)" format tag
+            r'\[live\]',               # "[live]" format tag
+            r'-\s*live\b',             # "- live" suffix
+            r'\s+live\s*$',            # ends with " live"
+            r'\s+live\s*[\)\]]',       # "live)" or "live]"
+            r'\bconcert\b',            # "concert"
+            r'\bon\s+stage\b',         # "on stage"
+            r'\bin\s+concert\b',       # "in concert"
+        ]
+        
+        for pattern in live_patterns:
+            if re.search(pattern, album_lower):
+                return True
+        
+        # Also check remaining keywords (that aren't "live" by itself)
         for keyword in self.LIVE_KEYWORDS_ALBUM:
-            if keyword in album_lower:
+            if keyword != "live" and keyword in album_lower:
                 return True
         
         # Check liveness audio feature
