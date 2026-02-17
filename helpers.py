@@ -100,22 +100,27 @@ def detect_live_album(album_title: str) -> dict:
     title_lower = album_title.lower()
     
     # Check for SPECIFIC live format indicators (not just any "live" word)
-    # These patterns are more restrictive to avoid matching "live" in titles like "(how to live)"
+    # These patterns require "live" to be in a format tag position (end, after separator, between brackets)
+    # NOT inside the actual title like "(how to live)"
     live_patterns = [
-        r'\blive\s+at\b',          # "live at venue"
-        r'\blive\s+in\b',          # "live in city"
-        r'\blive\s+from\b',        # "live from venue"
-        r'\blive\s+session\b',     # "live session"
-        r'\blive\s+recording\b',   # "live recording"
+        # Standalone format tags
+        r'\(live\)\s*$',           # "(live)" at the end
+        r'\[live\]\s*$',           # "[live]" at the end
+        r'-\s*live\s*$',           # "- live" at the end
+        r',\s*live\s*$',           # ", live" at the end
+        r'\+\s*live\s*$',          # "+ live" at the end
+        
+        # "Live at/in/from" patterns (more restrictive)
+        r'live\s+at\b',            # "live at venue"
+        r'live\s+in\b',            # "live in city"
+        r'live\s+from\b',          # "live from venue"
+        r'live\s+session',         # "live session"
+        r'live\s+recording',       # "live recording"
+        
+        # Concert-related
         r'\bconcert\b',            # "concert" album
         r'\bon\s+stage\b',         # "on stage"
         r'\bin\s+concert\b',       # "in concert"
-        r'\(live\)',               # "(live)" format tag
-        r'\[live\]',               # "[live]" format tag
-        r'-\s*live\b',             # "- live" suffix
-        r'\s+live\s*$',            # ends with " live"
-        r'\s+live\s*\)',           # "live)" format variant
-        r'\s+live\s*\]',           # "live]" format variant
     ]
     
     is_live = any(re.search(pattern, title_lower) for pattern in live_patterns)
