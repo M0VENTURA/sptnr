@@ -2825,6 +2825,25 @@ def popularity_scan(
                 
                 # End of popularity scanning section (skipped in singles_only mode)
 
+                # CRITICAL FIX: Close the read cursor BEFORE single detection to prevent lock contention
+                # The original cursor from line ~1949 holds a READ lock on the database.
+                # When detect_single_for_track() creates NEW connections to WRITE, those need to acquire
+                # a WRITE lock, which SQLite cannot grant while a READ lock is held.
+                # This causes "Database is locked" errors in store_single_detection_result().
+                # Solution: Release the read lock by closing/resetting the cursor before write attempts.
+                try:
+                    if cursor is not None and not cursor._closed:
+                        cursor.close()
+                    cursor = conn.cursor()
+                    log_debug(f"Closed read cursor before single detection to prevent lock contention")
+                except Exception as e:
+                    log_debug(f"Warning: Failed to close cursor before single detection: {e}")
+                    # Continue anyway, create a fresh cursor
+                    try:
+                        cursor = conn.cursor()
+                    except:
+                        pass
+
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
                 # Get album type from MusicBrainz with Spotify fallback
@@ -3060,15 +3079,15 @@ def popularity_scan(
                         log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
                         singles_milestones_logged.add(75)
                 
-                # CRITICAL: Close/reset the read cursor to release any READ locks before attempting WRITE operations
-                # This is especially important with early-stop detection which completes quickly and immediately
-                # tries to write results. Without this, SQLite waits for the read lock to expire (120s timeout)
+                # NOTE: We already closed the read cursor BEFORE single detection started (see above).
+                # This section is just a safety measure to ensure cursor is fresh for batch updates.
                 try:
-                    cursor.close()
+                    if cursor is not None and not cursor._closed:
+                        cursor.close()
                     cursor = conn.cursor()
-                    log_debug(f"Reset cursor after single detection loop to release read locks")
+                    log_debug(f"Reset cursor after single detection loop for batch updates")
                 except Exception as e:
-                    log_debug(f"Warning: Failed to reset cursor: {e}")
+                    log_debug(f"Warning: Failed to reset cursor after singles: {e}")
                     # Continue anyway, the connection will still work
                 
                 # Batch update all singles detection results for this album in one commit
