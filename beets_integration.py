@@ -610,12 +610,12 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
                 if '\\\\' in genre_value:
                     genre_str = genre_value
                 else:
-                    # Split on comma and reconstruct with backslash
+                    # Split on comma and reconstruct with double backslash for ID3 format
                     genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
-                    genre_str = '\\'.join(genre_list)
+                    genre_str = '\\\\'.join(genre_list)
             else:
-                # It's a list
-                genre_str = '\\'.join(str(g).strip() for g in genre_value if g)
+                # It's a list, join with double backslash for ID3 format
+                genre_str = '\\\\'.join(str(g).strip() for g in genre_value if g)
             
             audio.tags['TCON'] = TCON(encoding=3, text=[genre_str])
         
@@ -635,7 +635,10 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             audio.tags['COMM'] = COMM(encoding=3, lang='eng', desc='', text=metadata['comments'])
         
         # Handle MusicBrainz IDs using TXXX frames
+        # Remove existing TXXX frames to prevent duplicates, then add new ones
         if 'mb_trackid' in metadata and metadata['mb_trackid']:
+            # Remove existing MUSICBRAINZ TRACK ID frames
+            audio.tags.delall('TXXX:MUSICBRAINZ TRACK ID')
             audio.tags.add(TXXX(
                 encoding=3,
                 desc='MUSICBRAINZ TRACK ID',
@@ -643,6 +646,8 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             ))
         
         if 'mb_albumid' in metadata and metadata['mb_albumid']:
+            # Remove existing MUSICBRAINZ ALBUM ID frames
+            audio.tags.delall('TXXX:MUSICBRAINZ ALBUM ID')
             audio.tags.add(TXXX(
                 encoding=3,
                 desc='MUSICBRAINZ ALBUM ID',
