@@ -97,7 +97,7 @@
                         
                         <!-- Letter Section Header -->
                         {% if letter_key != current_letter %}
-                        <tr class="table-light" data-letter-header="{{ letter_key }}">
+                        <tr class="table-light" id="letter-header-{{ letter_key }}" data-letter-header="{{ letter_key }}">
                             <td colspan="7" class="py-2 px-0">
                                 <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-primary bg-opacity-10">
                                     <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
@@ -348,27 +348,32 @@ function jumpToLetter(letter) {
     if (letter === 'all') {
         // Show all rows
         rows.forEach(row => row.style.display = '');
+        table.scrollIntoView({ behavior: 'smooth', block: 'start' });
         return;
     }
     
     // Hide all rows first
     rows.forEach(row => row.style.display = 'none');
     
-    // Show only rows matching the letter
-    let firstMatch = null;
+    // Show all rows matching this letter (header + artists)
+    let headerRow = null;
     rows.forEach(row => {
         const rowLetter = row.getAttribute('data-letter');
-        if (rowLetter === letter) {
+        const hasHeader = row.getAttribute('data-letter-header');
+        
+        if (hasHeader === letter) {
+            // Found the header row
             row.style.display = '';
-            if (!firstMatch) {
-                firstMatch = row;
-            }
+            headerRow = row;
+        } else if (rowLetter === letter) {
+            // Show all artists with this letter
+            row.style.display = '';
         }
     });
     
-    // Scroll to first match
-    if (firstMatch) {
-        firstMatch.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // Scroll to header row
+    if (headerRow) {
+        headerRow.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
 }
 
