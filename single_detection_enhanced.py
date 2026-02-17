@@ -1238,16 +1238,17 @@ def detect_single_enhanced(
         log_debug(f"Pre-filter: Checking {title} (high priority)")
     
     # ALBUM-LEVEL POPULARITY FILTER
-    # Reject single detection if track popularity is below album mean
+    # Reject single detection if track popularity is below album median
     # This prevents album tracks with separate single releases from being incorrectly marked
+    # Uses median instead of mean for robustness against outliers (very popular singles)
     album_filter_passed = True
-    if album_mean > 0 and popularity > 0 and popularity < album_mean:
-        log_debug(f"[ALBUM_FILTER] ✗ Album-level popularity filter: pop={popularity:.1f} < album_mean={album_mean:.1f}")
+    if album_median > 0 and popularity > 0 and popularity < album_median:
+        log_debug(f"[ALBUM_FILTER] ✗ Album-level popularity filter: pop={popularity:.1f} < album_median={album_median:.1f}")
         if verbose:
-            log_debug(f"Album-level popularity filter: Track {title} (pop={popularity:.1f} < album_mean={album_mean:.1f})")
+            log_debug(f"Album-level popularity filter: Track {title} (pop={popularity:.1f} < album_median={album_median:.1f})")
         album_filter_passed = False
     else:
-        log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, mean={album_mean:.1f})")
+        log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, median={album_median:.1f})")
     
     # NOTE: We DON'T return early here anymore - we check all sources regardless of filters
     # Filters only affect whether it's marked as a single, not whether we detect it

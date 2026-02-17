@@ -794,6 +794,27 @@
           </div>
         </div>
 
+        <!-- The AudioDB -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1"><i class="bi bi-images"></i> The AudioDB (Optional)</h6>
+              <small class="text-muted d-block mb-2">Artist artwork and metadata. Used for fetching artist fanart during popularity scans with fallback to MusicBrainz.</small>
+              <small class="form-text text-muted"><strong>Setup:</strong> Free API key available at <a href="https://www.theaudiodb.com/free_music_api" target="_blank">The AudioDB Free API</a> (30 requests/min limit)</small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="audiodb_enabled" {% if config.get('api_integrations', {}).get('audiodb', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="text" class="form-control form-control-sm" id="audiodb_api_key" placeholder="195003" value="{{ config.get('api_integrations', {}).get('audiodb', {}).get('api_key', '195003') }}">
+              <small class="form-text text-muted">Default free API key included. Use your own key for priority access.</small>
+            </div>
+          </div>
+        </div>
+
         <!-- Source Confidence Settings -->
         <div class="col-12">
           <div class="d-flex justify-content-between align-items-start">
@@ -1131,6 +1152,10 @@ function buildConfigObject() {
       },
       musicbrainz: {
         enabled: getChecked('musicbrainz_enabled', false)
+      },
+      audiodb: {
+        enabled: getChecked('audiodb_enabled', false),
+        api_key: getValue('audiodb_api_key', '195003')
       }
     },
     database: {

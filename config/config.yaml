@@ -63,8 +63,8 @@ api_integrations:
     # No API key needed - public API with rate limits
   
   audiodb:
-    enabled: false
-    api_key: ""  # Optional - only used if enabled: true
+    enabled: true
+    api_key: "195003"  # Free API key from https://www.theaudiodb.com/free_music_api
   
   google:
     enabled: false

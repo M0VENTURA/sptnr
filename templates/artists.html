@@ -90,9 +90,31 @@
                         </tr>
                     </thead>
                     <tbody>
+                        {% set current_letter = '' %}
                         {% for artist in artists %}
                         {% set first_letter = artist.display_name[0]|upper if artist.display_name else '#' %}
                         {% set letter_key = first_letter if first_letter in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ' else '#' %}
+                        
+                        <!-- Letter Section Header -->
+                        {% if letter_key != current_letter %}
+                        <tr class="table-light" data-letter-header="{{ letter_key }}">
+                            <td colspan="7" class="py-2 px-0">
+                                <div class="d-flex justify-content-between align-items-center px-3 py-2 bg-primary bg-opacity-10">
+                                    <h5 class="mb-0 fw-bold">{{ letter_key }}</h5>
+                                    <div class="btn-group btn-group-sm" role="group">
+                                        <button class="btn btn-outline-primary btn-sm" onclick="scanLetterArtists('{{ letter_key }}', 'changes')" title="Scan changes only">
+                                            <i class="bi bi-lightning"></i> Scan (Changes)
+                                        </button>
+                                        <button class="btn btn-outline-warning btn-sm" onclick="scanLetterArtists('{{ letter_key }}', 'forced')" title="Full rescan">
+                                            <i class="bi bi-arrow-repeat"></i> Scan (Forced)
+                                        </button>
+                                    </div>
+                                </div>
+                            </td>
+                        </tr>
+                        {% set current_letter = letter_key %}
+                        {% endif %}
+                        
                         <tr data-letter="{{ letter_key }}" data-artist="{{ artist.link_artist }}">
                             <td class="d-none d-sm-table-cell">
                                 <a href="{{ url_for('artist_detail', name=artist.link_artist) }}" class="text-decoration-none">
@@ -348,6 +370,67 @@ function jumpToLetter(letter) {
     if (firstMatch) {
         firstMatch.scrollIntoView({ behavior: 'smooth', block: 'start' });
     }
+}
+
+// Scan all artists in a letter section
+async function scanLetterArtists(letter, scanType) {
+    const table = document.getElementById('artistsTable');
+    const rows = table.querySelectorAll(`tbody tr[data-letter="${letter}"]`);
+    
+    // Filter out the header row and collect artist names
+    const artists = [];
+    rows.forEach(row => {
+        const artistName = row.getAttribute('data-artist');
+        if (artistName && !row.getAttribute('data-letter-header')) {
+            artists.push(artistName);
+        }
+    });
+    
+    if (artists.length === 0) {
+        alert('No artists found for letter ' + letter);
+        return;
+    }
+    
+    const fullScan = scanType === 'forced';
+    const message = `Scan ${fullScan ? 'Full' : 'Changes'} for ${artists.length} artist(s) in section "${letter}"?`;
+    
+    if (!confirm(message)) {
+        return;
+    }
+    
+    let completed = 0;
+    let failed = 0;
+    
+    for (const artist of artists) {
+        try {
+            const response = await fetch('/api/scan/artist', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ 
+                    artist: artist,
+                    full_scan: fullScan
+                })
+            });
+            
+            const data = await response.json();
+            if (data.success) {
+                completed++;
+            } else {
+                failed++;
+                console.error('Scan failed for ' + artist + ':', data.error);
+            }
+        } catch (error) {
+            failed++;
+            console.error('Error scanning ' + artist + ':', error);
+        }
+    }
+    
+    alert(`Completed ${completed} scans${failed > 0 ? ', ' + failed + ' failed' : ''}`);
+    
+    // Reload the page to show updated data
+    setTimeout(() => {
+        window.location.reload();
+    }, 1000);
 }
 </script>
 

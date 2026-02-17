@@ -255,7 +255,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             
             # Debug logging for technical details
             log_debug(f"Album details - ID: {album_id}, Name: {album_name}, Artist: {artist_name}, Index: {alb_idx}/{total_albums}")
-            log_debug(f"[ALBUM_ART] Album '{album_name}' metadata imported. Cover art available via Navidrome local server or Apple Music API")
+            log_debug(f"[ALBUM_ART] Album '{album_name}' starting import. Will attempt to extract cover art from Navidrome.")
             
             # Detect if this is a live/unplugged album
             album_context = detect_live_album(album_name)
@@ -268,6 +268,25 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 tracks = album_data.get("tracks", [])
                 # Get album artist from the album-level metadata (most reliable source)
                 api_album_artist = album_data.get("artist", "")
+                
+                # Extract album art URL from Navidrome's coverArt ID
+                # Navidrome returns a coverArt ID that we can use to construct the direct API URL
+                navidrome_cover_art_id = album_data.get("coverArt", "")
+                album_cover_art_url = ""
+                if navidrome_cover_art_id:
+                    # Construct the Navidrome API URL for cover art
+                    # Format: {base_url}/rest/getCoverArt.view?u={username}&p={password}&v=1.12.0&c=sptnr&id={coverArtId}
+                    try:
+                        from config_loader import load_config
+                        navidrome_config = load_config().get("musicserver", {})
+                        base_url = navidrome_config.get("url", "").rstrip('/')
+                        if base_url:
+                            # The coverArt URL is already formatted correctly by Navidrome
+                            album_cover_art_url = f"{base_url}/rest/getCoverArt.view?u={navidrome_config.get('username', '')}&p={navidrome_config.get('password', '')}&v=1.12.0&c=sptnr&id={navidrome_cover_art_id}"
+                            log_debug(f"[ALBUM_ART] Constructed Navidrome cover art URL for album '{album_name}': {album_cover_art_url[:80]}...")
+                    except Exception as e:
+                        log_debug(f"[ALBUM_ART] Failed to construct Navidrome cover art URL: {e}")
+                
                 log_debug(f"API Response: fetch_album_tracks returned {len(tracks)} tracks for album_id={album_id}, album_artist='{api_album_artist}'")
                 
                 # Debug: Log the first track's full data structure to see what Navidrome provides
@@ -483,6 +502,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "spotify_popularity": 0,
                     "spotify_release_date": t.get("year", "") or "",
                     "spotify_album_art_url": "",
+                    "cover_art_url": album_cover_art_url,  # Album art from Navidrome
                     "lastfm_track_playcount": 0,
                     "file_path": navidrome_path if navidrome_path else None,  # Store Navidrome path for better matching
                     "last_scanned": _now_local_iso(),
@@ -544,8 +564,11 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 # Debug log: Track data being saved
                 log_debug(f"Saving track to DB - ID: {track_id}, Title: {td['title']}, Track#: {td['track_number']}, Duration: {td['duration']}s")
-                # Debug log: Album art will be fetched from built-in sources
-                log_debug(f"Album art for '{track_title}' will be fetched on-demand from Navidrome or Apple Music")
+                # Debug log: Album art is being stored from Navidrome
+                if album_cover_art_url:
+                    log_debug(f"[ALBUM_ART] Album art for '{track_title}' from Navidrome: {album_cover_art_url[:80]}...")
+                else:
+                    log_debug(f"[ALBUM_ART] No album art available from Navidrome for '{track_title}'")
                 
                 save_to_db(td)
                 imported_track_ids.add(track_id)  # Track this as successfully imported
@@ -573,7 +596,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 
                 # Debug log: Technical details
                 log_debug(f"Album scan complete - Artist: {artist_name}, Album: {album_name}, Tracks: {album_tracks_processed}, Total tracks imported so far: {tracks_imported}")
-                log_debug(f"[ALBUM_ART] Album art for '{album_name}' will be fetched on-demand from Navidrome or Apple Music")
+                if album_cover_art_url:
+                    log_debug(f"[ALBUM_ART] Album art stored for '{album_name}' from Navidrome")
+                else:
+                    log_debug(f"[ALBUM_ART] No album art available from Navidrome for '{album_name}'")
                 
                 log_album_scan(artist_name, album_name, 'navidrome', album_tracks_processed, 'completed')
             
@@ -707,12 +733,18 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
     This is called after a successful artist scan to enhance artist metadata.
     Only fetches if data doesn't exist or if force=true in config.
     
+    Image sources priority (in order):
+    1. The AudioDB (fanart) - 30 requests/min, good quality
+    2. Apple Music - unlimited, reliable
+    3. MusicBrainz CAA - unlimited, good coverage
+    
     Args:
         artist_name: Name of the artist
         verbose: Enable verbose logging
     """
     from api_clients.discogs import get_discogs_artist_biography
     from api_clients.applemusic import get_artist_artwork
+    from api_clients.audiodb import get_artist_fanart
     from config_loader import load_config
     
     try:
@@ -767,11 +799,16 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
         
         conn.close()
         
-        # Get Discogs configuration
+        # Get API configurations
         discogs_config = config.get("api_integrations", {}).get("discogs", {})
         discogs_enabled = discogs_config.get("enabled", False)
         discogs_token = discogs_config.get("token", "")
         log_debug(f"Discogs config - Enabled: {discogs_enabled}, Token present: {bool(discogs_token)}")
+        
+        audiodb_config = config.get("api_integrations", {}).get("audiodb", {})
+        audiodb_enabled = audiodb_config.get("enabled", False)
+        audiodb_api_key = audiodb_config.get("api_key", "195003")
+        log_debug(f"AudioDB config - Enabled: {audiodb_enabled}, API key present: {bool(audiodb_api_key)}")
         
         # Try to fetch biography from Discogs (only if needed)
         biography = ""
@@ -785,16 +822,52 @@ def _fetch_artist_metadata(artist_name: str, verbose: bool = False):
                 log_info(f"Retrieved artist biography from Discogs ({len(biography)} characters)")
                 log_debug(f"Biography preview: {biography[:100]}...")
         
-        # Try to fetch artist image from Apple Music (only if needed)
+        # Try to fetch artist image with fallback chain (only if needed)
         artist_image_url = ""
         if fetch_image:
-            log_info(f"Fetching artist image for {artist_name} from Apple Music...")
-            log_debug(f"API Call: get_artist_artwork(artist_name={artist_name}, size=500)")
-            artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
-            log_debug(f"API Response: {artist_image_url}")
-            if artist_image_url:
-                log_info(f"Retrieved artist image from Apple Music")
-                log_debug(f"Image URL: {artist_image_url}")
+            # Priority 1: Try The AudioDB
+            if audiodb_enabled and audiodb_api_key:
+                log_info(f"Fetching artist image for {artist_name} from The AudioDB...")
+                log_debug(f"API Call: get_artist_fanart(artist_name={artist_name})")
+                artist_image_url = get_artist_fanart(artist_name, api_key=audiodb_api_key, enabled=True)
+                if artist_image_url:
+                    log_info(f"Retrieved artist image from The AudioDB")
+                    log_debug(f"Image URL: {artist_image_url}")
+            
+            # Priority 2: Fall back to Apple Music if AudioDB didn't return anything
+            if not artist_image_url:
+                log_info(f"Fetching artist image for {artist_name} from Apple Music (AudioDB fallback)...")
+                log_debug(f"API Call: get_artist_artwork(artist_name={artist_name}, size=500)")
+                artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
+                if artist_image_url:
+                    log_info(f"Retrieved artist image from Apple Music")
+                    log_debug(f"Image URL: {artist_image_url}")
+            
+            # Priority 3: Fall back to MusicBrainz if still nothing found
+            if not artist_image_url:
+                try:
+                    log_debug(f"Attempting to fetch artist image from MusicBrainz CAA...")
+                    # Simple MusicBrainz artist lookup to get MBID
+                    mb_search_url = "https://musicbrainz.org/ws/2/artist"
+                    mb_params = {"query": f'"{artist_name}"', "fmt": "json", "limit": 1}
+                    mb_headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+                    
+                    session = create_retry_session(user_agent=MUSICBRAINZ_USER_AGENT, retries=3, backoff=1.0)
+                    mb_resp = session.get(mb_search_url, params=mb_params, headers=mb_headers, timeout=5)
+                    mb_resp.raise_for_status()
+                    
+                    mb_data = mb_resp.json()
+                    artists = mb_data.get("artists", [])
+                    
+                    if artists:
+                        mbid = artists[0].get("id")
+                        if mbid:
+                            # Construct CAA URL for artist
+                            artist_image_url = f"https://coverartarchive.org/artist/{mbid}/front-500"
+                            log_info(f"Retrieved artist image from MusicBrainz CAA")
+                            log_debug(f"Image URL: {artist_image_url}")
+                except Exception as e:
+                    log_debug(f"MusicBrainz fallback failed: {e}")
         
         # Store in database
         if biography or artist_image_url:
