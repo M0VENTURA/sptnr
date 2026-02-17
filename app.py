@@ -5526,16 +5526,49 @@ def scan_popularity_route():
                     if singles_only:
                         logging.info(f"Starting singles-only scan in background")
                         scan_popularity_func(verbose=False, force=False, singles_only=True, resume_from=resume_from_artist)
-                        _write_progress_file(popularity_progress_file, "singles_scan", False, {"status": "complete", "exit_code": 0})
+                        # Preserve current_artist when marking scan as complete (for resume functionality)
+                        try:
+                            with open(popularity_progress_file, 'r') as f:
+                                existing_progress = json.load(f)
+                                last_artist = existing_progress.get('current_artist')
+                        except:
+                            last_artist = None
+                        
+                        completion_data = {"status": "complete", "exit_code": 0}
+                        if last_artist:
+                            completion_data['current_artist'] = last_artist
+                        _write_progress_file(popularity_progress_file, "singles_scan", False, completion_data)
                         logging.info("Singles scan completed successfully")
                     else:
                         logging.info(f"Starting popularity score scan in background (force={force_rescan}, filter_missing={filter_missing}, resume_from={resume_from_artist})")
                         scan_popularity_func(verbose=False, force=force_rescan, filter_missing=filter_missing, resume_from=resume_from_artist)
-                        _write_progress_file(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                        # Preserve current_artist when marking scan as complete (for resume functionality)
+                        try:
+                            with open(popularity_progress_file, 'r') as f:
+                                existing_progress = json.load(f)
+                                last_artist = existing_progress.get('current_artist')
+                        except:
+                            last_artist = None
+                        
+                        completion_data = {"status": "complete", "exit_code": 0}
+                        if last_artist:
+                            completion_data['current_artist'] = last_artist
+                        _write_progress_file(popularity_progress_file, "popularity_scan", False, completion_data)
                         logging.info("Popularity scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in popularity scan: {e}", exc_info=True)
-                    _write_progress_file(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                    # Preserve current_artist even on error (for resume functionality)
+                    try:
+                        with open(popularity_progress_file, 'r') as f:
+                            existing_progress = json.load(f)
+                            last_artist = existing_progress.get('current_artist')
+                    except:
+                        last_artist = None
+                    
+                    error_data = {"status": "error", "error": str(e), "exit_code": 1}
+                    if last_artist:
+                        error_data['current_artist'] = last_artist
+                    _write_progress_file(popularity_progress_file, "popularity_scan" if not singles_only else "singles_scan", False, error_data)
             
             scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
             scan_thread.start()
@@ -6732,11 +6765,33 @@ def scan_navidrome():
                     if os.path.exists(checkpoint_path):
                         os.remove(checkpoint_path)
                     
-                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "complete", "exit_code": 0})
+                    # Preserve current_artist when marking scan as complete (for resume functionality)
+                    try:
+                        with open(nav_progress_file, 'r') as f:
+                            existing_progress = json.load(f)
+                            last_artist = existing_progress.get('current_artist')
+                    except:
+                        last_artist = None
+                    
+                    completion_data = {"status": "complete", "exit_code": 0}
+                    if last_artist:
+                        completion_data['current_artist'] = last_artist
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, completion_data)
                     logging.info("Navidrome import-only scan completed")
                 except Exception as e:
                     logging.error(f"Error in Navidrome import-only scan: {e}", exc_info=True)
-                    _write_progress_file(nav_progress_file, "navidrome_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                    # Preserve current_artist even on error (for resume functionality)
+                    try:
+                        with open(nav_progress_file, 'r') as f:
+                            existing_progress = json.load(f)
+                            last_artist = existing_progress.get('current_artist')
+                    except:
+                        last_artist = None
+                    
+                    error_data = {"status": "error", "error": str(e), "exit_code": 1}
+                    if last_artist:
+                        error_data['current_artist'] = last_artist
+                    _write_progress_file(nav_progress_file, "navidrome_scan", False, error_data)
                 finally:
                     # Clear skip flag so popularity/singles scans run normally elsewhere
                     os.environ.pop("SPTNR_SKIP_SINGLES", None)
@@ -6859,11 +6914,33 @@ def scan_combined():
                         }
                         _write_progress_file(combined_progress_file, "combined_scan", True, progress_data)
                     
-                    _write_progress_file(combined_progress_file, "combined_scan", False, {"status": "complete", "exit_code": 0})
+                    # Preserve current_artist when marking scan as complete (for resume functionality)
+                    try:
+                        with open(combined_progress_file, 'r') as f:
+                            existing_progress = json.load(f)
+                            last_artist = existing_progress.get('current_artist')
+                    except:
+                        last_artist = None
+                    
+                    completion_data = {"status": "complete", "exit_code": 0}
+                    if last_artist:
+                        completion_data['current_artist'] = last_artist
+                    _write_progress_file(combined_progress_file, "combined_scan", False, completion_data)
                     logging.info("Combined scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in combined scan: {e}", exc_info=True)
-                    _write_progress_file(combined_progress_file, "combined_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+                    # Preserve current_artist even on error (for resume functionality)
+                    try:
+                        with open(combined_progress_file, 'r') as f:
+                            existing_progress = json.load(f)
+                            last_artist = existing_progress.get('current_artist')
+                    except:
+                        last_artist = None
+                    
+                    error_data = {"status": "error", "error": str(e), "exit_code": 1}
+                    if last_artist:
+                        error_data['current_artist'] = last_artist
+                    _write_progress_file(combined_progress_file, "combined_scan", False, error_data)
                 finally:
                     # Clean up thread reference when done
                     with scan_lock:
