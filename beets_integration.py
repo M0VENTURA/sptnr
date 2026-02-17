@@ -606,18 +606,19 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             # Handle genre - can be string or list
             genre_value = metadata['genre']
             if isinstance(genre_value, str):
-                # Check if it's comma-separated or double-backslash separated
-                if '\\\\' in genre_value:
-                    genre_str = genre_value
+                # Split comma-separated or backslash-separated genres into a list
+                if '\\' in genre_value:
+                    # Split on backslash (single or double)
+                    genre_list = [g.strip() for g in genre_value.replace('\\\\', '\\').split('\\') if g.strip()]
                 else:
-                    # Split on comma and reconstruct with double backslash for ID3 format
+                    # Split on comma
                     genre_list = [g.strip() for g in genre_value.split(',') if g.strip()]
-                    genre_str = '\\\\'.join(genre_list)
             else:
-                # It's a list, join with double backslash for ID3 format
-                genre_str = '\\\\'.join(str(g).strip() for g in genre_value if g)
+                # Already a list
+                genre_list = [str(g).strip() for g in genre_value if g]
             
-            audio.tags['TCON'] = TCON(encoding=3, text=[genre_str])
+            # Pass the list directly to TCON - mutagen handles the ID3v2 format internally
+            audio.tags['TCON'] = TCON(encoding=3, text=genre_list)
         
         if 'year' in metadata and metadata['year']:
             audio.tags['TDRC'] = TDRC(encoding=3, text=str(metadata['year']))
