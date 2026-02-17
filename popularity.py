@@ -985,6 +985,62 @@ except ImportError:
     def was_album_scanned(*args, **kwargs):
         return False  # Fallback if scan_history not available
 
+
+# ============================================================================
+# Helper Functions for Two-Stage Single Detection Filtering
+# ============================================================================
+
+def calculate_album_stats(conn, artist: str, album: str) -> tuple:
+    """
+    Calculate album popularity statistics for album-level filtering.
+    
+    Returns:
+        Tuple of (mean, stddev, median, count)
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT popularity_score
+        FROM tracks
+        WHERE artist = ? AND album = ? AND popularity_score > 0
+    """, (artist, album))
+    
+    popularities = [row[0] for row in cursor.fetchall()]
+    
+    if len(popularities) < 2:
+        return 0.0, 0.0, 0.0, len(popularities)
+    
+    album_mean = mean(popularities)
+    album_stddev = stdev(popularities)
+    album_median = median(popularities)
+    
+    return album_mean, album_stddev, album_median, len(popularities)
+
+
+def calculate_artist_stats(conn, artist: str) -> tuple:
+    """
+    Calculate artist-level popularity statistics across entire catalogue.
+    
+    Returns:
+        Tuple of (mean, stddev, count)
+    """
+    cursor = conn.cursor()
+    cursor.execute("""
+        SELECT popularity_score
+        FROM tracks
+        WHERE artist = ? AND popularity_score > 0
+    """, (artist,))
+    
+    popularities = [row[0] for row in cursor.fetchall()]
+    
+    if len(popularities) < 2:
+        return 0.0, 0.0, len(popularities)
+    
+    artist_mean = mean(popularities)
+    artist_stddev = stdev(popularities)
+    
+    return artist_mean, artist_stddev, len(popularities)
+
+
 # --- DEBUG: Test log_unified and print log path ---
 if __name__ == "__main__":
     try:
@@ -1360,7 +1416,7 @@ def detect_single_for_track(
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Calculate album mean popularity
+            # STAGE 1: Album-level filter (must be album standout)
             cursor.execute("""
                 SELECT popularity_score 
                 FROM tracks 
@@ -1368,19 +1424,68 @@ def detect_single_for_track(
             """, (artist, album))
             album_popularities = [row[0] for row in cursor.fetchall()]
             
+            album_passed = True
             if album_popularities:
-                from statistics import mean as stat_mean
+                from statistics import mean as stat_mean, stdev as stat_stdev, median as stat_median
+                album_median = stat_median(album_popularities)
                 album_mean = stat_mean(album_popularities)
+                album_stddev = stdev(album_popularities) if len(album_popularities) > 1 else 0
                 
-                if popularity < album_mean:
+                # Must be in top 3 of album OR above album median - 0.5*stddev
+                sorted_album = sorted(album_popularities, reverse=True)
+                is_top_3_album = popularity in sorted_album[:3]
+                album_threshold = album_median - (0.5 * album_stddev) if album_stddev > 0 else album_median
+                meets_album_threshold = popularity >= album_threshold
+                
+                if not (is_top_3_album or meets_album_threshold):
                     if verbose:
-                        log_verbose(f"   âŠ— Skipping single: {title} (popularity {popularity:.1f} < album mean {album_mean:.1f})")
+                        log_verbose(f"   ⊗ Album filter blocked: {title} (pop {popularity:.1f}, album median {album_median:.1f})")
                     conn.close()
                     return {
                         "sources": [],
                         "confidence": "low",
-                        "is_single": False
+                        "is_single": False,
+                        "stage_blocked": "album_filter"
                     }
+            
+            # STAGE 2: Artist-level filter (must be artist standout)
+            cursor.execute("""
+                SELECT popularity_score 
+                FROM tracks 
+                WHERE artist = ? AND popularity_score > 0
+            """, (artist,))
+            artist_popularities = [row[0] for row in cursor.fetchall()]
+            artist_passed = True
+            artist_zscore = 0.0
+            artist_mean = 0.0
+            
+            if len(artist_popularities) >= 5:
+                # Established artist: use artist-level z-score
+                from statistics import mean as stat_mean, stdev as stat_stdev
+                artist_mean = stat_mean(artist_popularities)
+                artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
+                artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
+                
+                artist_threshold = 0.5  # Configurable threshold
+                if artist_zscore < artist_threshold:
+                    if verbose:
+                        log_verbose(f"   ⊗ Artist filter blocked: {title} (z-score {artist_zscore:.2f} < {artist_threshold})")
+                    artist_passed = False
+            elif verbose:
+                log_verbose(f"   ⚠ Bootstrap: Artist has {len(artist_popularities)} tracks (< 5), skipping artist filter")
+            
+            if artist_popularities and not artist_passed:
+                conn.close()
+                return {
+                    "sources": [],
+                    "confidence": "low",
+                    "is_single": False,
+                    "stage_blocked": "artist_filter",
+                    "artist_zscore": artist_zscore
+                }
+            
+            if verbose and artist_zscore > 0:
+                log_verbose(f"   ✓ Passed both filters: {title} (album top 3/threshold, z-score {artist_zscore:.2f})")
             
             conn.close()
         except Exception as e:
@@ -3594,18 +3699,32 @@ def popularity_scan(
                             is_standout = track_is_standout and track_stars == 5 and not track_is_single
                             is_close_match = track_single_confidence == "medium" or (sources_str and not track_is_single)
                             
-                            # Build reason string for categorization
+                            # Build detailed reason string showing HOW the rating was determined
                             reasons = []
+                            methods = []
+                            
                             if is_detected_single and sources_str:
-                                reasons.append(sources_str)
+                                # Single detection: show detection methods
+                                methods.append(sources_str)
+                                if track_zscore:
+                                    methods.append(f"z-score: {track_zscore:.2f}")
+                                reasons.append("; ".join(methods))
                             elif is_standout:
-                                reasons.append("Standout Track")
+                                # Standout track: show why it's popular
+                                methods.append("Standout Track")
+                                if track_zscore:
+                                    methods.append(f"z-score: {track_zscore:.2f}")
+                                reasons.append("; ".join(methods))
                             elif is_close_match:
-                                # Always show sources for close matches
+                                # Close matches: show detection sources or confidence level
                                 if sources_str:
-                                    reasons.append(sources_str)
-                                elif track_single_confidence == "medium":
-                                    reasons.append("Medium Confidence")
+                                    methods.append(sources_str)
+                                if track_single_confidence:
+                                    methods.append(f"({track_single_confidence} confidence)")
+                                if track_zscore:
+                                    methods.append(f"z-score: {track_zscore:.2f}")
+                                if methods:
+                                    reasons.append("; ".join(methods))
                             
                             reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
                             

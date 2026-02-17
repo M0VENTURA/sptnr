@@ -527,7 +527,7 @@ def detect_single_advanced(
     if verbose:
         logger.info(f"Metadata single: {metadata_single}")
     
-    # Get all track popularities in the album for z-score calculation
+    # STAGE 1: Album-level statistics (must be album standout first)
     cursor.execute("""
         SELECT popularity_score
         FROM tracks
@@ -535,18 +535,52 @@ def detect_single_advanced(
     """, (artist, album))
     
     album_pops = [row[0] for row in cursor.fetchall() if row[0]]
+    album_median_val = median(album_pops) if album_pops else 0.0
+    album_mean_val = mean(album_pops) if len(album_pops) > 1 else 0.0
+    album_stddev_val = stdev(album_pops) if len(album_pops) > 1 else 0.0
     
-    # Calculate z-score (Rule 7, 8)
-    # Use global popularity for z-score calculation (unless compilation)
-    zscore = calculate_zscore(global_pop, album_pops) if album_pops else 0.0
+    # STAGE 2: Artist-level statistics for standout detection
+    cursor.execute("""
+        SELECT popularity_score
+        FROM tracks
+        WHERE artist = ? AND popularity_score IS NOT NULL
+    """, (artist,))
+    
+    artist_pops = [row[0] for row in cursor.fetchall() if row[0]]
+    artist_mean_val = mean(artist_pops) if len(artist_pops) > 1 else 0.0
+    artist_stddev_val = stdev(artist_pops) if len(artist_pops) > 1 else 1.0
+    
+    # TWO-STAGE Z-SCORE CALCULATION
+    # Stage 1: Album standout check
+    if album_pops:
+        album_threshold = album_median_val - (0.5 * album_stddev_val) if album_stddev_val > 0 else album_median_val
+        sorted_album = sorted(album_pops, reverse=True)
+        is_top_3_album = global_pop in sorted_album[:3]
+        album_standout = (global_pop >= album_threshold) or is_top_3_album
+    else:
+        album_standout = True  # No album data, assume pass
+    
+    # Stage 2: Artist standout check (only if artist has 5+ tracks)
+    artist_standout = True  # Default: pass
+    artist_zscore = 0.0
+    if len(artist_pops) >= 5:
+        artist_zscore = (global_pop - artist_mean_val) / artist_stddev_val if artist_stddev_val > 0 else 0.0
+        artist_threshold = zscore_threshold
+        artist_standout = artist_zscore >= artist_threshold
+    
     if verbose:
-        logger.info(f"Z-score: {zscore:.3f} (threshold: {zscore_threshold})")
+        logger.info(f"[FILTER] Album standout: {album_standout} (pop={global_pop:.1f}, median={album_median_val:.1f})")
+        if len(artist_pops) >= 5:
+            logger.info(f"[FILTER] Artist standout: {artist_standout} (z-score={artist_zscore:.3f}, threshold={zscore_threshold})")
+        else:
+            logger.info(f"[BOOTSTRAP] Artist has {len(artist_pops)} tracks (<5), using album filter only")
     
     # Final single detection (Rule 8)
-    # Both conditions must be true:
+    # All conditions must be true:
     # 1. Is metadata single (Spotify OR MusicBrainz)
-    # 2. Z-score >= threshold
-    is_single = metadata_single and (zscore >= zscore_threshold)
+    # 2. Passes album standout check (top 3 or above threshold)
+    # 3. Passes artist standout check (z-score >= threshold, if artist has 5+ tracks)
+    is_single = metadata_single and album_standout and artist_standout
     
     # Special case for compilations (Rule 9)
     if is_comp:

@@ -1170,20 +1170,25 @@ def detect_single_enhanced(
     # Log entry for this track detection
     log_debug(f"[DETECT] Starting single detection for: '{title}' by {artist} (album: {album}, pop: {popularity:.1f})")
 
-    # Get album statistics
-    album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
-    log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
+    # Get ARTIST-level statistics (across entire catalogue for comparison)
+    # This identifies true standouts in the artist's body of work
+    artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+    log_debug(f"[ARTIST_STATS] Mean: {artist_mean:.1f}, StdDev: {artist_stddev:.1f}, Tracks: {artist_track_count}")
 
-    # Get all album popularities for pre-filter
+    # Get album statistics for album-level filtering (two-stage approach)
+    album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
+    log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
+
+    # Get all artist popularities for context
     cursor = conn.cursor()
     cursor.execute("""
-        SELECT id, title, popularity_score
+        SELECT id, title, popularity_score, album
         FROM tracks
-        WHERE artist = ? AND album = ? AND popularity_score > 0
+        WHERE artist = ? AND popularity_score > 0
         ORDER BY popularity_score DESC
-    """, (artist, album))
-    album_rows = cursor.fetchall()
-    album_popularities = [row[2] for row in album_rows]
+    """, (artist,))
+    artist_rows = cursor.fetchall()
+    artist_popularities = [row[2] for row in artist_rows]
 
     # --- Prefer canonical (non-alternate) version for single detection ---
     # If both canonical and alternate (e.g., acoustic) versions exist for the same base title,
@@ -1194,8 +1199,8 @@ def detect_single_enhanced(
         return re.sub(r'\s*\([^)]*\)$', '', t).strip().lower()
 
     current_base = base_title(title)
-    # Find all tracks with the same base title
-    same_base_tracks = [row for row in album_rows if base_title(row[1]) == current_base]
+    # Find all tracks with the same base title in artist's catalogue
+    same_base_tracks = [row for row in artist_rows if base_title(row[1]) == current_base]
     if len(same_base_tracks) > 1:
         # Prefer canonical (non-alternate) version
         def is_alternate(t):
