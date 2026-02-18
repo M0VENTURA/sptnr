@@ -3971,6 +3971,100 @@ def api_get_similar_artists(artist):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/library/artists/similar", methods=["GET"])
+def api_library_similar_artists():
+    """Get aggregated similar artists from all artists in the user's collection"""
+    try:
+        import json
+        from collections import defaultdict
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all artists with their similar artists
+        cursor.execute("""
+            SELECT name, similar_artists_lastfm, similar_artists_listenbrainz
+            FROM artists
+            WHERE similar_artists_lastfm IS NOT NULL OR similar_artists_listenbrainz IS NOT NULL
+            ORDER BY name
+        """)
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        similar_cache = {}
+        
+        for row in rows:
+            artist_name = row[0]
+            similar_lastfm = row[1]
+            similar_listenbrainz = row[2]
+            
+            # Process Last.fm similar artists
+            if similar_lastfm:
+                try:
+                    artists = json.loads(similar_lastfm) if isinstance(similar_lastfm, str) else similar_lastfm
+                    for similar in artists:
+                        name = similar.get('name', '')
+                        if name and name != artist_name:
+                            key = (name.lower(), 'lastfm')
+                            if key not in similar_cache:
+                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'lastfm'}
+                            similar_cache[key]['count'] += 1
+                            if similar.get('match'):
+                                similar_cache[key]['match'] += similar['match']
+                            similar_cache[key]['from_artists'].add(artist_name)
+                except:
+                    pass
+            
+            # Process ListenBrainz similar artists
+            if similar_listenbrainz:
+                try:
+                    artists = json.loads(similar_listenbrainz) if isinstance(similar_listenbrainz, str) else similar_listenbrainz
+                    for similar in artists:
+                        name = similar.get('name', '')
+                        if name and name != artist_name:
+                            key = (name.lower(), 'listenbrainz')
+                            if key not in similar_cache:
+                                similar_cache[key] = {'name': name, 'count': 0, 'match': 0, 'from_artists': set(), 'source': 'listenbrainz'}
+                            similar_cache[key]['count'] += 1
+                            similar_cache[key]['from_artists'].add(artist_name)
+                except:
+                    pass
+        
+        # Format results
+        results = []
+        for data in similar_cache.values():
+            count = data.get('count', 0)
+            match = data.get('match', 0)
+            avg_match = (match / count) if count > 0 else 0
+            from_artists = data.get('from_artists', set())
+            from_artist = list(from_artists)[0] if from_artists else ''
+            
+            results.append({
+                'name': data['name'],
+                'source': data['source'],
+                'count': count,
+                'match': avg_match,
+                'from_artist': from_artist
+            })
+        
+        # Sort by frequency then by match score
+        results.sort(key=lambda x: (-x['count'], -x['match']))
+        
+        # Limit results
+        results = results[:100]
+        
+        return jsonify({
+            "success": True,
+            "similar_artists": results,
+            "total_similar": len(results)
+        })
+    
+    except Exception as e:
+        logging.error(f"[LIBRARY SIMILAR] Error aggregating similar artists: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/search-art")
 def api_album_search_art():
     """Search for album art on MusicBrainz, Discogs, Spotify, or Apple Music"""

@@ -47,6 +47,11 @@
       </button>
     </li>
     <li class="nav-item" role="presentation">
+      <button class="nav-link" id="similarArtistsTab" data-bs-toggle="tab" data-bs-target="#similarArtistsContent" type="button" role="tab">
+        <i class="bi bi-person-heart"></i> Similar Artists
+      </button>
+    </li>
+    <li class="nav-item" role="presentation">
       <button class="nav-link" id="upcomingTab" data-bs-toggle="tab" data-bs-target="#upcomingContent" type="button" role="tab">
         <i class="bi bi-calendar-event"></i> Upcoming Releases
       </button>
@@ -773,6 +778,59 @@
       </div>
     </div>
     <!-- End Last.fm Recommendations Tab -->
+
+    <!-- Similar Artists Tab -->
+    <div class="tab-pane fade" id="similarArtistsContent" role="tabpanel">
+      <div class="row g-4 mb-4">
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <div>
+                <h5 class="card-title mb-1">
+                  <i class="bi bi-person-heart"></i> Similar Artists from Your Collection
+                </h5>
+                <small class="text-muted">Artists similar to those in your library</small>
+              </div>
+              <button class="btn btn-sm btn-outline-primary" onclick="loadSimilarArtistsRecommendations()">
+                <i class="bi bi-arrow-clockwise"></i> Refresh
+              </button>
+            </div>
+            <div class="card-body">
+              <div id="similarArtistsLoading" class="text-center py-4">
+                <div class="spinner-border text-primary" role="status">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2">Aggregating similar artists from your collection...</p>
+              </div>
+              
+              <div id="similarArtistsError" class="alert alert-warning" style="display: none;">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span id="similarArtistsErrorText">Unable to load similar artists.</span>
+              </div>
+
+              <div id="similarArtistsContent" style="display: none;">
+                <div class="mb-3">
+                  <small class="text-muted">Filter by source:</small>
+                  <div class="btn-group btn-group-sm ms-2" role="group">
+                    <input type="radio" class="btn-check" name="similarSource" id="similarSourceAll" value="all" checked onchange="filterSimilarArtists('all')">
+                    <label class="btn btn-outline-secondary" for="similarSourceAll">All Sources</label>
+                    
+                    <input type="radio" class="btn-check" name="similarSource" id="similarSourceLastfm" value="lastfm" onchange="filterSimilarArtists('lastfm')">
+                    <label class="btn btn-outline-danger" for="similarSourceLastfm">Last.fm Only</label>
+                    
+                    <input type="radio" class="btn-check" name="similarSource" id="similarSourceListenbrainz" value="listenbrainz" onchange="filterSimilarArtists('listenbrainz')">
+                    <label class="btn btn-outline-info" for="similarSourceListenbrainz">ListenBrainz Only</label>
+                  </div>
+                </div>
+
+                <div class="row g-3" id="similarArtistsGrid"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End Similar Artists Tab -->
 
     <!-- Upcoming Releases Tab -->
     <div class="tab-pane fade" id="upcomingContent" role="tabpanel">
@@ -4899,6 +4957,116 @@ async function createPlaylistDownloadSession(event) {
     console.error('Error creating session:', error);
     alert('❌ Network error: ' + error.message);
   }
+}
+
+// ===== Similar Artists Recommendations =====
+
+let allSimilarArtists = [];
+let filteredSimilarArtists = [];
+
+document.addEventListener('DOMContentLoaded', function() {
+  // Load similar artists when tab is selected
+  document.getElementById('similarArtistsTab')?.addEventListener('click', () => {
+    if (allSimilarArtists.length === 0) {
+      loadSimilarArtistsRecommendations();
+    }
+  });
+});
+
+async function loadSimilarArtistsRecommendations() {
+  try {
+    document.getElementById('similarArtistsLoading').style.display = 'block';
+    document.getElementById('similarArtistsError').style.display = 'none';
+    document.getElementById('similarArtistsContent').style.display = 'none';
+
+    const response = await fetch('/api/library/artists/similar');
+    if (!response.ok) {
+      throw new Error('Failed to fetch similar artists');
+    }
+
+    const data = await response.json();
+    
+    if (!data.similar_artists || data.similar_artists.length === 0) {
+      document.getElementById('similarArtistsError').style.display = 'block';
+      document.getElementById('similarArtistsErrorText').textContent = 'No similar artists found. Make sure you have artists in your collection.';
+      return;
+    }
+
+    allSimilarArtists = data.similar_artists;
+    filteredSimilarArtists = allSimilarArtists;
+    displaySimilarArtistsGrid();
+
+    document.getElementById('similarArtistsLoading').style.display = 'none';
+    document.getElementById('similarArtistsContent').style.display = 'block';
+  } catch (error) {
+    console.error('Error loading similar artists:', error);
+    document.getElementById('similarArtistsLoading').style.display = 'none';
+    document.getElementById('similarArtistsError').style.display = 'block';
+    document.getElementById('similarArtistsErrorText').textContent = 'Error: ' + error.message;
+  }
+}
+
+function filterSimilarArtists(source) {
+  if (source === 'all') {
+    filteredSimilarArtists = allSimilarArtists;
+  } else {
+    filteredSimilarArtists = allSimilarArtists.filter(a => a.source === source);
+  }
+  displaySimilarArtistsGrid();
+}
+
+function displaySimilarArtistsGrid() {
+  const grid = document.getElementById('similarArtistsGrid');
+  
+  if (!filteredSimilarArtists || filteredSimilarArtists.length === 0) {
+    grid.innerHTML = '<div class="col-12"><div class="alert alert-info">No results for selected filter</div></div>';
+    return;
+  }
+
+  let html = '';
+  filteredSimilarArtists.forEach(artist => {
+    const sourceColor = artist.source === 'lastfm' ? 'danger' : 'info';
+    const sourceBadge = `<span class="badge bg-${sourceColor} me-1">${artist.source === 'lastfm' ? 'Last.fm' : 'ListenBrainz'}</span>`;
+    const matchPercent = artist.match ? ` (${(artist.match * 100).toFixed(0)}%)` : '';
+    const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
+    
+    html += `
+      <div class="col-xl-3 col-lg-4 col-md-6">
+        <div class="card h-100">
+          <div class="card-body">
+            <h6 class="card-title text-truncate">
+              <a href="${artistUrl}" class="text-decoration-none">
+                ${escapeHtml(artist.name)}
+              </a>
+              ${sourceBadge}
+            </h6>
+            <p class="text-muted small mb-3">Similar from: ${escapeHtml(artist.from_artist || 'Unknown')}</p>
+            ${matchPercent ? `<p class="text-muted small mb-3">Match: ${matchPercent}</p>` : ''}
+            <div class="btn-group btn-group-sm w-100" role="group">
+              <button class="btn btn-outline-primary" onclick="openDownloadSearch('${artistUrl.split('/')[2]}')">
+                <i class="bi bi-download"></i> Search
+              </button>
+              <a href="${artistUrl}" class="btn btn-outline-secondary">
+                <i class="bi bi-info-circle"></i> View
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  grid.innerHTML = html;
+}
+
+function openDownloadSearch(artist) {
+  // Navigate to qBittorrent search with artist query
+  window.location.hash = '';
+  document.getElementById('qbitTab').click();
+  setTimeout(() => {
+    document.getElementById('qbitSearch').value = artist;
+    performQbitSearch();
+  }, 100);
 }
 
 </script>
