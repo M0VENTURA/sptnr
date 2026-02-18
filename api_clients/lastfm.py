@@ -657,128 +657,77 @@ class LastFmClient:
             return {"artists": [], "albums": [], "tracks": []}
     
     def _get_recommended_artists(self) -> list:
-        """Fetch recommended artists from Last.fm based on similar artists.
+        """Fetch recommended artists from Last.fm using the native recommendation API.
         
-        Enhanced with DiscoveryLastFM features:
-        - Minimum play count filtering (MIN_ARTIST_PLAYS)
-        - Minimum similarity score (MIN_SIMILARITY_SCORE)
-        - Rate limiting between requests
-        - Retry logic with exponential backoff
+        Uses Last.fm's user.getRecommendedArtists endpoint which provides
+        personalized recommendations based on the user's listening history.
         
         Strategy:
-        1. Get user's top artists (to understand their taste)
-        2. Filter by minimum play count
-        3. For each top artist, fetch similar artists using artist.getSimilar
-        4. Filter by minimum similarity score
-        5. Dedup and return the similar artists (not the user's own top artists)
+        1. Call user.getRecommendedArtists API endpoint (requires authentication)
+        2. Extract artist data with image URLs
+        3. Return list of recommended artists that match Last.fm's home page
         """
         recommended_artists = {}
         
         try:
-            # Step 1: Get user's top artists to understand their taste
+            # Use Last.fm's native recommendation endpoint
             if self.username:
                 params = {
-                    "method": "user.getTopArtists",
+                    "method": "user.getRecommendedArtists",
                     "user": self.username,
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 15,  # Fetch more to account for filtering
-                    "period": f"{LASTFM_CONFIG['RECENT_MONTHS']}month"
+                    "limit": 20
                 }
             else:
-                # Fall back to global chart
+                # Fall back to global chart if no username
                 params = {
                     "method": "chart.getTopArtists",
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 15
+                    "limit": 20
                 }
             
-            def fetch_top_artists():
+            def fetch_recommended_artists():
                 return self.session.get(self.base_url, params=params, timeout=(5, 10))
             
             res = retry_with_backoff(
-                fetch_top_artists,
+                fetch_recommended_artists,
                 max_retries=LASTFM_CONFIG["MAX_RETRIES"],
                 backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
                 rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
             )
             res.raise_for_status()
             
-            # Get the top artists
+            # Get the recommended artists
             if self.username:
-                top_artists = res.json().get("topartists", {}).get("artist", [])
+                artists = res.json().get("recommendedartists", {}).get("artist", [])
             else:
-                top_artists = res.json().get("artists", {}).get("artist", [])
+                artists = res.json().get("artists", {}).get("artist", [])
             
-            # Step 2: For each top artist, get similar artists
-            for top_artist in top_artists:
-                artist_name = top_artist.get("name", "")
-                if not artist_name:
+            for artist in artists:
+                name = artist.get("name", "")
+                if not name or name in recommended_artists:
                     continue
                 
-                # Filter by minimum play count (for user recommendations)
-                if self.username:
-                    playcount = int(top_artist.get("playcount", 0) or 0)
-                    if playcount < LASTFM_CONFIG["MIN_ARTIST_PLAYS"]:
-                        logger.debug(f"Skipping {artist_name}: {playcount} plays < {LASTFM_CONFIG['MIN_ARTIST_PLAYS']}")
-                        continue
+                # Extract image
+                image_url = ""
+                if isinstance(artist.get("image"), list):
+                    for img in reversed(artist["image"]):
+                        if img.get("#text"):
+                            image_url = img.get("#text", "")
+                            break
                 
-                try:
-                    # Fetch similar artists using artist.getSimilar
-                    similar_params = {
-                        "method": "artist.getSimilar",
-                        "artist": artist_name,
-                        "api_key": self.api_key,
-                        "format": "json",
-                        "limit": LASTFM_CONFIG["MAX_SIMILAR_PER_ARTIST"]
-                    }
-                    
-                    def fetch_similar():
-                        return self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
-                    
-                    similar_res = retry_with_backoff(
-                        fetch_similar,
-                        max_retries=2,  # Lower retry count for nested requests
-                        backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
-                        rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
-                    )
-                    
-                    if similar_res.status_code == 200:
-                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
-                        
-                        for similar_artist in similar_artists:
-                            name = similar_artist.get("name", "")
-                            if not name or name in recommended_artists:
-                                continue
-                            
-                            # Filter by minimum similarity score
-                            match = float(similar_artist.get("match", 0) or 0)
-                            if match < LASTFM_CONFIG["MIN_SIMILARITY_SCORE"]:
-                                logger.debug(f"Skipping {name}: match {match} < {LASTFM_CONFIG['MIN_SIMILARITY_SCORE']}")
-                                continue
-                            
-                            # Extract image
-                            image_url = ""
-                            if isinstance(similar_artist.get("image"), list):
-                                for img in reversed(similar_artist["image"]):
-                                    if img.get("#text"):
-                                        image_url = img.get("#text", "")
-                                        break
-                            
-                            recommended_artists[name] = {
-                                "name": name,
-                                "listeners": similar_artist.get("listeners", 0),
-                                "match": match,
-                                "playcount": 0,
-                                "image": image_url,
-                                "url": similar_artist.get("url", "")
-                            }
-                except Exception as e:
-                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
-                    continue
+                recommended_artists[name] = {
+                    "name": name,
+                    "listeners": artist.get("listeners", 0),
+                    "match": 1.0,  # Recommendation strength from Last.fm algorithm
+                    "playcount": 0,
+                    "image": image_url,
+                    "url": artist.get("url", "")
+                }
             
-            logger.info(f"Found {len(recommended_artists)} recommended artists (after filtering)")
+            logger.info(f"Found {len(recommended_artists)} recommended artists from Last.fm")
             return list(recommended_artists.values())[:20]
         except (ConnectionError, ConnectionResetError) as e:
             logger.error(f"Connection error fetching recommended artists: {e} - may indicate network issues")
@@ -795,49 +744,44 @@ class LastFmClient:
             return []
     
     def _get_recommended_albums(self) -> list:
-        """Fetch recommended albums from Last.fm based on similar artists.
+        """Fetch recommended albums from Last.fm using the native recommendation API.
         
-        Enhanced with DiscoveryLastFM features:
-        - Studio album filtering via MusicBrainz
-        - Minimum play count filtering
-        - Minimum similarity score filtering
-        - Rate limiting and retry logic
-        - Caching and deduplication
+        Uses Last.fm's user.getRecommendedArtists endpoint to get recommended artists,
+        then fetches their top albums. This provides personalized recommendations
+        that match Last.fm's home page algorithm.
         
         Strategy:
-        1. Get user's top artists (to understand their taste)
-        2. Filter by minimum play count
-        3. For each top artist, fetch similar artists (with similarity score)
-        4. For each similar artist, fetch their top albums
-        5. Filter to only studio album releases using MusicBrainz
-        6. Return albums from similar artists (NEW recommendations, not user's own top albums)
+        1. Call user.getRecommendedArtists API endpoint
+        2. For each recommended artist, fetch their top albums
+        3. Filter to only studio album releases using MusicBrainz
+        4. Return albums from recommended artists
         """
         recommended_albums = {}
         
         try:
-            # Step 1: Get user's top artists
+            # Step 1: Get recommended artists using Last.fm's native recommendation API
             if self.username:
-                params = {
-                    "method": "user.getTopArtists",
+                artist_params = {
+                    "method": "user.getRecommendedArtists",
                     "user": self.username,
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 12,  # Fetch more to account for filtering
-                    "period": f"{LASTFM_CONFIG['RECENT_MONTHS']}month"
+                    "limit": 12
                 }
             else:
-                params = {
+                # Fall back to global chart
+                artist_params = {
                     "method": "chart.getTopArtists",
                     "api_key": self.api_key,
                     "format": "json",
                     "limit": 12
                 }
             
-            def fetch_top_artists():
-                return self.session.get(self.base_url, params=params, timeout=(5, 10))
+            def fetch_recommended_artists():
+                return self.session.get(self.base_url, params=artist_params, timeout=(5, 10))
             
             res = retry_with_backoff(
-                fetch_top_artists,
+                fetch_recommended_artists,
                 max_retries=LASTFM_CONFIG["MAX_RETRIES"],
                 backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
                 rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
@@ -845,121 +789,78 @@ class LastFmClient:
             res.raise_for_status()
             
             if self.username:
-                top_artists = res.json().get("topartists", {}).get("artist", [])
+                recommended_artists = res.json().get("recommendedartists", {}).get("artist", [])
             else:
-                top_artists = res.json().get("artists", {}).get("artist", [])
+                recommended_artists = res.json().get("artists", {}).get("artist", [])
             
-            # Step 2: For each top artist, get similar artists and their albums
-            for top_artist in top_artists:
-                artist_name = top_artist.get("name", "")
+            # Step 2: For each recommended artist, get their top albums
+            for artist in recommended_artists:
+                artist_name = artist.get("name", "")
                 if not artist_name:
                     continue
                 
-                # Filter by minimum play count (for user recommendations)
-                if self.username:
-                    playcount = int(top_artist.get("playcount", 0) or 0)
-                    if playcount < LASTFM_CONFIG["MIN_ARTIST_PLAYS"]:
-                        continue
-                
                 try:
-                    # Get similar artists
-                    similar_params = {
-                        "method": "artist.getSimilar",
+                    album_params = {
+                        "method": "artist.getTopAlbums",
                         "artist": artist_name,
                         "api_key": self.api_key,
                         "format": "json",
-                        "limit": 3
+                        "limit": LASTFM_CONFIG["MAX_ALBUMS_PER_ARTIST"]
                     }
                     
-                    def fetch_similar():
-                        return self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
+                    def fetch_albums():
+                        return self.session.get(self.base_url, params=album_params, timeout=(5, 10))
                     
-                    similar_res = retry_with_backoff(
-                        fetch_similar,
+                    album_res = retry_with_backoff(
+                        fetch_albums,
                         max_retries=2,
                         backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
                         rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
                     )
                     
-                    if similar_res and similar_res.status_code == 200:
-                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
+                    if album_res and album_res.status_code == 200:
+                        top_albums = album_res.json().get("topalbums", {}).get("album", [])
                         
-                        # Step 3: Get top albums from each similar artist
-                        for similar_artist in similar_artists:
-                            similar_artist_name = similar_artist.get("name", "")
-                            if not similar_artist_name:
+                        for album in top_albums:
+                            album_name = album.get("name", "")
+                            if not album_name:
                                 continue
                             
-                            # Filter by similarity score
-                            match = float(similar_artist.get("match", 0) or 0)
-                            if match < LASTFM_CONFIG["MIN_SIMILARITY_SCORE"]:
+                            album_key = (artist_name.lower(), album_name.lower())
+                            if album_key in recommended_albums:
                                 continue
                             
-                            try:
-                                album_params = {
-                                    "method": "artist.getTopAlbums",
-                                    "artist": similar_artist_name,
-                                    "api_key": self.api_key,
-                                    "format": "json",
-                                    "limit": LASTFM_CONFIG["MAX_ALBUMS_PER_ARTIST"]
-                                }
-                                
-                                def fetch_albums():
-                                    return self.session.get(self.base_url, params=album_params, timeout=(5, 10))
-                                
-                                album_res = retry_with_backoff(
-                                    fetch_albums,
-                                    max_retries=2,
-                                    backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
-                                    rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
-                                )
-                                
-                                if album_res and album_res.status_code == 200:
-                                    top_albums = album_res.json().get("topalbums", {}).get("album", [])
-                                    
-                                    for album in top_albums:
-                                        album_name = album.get("name", "")
-                                        if not album_name:
-                                            continue
-                                        
-                                        album_key = (similar_artist_name.lower(), album_name.lower())
-                                        if album_key in recommended_albums:
-                                            continue
-                                        
-                                        # ENHANCED: Check if album already exists in user's database
-                                        if self._album_exists(similar_artist_name, album_name):
-                                            logger.debug(f"Filtering out existing album: {album_name} by {similar_artist_name}")
-                                            continue
-                                        
-                                        # ENHANCED: Filter to studio albums only using MusicBrainz
-                                        if not self._is_studio_album(similar_artist_name, album_name):
-                                            logger.debug(f"Filtering non-studio album: {album_name} by {similar_artist_name}")
-                                            continue
-                                        
-                                        # Extract image
-                                        image_url = ""
-                                        if isinstance(album.get("image"), list):
-                                            for img in reversed(album["image"]):
-                                                if img.get("#text"):
-                                                    image_url = img.get("#text", "")
-                                                    break
-                                        
-                                        recommended_albums[album_key] = {
-                                            "name": album_name,
-                                            "artist": similar_artist_name,
-                                            "playcount": 0,
-                                            "image": image_url,
-                                            "url": album.get("url", ""),
-                                            "similarity": match
-                                        }
-                            except Exception as e:
-                                logger.debug(f"Failed to fetch albums for {similar_artist_name}: {e}")
+                            # ENHANCED: Check if album already exists in user's database
+                            if self._album_exists(artist_name, album_name):
+                                logger.debug(f"Filtering out existing album: {album_name} by {artist_name}")
                                 continue
+                            
+                            # ENHANCED: Filter to studio albums only using MusicBrainz
+                            if not self._is_studio_album(artist_name, album_name):
+                                logger.debug(f"Filtering non-studio album: {album_name} by {artist_name}")
+                                continue
+                            
+                            # Extract image
+                            image_url = ""
+                            if isinstance(album.get("image"), list):
+                                for img in reversed(album["image"]):
+                                    if img.get("#text"):
+                                        image_url = img.get("#text", "")
+                                        break
+                            
+                            recommended_albums[album_key] = {
+                                "name": album_name,
+                                "artist": artist_name,
+                                "playcount": 0,
+                                "image": image_url,
+                                "url": album.get("url", ""),
+                                "similarity": 1.0  # From Last.fm recommendation algorithm
+                            }
                 except Exception as e:
-                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
+                    logger.debug(f"Failed to fetch albums for {artist_name}: {e}")
                     continue
             
-            logger.info(f"Found {len(recommended_albums)} recommended studio albums (after filtering)")
+            logger.info(f"Found {len(recommended_albums)} recommended studio albums from Last.fm")
             return list(recommended_albums.values())[:12]
         except (ConnectionError, ConnectionResetError) as e:
             logger.error(f"Connection error fetching recommended albums: {e} - may indicate network issues")
@@ -976,162 +877,103 @@ class LastFmClient:
             return []
     
     def _get_recommended_tracks(self) -> list:
-        """Fetch recommended tracks from Last.fm based on similar artists.
+        """Fetch recommended tracks from Last.fm using the native recommendation API.
         
-        Enhanced with DiscoveryLastFM features:
-        - Minimum play count filtering
-        - Minimum similarity score filtering
-        - Rate limiting and retry logic
-        - Caching and deduplication
+        Uses Last.fm's user.getRecommendedTracks endpoint which provides
+        personalized recommendations based on the user's full listening history.
+        This matches Last.fm's home page recommendations algorithm.
         
         Strategy:
-        1. Get user's top artists (to understand their taste)
-        2. Filter by minimum play count
-        3. For each top artist, fetch similar artists (with similarity score)
-        4. For each similar artist, fetch their top tracks
-        5. Return tracks from similar artists (NEW recommendations, not user's own recent tracks)
+        1. Call user.getRecommendedTracks API endpoint (requires authentication)
+        2. Extract track data with artist, play count, and image URLs
+        3. Return list of recommended tracks that match Last.fm's home page
         """
         recommended_tracks = {}
         
         try:
-            # Step 1: Get user's top artists
+            # Use Last.fm's native recommended tracks endpoint
             if self.username:
                 params = {
-                    "method": "user.getTopArtists",
+                    "method": "user.getRecommendedTracks",
                     "user": self.username,
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 12,  # Fetch more to account for filtering
-                    "period": f"{LASTFM_CONFIG['RECENT_MONTHS']}month"
+                    "limit": 20
                 }
             else:
+                # Fall back to global chart if no username
                 params = {
-                    "method": "chart.getTopArtists",
+                    "method": "chart.getTopTracks",
                     "api_key": self.api_key,
                     "format": "json",
-                    "limit": 12
+                    "limit": 20
                 }
             
-            def fetch_top_artists():
+            def fetch_recommended_tracks():
                 return self.session.get(self.base_url, params=params, timeout=(5, 10))
             
             res = retry_with_backoff(
-                fetch_top_artists,
+                fetch_recommended_tracks,
                 max_retries=LASTFM_CONFIG["MAX_RETRIES"],
                 backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
                 rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
             )
             res.raise_for_status()
             
+            # Get the recommended tracks
             if self.username:
-                top_artists = res.json().get("topartists", {}).get("artist", [])
+                tracks = res.json().get("recommendedtracks", {}).get("track", [])
             else:
-                top_artists = res.json().get("artists", {}).get("artist", [])
+                tracks = res.json().get("tracks", {}).get("track", [])
             
-            # Step 2: For each top artist, get similar artists and their tracks
-            for top_artist in top_artists:
-                artist_name = top_artist.get("name", "")
-                if not artist_name:
+            for track in tracks:
+                track_name = track.get("name", "")
+                artist_name = ""
+                
+                # Handle both artist string and artist object format
+                if isinstance(track.get("artist"), dict):
+                    artist_name = track["artist"].get("name", "")
+                elif isinstance(track.get("artist"), str):
+                    artist_name = track.get("artist", "")
+                
+                if not track_name or not artist_name:
                     continue
                 
-                # Filter by minimum play count (for user recommendations)
-                if self.username:
-                    playcount = int(top_artist.get("playcount", 0) or 0)
-                    if playcount < LASTFM_CONFIG["MIN_ARTIST_PLAYS"]:
-                        continue
-                
-                try:
-                    # Get similar artists
-                    similar_params = {
-                        "method": "artist.getSimilar",
-                        "artist": artist_name,
-                        "api_key": self.api_key,
-                        "format": "json",
-                        "limit": 3
-                    }
-                    
-                    def fetch_similar():
-                        return self.session.get(self.base_url, params=similar_params, timeout=(5, 10))
-                    
-                    similar_res = retry_with_backoff(
-                        fetch_similar,
-                        max_retries=2,
-                        backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
-                        rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
-                    )
-                    
-                    if similar_res and similar_res.status_code == 200:
-                        similar_artists = similar_res.json().get("similarartists", {}).get("artist", [])
-                        
-                        # Step 3: Get top tracks from each similar artist
-                        for similar_artist in similar_artists:
-                            similar_artist_name = similar_artist.get("name", "")
-                            if not similar_artist_name:
-                                continue
-                            
-                            # Filter by similarity score
-                            match = float(similar_artist.get("match", 0) or 0)
-                            if match < LASTFM_CONFIG["MIN_SIMILARITY_SCORE"]:
-                                continue
-                            
-                            try:
-                                track_params = {
-                                    "method": "artist.getTopTracks",
-                                    "artist": similar_artist_name,
-                                    "api_key": self.api_key,
-                                    "format": "json",
-                                    "limit": 4
-                                }
-                                
-                                def fetch_tracks():
-                                    return self.session.get(self.base_url, params=track_params, timeout=(5, 10))
-                                
-                                track_res = retry_with_backoff(
-                                    fetch_tracks,
-                                    max_retries=2,
-                                    backoff_factor=LASTFM_CONFIG["RETRY_BACKOFF"],
-                                    rate_limit_delay=LASTFM_CONFIG["RATE_LIMIT_DELAY"]
-                                )
-                                
-                                if track_res and track_res.status_code == 200:
-                                    top_tracks = track_res.json().get("toptracks", {}).get("track", [])
-                                    
-                                    for track in top_tracks:
-                                        track_name = track.get("name", "")
-                                        if not track_name:
-                                            continue
-                                        
-                                        track_key = (similar_artist_name.lower(), track_name.lower())
-                                        if track_key in recommended_tracks:
-                                            continue
-                                        
-                                        # Extract image
-                                        image_url = ""
-                                        if isinstance(track.get("image"), list):
-                                            for img in reversed(track["image"]):
-                                                if img.get("#text"):
-                                                    image_url = img.get("#text", "")
-                                                    break
-                                        
-                                        recommended_tracks[track_key] = {
-                                            "name": track_name,
-                                            "artist": similar_artist_name,
-                                            "playcount": track.get("playcount", 0),
-                                            "image": image_url,
-                                            "url": track.get("url", ""),
-                                            "similarity": match
-                                        }
-                            except Exception as e:
-                                logger.debug(f"Failed to fetch tracks for {similar_artist_name}: {e}")
-                                continue
-                except Exception as e:
-                    logger.debug(f"Failed to fetch similar artists for {artist_name}: {e}")
+                track_key = (artist_name.lower(), track_name.lower())
+                if track_key in recommended_tracks:
                     continue
+                
+                # Extract image
+                image_url = ""
+                if isinstance(track.get("image"), list):
+                    for img in reversed(track["image"]):
+                        if img.get("#text"):
+                            image_url = img.get("#text", "")
+                            break
+                
+                recommended_tracks[track_key] = {
+                    "name": track_name,
+                    "artist": artist_name,
+                    "playcount": track.get("playcount", 0),
+                    "image": image_url,
+                    "url": track.get("url", ""),
+                    "similarity": 1.0  # From Last.fm recommendation algorithm
+                }
             
-            logger.info(f"Found {len(recommended_tracks)} recommended tracks (after filtering)")
+            logger.info(f"Found {len(recommended_tracks)} recommended tracks from Last.fm")
             return list(recommended_tracks.values())[:20]
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.error(f"Connection error fetching recommended tracks: {e} - may indicate network issues")
+            return []
+        except Timeout as e:
+            logger.error(f"Timeout fetching recommended tracks: {e}")
+            return []
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.error(f"HTTP error {status_code} fetching recommended tracks: {e}")
+            return []
         except Exception as e:
-            logger.error(f"Failed to fetch recommended tracks: {e}")
+            logger.error(f"Failed to fetch Last.fm recommended tracks: {e}")
             return []
 
 

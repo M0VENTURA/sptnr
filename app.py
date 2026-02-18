@@ -11470,6 +11470,414 @@ def api_lastfm_create_playlist():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/listenbrainz/sync/now", methods=["POST"])
+def api_listenbrainz_sync_now():
+    """Manually trigger ListenBrainz recommendations sync"""
+    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+    from datetime import datetime
+    import unicodedata
+    
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    lb_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
+    
+    if not lb_config.get("enabled"):
+        return jsonify({"error": "ListenBrainz not enabled"}), 400
+    
+    current_user = session.get("username")
+    user_token = None
+    
+    if current_user:
+        navidrome_users = cfg.get("navidrome_users", [])
+        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if user_cfg:
+            user_token = user_cfg.get("listenbrainz_user_token", "")
+    
+    if not user_token:
+        return jsonify({"error": "ListenBrainz user token not configured"}), 400
+    
+    # Create ListenBrainz client and validate token
+    try:
+        lb_client = ListenBrainzUserClient(user_token)
+        username = lb_client.get_username_from_token()
+        if not username:
+            return jsonify({"error": "Invalid ListenBrainz token"}), 400
+    except Exception as e:
+        logging.error(f"Failed to validate ListenBrainz token: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+    # Fetch fresh recommendations from ListenBrainz (weekly explorations)
+    try:
+        recommendations = lb_client.get_weekly_exploration(username)
+        # Convert from ListenBrainz format to our format
+        tracks_list = []
+        for track in recommendations:
+            # ListenBrainz returns recordings with artist/title info
+            if isinstance(track, dict):
+                track_name = track.get("title", track.get("name", ""))
+                artist_obj = track.get("artist", {})
+                artist_name = ""
+                if isinstance(artist_obj, dict):
+                    artist_name = artist_obj.get("name", "")
+                elif isinstance(artist_obj, str):
+                    artist_name = artist_obj
+                
+                if track_name and artist_name:
+                    tracks_list.append({
+                        "track_name": track_name,
+                        "artist_name": artist_name,
+                        "release_name": track.get("release", {}).get("name", "") if isinstance(track.get("release"), dict) else "",
+                        "confidence": 0.8,
+                        "source": "listenbrainz-weekly-exploration"
+                    })
+    except Exception as e:
+        logging.error(f"Failed to fetch ListenBrainz recommendations: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+    if not tracks_list:
+        return jsonify({
+            "error": "No recommendations from ListenBrainz (empty result)",
+            "success": False
+        }), 500
+    
+    # Helper function to normalize names
+    def normalize_name(name):
+        if not name:
+            return ""
+        normalized = name.lower().strip()
+        normalized = unicodedata.normalize('NFD', normalized)
+        normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        normalized = ' '.join(normalized.split())
+        return normalized
+    
+    # Get existing collection items
+    existing_tracks = set()
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
+        for row in cursor.fetchall():
+            artist = row['artist'] if row else ''
+            title = row['title'] if row else ''
+            if artist and title:
+                artist_norm = normalize_name(artist)
+                title_norm = normalize_name(title)
+                existing_tracks.add((artist_norm, title_norm))
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Failed to check collection status: {e}")
+    
+    # Store recommendations in database
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    tracks_count = 0
+    filtered_count = 0
+    sync_start = datetime.now()
+    sync_now = datetime.now()
+    
+    try:
+        # Prepare all insert data
+        insert_data = []
+        username_val = current_user or "default_user"
+        
+        for track in tracks_list:
+            track_name = track.get("track_name", "")
+            artist_name = track.get("artist_name", "")
+            artist_norm = normalize_name(artist_name)
+            track_norm = normalize_name(track_name)
+            
+            if (artist_norm, track_norm) and (artist_norm, track_norm) not in existing_tracks:
+                insert_data.append((
+                    username_val,
+                    "track",
+                    track_name,
+                    artist_name,
+                    track.get("release_name", ""),
+                    track.get("confidence", 0.5),
+                    track.get("source", "unknown"),
+                    None,
+                    sync_now
+                ))
+                tracks_count += 1
+            else:
+                filtered_count += 1
+        
+        # Execute transaction
+        try:
+            # Clear old recommendations for this user
+            cursor.execute("DELETE FROM listenbrainz_recommendations WHERE username = ?", (username_val,))
+            
+            # Batch insert all recommendations
+            if insert_data:
+                cursor.executemany("""
+                    INSERT INTO listenbrainz_recommendations 
+                    (username, recommendation_type, track_name, artist_name, release_name, confidence, source, metadata, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_data)
+            
+            # Update sync history
+            sync_end = datetime.now()
+            cursor.execute("""
+                INSERT INTO listenbrainz_sync_history 
+                (username, sync_type, source, tracks_count, filtered_count, sync_start, sync_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                username_val,
+                "manual",
+                "listenbrainz-api",
+                tracks_count,
+                filtered_count,
+                sync_start,
+                sync_end
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"ListenBrainz sync complete for {username_val}: {tracks_count} tracks")
+            
+            return jsonify({
+                "success": True,
+                "tracks_synced": tracks_count,
+                "filtered_count": filtered_count,
+                "total": tracks_count
+            })
+            
+        except Exception as insert_error:
+            try:
+                conn.rollback()
+            except:
+                pass
+            conn.close()
+            logging.error(f"Database error during ListenBrainz sync: {insert_error}")
+            raise
+    
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        logging.error(f"Error syncing ListenBrainz recommendations: {e}", exc_info=True)
+        return jsonify({"error": str(e), "success": False}), 500
+    
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    lb_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
+    
+    if not lb_config.get("enabled"):
+        return jsonify({"error": "ListenBrainz not enabled"}), 400
+    
+    current_user = session.get("username")
+    username = None
+    user_token = None
+    
+    if current_user:
+        navidrome_users = cfg.get("navidrome_users", [])
+        user_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+        if user_cfg:
+            username = user_cfg.get("listenbrainz_username", "")
+            user_token = user_cfg.get("listenbrainz_token", "")
+    
+    if not username:
+        return jsonify({"error": "ListenBrainz username not configured"}), 400
+    
+    # Fetch fresh recommendations from ListenBrainz
+    try:
+        recommendations = get_listenbrainz_recommendations(username, user_token=user_token)
+    except Exception as e:
+        logging.error(f"Failed to fetch ListenBrainz recommendations: {e}")
+        return jsonify({"error": str(e)}), 500
+    
+    if not recommendations:
+        return jsonify({
+            "error": "No recommendations from ListenBrainz (empty result)",
+            "success": False
+        }), 500
+    
+    # Helper function to normalize names
+    def normalize_name(name):
+        if not name:
+            return ""
+        normalized = name.lower().strip()
+        normalized = unicodedata.normalize('NFD', normalized)
+        normalized = ''.join(c for c in normalized if unicodedata.category(c) != 'Mn')
+        normalized = ' '.join(normalized.split())
+        return normalized
+    
+    # Get existing collection items
+    existing_tracks = set()
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
+        for row in cursor.fetchall():
+            artist = row['artist'] if row else ''
+            title = row['title'] if row else ''
+            if artist and title:
+                artist_norm = normalize_name(artist)
+                title_norm = normalize_name(title)
+                existing_tracks.add((artist_norm, title_norm))
+        conn.close()
+    except Exception as e:
+        logging.warning(f"Failed to check collection status: {e}")
+    
+    # Store recommendations in database
+    conn = get_db()
+    cursor = conn.cursor()
+    
+    tracks_count = 0
+    filtered_count = 0
+    sync_start = datetime.now()
+    sync_now = datetime.now()
+    
+    try:
+        # Prepare all insert data
+        insert_data = []
+        username_val = current_user or "default_user"
+        
+        for track in recommendations:
+            track_name = track.get("track_name", "")
+            artist_name = track.get("artist_name", "")
+            artist_norm = normalize_name(artist_name)
+            track_norm = normalize_name(track_name)
+            
+            if (artist_norm, track_norm) and (artist_norm, track_norm) not in existing_tracks:
+                insert_data.append((
+                    username_val,
+                    "track",
+                    track_name,
+                    artist_name,
+                    track.get("release_name", ""),
+                    track.get("confidence", 0.5),
+                    track.get("source", "unknown"),
+                    None,
+                    sync_now
+                ))
+                tracks_count += 1
+            else:
+                filtered_count += 1
+        
+        # Execute transaction
+        try:
+            # Clear old recommendations for this user
+            cursor.execute("DELETE FROM listenbrainz_recommendations WHERE username = ?", (username_val,))
+            
+            # Batch insert all recommendations
+            if insert_data:
+                cursor.executemany("""
+                    INSERT INTO listenbrainz_recommendations 
+                    (username, recommendation_type, track_name, artist_name, release_name, confidence, source, metadata, synced_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, insert_data)
+            
+            # Update sync history
+            sync_end = datetime.now()
+            cursor.execute("""
+                INSERT INTO listenbrainz_sync_history 
+                (username, sync_type, source, tracks_count, filtered_count, sync_start, sync_end)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            """, (
+                username_val,
+                "manual",
+                "listenbrainz-api",
+                tracks_count,
+                filtered_count,
+                sync_start,
+                sync_end
+            ))
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"ListenBrainz sync complete for {username_val}: {tracks_count} tracks")
+            
+            return jsonify({
+                "success": True,
+                "tracks_synced": tracks_count,
+                "filtered_count": filtered_count,
+                "total": tracks_count
+            })
+            
+        except Exception as insert_error:
+            try:
+                conn.rollback()
+            except:
+                pass
+            conn.close()
+            logging.error(f"Database error during ListenBrainz sync: {insert_error}")
+            raise
+    
+    except Exception as e:
+        try:
+            conn.close()
+        except:
+            pass
+        logging.error(f"Error syncing ListenBrainz recommendations: {e}", exc_info=True)
+        return jsonify({"error": str(e), "success": False}), 500
+
+
+@app.route("/api/listenbrainz/recommendations", methods=["GET"])
+def api_listenbrainz_recommendations():
+    """Get ListenBrainz recommendations from cache"""
+    try:
+        current_user = session.get("username", "default_user")
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get recommendations ordered by synced_at (most recent first)
+        cursor.execute("""
+            SELECT 
+                track_name, 
+                artist_name, 
+                release_name, 
+                confidence, 
+                source,
+                synced_at
+            FROM listenbrainz_recommendations 
+            WHERE username = ?
+            ORDER BY synced_at DESC
+            LIMIT 50
+        """, (current_user,))
+        
+        rows = cursor.fetchall()
+        conn.close()
+        
+        tracks = []
+        if rows:
+            last_sync = None
+            for row in rows:
+                tracks.append({
+                    "name": row['track_name'],
+                    "artist": row['artist_name'],
+                    "album": row['release_name'],
+                    "confidence": row['confidence'],
+                    "source": row['source'],
+                    "url": f"https://listenbrainz.org/user/{current_user}/"
+                })
+                if not last_sync:
+                    last_sync = row['synced_at']
+            
+            return jsonify({
+                "recommendations": {
+                    "tracks": tracks
+                },
+                "cache_info": f"Cached on {last_sync}" if last_sync else "No cached data available"
+            })
+        else:
+            return jsonify({
+                "recommendations": {"tracks": []},
+                "cache_info": "No cached data available"
+            })
+    
+    except Exception as e:
+        logging.error(f"ListenBrainz recommendations error: {str(e)}")
+        return jsonify({"recommendations": {"tracks": []}, "cache_info": "Error loading cache"})
+
+
 @app.route("/downloads-manager")
 def downloads_manager():
     """Downloads manager UI page"""
