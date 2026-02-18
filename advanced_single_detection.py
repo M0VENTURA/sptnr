@@ -616,18 +616,18 @@ def detect_single_advanced(
     # Per problem statement: z-score should not appear as a high-confidence source
     
     # Determine confidence based on zscore thresholds:
-    # - zscore > 3.0: high confidence
-    # - zscore > 1.8: medium confidence
+    # - zscore >= 3.0: high confidence
+    # - zscore >= 1.8: medium confidence
     # - Otherwise: low confidence
-    # Priority: metadata sources always override zscore-based confidence
+    # Priority: metadata sources (via is_single) always override zscore-based confidence
     if is_single:
         # Metadata sources (Discogs, Spotify, MusicBrainz) always = high confidence
         confidence = 'high'
     elif artist_zscore >= 3.0:
         # High zscore = high confidence
         confidence = 'high'
-    elif metadata_single or (artist_zscore >= 1.8):
-        # Medium zscore or metadata hint = medium confidence
+    elif artist_zscore >= 1.8:
+        # Medium zscore = medium confidence
         confidence = 'medium'
     else:
         confidence = 'low'
