@@ -1262,6 +1262,57 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         return None
 
 
+def download_and_save_album_art(artist: str, album: str, art_url: str) -> bool:
+    """
+    Download album art image from CAA URL and save to database.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        art_url: Cover Art Archive URL
+        
+    Returns:
+        True if successfully saved, False otherwise
+    """
+    try:
+        import requests
+        
+        if not art_url:
+            return False
+        
+        # Download image from CAA
+        resp = requests.get(art_url, timeout=5)
+        if resp.status_code != 200:
+            log_debug(f"[ALBUM_ART] Failed to download image from {art_url}: HTTP {resp.status_code}")
+            return False
+        
+        image_data = resp.content
+        if not image_data or len(image_data) == 0:
+            log_debug(f"[ALBUM_ART] Downloaded image is empty for {artist} - {album}")
+            return False
+        
+        # Save to database
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("""
+            INSERT OR REPLACE INTO album_art 
+            (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
+            VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+        """, (artist, album, image_data, "image/jpeg", "musicbrainz_caa"))
+        conn.commit()
+        conn.close()
+        
+        log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} ({len(image_data)} bytes)")
+        return True
+        
+    except requests.exceptions.Timeout:
+        log_debug(f"[ALBUM_ART] Timeout downloading image from {art_url} for {artist} - {album}")
+        return False
+    except Exception as e:
+        log_debug(f"[ALBUM_ART] Failed to download/save album art for {artist} - {album}: {e}")
+        return False
+
+
 def detect_single_for_track(
     title: str,
     artist: str,
@@ -2441,6 +2492,11 @@ def popularity_scan(
                     album_art_url = fetch_album_art_url_from_musicbrainz(artist, album)
                     if album_art_url:
                         log_info(f'Fetched album art URL for {artist} - {album}: {album_art_url}')
+                        # Download and save the actual image data
+                        if download_and_save_album_art(artist, album, album_art_url):
+                            log_info(f'[ALBUM_ART] Album art image downloaded and saved for {artist} - {album}')
+                        else:
+                            log_debug(f'[ALBUM_ART] Failed to download album art image for {artist} - {album}')
                     else:
                         log_debug(f'No album art URL found for {artist} - {album}')
                 
@@ -3100,8 +3156,11 @@ def popularity_scan(
                 # This causes "Database is locked" errors in store_single_detection_result().
                 # Solution: Release the read lock by closing/resetting the cursor before write attempts.
                 try:
-                    if cursor is not None and not cursor._closed:
-                        cursor.close()
+                    if cursor is not None:
+                        try:
+                            cursor.close()
+                        except:
+                            pass  # Cursor might already be closed, that's OK
                     cursor = None  # Don't create a new cursor yet - we'll need it after singles detection
                     log_debug(f"Closed read cursor before single detection to prevent lock contention")
                 except Exception as e:
