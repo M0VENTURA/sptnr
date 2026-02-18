@@ -539,66 +539,161 @@
     <!-- Playlist Downloads Tab -->
     <div class="tab-pane fade" id="playlistContent" role="tabpanel">
       <div class="row g-4 mb-4">
-        <!-- Create New Session -->
+        <!-- Spotify User Lookup -->
         <div class="col-12">
           <div class="card">
             <div class="card-header">
               <h5 class="card-title mb-0">
-                <i class="bi bi-plus-circle"></i> Create New Playlist Download Session
+                <i class="bi bi-spotify"></i> Spotify User Playlists
               </h5>
             </div>
             <div class="card-body">
-              <form id="newSessionForm" onsubmit="createPlaylistSession(event)">
-                <div class="row g-3">
+              <div class="row g-3 mb-3">
+                <div class="col-md-6">
+                  <label for="spotifyUsername" class="form-label">Spotify Username</label>
+                  <div class="input-group">
+                    <input type="text" class="form-control" id="spotifyUsername" placeholder="e.g., username" required>
+                    <button class="btn btn-primary" type="button" id="lookupSpotifyBtn" onclick="lookupSpotifyUser()">
+                      <i class="bi bi-search"></i> Look Up
+                    </button>
+                  </div>
+                  <small class="form-text text-muted">Enter a Spotify username to load their playlists</small>
+                </div>
+              </div>
+
+              <!-- Playlists Dropdown (hidden until user is looked up) -->
+              <div id="playlistsContainer" style="display: none;">
+                <div class="row g-3 mb-3">
                   <div class="col-md-6">
-                    <label for="sessionName" class="form-label">Session Name</label>
-                    <input type="text" class="form-control" id="sessionName" placeholder="e.g., Indie Rock Collection" required>
-                  </div>
-                  <div class="col-md-3">
-                    <label for="totalTracks" class="form-label">Expected Tracks</label>
-                    <input type="number" class="form-control" id="totalTracks" min="1" value="1" required>
-                  </div>
-                  <div class="col-md-3">
-                    <label for="downloadMethod" class="form-label">Download Method</label>
-                    <select class="form-select" id="downloadMethod">
-                      <option value="qbittorrent">qBittorrent</option>
-                      <option value="slskd">Soulseek</option>
+                    <label for="playlistSelect" class="form-label">Select Playlist</label>
+                    <select class="form-select" id="playlistSelect" onchange="loadPlaylistTracks()">
+                      <option value="">-- Select a Playlist --</option>
                     </select>
                   </div>
-                  <div class="col-12">
-                    <div class="form-check">
-                      <input class="form-check-input" type="checkbox" id="sessionPriorityQueue" checked>
-                      <label class="form-check-label" for="sessionPriorityQueue">
-                        Enable priority queue (prioritize certain downloads in session)
-                      </label>
-                    </div>
+                  <div class="col-md-6">
+                    <label class="form-label">&nbsp;</label>
+                    <button class="btn btn-success w-100" id="loadPlaylistBtn" type="button" onclick="loadPlaylistTracks()">
+                      <i class="bi bi-download"></i> Load Playlist
+                    </button>
                   </div>
-                  <div class="col-12">
-                    <button type="submit" class="btn btn-success">
+                </div>
+              </div>
+
+              <!-- Loading spinner -->
+              <div id="playlistLoadingSpinner" class="text-center py-3" style="display: none;">
+                <div class="spinner-border text-primary spinner-border-sm" role="status">
+                  <span class="visually-hidden">Loading...</span>
+                </div>
+                <p class="mt-2 mb-0 text-muted">Loading playlists...</p>
+              </div>
+
+              <!-- Error alert -->
+              <div id="playlistErrorAlert" class="alert alert-danger" style="display: none;">
+                <i class="bi bi-exclamation-triangle"></i>
+                <span id="playlistErrorText"></span>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Missing Tracks from Playlist -->
+        <div class="col-12">
+          <div class="card">
+            <div class="card-header d-flex justify-content-between align-items-center">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-music-note-list"></i> Track Matching Results
+              </h5>
+              <div id="trackStatsContainer" style="display: none;">
+                <span class="badge bg-success me-2">Found: <span id="foundTracksCount">0</span></span>
+                <span class="badge bg-warning text-dark">Missing: <span id="missingTracksCount">0</span></span>
+              </div>
+            </div>
+            <div class="card-body">
+              <!-- No playlist loaded yet -->
+              <div id="noPlaylistLoaded" class="text-center py-5 text-muted">
+                <i class="bi bi-music-note" style="font-size: 3rem; opacity: 0.5;"></i>
+                <p class="mt-3">Load a Spotify playlist above to see matching results</p>
+              </div>
+
+              <!-- Found tracks (from collection) -->
+              <div id="foundTracksContainer" style="display: none;" class="mb-4">
+                <h6 class="text-success mb-3">
+                  <i class="bi bi-check-circle"></i> Found in Collection (<span id="foundCount">0</span>)
+                </h6>
+                <div id="foundTracksList" style="max-height: 400px; overflow-y: auto;">
+                  <!-- Populated by JavaScript -->
+                </div>
+              </div>
+
+              <!-- Missing tracks (need to download) -->
+              <div id="missingTracksContainer" style="display: none;">
+                <h6 class="text-warning mb-3">
+                  <i class="bi bi-exclamation-circle"></i> Missing from Collection (<span id="missingCount">0</span>)
+                </h6>
+                
+                <!-- Bulk actions -->
+                <div class="mb-3 d-flex gap-2">
+                  <button class="btn btn-sm btn-outline-primary" type="button" onclick="toggleAllMissingTracks()">
+                    <i class="bi bi-check-all"></i> Select All
+                  </button>
+                  <button class="btn btn-sm btn-outline-secondary" type="button" onclick="deselectAllMissingTracks()">
+                    <i class="bi bi-x-lg"></i> Deselect All
+                  </button>
+                  <button class="btn btn-sm btn-success" type="button" onclick="downloadSelectedTracks()">
+                    <i class="bi bi-download"></i> Download Selected
+                  </button>
+                </div>
+
+                <!-- Download method selector -->
+                <div class="row g-3 mb-3">
+                  <div class="col-md-4">
+                    <label for="missingTracksDownloadMethod" class="form-label">Download Method</label>
+                    <select class="form-select form-select-sm" id="missingTracksDownloadMethod">
+                      <option value="soulseek">Soulseek</option>
+                      <option value="qbittorrent">qBittorrent</option>
+                    </select>
+                  </div>
+                </div>
+
+                <!-- Missing tracks list -->
+                <div id="missingTracksList" style="max-height: 400px; overflow-y: auto;">
+                  <!-- Populated by JavaScript -->
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Create Download Session from Selected -->
+        <div class="col-12">
+          <div class="card" id="createSessionCard" style="display: none;">
+            <div class="card-header">
+              <h5 class="card-title mb-0">
+                <i class="bi bi-plus-circle"></i> Create Download Session
+              </h5>
+            </div>
+            <div class="card-body">
+              <form id="playlistSessionForm" onsubmit="createPlaylistDownloadSession(event)">
+                <div class="row g-3">
+                  <div class="col-md-6">
+                    <label for="playlistSessionName" class="form-label">Session Name</label>
+                    <input type="text" class="form-control" id="playlistSessionName" placeholder="e.g., My Playlist Downloads" required>
+                  </div>
+                  <div class="col-md-3">
+                    <label for="playlistSessionMethod" class="form-label">Download Method</label>
+                    <select class="form-select" id="playlistSessionMethod">
+                      <option value="soulseek">Soulseek</option>
+                      <option value="qbittorrent">qBittorrent</option>
+                    </select>
+                  </div>
+                  <div class="col-md-3">
+                    <label class="form-label">&nbsp;</label>
+                    <button type="submit" class="btn btn-success w-100">
                       <i class="bi bi-plus-circle"></i> Create Session
                     </button>
                   </div>
                 </div>
               </form>
-            </div>
-          </div>
-        </div>
-
-        <!-- Active Sessions List -->
-        <div class="col-12">
-          <div class="card">
-            <div class="card-header d-flex justify-content-between align-items-center">
-              <h5 class="card-title mb-0">
-                <i class="bi bi-clock-history"></i> Active Sessions
-              </h5>
-              <button class="btn btn-sm btn-outline-primary" onclick="refreshPlaylistSessions()">
-                <i class="bi bi-arrow-clockwise"></i> Refresh
-              </button>
-            </div>
-            <div class="card-body">
-              <div id="playlistSessionsContainer" style="max-height: 800px; overflow-y: auto;">
-                <p class="text-muted text-center py-4">Loading sessions...</p>
-              </div>
             </div>
           </div>
         </div>
@@ -3758,6 +3853,304 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// ===== Spotify Playlist Downloads =====
+
+let currentPlaylistId = null;
+let currentPlaylistName = null;
+let playlistTracks = [];
+let collectionTracks = [];
+let missingTracks = [];
+let selectedMissingTracks = [];
+
+async function lookupSpotifyUser() {
+  const username = document.getElementById('spotifyUsername').value.trim();
+  if (!username) {
+    alert('❌ Please enter a Spotify username');
+    return;
+  }
+
+  const btn = document.getElementById('lookupSpotifyBtn');
+  btn.disabled = true;
+  btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Loading...';
+
+  try {
+    const response = await fetch(`/api/spotify/user/${encodeURIComponent(username)}/playlists`);
+    const data = await response.json();
+
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-search"></i> Look Up';
+
+    if (!data.success) {
+      document.getElementById('playlistErrorAlert').style.display = 'block';
+      document.getElementById('playlistErrorText').textContent = data.error || 'Failed to load playlists';
+      document.getElementById('playlistsContainer').style.display = 'none';
+      return;
+    }
+
+    document.getElementById('playlistErrorAlert').style.display = 'none';
+    document.getElementById('playlistsContainer').style.display = 'block';
+
+    // Populate playlists dropdown
+    const select = document.getElementById('playlistSelect');
+    select.innerHTML = '<option value="">-- Select a Playlist --</option>';
+
+    data.playlists.forEach(playlist => {
+      const option = document.createElement('option');
+      option.value = playlist.id;
+      option.textContent = `${playlist.name} (${playlist.tracks.total || playlist.track_count} tracks)`;
+      select.appendChild(option);
+    });
+
+  } catch (error) {
+    console.error('Error looking up user:', error);
+    btn.disabled = false;
+    btn.innerHTML = '<i class="bi bi-search"></i> Look Up';
+    document.getElementById('playlistErrorAlert').style.display = 'block';
+    document.getElementById('playlistErrorText').textContent = 'Network error: ' + error.message;
+  }
+}
+
+async function loadPlaylistTracks() {
+  const playlistId = document.getElementById('playlistSelect').value;
+  if (!playlistId) {
+    alert('❌ Please select a playlist');
+    return;
+  }
+
+  const playlistName = document.getElementById('playlistSelect').options[document.getElementById('playlistSelect').selectedIndex].text;
+  currentPlaylistId = playlistId;
+  currentPlaylistName = playlistName;
+
+  document.getElementById('playlistLoadingSpinner').style.display = 'block';
+  document.getElementById('foundTracksContainer').style.display = 'none';
+  document.getElementById('missingTracksContainer').style.display = 'none';
+  document.getElementById('noPlaylistLoaded').style.display = 'none';
+  document.getElementById('createSessionCard').style.display = 'none';
+
+  try {
+    const response = await fetch(`/api/spotify/playlist/${encodeURIComponent(playlistId)}/tracks?match_collection=true`);
+    const data = await response.json();
+
+    document.getElementById('playlistLoadingSpinner').style.display = 'none';
+
+    if (!data.success) {
+      document.getElementById('playlistErrorAlert').style.display = 'block';
+      document.getElementById('playlistErrorText').textContent = data.error || 'Failed to load playlist tracks';
+      return;
+    }
+
+    document.getElementById('playlistErrorAlert').style.display = 'none';
+
+    playlistTracks = data.tracks || [];
+    const matched = data.matched_tracks || [];
+    missingTracks = data.missing_tracks || [];
+    selectedMissingTracks = [];
+
+    document.getElementById('foundTracksCount').textContent = matched.length;
+    document.getElementById('missingTracksCount').textContent = missingTracks.length;
+    document.getElementById('trackStatsContainer').style.display = 'block';
+
+    // Show matched tracks
+    if (matched.length > 0) {
+      renderFoundTracks(matched);
+      document.getElementById('foundTracksContainer').style.display = 'block';
+    } else {
+      document.getElementById('foundTracksContainer').style.display = 'none';
+    }
+
+    // Show missing tracks
+    if (missingTracks.length > 0) {
+      renderMissingTracks(missingTracks);
+      document.getElementById('missingTracksContainer').style.display = 'block';
+      document.getElementById('createSessionCard').style.display = 'block';
+    } else {
+      document.getElementById('missingTracksContainer').style.display = 'none';
+      if (matched.length > 0) {
+        document.getElementById('noPlaylistLoaded').innerHTML = '<div class="alert alert-success text-center"><i class="bi bi-check-circle"></i> All playlist tracks found in collection!</div>';
+        document.getElementById('noPlaylistLoaded').style.display = 'block';
+      }
+    }
+
+  } catch (error) {
+    console.error('Error loading playlist tracks:', error);
+    document.getElementById('playlistLoadingSpinner').style.display = 'none';
+    document.getElementById('playlistErrorAlert').style.display = 'block';
+    document.getElementById('playlistErrorText').textContent = 'Network error: ' + error.message;
+  }
+}
+
+function renderFoundTracks(tracks) {
+  const container = document.getElementById('foundTracksList');
+  document.getElementById('foundCount').textContent = tracks.length;
+
+  let html = '<div class="list-group list-group-sm">';
+  
+  tracks.forEach(track => {
+    html += `
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <h6 class="mb-1 small">${escapeHtml(track.title)}</h6>
+            <p class="text-muted small mb-0">${escapeHtml(track.artist)}${track.album ? ' · ' + escapeHtml(track.album) : ''}</p>
+          </div>
+          <span class="badge bg-success ms-2">✓ Found</span>
+        </div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderMissingTracks(tracks) {
+  const container = document.getElementById('missingTracksList');
+  document.getElementById('missingCount').textContent = tracks.length;
+
+  let html = '<div class="list-group list-group-sm">';
+
+  tracks.forEach((track, index) => {
+    html += `
+      <div class="list-group-item">
+        <div class="d-flex gap-2 align-items-start">
+          <div class="form-check mt-1">
+            <input class="form-check-input" type="checkbox" id="track_${index}" value="${index}" onchange="updateSelectedTracks()">
+          </div>
+          <div class="flex-grow-1">
+            <label for="track_${index}" class="form-check-label" style="cursor: pointer;">
+              <h6 class="mb-1 small">${escapeHtml(track.title)}</h6>
+              <p class="text-muted small mb-0">${escapeHtml(track.artist)}${track.album ? ' · ' + escapeHtml(track.album) : ''}</p>
+            </label>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function updateSelectedTracks() {
+  selectedMissingTracks = [];
+  
+  missingTracks.forEach((track, index) => {
+    const checkbox = document.getElementById(`track_${index}`);
+    if (checkbox && checkbox.checked) {
+      selectedMissingTracks.push(track);
+    }
+  });
+}
+
+function toggleAllMissingTracks() {
+  missingTracks.forEach((track, index) => {
+    const checkbox = document.getElementById(`track_${index}`);
+    if (checkbox) checkbox.checked = true;
+  });
+  updateSelectedTracks();
+}
+
+function deselectAllMissingTracks() {
+  missingTracks.forEach((track, index) => {
+    const checkbox = document.getElementById(`track_${index}`);
+    if (checkbox) checkbox.checked = false;
+  });
+  updateSelectedTracks();
+}
+
+async function downloadSelectedTracks() {
+  if (selectedMissingTracks.length === 0) {
+    alert('❌ Please select at least one track to download');
+    return;
+  }
+
+  const downloadMethod = document.getElementById('missingTracksDownloadMethod').value;
+  
+  // Add each selected track to the download queue
+  let successCount = 0;
+  let failureCount = 0;
+
+  for (const track of selectedMissingTracks) {
+    try {
+      const response = await fetch('/api/queue/add', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          artist: track.artist,
+          title: track.title,
+          album: track.album || '',
+          source: downloadMethod,
+          priority: 5
+        })
+      });
+
+      const data = await response.json();
+
+      if (data.success) {
+        successCount++;
+      } else {
+        failureCount++;
+        console.error(`Failed to queue ${track.artist} - ${track.title}:`, data.error);
+      }
+    } catch (error) {
+      failureCount++;
+      console.error(`Error queuing ${track.artist} - ${track.title}:`, error);
+    }
+  }
+
+  alert(`✅ Queued ${successCount} tracks${failureCount > 0 ? ` (${failureCount} failed)` : ''}`);
+  
+  // Reload queue status
+  await loadQueueStatus();
+
+  // Clear selection
+  deselectAllMissingTracks();
+}
+
+async function createPlaylistDownloadSession(event) {
+  event.preventDefault();
+
+  if (selectedMissingTracks.length === 0) {
+    alert('❌ Please select tracks to download first');
+    return;
+  }
+
+  const sessionName = document.getElementById('playlistSessionName').value;
+  const downloadMethod = document.getElementById('playlistSessionMethod').value;
+
+  try {
+    const response = await fetch('/api/playlist/session', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session_name: sessionName,
+        playlist_name: currentPlaylistName,
+        playlist_id: currentPlaylistId,
+        tracks: selectedMissingTracks.map(t => ({
+          artist: t.artist,
+          title: t.title,
+          album: t.album
+        })),
+        download_method: downloadMethod
+      })
+    });
+
+    const data = await response.json();
+
+    if (data.success) {
+      alert(`✅ Created session "${sessionName}" with ${selectedMissingTracks.length} tracks`);
+      document.getElementById('playlistSessionForm').reset();
+      deselectAllMissingTracks();
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to create session'));
+    }
+  } catch (error) {
+    console.error('Error creating session:', error);
+    alert('❌ Network error: ' + error.message);
+  }
 }
 
 </script>

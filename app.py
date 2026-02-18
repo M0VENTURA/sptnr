@@ -579,6 +579,216 @@ def api_spotify_playlists():
         logging.error(f"Failed to fetch Spotify playlists: {e}", exc_info=True)
         return jsonify({"error": f"Exception occurred: {str(e)}"}), 500
 
+# --- Spotify User Playlists Endpoint (for Playlist Downloads tab) ---
+@app.route("/api/spotify/user/<username>/playlists", methods=["GET"])
+def api_spotify_user_playlists(username):
+    """
+    Fetch public playlists for a Spotify user by username.
+    """
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+        client_id = spotify_config.get("client_id", "")
+        client_secret = spotify_config.get("client_secret", "")
+        
+        if not client_id or not client_secret:
+            return jsonify({"success": False, "error": "Spotify not configured"}), 400
+        
+        from api_clients.spotify import get_spotify_user_public_playlists
+        playlists = get_spotify_user_public_playlists(username, client_id, client_secret)
+        
+        return jsonify({
+            "success": True,
+            "username": username,
+            "playlists": playlists,
+            "count": len(playlists)
+        })
+    
+    except Exception as e:
+        logging.error(f"Failed to fetch playlists for user {username}: {e}", exc_info=True)
+        return jsonify({"success": False, "error": f"Failed to fetch playlists: {str(e)}"}), 500
+
+# --- Spotify Playlist Tracks with Collection Matching ---
+@app.route("/api/spotify/playlist/<playlist_id>/tracks", methods=["GET"])
+def api_spotify_playlist_tracks_with_matching(playlist_id):
+    """
+    Fetch tracks from a Spotify playlist and match them to the collection.
+    Query params:
+        - match_collection (optional): If true, compare tracks to collection and identify missing
+    """
+    try:
+        config_data, _ = _read_yaml(CONFIG_PATH)
+        spotify_config = config_data.get("api_integrations", {}).get("spotify", {})
+        client_id = spotify_config.get("client_id", "")
+        client_secret = spotify_config.get("client_secret", "")
+        
+        if not client_id or not client_secret:
+            return jsonify({"success": False, "error": "Spotify not configured"}), 400
+        
+        # Fetch playlist tracks
+        from api_clients.spotify import SpotifyAPI
+        spotify_client = SpotifyAPI(client_id, client_secret)
+        tracks = spotify_client.get_playlist_tracks(playlist_id)
+        
+        if not tracks:
+            return jsonify({"success": False, "error": "Playlist not found or is empty"}), 404
+        
+        match_collection = request.args.get("match_collection", "false").lower() == "true"
+        
+        if match_collection:
+            # Get all tracks from collection
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            cursor.execute("SELECT artist, title, album FROM tracks ORDER BY artist, title")
+            collection_tracks = cursor.fetchall()
+            conn.close()
+            
+            # Create searchable set for collection
+            collection_set = set()
+            for row in collection_tracks:
+                artist = (row['artist'] or '').lower()
+                title = (row['title'] or '').lower()
+                key = f"{artist}|{title}"
+                collection_set.add(key)
+            
+            # Match playlist tracks
+            matched_tracks = []
+            missing_tracks = []
+            
+            for track in tracks:
+                artist = (track.get('artist', '') or '').lower()
+                title = (track.get('name', '') or '').lower()
+                key = f"{artist}|{title}"
+                
+                if key in collection_set:
+                    matched_tracks.append({
+                        'artist': track.get('artist', ''),
+                        'title': track.get('name', ''),
+                        'album': track.get('album', '')
+                    })
+                else:
+                    missing_tracks.append({
+                        'artist': track.get('artist', ''),
+                        'title': track.get('name', ''),
+                        'album': track.get('album', '')
+                    })
+            
+            return jsonify({
+                "success": True,
+                "playlist_id": playlist_id,
+                "tracks": tracks,
+                "matched_tracks": matched_tracks,
+                "missing_tracks": missing_tracks,
+                "matched_count": len(matched_tracks),
+                "missing_count": len(missing_tracks),
+                "total_count": len(tracks)
+            })
+        else:
+            return jsonify({
+                "success": True,
+                "playlist_id": playlist_id,
+                "tracks": tracks,
+                "count": len(tracks)
+            })
+    
+    except Exception as e:
+        logging.error(f"Failed to fetch playlist {playlist_id} tracks: {e}", exc_info=True)
+        return jsonify({"success": False, "error": f"Failed to fetch playlist: {str(e)}"}), 500
+
+# --- Create Playlist Download Session ---
+@app.route("/api/playlist/session", methods=["POST"])
+def api_create_playlist_session():
+    """
+    Create a playlist download session and add tracks to download queue.
+    """
+    try:
+        data = request.json
+        
+        if not data:
+            return jsonify({"success": False, "error": "No data provided"}), 400
+        
+        session_name = data.get("session_name", "").strip()
+        playlist_name = data.get("playlist_name", "").strip()
+        playlist_id = data.get("playlist_id", "").strip()
+        download_method = data.get("download_method", "soulseek").strip()
+        tracks = data.get("tracks", [])
+        
+        if not session_name or not tracks:
+            return jsonify({"success": False, "error": "Missing session_name or tracks"}), 400
+        
+        if download_method not in ["soulseek", "qbittorrent"]:
+            return jsonify({"success": False, "error": "Invalid download_method"}), 400
+        
+        # Add each track to the download queue
+        from download_queue_manager import add_to_queue
+        
+        queued_tracks = []
+        failed_tracks = []
+        
+        for track in tracks:
+            artist = track.get("artist", "").strip()
+            title = track.get("title", "").strip()
+            album = track.get("album", "").strip()
+            
+            if not artist or not title:
+                failed_tracks.append(track)
+                continue
+            
+            try:
+                queue_item = add_to_queue(artist, title, album, download_method, priority=5)
+                if queue_item:
+                    queued_tracks.append(queue_item)
+                else:
+                    failed_tracks.append(track)
+            except Exception as e:
+                logging.error(f"Failed to queue {artist} - {title}: {e}")
+                failed_tracks.append(track)
+        
+        # Log this session
+        try:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Check if playlist_downloads_sessions table exists
+            cursor.execute("""
+                CREATE TABLE IF NOT EXISTS playlist_downloads_sessions (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    session_name TEXT NOT NULL,
+                    playlist_name TEXT,
+                    playlist_id TEXT,
+                    download_method TEXT,
+                    total_tracks INTEGER,
+                    queued_count INTEGER,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
+            
+            cursor.execute("""
+                INSERT INTO playlist_downloads_sessions 
+                (session_name, playlist_name, playlist_id, download_method, total_tracks, queued_count)
+                VALUES (?, ?, ?, ?, ?, ?)
+            """, (session_name, playlist_name, playlist_id, download_method, len(tracks), len(queued_tracks)))
+            
+            conn.commit()
+            conn.close()
+        except Exception as e:
+            logging.warning(f"Failed to log playlist session: {e}")
+        
+        return jsonify({
+            "success": True,
+            "session_name": session_name,
+            "playlist_name": playlist_name,
+            "queued_count": len(queued_tracks),
+            "failed_count": len(failed_tracks),
+            "total_count": len(tracks),
+            "queued_tracks": queued_tracks,
+            "failed_tracks": failed_tracks
+        })
+    
+    except Exception as e:
+        logging.error(f"Failed to create playlist session: {e}", exc_info=True)
+        return jsonify({"success": False, "error": f"Failed to create session: {str(e)}"}), 500
+
 app.secret_key = os.environ.get("SECRET_KEY", "dev-secret-key-change-in-production")
 app.config['PERMANENT_SESSION_LIFETIME'] = 86400  # 24 hours
 
