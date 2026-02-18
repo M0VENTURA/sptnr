@@ -10477,6 +10477,72 @@ def api_queue_add():
         return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
 
 
+@app.route("/api/queue/add-batch", methods=["POST"])
+def api_queue_add_batch():
+    """Add multiple songs/albums to download queue in a single request"""
+    try:
+        from download_queue_manager import add_to_queue
+        
+        data = request.get_json()
+        if not data or 'items' not in data:
+            logging.warning(f"Batch queue add called with no items")
+            return jsonify({"error": "No items provided"}), 400
+        
+        items = data.get('items', [])
+        if not isinstance(items, list):
+            return jsonify({"error": "items must be an array"}), 400
+        
+        logging.info(f"Adding {len(items)} items to queue in batch")
+        
+        added_count = 0
+        failed_count = 0
+        failed_tracks = []
+        
+        for item_data in items:
+            artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
+            title = item_data.get('title', '').strip() if item_data.get('title') else ''
+            album = item_data.get('album', '').strip() if item_data.get('album') else None
+            source = item_data.get('source', 'soulseek')
+            
+            try:
+                priority = int(item_data.get('priority', 5))
+            except (ValueError, TypeError):
+                priority = 5
+            
+            if not artist or not title:
+                failed_count += 1
+                failed_tracks.append(title or 'Unknown')
+                logging.warning(f"Skipping item with missing fields: artist='{artist}', title='{title}'")
+                continue
+            
+            try:
+                item = add_to_queue(artist, title, album, source, priority)
+                if item:
+                    added_count += 1
+                else:
+                    failed_count += 1
+                    failed_tracks.append(title)
+            except Exception as e:
+                failed_count += 1
+                failed_tracks.append(title)
+                logging.error(f"Error adding track '{title}' to queue: {e}")
+        
+        return jsonify({
+            "success": True,
+            "added": added_count,
+            "failed": failed_count,
+            "failed_tracks": failed_tracks,
+            "message": f"Added {added_count} items to queue" + 
+                      (f", {failed_count} failed" if failed_count > 0 else "")
+        })
+        
+    except Exception as e:
+        logging.error(f"Unexpected error in batch queue add: {type(e).__name__}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
+
+
 @app.route("/api/queue/status", methods=["GET"])
 def api_queue_status():
     """Get queue status and items"""

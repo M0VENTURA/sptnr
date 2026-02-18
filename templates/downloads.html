@@ -3635,7 +3635,10 @@ function displayMusicBrainzResults(results) {
           aria-labelledby="heading${releaseId}" data-bs-parent="#mbResultsAccordion">
           <div class="accordion-body">
             <div class="mb-3">
-              <button class="btn btn-success" onclick="downloadMusicBrainzRelease('${release.artist}', '${release.title}', ${JSON.stringify(release.tracks).replace(/'/g, "\\'")})" >
+              <button class="btn btn-success mb-download-release" 
+                data-artist="${escapeHtml(release.artist)}"
+                data-album="${escapeHtml(release.title)}"
+                data-tracks='${JSON.stringify(release.tracks)}'>
                 <i class="bi bi-download"></i> Download All Tracks (${release.track_count})
               </button>
             </div>
@@ -3659,6 +3662,16 @@ function displayMusicBrainzResults(results) {
   
   html += '</div>';
   container.innerHTML = html;
+  
+  // Attach event listeners to download buttons
+  container.querySelectorAll('.mb-download-release').forEach(button => {
+    button.addEventListener('click', function() {
+      const artist = this.dataset.artist;
+      const album = this.dataset.album;
+      const tracks = JSON.parse(this.dataset.tracks);
+      downloadMusicBrainzRelease(artist, album, tracks);
+    });
+  });
 }
 
 async function downloadMusicBrainzRelease(artist, album, tracks) {
@@ -3668,36 +3681,25 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
   }
   
   try {
-    // Add each track to the download queue
-    let addedCount = 0;
-    let failedCount = 0;
+    // Batch add all tracks in a single API call
+    const trackItems = tracks.map(track => ({
+      artist: artist,
+      title: track.title,
+      album: album,
+      source: 'soulseek',
+      priority: 5
+    }));
     
-    for (const track of tracks) {
-      try {
-        const response = await fetch('/api/queue/add', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            artist: artist,
-            title: track.title,
-            album: album,
-            source: 'soulseek',
-            priority: 5
-          })
-        });
-        
-        const data = await response.json();
-        if (data.success) {
-          addedCount++;
-        } else {
-          failedCount++;
-          console.error(`Failed to add track: ${track.title}`, data.error);
-        }
-      } catch (error) {
-        failedCount++;
-        console.error(`Error adding track: ${track.title}`, error);
-      }
-    }
+    // Send batch request
+    const response = await fetch('/api/queue/add-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: trackItems
+      })
+    });
+    
+    const data = await response.json();
     
     // Close modal
     const modalEl = document.getElementById('musicBrainzModal');
@@ -3706,13 +3708,24 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
       modal.hide();
     }
     
-    // Show success message
-    if (addedCount > 0) {
-      alert(`✅ Added ${addedCount} tracks to download queue` + 
-            (failedCount > 0 ? ` (${failedCount} failed)` : ''));
+    // Show result message
+    if (data.success) {
+      const added = data.added || 0;
+      const failed = data.failed || 0;
+      const failedTracks = data.failed_tracks || [];
+      
+      let message = `✅ Added ${added} tracks to download queue`;
+      if (failed > 0) {
+        message += `\n⚠️ Failed to add ${failed} tracks`;
+        if (failedTracks.length > 0) {
+          const failedList = failedTracks.slice(0, 5).join(', ');
+          message += `:\n${failedList}${failedTracks.length > 5 ? '...' : ''}`;
+        }
+      }
+      alert(message);
       await loadQueueStatus();
     } else {
-      alert('❌ Failed to add tracks to queue');
+      alert('❌ Error: ' + (data.error || 'Failed to add tracks to queue'));
     }
     
   } catch (error) {
