@@ -236,6 +236,9 @@ from logging_config import (
 # Set up logging with WebUI service name
 setup_logging("WebUI")
 
+# API Rate limiting constants
+DISCOGS_RATE_LIMIT_DELAY = 1  # seconds between Discogs API requests
+
 # Legacy compatibility - keep old functions
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = (
@@ -14369,12 +14372,13 @@ def api_search_musicbrainz_release():
         headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
         search_url = "https://musicbrainz.org/ws/2/release-group"
         
-        # Build search query
-        query = f'artist:"{artist}" AND releasegroup:"{album}"'
+        # Build search query - use fuzzy matching instead of exact quotes for better results
+        # This allows partial matches and typos to still return results
+        query = f'artist:{artist} AND releasegroup:{album}'
         params = {
             "fmt": "json",
             "query": query,
-            "limit": 10
+            "limit": 20  # Increased from 10 to show more potential matches
         }
         
         logging.info(f"Searching MusicBrainz for: {artist} - {album}")
@@ -14394,7 +14398,7 @@ def api_search_musicbrainz_release():
         
         # For each release group, fetch one representative release with tracks
         results = []
-        for rg in release_groups[:5]:  # Limit to first 5 matches
+        for rg in release_groups[:10]:  # Increased from 5 to show more potential matches
             rg_id = rg.get("id", "")
             rg_title = rg.get("title", "")
             rg_type = rg.get("primary-type", "")
@@ -14473,6 +14477,120 @@ def api_search_musicbrainz_release():
         return jsonify({"error": f"MusicBrainz API error: {e.response.status_code if hasattr(e, 'response') else str(e)}"}), 500
     except Exception as e:
         logging.error(f"Error searching MusicBrainz: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/search-discogs", methods=["POST"])
+def api_search_discogs_release():
+    """Search Discogs for a release and return track listings as fallback"""
+    try:
+        data = request.get_json() or {}
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        
+        # Get Discogs configuration
+        discogs_config = config.get("discogs", {})
+        discogs_token = discogs_config.get("token", "")
+        discogs_enabled = discogs_config.get("enabled", False)
+        
+        if not discogs_enabled or not discogs_token:
+            return jsonify({
+                "success": False,
+                "error": "Discogs is not configured. Please add your Discogs token in config."
+            }), 400
+        
+        from api_clients.discogs import DiscogsClient
+        
+        discogs_client = DiscogsClient(token=discogs_token, enabled=discogs_enabled)
+        
+        # Search Discogs for releases
+        search_url = f"{discogs_client.base_url}/database/search"
+        search_params = {
+            "q": f"{artist} {album}",
+            "type": "release",
+            "per_page": 20
+        }
+        
+        logging.info(f"Searching Discogs for: {artist} - {album}")
+        
+        time.sleep(DISCOGS_RATE_LIMIT_DELAY)  # Discogs rate limiting
+        
+        response = requests.get(search_url, headers=discogs_client.headers, params=search_params, timeout=15)
+        response.raise_for_status()
+        search_data = response.json()
+        
+        search_results = search_data.get("results", [])
+        
+        if not search_results:
+            return jsonify({
+                "success": True,
+                "results": [],
+                "message": f"No releases found on Discogs for {artist} - {album}"
+            })
+        
+        # Fetch details for top matches
+        results = []
+        for result in search_results[:10]:  # Limit to 10 results
+            release_id = result.get('id')
+            if not release_id:
+                continue
+            
+            try:
+                time.sleep(DISCOGS_RATE_LIMIT_DELAY)  # Rate limiting
+                
+                # Fetch full release data
+                release_url = f"{discogs_client.base_url}/releases/{release_id}"
+                release_response = requests.get(release_url, headers=discogs_client.headers, timeout=15)
+                release_response.raise_for_status()
+                release_data = release_response.json()
+                
+                # Extract track listing
+                tracklist = release_data.get("tracklist", [])
+                tracks = []
+                for track in tracklist:
+                    if track.get("type_") == "track":
+                        tracks.append({
+                            "title": track.get("title", "Unknown"),
+                            "position": track.get("position", ""),
+                            "duration": track.get("duration", "")
+                        })
+                
+                # Get release info
+                release_title = release_data.get("title", "")
+                release_year = release_data.get("year")
+                release_formats = release_data.get("formats", [])
+                format_names = [fmt.get("name", "") for fmt in release_formats]
+                
+                results.append({
+                    "release_id": release_id,
+                    "title": release_title,
+                    "artist": artist,
+                    "year": release_year,
+                    "formats": format_names,
+                    "track_count": len(tracks),
+                    "tracks": tracks,
+                    "source": "discogs"
+                })
+                
+            except Exception as e:
+                logging.warning(f"Error fetching Discogs release {release_id}: {e}")
+                continue
+        
+        return jsonify({
+            "success": True,
+            "results": results,
+            "total": len(results),
+            "source": "discogs"
+        })
+        
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"Discogs API error: {e}")
+        return jsonify({"error": f"Discogs API error: {e.response.status_code if hasattr(e, 'response') else str(e)}"}), 500
+    except Exception as e:
+        logging.error(f"Error searching Discogs: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

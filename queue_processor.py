@@ -13,6 +13,7 @@ import sys
 import time
 import sqlite3
 import logging
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -221,33 +222,41 @@ def search_and_download(queue_id, queue_item, client):
             mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
             return False
         
-        # Poll for results (up to 15 seconds with 1 second intervals)
+        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
+        MAX_POLL_ATTEMPTS = 15
         best_result = None
-        for poll_attempt in range(15):
+        for poll_attempt in range(MAX_POLL_ATTEMPTS):
             time.sleep(1)
             
             try:
                 responses, state, is_complete = client.get_search_results(search_id)
                 
+                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
+                
                 if responses:
                     # Find best result (first file from first user)
-                    for resp in responses:
+                    for resp_idx, resp in enumerate(responses):
                         if hasattr(resp, 'files') and resp.files:
+                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
                             best_result = {
                                 "username": resp.username,
                                 "filename": resp.files[0].filename,
                                 "size": getattr(resp.files[0], 'size', 0)
                             }
-                            logger.info(f"Queue {queue_id}: Found result after {poll_attempt}s: {best_result['filename']}")
+                            logger.info(f"Queue {queue_id}: ✓ Found result after {poll_attempt+1}s from {resp.username}")
+                            logger.info(f"Queue {queue_id}: File: {best_result['filename'][:80]}... ({best_result['size']} bytes)")
                             break
+                        else:
+                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {getattr(resp, 'username', 'unknown')} has no files")
                     
                     if best_result:
                         break
             except Exception as e:
-                logger.warning(f"Queue {queue_id}: Error polling results: {e}")
+                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+                logger.debug(traceback.format_exc())
         
         if not best_result:
-            logger.warning(f"Queue {queue_id}: No results found after 15 seconds")
+            logger.warning(f"Queue {queue_id}: ✗ No results found after {MAX_POLL_ATTEMPTS} seconds of polling")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
             return False
         
@@ -258,11 +267,12 @@ def search_and_download(queue_id, queue_item, client):
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
         
         if success:
-            logger.info(f"Queue {queue_id}: Download queued successfully")
-            update_queue_status(queue_id, 'downloading')
+            logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
+            logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
+            # Status already set to 'downloading' above
             return True
         else:
-            logger.error(f"Queue {queue_id}: Failed to queue download")
+            logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
             mark_failed(queue_id, "Failed to queue Soulseek download", schedule_retry=True, retry_delay_minutes=15)
             return False
             
@@ -278,6 +288,7 @@ def check_completed_downloads():
         cursor = conn.cursor()
         
         if not os.path.isdir(DOWNLOADS_DIR):
+            logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
             return
         
         # Get all downloading queue items
@@ -288,10 +299,15 @@ def check_completed_downloads():
         
         downloading = [dict(row) for row in cursor.fetchall()]
         
+        if downloading:
+            logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
+        
         # Get files in downloads folder
         try:
             files = [f for f in os.listdir(DOWNLOADS_DIR) 
                     if f.lower().endswith(('.mp3', '.flac', '.m4a'))]
+            if files:
+                logger.debug(f"Found {len(files)} audio files in {DOWNLOADS_DIR}")
         except Exception as e:
             logger.error(f"Error scanning downloads folder: {e}")
             conn.close()
@@ -304,16 +320,18 @@ def check_completed_downloads():
             # Try exact filename match first
             if item['found_filename'] and item['found_filename'] in files:
                 match_found = item['found_filename']
+                logger.debug(f"Queue {item['id']}: Exact filename match found")
             else:
                 # Try fuzzy matching
                 for filename in files:
                     if matches_queue_item(filename, item):
                         match_found = filename
+                        logger.debug(f"Queue {item['id']}: Fuzzy match found: {filename}")
                         break
             
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                logger.info(f"Queue {item['id']}: Matched file '{match_found}'")
+                logger.info(f"Queue {item['id']}: Matched file '{match_found}' - marking as completed")
                 update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
         
         conn.close()
@@ -362,9 +380,9 @@ def process_queue(client):
         items = get_queued_items(limit=5)
         
         if not items:
-            return 0
-        
-        logger.info(f"Processing {len(items)} queue items...")
+            logger.debug("No queued items to process")
+        else:
+            logger.info(f"Processing {len(items)} queue items...")
         
         processed = 0
         for item in items:
@@ -379,7 +397,8 @@ def process_queue(client):
                 logger.error(f"Error processing queue {item['id']}: {e}")
                 mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
         
-        # Check for completed downloads after processing
+        # Always check for completed downloads, even if no new items were processed
+        # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
         
         return processed
@@ -418,7 +437,6 @@ def run_processor(interval=30):
                 break
             except Exception as e:
                 logger.error(f"Error in processor loop: {e}")
-                import traceback
                 logger.error(traceback.format_exc())
                 time.sleep(interval)
                 
