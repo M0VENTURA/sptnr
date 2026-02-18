@@ -388,6 +388,67 @@ class SlskdClient:
             logger.info(f"Slskd search completed for '{query}' but no qualified results")
         
         return qualified
+    
+    def get_active_downloads(self, timeout: int = 10) -> list[dict]:
+        """
+        Get list of active downloads from slskd.
+        
+        Args:
+            timeout: Request timeout
+            
+        Returns:
+            List of download dicts with progress information
+        """
+        if not self.enabled:
+            return []
+        
+        try:
+            # Query the transfers/downloads endpoint
+            url = f"{self.base_url}/transfers/downloads"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            
+            if resp.status_code != 200:
+                logger.warning(f"Slskd downloads endpoint failed: {resp.status_code}")
+                return []
+            
+            raw_downloads = resp.json() or []
+            downloads = []
+            
+            for download in raw_downloads:
+                try:
+                    # Extract key fields from slskd response
+                    username = download.get("username", "Unknown")
+                    filename = download.get("filename", "Unknown")
+                    size = int(download.get("size", 0))
+                    bytes_transferred = int(download.get("bytesTransferred", 0))
+                    state = download.get("state", "Unknown")
+                    
+                    # Calculate progress percentage (0-100)
+                    progress = 0
+                    if size > 0:
+                        progress = min(100, round((bytes_transferred / size) * 100, 2))
+                    
+                    # Calculate average speed (bytes/sec)
+                    # slskd may provide averageSpeed or we can estimate it
+                    average_speed = int(download.get("averageSpeed", 0))
+                    
+                    downloads.append({
+                        "username": username,
+                        "filename": filename,
+                        "size": size,
+                        "bytesTransferred": bytes_transferred,
+                        "progress": progress,
+                        "state": state,
+                        "averageSpeed": average_speed,
+                    })
+                except Exception as e:
+                    logger.warning(f"Failed to parse slskd download entry: {e}")
+            
+            logger.debug(f"Slskd found {len(downloads)} active downloads")
+            return downloads
+        except Exception as e:
+            logger.error(f"Slskd get active downloads failed: {e}")
+            return []
 
 
 # Backward-compatible module functions
