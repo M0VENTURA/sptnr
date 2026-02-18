@@ -3863,6 +3863,12 @@ document.addEventListener('DOMContentLoaded', function() {
   
   // Auto-refresh queue every 10 seconds
   setInterval(loadQueueStatus, 10000);
+  
+  // Handle hash-based tab navigation (for links from artist/album pages)
+  if (window.location.hash === '#upcoming') {
+    const upcomingTab = new bootstrap.Tab(document.getElementById('upcomingTab'));
+    upcomingTab.show();
+  }
 });
 
 // ===== Download Queue Management Functions =====
