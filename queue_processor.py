@@ -223,7 +223,8 @@ def search_and_download(queue_id, queue_item, client):
             return False
         
         # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
-        MAX_POLL_ATTEMPTS = 15
+        # Increased timeout to 45 seconds to handle slow Soulseek peer responses
+        MAX_POLL_ATTEMPTS = 45
         best_result = None
         for poll_attempt in range(MAX_POLL_ATTEMPTS):
             time.sleep(1)
@@ -234,23 +235,34 @@ def search_and_download(queue_id, queue_item, client):
                 logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
                 
                 if responses:
-                    # Find best result (first file from first user)
+                    # Find best result (first file from first user with files)
                     for resp_idx, resp in enumerate(responses):
-                        if hasattr(resp, 'files') and resp.files:
+                        if hasattr(resp, 'files') and resp.files and len(resp.files) > 0:
                             logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
+                            # Get file info - handle both object and dict formats
+                            file_info = resp.files[0]
+                            filename = getattr(file_info, 'filename', file_info.get('filename', '')) if isinstance(file_info, dict) else getattr(file_info, 'filename', '')
+                            size = getattr(file_info, 'size', file_info.get('size', 0)) if isinstance(file_info, dict) else getattr(file_info, 'size', 0)
+                            
                             best_result = {
                                 "username": resp.username,
-                                "filename": resp.files[0].filename,
-                                "size": getattr(resp.files[0], 'size', 0)
+                                "filename": filename,
+                                "size": size
                             }
                             logger.info(f"Queue {queue_id}: ✓ Found result after {poll_attempt+1}s from {resp.username}")
-                            logger.info(f"Queue {queue_id}: File: {best_result['filename'][:80]}... ({best_result['size']} bytes)")
+                            logger.info(f"Queue {queue_id}: File: {str(filename)[:80]}... ({size} bytes)")
                             break
                         else:
-                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {getattr(resp, 'username', 'unknown')} has no files")
+                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {getattr(resp, 'username', 'unknown')} has no files or empty files list")
                     
                     if best_result:
                         break
+                
+                # Exit early if search is complete and we have results
+                if is_complete and best_result:
+                    logger.info(f"Queue {queue_id}: Search complete with results, stopping polling")
+                    break
+                    
             except Exception as e:
                 logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
                 logger.debug(traceback.format_exc())

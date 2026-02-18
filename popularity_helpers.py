@@ -241,12 +241,12 @@ def calculate_lastfm_zscore_popularity(
     
     This method is more robust than single-metric scoring as it:
     - Uses both unique listeners (reach) and play count (engagement)
-    - Normalizes within album context (z-scores) to account for album-level popularity
+    - Normalizes within album context (z-scores using median) to account for album-level popularity
     - Combines metrics to balance reach vs. engagement
     
     Algorithm:
-    1. Calculate z-score for listeners within album: (listeners - mean_listeners) / stdev_listeners
-    2. Calculate z-score for playcount within album: (playcount - mean_playcount) / stdev_playcount  
+    1. Calculate z-score for listeners within album: (listeners - median_listeners) / stdev_listeners
+    2. Calculate z-score for playcount within album: (playcount - median_playcount) / stdev_playcount  
     3. Average the two z-scores: (z_listeners + z_playcount) / 2
     4. Convert averaged z-score to 0-100 scale
     
@@ -269,21 +269,21 @@ def calculate_lastfm_zscore_popularity(
         return calculate_lastfm_popularity_score(listeners)
     
     try:
-        # Calculate z-scores for listeners
-        listeners_mean = mean(album_listeners)
+        # Calculate z-scores for listeners (using median for centering)
+        listeners_median = median(album_listeners)
         listeners_stdev = stdev(album_listeners)
         
         if listeners_stdev > 0:
-            z_listeners = (listeners - listeners_mean) / listeners_stdev
+            z_listeners = (listeners - listeners_median) / listeners_stdev
         else:
             z_listeners = 0.0
         
-        # Calculate z-scores for playcounts
-        playcount_mean = mean(album_playcounts)
+        # Calculate z-scores for playcounts (using median for centering)
+        playcount_median = median(album_playcounts)
         playcount_stdev = stdev(album_playcounts)
         
         if playcount_stdev > 0:
-            z_playcount = (playcount - playcount_mean) / playcount_stdev
+            z_playcount = (playcount - playcount_median) / playcount_stdev
         else:
             z_playcount = 0.0
         
@@ -292,10 +292,10 @@ def calculate_lastfm_zscore_popularity(
         
         # Convert z-score to 0-100 scale
         # Z-scores typically range from -3 to +3, so we normalize:
-        # z_score of 0 (album average) → 50
-        # z_score of +1 (1 stdev above) → 66.7 (50 + 16.7)
-        # z_score of +2 (2 stdev above) → 83.3 (50 + 33.3) 
-        # z_score of -1 (1 stdev below) → 33.3 (50 - 16.7)
+        # z_score of 0 (album median) → 50
+        # z_score of +1 (1 stdev above median) → 66.7 (50 + 16.7)
+        # z_score of +2 (2 stdev above median) → 83.3 (50 + 33.3) 
+        # z_score of -1 (1 stdev below median) → 33.3 (50 - 16.7)
         # Formula: 50 + (z_score * 16.7)
         
         score = 50.0 + (average_zscore * 16.7)

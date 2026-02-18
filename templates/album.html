@@ -36,13 +36,13 @@
             </div>
         </div>
         <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
-            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name }}', '{{ artist_name }}', '{{ album_name }}', null)" title="Add to favourites">
+            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
                 <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
             </button>
             <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
                 <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
             </button>
-            <button class="btn btn-outline-warning" onclick="updateAlbumWithBeets('{{ artist_name }}', '{{ album_name }}')" title="Update tags and organize files with beets">
+            <button class="btn btn-outline-warning" onclick="updateAlbumWithBeets('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Update tags and organize files with beets">
                 <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update with Beets</span>
             </button>
             <div class="btn-group" role="group">
@@ -51,12 +51,12 @@
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
                     {% if qbit_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                    <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
                         <i class="bi bi-cloud-download"></i> Search qBittorrent
                     </a></li>
                     {% endif %}
                     {% if slskd_config.enabled %}
-                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name }}', '{{ album_name }}')" href="javascript:void(0)">
+                    <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
                         <i class="bi bi-music-note-beamed"></i> Search Soulseek
                     </a></li>
                     {% endif %}
@@ -67,7 +67,7 @@
                     <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album</span>
                 </button>
             </form>
-            <button class="btn btn-outline-secondary" onclick="addAlbumToMissingReleases('{{ artist_name }}', '{{ album_name }}', '{{ album_data.spotify_release_date if album_data and album_data.spotify_release_date else '' }}')" title="Track this album in missing releases">
+            <button class="btn btn-outline-secondary" onclick="addAlbumToMissingReleases('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', '{{ album_data.spotify_release_date if album_data and album_data.spotify_release_date else ''|escapejs }}')" title="Track this album in missing releases">
                 <i class="bi bi-bookmark-plus"></i> <span class="d-none d-sm-inline">Track Release</span>
             </button>
         </div>
@@ -329,7 +329,7 @@
                                 {% for genre in album_genres %}
                                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                                     {{ genre }}
-                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre }}', '{{ artist_name }}', '{{ album_name }}')" aria-label="Remove"></button>
+                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" aria-label="Remove"></button>
                                 </span>
                                 {% endfor %}
                             {% else %}

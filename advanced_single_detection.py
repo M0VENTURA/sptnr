@@ -377,13 +377,13 @@ def calculate_zscore(
     if len(album_popularities) < 2:
         return 0.0
     
-    album_mean = mean(album_popularities)
+    album_median = median(album_popularities)
     album_stddev = stdev(album_popularities)
     
     if album_stddev == 0:
         return 0.0
     
-    return (popularity - album_mean) / album_stddev
+    return (popularity - album_median) / album_stddev
 
 
 def is_compilation_album(album_type: Optional[str], album: str) -> bool:
@@ -550,7 +550,6 @@ def detect_single_advanced(
     
     album_pops = [row[0] for row in cursor.fetchall() if row[0]]
     album_median_val = median(album_pops) if album_pops else 0.0
-    album_mean_val = mean(album_pops) if len(album_pops) > 1 else 0.0
     album_stddev_val = stdev(album_pops) if len(album_pops) > 1 else 0.0
     
     # STAGE 2: Artist-level statistics for standout detection

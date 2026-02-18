@@ -41,7 +41,7 @@ from datetime import datetime
 import copy
 from functools import wraps
 from navidrome_import import scan_artist_to_db, _fetch_artist_metadata
-from popularity import popularity_scan, row_get
+from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
 # --- Utility: Aggregate genres from tracks in DB ---
@@ -2564,11 +2564,21 @@ def api_scan_all_missing_releases():
                                 # Update cover_art_url for all tracks in this album
                                 original_album = next((a for a in existing_albums if _normalize_release_title(a) == norm_title), None)
                                 if original_album:
+                                    # Update the URL in tracks table
                                     cursor.execute("""
                                         UPDATE tracks 
                                         SET cover_art_url = ?
                                         WHERE artist = ? AND album = ?
                                     """, (cover_art_url, artist_name, original_album))
+                                    
+                                    # Also download and save the actual album art image data (same as popularity scan does)
+                                    try:
+                                        if download_and_save_album_art(artist_name, original_album, cover_art_url):
+                                            logging.info(f"[MISSING_RELEASES] Downloaded and cached album art for {artist_name} - {original_album}")
+                                        else:
+                                            logging.debug(f"[MISSING_RELEASES] Failed to download album art for {artist_name} - {original_album}")
+                                    except Exception as e:
+                                        logging.debug(f"[MISSING_RELEASES] Error downloading album art for {artist_name} - {original_album}: {e}")
                             continue
                         
                         if not norm_title:
@@ -7807,7 +7817,9 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
         # Start a thread to monitor the search and download when results are available
         def monitor_slskd_search():
             import time
-            max_wait = 30  # Wait up to 30 seconds for results
+            # Increased timeout to 60 seconds to handle slow Soulseek peer responses
+            # Each peer has a 5-second timeout; many timeouts need more time to collect results
+            max_wait = 60
             start_time = time.time()
             best_file = None
             best_match_score = 0
@@ -7819,19 +7831,20 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                     if responses:
                         # Look through responses for best matching files
                         for response in responses:
-                            if hasattr(response, 'files') and response.files:
+                            if hasattr(response, 'files') and response.files and len(response.files) > 0:
                                 for file_info in response.files:
-                                    # Score the file based on how well it matches the query
-                                    filename = file_info.get('filename', '').lower()
+                                    # Get filename - handle both dict and object formats
+                                    filename = file_info.get('filename', '') if isinstance(file_info, dict) else getattr(file_info, 'filename', '')
+                                    filename_lower = str(filename).lower()
                                     query_lower = query.lower()
                                     
                                     # Simple scoring: count matching words
                                     query_words = query_lower.split()
-                                    matches = sum(1 for word in query_words if word in filename)
+                                    matches = sum(1 for word in query_words if word in filename_lower)
                                     match_score = matches / len(query_words) if query_words else 0
                                     
                                     # Prefer files with audio extensions
-                                    if any(filename.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
+                                    if any(filename_lower.endswith(ext) for ext in ['.mp3', '.flac', '.m4a', '.aac', '.ogg']):
                                         match_score *= 1.2
                                     else:
                                         match_score *= 0.5  # Lower score for non-audio
@@ -7840,12 +7853,19 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                                         best_match_score = match_score
                                         best_file = {
                                             'username': response.username if hasattr(response, 'username') else 'Unknown',
-                                            'filename': file_info.get('filename', ''),
-                                            'size': file_info.get('size', 0),
+                                            'filename': filename,
+                                            'size': file_info.get('size', 0) if isinstance(file_info, dict) else getattr(file_info, 'size', 0),
                                             'match_score': match_score
                                         }
                     
-                    if is_complete:
+                    if is_complete and best_file and best_match_score >= 0.3:
+                        # Stop early if search is complete and we have a good match
+                        logging.debug(f"[SLSKD_MONITOR] Search complete with good match score {best_match_score}")
+                        break
+                    
+                    if is_complete and not best_file:
+                        # Stop if search is complete but no files found
+                        logging.debug(f"[SLSKD_MONITOR] Search complete but no files found")
                         break
                     
                     time.sleep(1)
@@ -7859,6 +7879,8 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
+                    
+                    logging.info(f"[SLSKD_MONITOR] Downloading best match with score {best_match_score}: {best_file['filename'][:80]}")
                     
                     # Start the download
                     success = client.download_file(
@@ -7903,11 +7925,12 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
                 try:
                     conn2 = get_db()
                     cursor2 = conn2.cursor()
+                    match_score_msg = f"match score {best_match_score}" if best_file else "no responses with files"
                     cursor2.execute("""
                         UPDATE managed_downloads 
-                        SET status = 'error', error_message = 'No matching files found', updated_at = CURRENT_TIMESTAMP
+                        SET status = 'error', error_message = ?, updated_at = CURRENT_TIMESTAMP
                         WHERE id = ?
-                    """, (tracking_id,))
+                    """, (f"No matching files found ({match_score_msg})", tracking_id))
                     conn2.commit()
                     conn2.close()
                 except:
