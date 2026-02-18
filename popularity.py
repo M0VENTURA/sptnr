@@ -2586,23 +2586,28 @@ def popularity_scan(
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
                     log_debug(f'Alternate takes map: {alternate_takes_map}')
                 
-                # Detect if this album is a compilation (using local heuristics and track listing analysis)
-                # Get album metadata from first track to access album_artist and spotify_album_type
-                sample_track = album_tracks_list[0] if album_tracks_list else {}
-                album_artist = row_get(sample_track, 'album_artist')
-                spotify_album_type = row_get(sample_track, 'spotify_album_type')
+                # Detect if this album is a compilation ONLY if we're scanning a compilation artist
+                # (e.g., Various Artists, Soundtracks, etc.)
+                # This avoids running compilation detection on regular artist popularity scans
+                is_scanning_compilation_artist = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack', 'various artists -')
                 
-                is_compilation = detect_compilation_album(artist, album, album_tracks_list, album_artist, spotify_album_type)
-                if is_compilation:
-                    # Update all tracks in this album to mark as compilation
-                    cursor.execute("""
-                        UPDATE tracks 
-                        SET is_compilation = 1
-                        WHERE artist = ? AND album = ?
-                    """, (artist, album))
-                    conn.commit()
-                    log_info(f'Marked album as compilation: "{artist} - {album}"')
-                    log_debug(f'Compilation detected for album: album_artist="{album_artist}", spotify_type="{spotify_album_type}"')
+                if is_scanning_compilation_artist:
+                    # Get album metadata from first track to access album_artist and spotify_album_type
+                    sample_track = album_tracks_list[0] if album_tracks_list else {}
+                    album_artist = row_get(sample_track, 'album_artist')
+                    spotify_album_type = row_get(sample_track, 'spotify_album_type')
+                    
+                    is_compilation = detect_compilation_album(artist, album, album_tracks_list, album_artist, spotify_album_type)
+                    if is_compilation:
+                        # Update all tracks in this album to mark as compilation
+                        cursor.execute("""
+                            UPDATE tracks 
+                            SET is_compilation = 1
+                            WHERE artist = ? AND album = ?
+                        """, (artist, album))
+                        conn.commit()
+                        log_info(f'Marked album as compilation: "{artist} - {album}"')
+                        log_debug(f'Compilation detected for album: album_artist="{album_artist}", spotify_type="{spotify_album_type}"')
                 
                 # Cache Spotify search results for singles detection reuse
                 # Initialize unconditionally for both singles_only and normal mode
