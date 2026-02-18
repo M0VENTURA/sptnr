@@ -188,11 +188,11 @@ def is_live_or_alternate_album(album: str) -> bool:
         r'\blive\s+session\b',     # "live session"
         r'\blive\s+recording\b',   # "live recording"
         r'\blive\s+tour\b',        # "live tour"
-        r'\(live\)',               # "(live)" format tag
-        r'\[live\]',               # "[live]" format tag
-        r'-\s*live\b',             # "- live" suffix
+        r'\(live\)\s*$',           # "(live)" at the end
+        r'\[live\]\s*$',           # "[live]" at the end
+        r'-\s*live\s*$',           # "- live" at the end
         r'\s+live\s*$',            # ends with " live"
-        r'\s+live\s*[\)\]]',       # "live)" or "live]" format
+        r'\s+live\s*[\)\]]\s*$',   # "live)" or "live]" at the end
         r'\bunplugged\b',          # "unplugged"
         r'\bacoustic\b',           # "acoustic"
         r'\bconcert\b',            # "concert" album

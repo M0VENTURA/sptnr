@@ -103,7 +103,7 @@ def detect_live_album(album_title: str) -> dict:
     # These patterns require "live" to be in a format tag position (end, after separator, between brackets)
     # NOT inside the actual title like "(how to live)"
     live_patterns = [
-        # Standalone format tags
+        # Standalone format tags (anchored to end)
         r'\(live\)\s*$',           # "(live)" at the end
         r'\[live\]\s*$',           # "[live]" at the end
         r'-\s*live\s*$',           # "- live" at the end
