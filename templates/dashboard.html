@@ -865,16 +865,8 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 const logEl = document.getElementById('unifiedLog');
                 if (logEl && data && data.lines) {
-                    // Properly escape HTML and join with actual newlines for <pre> tag
-                    const escapedLines = data.lines.map(line => {
-                        return line
-                            .replace(/&/g, '&amp;')
-                            .replace(/</g, '&lt;')
-                            .replace(/>/g, '&gt;')
-                            .replace(/"/g, '&quot;')
-                            .replace(/'/g, '&#39;');
-                    });
-                    logEl.textContent = escapedLines.join('\n');
+                    // textContent handles HTML escaping safely - no manual escaping needed
+                    logEl.textContent = data.lines.join('\n');
                     logEl.scrollTop = logEl.scrollHeight;
                 }
             })
