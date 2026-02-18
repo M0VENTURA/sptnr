@@ -1091,10 +1091,10 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
     if len(popularities) < 2:
         return 0.0, 0.0, len(popularities)
     
-    artist_median = median(popularities)
+    artist_mean = mean(popularities)
     artist_stddev = stdev(popularities)
     
-    return artist_median, artist_stddev, len(popularities)
+    return artist_mean, artist_stddev, len(popularities)
 
 
 # --- DEBUG: Test log_unified and print log path ---
@@ -1563,14 +1563,14 @@ def detect_single_for_track(
             artist_popularities = [row[0] for row in cursor.fetchall()]
             artist_passed = True
             artist_zscore = 0.0
-            artist_median = 0.0
+            artist_mean = 0.0
             
             if len(artist_popularities) >= 5:
                 # Established artist: use artist-level z-score
-                from statistics import stdev as stat_stdev, median as stat_median
-                artist_median = stat_median(artist_popularities)
+                from statistics import stdev as stat_stdev, mean as stat_mean
+                artist_mean = stat_mean(artist_popularities)
                 artist_stddev = stat_stdev(artist_popularities) if len(artist_popularities) > 1 else 1
-                artist_zscore = (popularity - artist_median) / artist_stddev if artist_stddev > 0 else 0
+                artist_zscore = (popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0
                 
                 artist_threshold = 0.5  # Configurable threshold
                 if artist_zscore < artist_threshold:
@@ -1915,8 +1915,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                 'source': 'error'
             }
         
-        # Calculate artist-level statistics (using median-centered z-scores)
-        artist_median = median(listeners_list)
+        # Calculate artist-level statistics (using mean-centered z-scores)
+        artist_mean = mean(listeners_list)
         artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
         artist_min = min(listeners_list)
         artist_max = max(listeners_list)
@@ -1929,15 +1929,15 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             listeners = track_row[3]
             
             if artist_stdev > 0:
-                z = (listeners - artist_median) / artist_stdev
+                z = (listeners - artist_mean) / artist_stdev
                 track_zscores[track_id] = z
                 # Log tracks that are significant outliers (for debugging)
                 if abs(z) >= 2.0:
                     in_top_10 = "✓ in top 10%" if listeners >= top_10_percentile_threshold else "✗ not in top 10%"
-                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_median={artist_median:.0f}, {in_top_10})")
+                    log_debug(f"Artist outlier detected: {title} (z={z:.2f}, listeners={listeners:.0f}, artist_mean={artist_mean:.0f}, {in_top_10})")
         
         return {
-            'median': artist_median,
+            'mean': artist_mean,
             'stdev': artist_stdev,
             'min': artist_min,
             'max': artist_max,
@@ -1951,7 +1951,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
     except Exception as e:
         log_debug(f"Error calculating artist Last.fm context: {e}")
         return {
-            'median': 0,
+            'mean': 0,
             'stdev': 0,
             'min': 0,
             'max': 0,
@@ -1995,26 +1995,26 @@ def get_dynamic_weights(
         Tuple of (adjusted_spotify_weight, adjusted_lastfm_weight)
     """
     try:
-        artist_median = artist_context.get('median', 0)
+        artist_mean = artist_context.get('mean', 0)
         artist_stdev = artist_context.get('stdev', 0)
         
         # If insufficient artist context, return base weights
-        if artist_stdev == 0 or artist_median == 0:
+        if artist_stdev == 0 or artist_mean == 0:
             return (base_spotify_weight, base_lastfm_weight)
         
-        # Calculate z-score for this track relative to artist median
+        # Calculate z-score for this track relative to artist mean
         if track_lastfm_listeners > 0:
-            track_zscore = (track_lastfm_listeners - artist_median) / artist_stdev
+            track_zscore = (track_lastfm_listeners - artist_mean) / artist_stdev
         else:
             return (base_spotify_weight, base_lastfm_weight)
         
-        # Boost weight for outliers (tracks significantly above/below artist median)
+        # Boost weight for outliers (tracks significantly above/below artist mean)
         # z-score magnitude indicates how unusual this track is
         abs_zscore = abs(track_zscore)
         
         if abs_zscore >= 2.0:
-            # Track is 2+ standard deviations from median (highly unusual in artist's catalogue)
-            if track_lastfm_listeners > artist_median * 1.5:
+            # Track is 2+ standard deviations from mean (highly unusual in artist's catalogue)
+            if track_lastfm_listeners > artist_mean * 1.5:
                 # Above mean outlier - Last.fm signal is stronger, boost it
                 adjustment = 1.5 - abs(track_zscore) * 0.05  # Cap adjustment at ~1.5x
                 new_lastfm = base_lastfm_weight * adjustment
@@ -2312,7 +2312,7 @@ def popularity_scan(
             # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
             artist_lastfm_context = get_artist_lastfm_context(artist, conn)
             if artist_lastfm_context['track_count'] > 0:
-                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, median={artist_lastfm_context['median']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
+                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, mean={artist_lastfm_context['mean']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
                 log_debug(f"Artist catalogue range: {artist_lastfm_context['min']:.0f} - {artist_lastfm_context['max']:.0f} listeners")
             else:
                 log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
@@ -3232,10 +3232,10 @@ def popularity_scan(
                                 listeners_list = [row_get(t, 'lastfm_track_playcount', 0) for t in artist_tracks if row_get(t, 'lastfm_track_playcount', 0) > 0]
                                 
                                 if len(listeners_list) >= 2:
-                                    artist_median = median(listeners_list)
+                                    artist_mean = mean(listeners_list)
                                     artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
                                     
-                                    log_debug(f'Artist {artist} listener stats: median={artist_median:.0f}, stdev={artist_stdev:.0f}')
+                                    log_debug(f'Artist {artist} listener stats: mean={artist_mean:.0f}, stdev={artist_stdev:.0f}')
                                     standup_count = 0
                                     for track in artist_tracks:
                                         track_id = row_get(track, 'id')
@@ -3243,7 +3243,7 @@ def popularity_scan(
                                         listeners = row_get(track, 'lastfm_track_playcount', 0)
                                         
                                         if listeners > 0 and artist_stdev > 0:
-                                            track_zscore = (listeners - artist_median) / artist_stdev
+                                            track_zscore = (listeners - artist_mean) / artist_stdev
                                             
                                             # Mark as standout if z-score >= 2.0 AND listeners >= 1000
                                             is_standout = 1 if (track_zscore >= 2.0 and listeners >= 1000) else 0
