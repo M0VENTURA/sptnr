@@ -236,6 +236,9 @@ from logging_config import (
 # Set up logging with WebUI service name
 setup_logging("WebUI")
 
+# API Rate limiting constants
+DISCOGS_RATE_LIMIT_DELAY = 1  # seconds between Discogs API requests
+
 # Legacy compatibility - keep old functions
 LOG_PATH = os.environ.get("LOG_PATH", "/config/sptnr.log")
 VERBOSE = (
@@ -14513,7 +14516,7 @@ def api_search_discogs_release():
         
         logging.info(f"Searching Discogs for: {artist} - {album}")
         
-        time.sleep(1)  # Discogs rate limiting
+        time.sleep(DISCOGS_RATE_LIMIT_DELAY)  # Discogs rate limiting
         
         response = requests.get(search_url, headers=discogs_client.headers, params=search_params, timeout=15)
         response.raise_for_status()
@@ -14536,7 +14539,7 @@ def api_search_discogs_release():
                 continue
             
             try:
-                time.sleep(1)  # Rate limiting
+                time.sleep(DISCOGS_RATE_LIMIT_DELAY)  # Rate limiting
                 
                 # Fetch full release data
                 release_url = f"{discogs_client.base_url}/releases/{release_id}"

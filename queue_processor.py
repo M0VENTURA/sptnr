@@ -222,15 +222,16 @@ def search_and_download(queue_id, queue_item, client):
             mark_failed(queue_id, "Failed to start Soulseek search", schedule_retry=True)
             return False
         
-        # Poll for results (up to 15 seconds with 1 second intervals)
+        # Poll for results (up to MAX_POLL_ATTEMPTS seconds with 1 second intervals)
+        MAX_POLL_ATTEMPTS = 15
         best_result = None
-        for poll_attempt in range(15):
+        for poll_attempt in range(MAX_POLL_ATTEMPTS):
             time.sleep(1)
             
             try:
                 responses, state, is_complete = client.get_search_results(search_id)
                 
-                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/15 - Got {len(responses)} responses, state={state}")
+                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/{MAX_POLL_ATTEMPTS} - Got {len(responses)} responses, state={state}")
                 
                 if responses:
                     # Find best result (first file from first user)
@@ -255,7 +256,7 @@ def search_and_download(queue_id, queue_item, client):
                 logger.debug(traceback.format_exc())
         
         if not best_result:
-            logger.warning(f"Queue {queue_id}: ✗ No results found after 15 seconds of polling")
+            logger.warning(f"Queue {queue_id}: ✗ No results found after {MAX_POLL_ATTEMPTS} seconds of polling")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
             return False
         
