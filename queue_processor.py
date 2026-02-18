@@ -258,11 +258,12 @@ def search_and_download(queue_id, queue_item, client):
         success = client.download_file(best_result['username'], best_result['filename'], best_result['size'])
         
         if success:
-            logger.info(f"Queue {queue_id}: Download queued successfully")
-            update_queue_status(queue_id, 'downloading')
+            logger.info(f"Queue {queue_id}: Download queued successfully in slskd")
+            logger.info(f"Queue {queue_id}: File will appear in {DOWNLOADS_DIR} when download completes")
+            # Status already set to 'downloading' above
             return True
         else:
-            logger.error(f"Queue {queue_id}: Failed to queue download")
+            logger.error(f"Queue {queue_id}: Failed to queue download in slskd")
             mark_failed(queue_id, "Failed to queue Soulseek download", schedule_retry=True, retry_delay_minutes=15)
             return False
             
@@ -278,6 +279,7 @@ def check_completed_downloads():
         cursor = conn.cursor()
         
         if not os.path.isdir(DOWNLOADS_DIR):
+            logger.warning(f"Downloads directory does not exist: {DOWNLOADS_DIR}")
             return
         
         # Get all downloading queue items
@@ -288,10 +290,15 @@ def check_completed_downloads():
         
         downloading = [dict(row) for row in cursor.fetchall()]
         
+        if downloading:
+            logger.debug(f"Checking {len(downloading)} items in 'downloading' status")
+        
         # Get files in downloads folder
         try:
             files = [f for f in os.listdir(DOWNLOADS_DIR) 
                     if f.lower().endswith(('.mp3', '.flac', '.m4a'))]
+            if files:
+                logger.debug(f"Found {len(files)} audio files in {DOWNLOADS_DIR}")
         except Exception as e:
             logger.error(f"Error scanning downloads folder: {e}")
             conn.close()
@@ -304,16 +311,18 @@ def check_completed_downloads():
             # Try exact filename match first
             if item['found_filename'] and item['found_filename'] in files:
                 match_found = item['found_filename']
+                logger.debug(f"Queue {item['id']}: Exact filename match found")
             else:
                 # Try fuzzy matching
                 for filename in files:
                     if matches_queue_item(filename, item):
                         match_found = filename
+                        logger.debug(f"Queue {item['id']}: Fuzzy match found: {filename}")
                         break
             
             if match_found:
                 file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                logger.info(f"Queue {item['id']}: Matched file '{match_found}'")
+                logger.info(f"Queue {item['id']}: Matched file '{match_found}' - marking as completed")
                 update_queue_status(item['id'], 'completed', file_path=file_path, found_filename=match_found)
         
         conn.close()
