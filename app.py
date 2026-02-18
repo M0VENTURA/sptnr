@@ -2458,6 +2458,7 @@ def api_scan_all_missing_releases():
             return jsonify({"error": "Missing releases scan already running"}), 400
     
     def run_missing_releases_scan():
+        global scan_process_missing_releases
         # Define progress_file at function scope so it's always available
         progress_file = os.path.join(os.path.dirname(DB_PATH), "missing_releases_scan_progress.json")
         
@@ -2491,6 +2492,23 @@ def api_scan_all_missing_releases():
             
             for artist_name in artists:
                 try:
+                    # Check if scan should stop
+                    with scan_lock:
+                        if scan_process_missing_releases is None:
+                            logging.info("[MISSING_RELEASES] Stop signal received, exiting gracefully")
+                            progress_data = {
+                                "is_running": False,
+                                "scan_type": "missing_releases_scan",
+                                "status": "stopped",
+                                "processed_artists": processed,
+                                "total_artists": total_artists,
+                                "total_missing_found": total_missing,
+                                "percent_complete": int((processed / total_artists * 100)) if total_artists > 0 else 0
+                            }
+                            with open(progress_file, 'w') as f:
+                                json.dump(progress_data, f)
+                            return
+                    
                     processed += 1
                     
                     # Update progress file
@@ -6947,6 +6965,7 @@ def scan_navidrome():
             _write_progress_file(nav_progress_file, "navidrome_scan", True, {"status": "starting"})
             
             def run_navidrome_import_bg():
+                global scan_process_navidrome
                 try:
                     # Ensure singles/rating pipeline stays off during Navidrome metadata-only import
                     os.environ["SPTNR_SKIP_SINGLES"] = "1"
@@ -6991,6 +7010,13 @@ def scan_navidrome():
                     
                     # Scan artists starting from checkpoint or beginning
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
+                        # Check if scan should stop
+                        with scan_lock:
+                            if scan_process_navidrome is None:
+                                logging.info("Navidrome scan stop signal received, exiting gracefully")
+                                _write_progress_with_current_artist(nav_progress_file, "navidrome_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
+                        
                         scan_artist_to_db(
                             artist_name, 
                             info.get("id"), 
@@ -7064,6 +7090,7 @@ def scan_combined():
             _write_progress_file(combined_progress_file, "combined_scan", True, {"status": "starting"})
             
             def run_combined_scan_bg():
+                global scan_process_combined
                 try:
                     logging.info(f"Starting combined scan (mode={mode})")
                     from popularity import popularity_scan as scan_popularity_func
@@ -7093,6 +7120,13 @@ def scan_combined():
                     
                     # Process each artist sequentially
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
+                        # Check if scan should stop
+                        with scan_lock:
+                            if scan_process_combined is None:
+                                logging.info("Combined scan stop signal received, exiting gracefully")
+                                _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
+                                return
+                        
                         artist_id = info.get("id")
                         
                         logging.info(f"[{idx}/{total}] Processing artist: {artist_name}")
@@ -7147,7 +7181,6 @@ def scan_combined():
                 finally:
                     # Clean up thread reference when done
                     with scan_lock:
-                        global scan_process_combined
                         scan_process_combined = None
             
             # daemon=False matches other scan threads - allows scan to complete even during shutdown
