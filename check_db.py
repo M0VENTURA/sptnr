@@ -912,6 +912,78 @@ def update_schema(db_path):
         ON release_scrape_history(source_name, created_at DESC)
     """)
 
+    # ✅ MIGRATION: Fix download_queue table if file_path has NOT NULL constraint
+    # This is needed because the column was created with NOT NULL in older versions
+    try:
+        cursor.execute("PRAGMA table_info(download_queue);")
+        columns = cursor.fetchall()
+        file_path_col = None
+        for col in columns:
+            if col[1] == 'file_path':
+                file_path_col = col
+                break
+        
+        # col[3] is the not_null flag (1 = NOT NULL, 0 = NULL allowed)
+        if file_path_col and file_path_col[3] == 1:
+            # file_path has NOT NULL constraint, need to fix it
+            print("⚠️  Fixing download_queue table: removing NOT NULL constraint from file_path")
+            
+            # Disable foreign key checks
+            cursor.execute("PRAGMA foreign_keys=OFF;")
+            
+            # Backup data
+            cursor.execute("""
+                CREATE TABLE download_queue_backup AS 
+                SELECT * FROM download_queue;
+            """)
+            
+            # Drop old table
+            cursor.execute("DROP TABLE download_queue;")
+            
+            # Recreate with correct schema (file_path WITHOUT NOT NULL)
+            cursor.execute("""
+                CREATE TABLE download_queue (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    artist TEXT NOT NULL,
+                    album TEXT,
+                    title TEXT NOT NULL,
+                    search_query TEXT,
+                    source TEXT DEFAULT 'soulseek',
+                    source_id TEXT,
+                    status TEXT DEFAULT 'queued',
+                    priority INTEGER DEFAULT 5,
+                    found_filename TEXT,
+                    file_path TEXT UNIQUE,
+                    metadata JSON,
+                    retry_count INTEGER DEFAULT 0,
+                    max_retries INTEGER DEFAULT 5,
+                    failure_reason TEXT,
+                    last_failure_time TIMESTAMP,
+                    retry_delay_minutes INTEGER DEFAULT 30,
+                    next_retry_at TIMESTAMP,
+                    imported_at TIMESTAMP,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                );
+            """)
+            
+            # Restore data
+            cursor.execute("""
+                INSERT INTO download_queue 
+                SELECT * FROM download_queue_backup;
+            """)
+            
+            # Drop backup table
+            cursor.execute("DROP TABLE download_queue_backup;")
+            
+            # Re-enable foreign key checks
+            cursor.execute("PRAGMA foreign_keys=ON;")
+            
+            print("✅ download_queue table fixed successfully")
+    except Exception as e:
+        print(f"Migration error: {e}")
+        cursor.execute("PRAGMA foreign_keys=ON;")
+
     conn.commit()
     conn.close()
     
