@@ -400,7 +400,7 @@ async function scanLetterArtists(letter, scanType) {
     const firstArtist = artists[0];
     const fullScan = scanType === 'forced';
     const scanMode = fullScan ? 'forced' : 'changes';
-    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from "${firstArtist}" (section "${letter}")?\\n\\nThis will scan ${firstArtist} and all artists that come after it in the library.`;
+    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from "${firstArtist}" (section "${letter}")?\\n\\nThis will scan "${firstArtist}" and all artists that come after it in the library.`;
     
     if (!confirm(message)) {
         return;
@@ -418,7 +418,7 @@ async function scanLetterArtists(letter, scanType) {
         
         const data = await response.json();
         if (data.success) {
-            alert(`✅ Scan started from "${firstArtist}"\\n\\nMode: ${data.mode}\\n\\nThe scan will continue through all remaining artists in the library. Check the dashboard for progress.`);
+            alert(`✅ Scan started successfully (${data.mode})\\n\\nCheck the dashboard for progress.`);
         } else {
             alert(`❌ Error: ${data.error}`);
         }
