@@ -1949,7 +1949,7 @@ def artist_detail(name):
         """, (name,))
         missing_releases_data = cursor.fetchall()
         
-        # Get potential compilation albums and check with MusicBrainz
+        # Get potential compilation albums using local heuristics only (avoid blocking API calls)
         # Query albums where this artist appears as a track artist
         cursor.execute("""
             SELECT 
@@ -1968,27 +1968,20 @@ def artist_detail(name):
         """, (name,))
         potential_albums = cursor.fetchall()
         
-        # Filter to only include albums that are actually compilations via MusicBrainz or obvious keywords
+        # Filter to only include albums that are actually compilations
+        # Use fast local heuristics only - NO blocking MusicBrainz API calls
         compilation_albums = []
-        from api_clients.musicbrainz import get_album_type_with_fallback
         
         for album_row in potential_albums:
-            album_name = row_get(album_row, 'album', '')
             album_artist = row_get(album_row, 'album_artist', '')
             spotify_type = row_get(album_row, 'album_type', '')
             
-            # Check if it's obviously a Various Artists/Compilation album
+            # Check if it's obviously a Various Artists/Compilation album (from local data only)
             if album_artist and album_artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack'):
                 compilation_albums.append(album_row)
-                continue
-            
-            # For other albums, check with MusicBrainz
-            try:
-                mb_album_type, source = get_album_type_with_fallback(name, album_name, spotify_type, enabled=True)
-                if mb_album_type and mb_album_type.lower() == 'compilation':
-                    compilation_albums.append(album_row)
-            except Exception as e:
-                logging.debug(f"Error checking MusicBrainz type for {name} - {album_name}: {e}")
+            elif spotify_type and spotify_type.lower() == 'compilation':
+                # Also check Spotify's designation
+                compilation_albums.append(album_row)
         
         # Get artist metadata (country, image, bio) from artists table if it exists
         artist_country = None
