@@ -1699,7 +1699,7 @@ def artist_detail(name):
                 album_mbid_row = cursor.fetchone()
                 
                 if album_mbid_row:
-                    album_mbid = album_mbid_row[0] if isinstance(album_mbid_row, tuple) else album_mbid_row['beets_album_mbid']
+                    album_mbid = album_mbid_row['beets_album_mbid']
                     
                     # Fetch the artist ID from this album's MusicBrainz release
                     try:
@@ -10684,8 +10684,8 @@ def api_lastfm_sync_now():
         
         cursor.execute("SELECT DISTINCT artist, album FROM tracks WHERE artist IS NOT NULL AND album IS NOT NULL")
         for row in cursor.fetchall():
-            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-            album = row[1] if isinstance(row, tuple) else row.get('album', '')
+            artist = row['artist'] if row else ''
+            album = row['album'] if row else ''
             if artist and album:
                 artist_norm = normalize_name(artist)
                 album_norm = normalize_name(album)
@@ -10693,15 +10693,15 @@ def api_lastfm_sync_now():
         
         cursor.execute("SELECT DISTINCT artist FROM tracks WHERE artist IS NOT NULL")
         for row in cursor.fetchall():
-            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
+            artist = row['artist'] if row else ''
             if artist:
                 artist_norm = normalize_name(artist)
                 existing_artists.add(artist_norm)
         
         cursor.execute("SELECT DISTINCT artist, title FROM tracks WHERE artist IS NOT NULL AND title IS NOT NULL")
         for row in cursor.fetchall():
-            artist = row[0] if isinstance(row, tuple) else row.get('artist', '')
-            title = row[1] if isinstance(row, tuple) else row.get('title', '')
+            artist = row['artist'] if row else ''
+            title = row['title'] if row else ''
             if artist and title:
                 artist_norm = normalize_name(artist)
                 title_norm = normalize_name(title)
@@ -10906,12 +10906,12 @@ def api_lastfm_recommendations():
                 continue
             
             try:
-                rec_type = row[0] if isinstance(row, tuple) else row.get('recommendation_type', '')
-                item_name = row[1] if isinstance(row, tuple) else row.get('item_name', '')
-                artist_name = row[2] if isinstance(row, tuple) else row.get('artist_name', '')
-                image_url = row[3] if isinstance(row, tuple) else row.get('image_url', '')
-                playcount = row[4] if isinstance(row, tuple) else row.get('playcount', 0)
-                url = row[5] if isinstance(row, tuple) else row.get('lastfm_url', '')
+                rec_type = row['recommendation_type']
+                item_name = row['item_name']
+                artist_name = row['artist_name']
+                image_url = row['image_url']
+                playcount = row['playcount']
+                url = row['lastfm_url']
                 
                 rec_item = {
                     "name": item_name,

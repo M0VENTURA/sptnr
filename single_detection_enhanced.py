@@ -1179,6 +1179,16 @@ def detect_single_enhanced(
     album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
     log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
 
+    # Get album popularities list for pre-filter
+    cursor.execute("""
+        SELECT popularity_score
+        FROM tracks
+        WHERE artist = ? AND album = ? AND popularity_score > 0
+        ORDER BY popularity_score DESC
+    """, (artist, album))
+    album_pops_rows = cursor.fetchall()
+    album_popularities = [row[0] for row in album_pops_rows] if album_pops_rows else []
+
     # Get all artist popularities for context
     cursor = conn.cursor()
     cursor.execute("""
