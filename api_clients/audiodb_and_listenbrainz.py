@@ -263,6 +263,59 @@ class ListenBrainzUserClient:
         except Exception as e:
             logger.error(f"Failed to validate token: {e}")
             return ""
+    
+    def get_similar_artists(self, mbid: str, limit: int = 10) -> list:
+        """
+        Fetch similar artists from ListenBrainz for a given artist MBID.
+        
+        Uses the relationships endpoint to find acoustically/culturally similar artists.
+        This will be used to find artists with similar listener bases,
+        enabling artist-contextual popularity weighting.
+        
+        Args:
+            mbid: MusicBrainz Artist ID
+            limit: Maximum number of results to return (1-100)
+            
+        Returns:
+            List of dicts with 'name', 'mbid', and optional 'score'
+            Example: [{'name': 'Similar Artist 1', 'mbid': 'xxx'}, {...}]
+        """
+        if not mbid:
+            return []
+        
+        limit = max(1, min(100, limit))
+        
+        try:
+            # ListenBrainz API endpoint for artist relationships
+            # This includes similar artists, collaborators, etc.
+            url = f"{self.base_url}/artist/{mbid}/relationships?inc=artist"
+            
+            res = self.session.get(url, headers=self.headers, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            relationships = data.get("relationships", [])
+            similar_artists = []
+            
+            # Extract artist relationships (similar-to, collaboration, etc.)
+            for rel in relationships:
+                if rel.get("type") in ["similar-to", "collaboration", "performing in"]:
+                    target = rel.get("artist") or rel.get("target")
+                    if target and isinstance(target, dict):
+                        name = target.get("name", "")
+                        artist_mbid = target.get("id", "")
+                        if name and len(similar_artists) < limit:
+                            similar_artists.append({
+                                "name": name,
+                                "mbid": artist_mbid
+                            })
+            
+            logger.debug(f"Fetched {len(similar_artists)} similar artists for MBID {mbid} from ListenBrainz")
+            return similar_artists
+            
+        except Exception as e:
+            logger.debug(f"Failed to fetch similar artists for MBID {mbid} from ListenBrainz: {e}")
+            return []
 
 
 class ListenBrainzClient:

@@ -209,7 +209,14 @@ required_columns = {
     "lastfm_alltime_listeners": "INTEGER",      # Last.fm all-time listeners (cache of existing data)
     "momentum_score": "REAL",                   # Trend velocity: (7day/alltime) / (365day/alltime)
     "popularity_trend": "TEXT",                 # Trend classification: 'accelerating', 'stable', 'declining'
-    "lastfm_temporal_last_updated": "TEXT"      # Timestamp of last temporal data fetch
+    "lastfm_temporal_last_updated": "TEXT",     # Timestamp of last temporal data fetch
+    # ✅ Genre and Tag data from multiple sources (for display and aggregation)
+    "spotify_genres": "TEXT",                   # JSON array of Spotify artist genres
+    "lastfm_tags": "TEXT",                      # JSON array of Last.fm tags with name and count
+    "listenbrainz_genres": "TEXT",              # JSON array of ListenBrainz genre tags with count
+    "discogs_genres": "TEXT",                   # JSON array of Discogs genres
+    "musicbrainz_genres": "TEXT",               # JSON array of MusicBrainz genres
+    "tags_last_updated": "TEXT"                 # Timestamp when tags were last fetched
 }
 
 # ✅ Define columns for the artists table
@@ -223,7 +230,10 @@ required_artist_columns = {
     "country": "TEXT",                      # Artist country/origin from MusicBrainz
     "musicbrainz_area_id": "TEXT",          # MusicBrainz area ID for geographical data
     "image_url": "TEXT",                    # Cached artist image URL from MusicBrainz
-    "bio": "TEXT"                           # Cached artist bio from MusicBrainz
+    "bio": "TEXT",                          # Cached artist bio from MusicBrainz
+    "similar_artists_lastfm": "TEXT",       # JSON array of similar artists from Last.fm
+    "similar_artists_listenbrainz": "TEXT", # JSON array of similar artists from ListenBrainz
+    "similar_artists_last_updated": "TEXT"  # Timestamp when similar artists were last fetched
 }
 
 # ✅ Define columns for the artist_stats table
@@ -233,9 +243,10 @@ required_artist_stats_columns = {
     "album_count": "INTEGER",               # Number of albums
     "track_count": "INTEGER",               # Number of tracks
     "last_updated": "TEXT",                 # Last update timestamp
-    "avg_popularity": "REAL",               # Average popularity across all tracks
-    "median_popularity": "REAL",            # Median popularity across all tracks
-    "popularity_stddev": "REAL"             # Standard deviation of popularity
+    "mean_popularity": "REAL",              # Mean (average) popularity across all tracks
+    "median_popularity": "REAL",            # Median popularity across all tracks (legacy)
+    "popularity_stddev": "REAL",            # Standard deviation of popularity
+    "mean_popularity_adjusted": "REAL"      # Mean popularity adjusted for pre-2005 releases
 }
 
 def update_schema(db_path):

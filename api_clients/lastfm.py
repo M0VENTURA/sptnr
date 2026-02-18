@@ -715,6 +715,120 @@ class LastFmClient:
                 'data_source': 'error'
             }
     
+    def get_similar_artists(self, artist: str, limit: int = 10) -> list:
+        """
+        Fetch similar artists from Last.fm for a given artist.
+        
+        This will be used to find artists with similar listener bases,
+        enabling artist-contextual popularity weighting.
+        
+        Args:
+            artist: Artist name
+            limit: Maximum number of results (1-100)
+            
+        Returns:
+            List of dicts with 'name' and 'match' (similarity score 0-1)
+            Example: [{'name': 'Similar Artist 1', 'match': 0.95}, {...}]
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping similar artists lookup.")
+            return []
+        
+        # Clamp limit
+        limit = max(1, min(100, limit))
+        
+        params = {
+            "method": "artist.getSimilar",
+            "artist": artist,
+            "limit": limit,
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            if "error" in data:
+                logger.debug(f"Last.fm error for '{artist}': {data.get('message', 'unknown')}")
+                return []
+            
+            similar_artists = data.get("similarartists", {}).get("artist", [])
+            
+            # Normalize response (might be a single dict or list)
+            if isinstance(similar_artists, dict):
+                similar_artists = [similar_artists]
+            
+            # Extract name and match score
+            result = []
+            for artist_obj in similar_artists:
+                if isinstance(artist_obj, dict):
+                    name = artist_obj.get("name", "")
+                    match = float(artist_obj.get("match", 0.0))
+                    if name:
+                        result.append({"name": name, "match": match})
+            
+            logger.debug(f"Fetched {len(result)} similar artists for '{artist}' from Last.fm")
+            return result
+            
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error fetching similar artists for '{artist}': {e}")
+            return []
+        except Timeout as e:
+            logger.debug(f"Timeout fetching similar artists for '{artist}': {e}")
+            return []
+        except Exception as e:
+            logger.debug(f"Failed to fetch similar artists for '{artist}' from Last.fm: {e}")
+            return []
+    
+    def get_track_tags(self, artist: str, title: str, limit: int = 10) -> list:
+        """
+        Extract and format track tags from Last.fm.
+        
+        Args:
+            artist: Artist name
+            title: Track title
+            limit: Maximum number of tags to return
+            
+        Returns:
+            List of dicts with 'name' and 'count' keys
+            Example: [{'name': 'rock', 'count': 1000}, {'name': 'alternative', 'count': 800}]
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping tags lookup.")
+            return []
+        
+        try:
+            # Use get_track_info which already fetches toptags
+            track_info = self.get_track_info(artist, title)
+            toptags = track_info.get("toptags", {})
+            
+            if isinstance(toptags, dict):
+                tag_list = toptags.get("tag", [])
+            else:
+                tag_list = toptags
+            
+            # Normalize response (might be a single dict or list)
+            if isinstance(tag_list, dict):
+                tag_list = [tag_list]
+            
+            # Extract name and count, applying limit
+            result = []
+            for tag_obj in tag_list[:limit]:
+                if isinstance(tag_obj, dict):
+                    name = tag_obj.get("name", "")
+                    count = int(tag_obj.get("count", 0))
+                    if name:
+                        result.append({"name": name, "count": count})
+            
+            logger.debug(f"Fetched {len(result)} tags for '{title}' by '{artist}' from Last.fm")
+            return result
+            
+        except Exception as e:
+            logger.debug(f"Failed to fetch Last.fm tags for '{title}' by '{artist}': {e}")
+            return []
+    
     def get_recommendations(self) -> dict:
         """
         Fetch personalized recommendations from Last.fm for the current user.

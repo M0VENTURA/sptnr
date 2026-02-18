@@ -950,6 +950,54 @@ class DiscogsClient:
             logger.error(f"Discogs lookup failed for '{title}': {e}")
             return []
     
+    def get_release_genres_by_id(self, release_id: str, timeout: tuple[int, int] | int = (5, 10)) -> list[dict]:
+        """
+        Fetch genres and styles for a specific Discogs release by ID.
+        
+        Args:
+            release_id: Discogs release ID
+            timeout: Request timeout
+            
+        Returns:
+            List of dicts with 'name' (genre/style name) for easy JSON storage
+            Example: [{'name': 'Electronic'}, {'name': 'House'}]
+        """
+        if not self.enabled or not self.token or not release_id:
+            logger.debug(f"Discogs release lookup skipped (disabled, token missing, or invalid release_id: {release_id})")
+            return []
+        
+        try:
+            _throttle_discogs()
+            release_url = f"{self.base_url}/releases/{release_id}"
+            
+            res = self.session.get(release_url, headers=self.headers, timeout=timeout)
+            
+            # Handle rate limiting
+            if res.status_code == 429:
+                retry_after = int(res.headers.get("Retry-After", 60))
+                time.sleep(retry_after)
+                res = self.session.get(release_url, headers=self.headers, timeout=timeout)
+            
+            res.raise_for_status()
+            release_data = res.json()
+            
+            genres = []
+            
+            # Extract genres
+            for genre in release_data.get("genres", []):
+                genres.append({"name": genre})
+            
+            # Extract styles
+            for style in release_data.get("styles", []):
+                genres.append({"name": style})
+            
+            logger.debug(f"Fetched {len(genres)} genres/styles for Discogs release {release_id}")
+            return genres
+            
+        except Exception as e:
+            logger.debug(f"Discogs release lookup failed for release_id {release_id}: {e}")
+            return []
+    
     def get_artist_biography(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> dict:
         """
         Fetch artist biography/profile from Discogs API.

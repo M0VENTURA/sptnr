@@ -2513,6 +2513,113 @@ def popularity_scan(
                 log_debug(f"Discogs token validation failed: token length={len(discogs_token)}, expected 20+ characters")
                 discogs_token = None  # Disable Discogs if token looks invalid
             
+            # Fetch similar artists from Last.fm and ListenBrainz for artist-contextual popularity weighting
+            # This enables boosting tracks that are popular among listeners of similar artists
+            similar_artists_lastfm = []
+            similar_artists_listenbrainz = []
+            similar_artists_json = None
+            
+            if not is_compilation_group:
+                try:
+                    # Get Last.fm client for similar artists lookup
+                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                        from api_clients.lastfm import LastFmClient
+                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        
+                        similar_artists_lastfm = _run_with_timeout(
+                            lastfm_client.get_similar_artists,
+                            8,  # 8 second timeout
+                            f"Last.fm similar artists lookup timed out after 8s",
+                            artist,
+                            limit=10
+                        )
+                        
+                        if similar_artists_lastfm:
+                            log_info(f"Found {len(similar_artists_lastfm)} similar artists for '{artist}' from Last.fm")
+                            log_debug(f"Last.fm similar artists: {[a.get('name') for a in similar_artists_lastfm]}")
+                        else:
+                            log_debug(f"No similar artists found for '{artist}' from Last.fm")
+                    else:
+                        log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
+                except TimeoutError as e:
+                    log_debug(f"Last.fm similar artists lookup timed out for {artist}: {e}")
+                except Exception as e:
+                    log_debug(f"Last.fm similar artists lookup failed for {artist}: {e}")
+                
+                try:
+                    # Get MusicBrainz artist MBID first
+                    mb_client = _get_timeout_safe_musicbrainz_client()
+                    if mb_client and HAVE_MUSICBRAINZ:
+                        # Search for artist MBID
+                        mb_results = _run_with_timeout(
+                            mb_client.search_artists,
+                            5,  # 5 second timeout
+                            f"MusicBrainz artist search timed out after 5s",
+                            artist
+                        )
+                        
+                        if mb_results and len(mb_results) > 0:
+                            artist_mbid = mb_results[0].get("id", "")
+                            if artist_mbid:
+                                log_debug(f"Found MusicBrainz MBID for '{artist}': {artist_mbid}")
+                                
+                                # Now fetch similar artists from ListenBrainz using MBID
+                                from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+                                lb_client = ListenBrainzUserClient("")  # Create instance for relationship lookups
+                                
+                                similar_artists_listenbrainz = _run_with_timeout(
+                                    lb_client.get_similar_artists,
+                                    8,  # 8 second timeout
+                                    f"ListenBrainz similar artists lookup timed out after 8s",
+                                    artist_mbid,
+                                    limit=10
+                                )
+                                
+                                if similar_artists_listenbrainz:
+                                    log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
+                                    log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
+                                else:
+                                    log_debug(f"No similar artists found for '{artist}' from ListenBrainz")
+                        else:
+                            log_debug(f"Artist '{artist}' not found in MusicBrainz")
+                    else:
+                        log_debug(f"MusicBrainz client not available - skipping ListenBrainz similar artists lookup")
+                except TimeoutError as e:
+                    log_debug(f"ListenBrainz similar artists lookup timed out for {artist}: {e}")
+                except Exception as e:
+                    log_debug(f"ListenBrainz similar artists lookup failed for {artist}: {e}")
+                
+                # Store similar artists in database and prepare JSON for later use
+                if similar_artists_lastfm or similar_artists_listenbrainz:
+                    try:
+                        # Prepare combined list for storage
+                        similar_artists_json = json.dumps({
+                            "lastfm": similar_artists_lastfm,
+                            "listenbrainz": similar_artists_listenbrainz,
+                            "fetched_at": datetime.now().isoformat()
+                        })
+                        
+                        # Update or insert artist with similar artists data
+                        cursor.execute("""
+                            INSERT INTO artists (id, name, similar_artists_lastfm, similar_artists_listenbrainz, similar_artists_last_updated)
+                            VALUES (?, ?, ?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET 
+                                similar_artists_lastfm = excluded.similar_artists_lastfm,
+                                similar_artists_listenbrainz = excluded.similar_artists_listenbrainz,
+                                similar_artists_last_updated = excluded.similar_artists_last_updated
+                        """, (
+                            artist,
+                            artist,
+                            json.dumps(similar_artists_lastfm) if similar_artists_lastfm else None,
+                            json.dumps(similar_artists_listenbrainz) if similar_artists_listenbrainz else None,
+                            datetime.now().isoformat()
+                        ))
+                        conn.commit()
+                        log_debug(f"Stored similar artists for '{artist}' in database")
+                    except Exception as e:
+                        log_debug(f"Failed to store similar artists for '{artist}': {e}")
+            
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
@@ -2730,6 +2837,112 @@ def popularity_scan(
                     log_info(f'Pre-fetch complete for album "{album}": {fetched_tracks} tracks with listener data, {zero_tracks} with zero/unavailable data')
                     if fetched_listeners:
                         log_debug(f'Album listener stats: min={min(fetched_listeners)}, max={max(fetched_listeners)}, avg={sum(fetched_listeners)/len(fetched_listeners):.0f}')
+                    
+                    # Fetch Last.fm tags, ListenBrainz genres, and Discogs genres for all tracks
+                    # This is done batch-style per album to be efficient
+                    album_tags_data = {}  # Map of track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...]}
+                    
+                    try:
+                        # Get Last.fm client for tag lookups
+                        lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                        lastfm_client = None
+                        if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                            from api_clients.lastfm import LastFmClient
+                            lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        
+                        # Get Discogs client for genre lookups
+                        discogs_config = config.get("api_integrations", {}).get("discogs", {})
+                        discogs_client = None
+                        if discogs_config.get("enabled") and discogs_config.get("token"):
+                            from api_clients.discogs import DiscogsClient
+                            discogs_client = DiscogsClient(discogs_config.get("token"))
+                        
+                        log_info(f'Fetching tags/genres for {len(album_tracks)} track(s) in album "{album}"')
+                        
+                        for track in album_tracks:
+                            track_id = track["id"]
+                            title = track["title"]
+                            track_artist = track["artist"]
+                            track_mbid = row_get(track, 'mbid')
+                            discogs_release_id = row_get(track, 'discogs_release_id')
+                            
+                            track_tags = {"lastfm_tags": [], "listenbrainz_genres": [], "discogs_genres": []}
+                            
+                            # Fetch Last.fm tags
+                            if lastfm_client:
+                                try:
+                                    rate_limiter = get_rate_limiter()
+                                    can_proceed = rate_limiter.check_lastfm_limit()[0]
+                                    if can_proceed:
+                                        lastfm_tags = _run_with_timeout(
+                                            lastfm_client.get_track_tags,
+                                            5,
+                                            f"Last.fm tags lookup timed out",
+                                            track_artist, title, limit=10
+                                        )
+                                        if lastfm_tags:
+                                            track_tags["lastfm_tags"] = lastfm_tags
+                                            log_debug(f'Fetched {len(lastfm_tags)} Last.fm tags for "{title}"')
+                                        rate_limiter.record_lastfm_request()
+                                except Exception as e:
+                                    log_debug(f'Failed to fetch Last.fm tags for "{title}": {e}')
+                            
+                            # Fetch ListenBrainz genres (if MBID available)
+                            if track_mbid:
+                                try:
+                                    from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
+                                    lb_client = ListenBrainzUserClient("")
+                                    lb_genres = _run_with_timeout(
+                                        lb_client.get_recording_tags,
+                                        5,
+                                        f"ListenBrainz genres lookup timed out",
+                                        track_mbid
+                                    )
+                                    if lb_genres:
+                                        # Format ListenBrainz tags to match expected structure
+                                        track_tags["listenbrainz_genres"] = [{"name": t.get("tag", t.get("name", "")), "count": t.get("count", 0)} for t in lb_genres if t.get("tag") or t.get("name")]
+                                        log_debug(f'Fetched {len(track_tags["listenbrainz_genres"])} ListenBrainz genres for "{title}"')
+                                except Exception as e:
+                                    log_debug(f'Failed to fetch ListenBrainz genres for "{title}": {e}')
+                            
+                            # Fetch Discogs genres (if release ID available or by title/artist search)
+                            if discogs_client:
+                                try:
+                                    discogs_genres = None
+                                    if discogs_release_id:
+                                        # Use release ID if available
+                                        discogs_genres = _run_with_timeout(
+                                            discogs_client.get_release_genres_by_id,
+                                            5,
+                                            f"Discogs genres by ID lookup timed out",
+                                            discogs_release_id
+                                        )
+                                    else:
+                                        # Fall back to search by title/artist
+                                        discogs_genres =_run_with_timeout(
+                                            discogs_client.get_genres,
+                                            5,
+                                            f"Discogs genres search lookup timed out",
+                                            title, track_artist
+                                        )
+                                        if isinstance(discogs_genres, list) and discogs_genres and isinstance(discogs_genres[0], str):
+                                            # Convert string list to dict format
+                                            discogs_genres = [{"name": g} for g in discogs_genres]
+                                    
+                                    if discogs_genres:
+                                        track_tags["discogs_genres"] = discogs_genres
+                                        log_debug(f'Fetched {len(discogs_genres)} Discogs genres for "{title}"')
+                                except Exception as e:
+                                    log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
+                            
+                            # Store all tags for this track
+                            album_tags_data[track_id] = track_tags
+                        
+                        log_info(f'Tag/genre fetch complete for album "{album}": {len(album_tags_data)} track(s) processed')
+                        
+                    except Exception as e:
+                        log_debug(f'Failed to initialize tag/genre fetch for album "{album}": {e}')
+                        log_info(f'Continuing without tag/genre data for this album')
                 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only:
@@ -3063,27 +3276,36 @@ def popularity_scan(
                         except Exception as e:
                             log_debug(f'Failed to extract Spotify genres: {e}')
                         
-                        # Extract Last.fm tags from API response
-                        try:
-                            if lastfm_info and lastfm_info.get("toptags"):
-                                tags_list = lastfm_info.get("toptags", {}).get("tag", [])
-                                if tags_list and isinstance(tags_list, list):
-                                    tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
-                                    if tag_names:
-                                        lastfm_tags_json = json.dumps(tag_names)
-                                        log_debug(f'Last.fm tags extracted for: {title} - {len(tag_names)} tags')
-                        except Exception as e:
-                            log_debug(f'Failed to extract Last.fm tags: {e}')
+                        # Use batch-fetched tag data if available (more efficient than per-track fetches)
+                        if track_id in album_tags_data:
+                            tags_dict = album_tags_data[track_id]
+                            if tags_dict.get("lastfm_tags"):
+                                lastfm_tags_json = json.dumps(tags_dict["lastfm_tags"])
+                                log_debug(f'Using batch-fetched Last.fm tags for: {title}')
+                            if tags_dict.get("discogs_genres"):
+                                discogs_genres_json = json.dumps(tags_dict["discogs_genres"])
+                                log_debug(f'Using batch-fetched Discogs genres for: {title}')
                         
-                        # Extract Discogs genres (requires Discogs release ID or search)
-                        if HAVE_DISCOGS and discogs_token:
+                        # If batch fetch didn't provide Last.fm tags, try extracting from lastfm_info
+                        if not lastfm_tags_json:
+                            try:
+                                if lastfm_info and lastfm_info.get("toptags"):
+                                    tags_list = lastfm_info.get("toptags", {}).get("tag", [])
+                                    if tags_list and isinstance(tags_list, list):
+                                        tag_names = [tag.get("name") for tag in tags_list if isinstance(tag, dict) and tag.get("name")]
+                                        if tag_names:
+                                            lastfm_tags_json = json.dumps(tag_names)
+                                            log_debug(f'Last.fm tags extracted from API for: {title} - {len(tag_names)} tags')
+                            except Exception as e:
+                                log_debug(f'Failed to extract Last.fm tags from API: {e}')
+                        
+                        # Extract Discogs genres (if not already fetched in batch)
+                        if not discogs_genres_json and HAVE_DISCOGS and discogs_token:
                             try:
                                 discogs_release_id = row_get(track, 'discogs_release_id')
                                 if discogs_release_id:
-                                    # Try to get genres directly from release
                                     log_debug(f'Fetching Discogs genres for release ID: {discogs_release_id}')
                                     discogs_client = DiscogsClient(token=discogs_token)
-                                    # Search for release by ID to get genres
                                     discogs_genres = discogs_client.get_genres(title, artist)
                                     if discogs_genres:
                                         discogs_genres_json = json.dumps(discogs_genres)
