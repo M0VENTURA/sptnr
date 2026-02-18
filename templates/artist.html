@@ -2615,10 +2615,18 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   
   document.addEventListener('DOMContentLoaded', function() {
     const artistName = "{{ artist_name }}";
-    if (artistName && !artistGenresLoaded) {
-      loadArtistGenres(artistName);
+    if (artistName) {
+      if (!artistGenresLoaded) {
+        loadArtistGenres(artistName);
+        artistGenresLoaded = true;
+      }
       loadSimilarArtistsForArtist(artistName);
-      artistGenresLoaded = true;
+    } else {
+      // If no artist data, show error
+      const genreContainer = document.getElementById('artistGenreSourcesContainer');
+      if (genreContainer) {
+        showArtistGenresError('Artist details not available');
+      }
     }
   });
   

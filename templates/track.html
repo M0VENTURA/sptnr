@@ -1113,10 +1113,20 @@ let genresLoaded = false;
 document.addEventListener('DOMContentLoaded', function() {
     const trackId = '{{ track.id }}';
     const artist = '{{ track.artist }}';
-    if (trackId && !genresLoaded) {
-        loadTrackGenres(trackId);
-        genresLoaded = true;
+    
+    if (trackId) {
+        if (!genresLoaded) {
+            loadTrackGenres(trackId);
+            genresLoaded = true;
+        }
+    } else {
+        // If no track ID, show error in genre container
+        const genreContainer = document.getElementById('trackGenreSourcesContainer');
+        if (genreContainer) {
+            showGenresError('Track details not available');
+        }
     }
+    
     if (artist) {
         loadSimilarArtistsForTrack(artist);
     }

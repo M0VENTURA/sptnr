@@ -2478,10 +2478,21 @@
     document.addEventListener('DOMContentLoaded', function() {
         const album = "{{ album_name }}";
         const artist = "{{ artist_name }}";
-        if (album && artist && !albumGenresLoaded) {
-            loadAlbumGenres(album, artist);
+        if (album && artist) {
+            if (!albumGenresLoaded) {
+                loadAlbumGenres(album, artist);
+                albumGenresLoaded = true;
+            }
+        } else {
+            // If no album/artist data, show error
+            const genreContainer = document.getElementById('albumGenreSourcesContainer');
+            if (genreContainer) {
+                showAlbumGenresError('Album details not available');
+            }
+        }
+        
+        if (artist) {
             loadSimilarArtistsForAlbum(artist);
-            albumGenresLoaded = true;
         }
     });
     
