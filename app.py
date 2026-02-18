@@ -6466,16 +6466,71 @@ def api_scan_single_artist():
 
 @app.route("/api/scan/from-artist", methods=["POST"])
 def api_scan_from_artist():
-    """API endpoint to start a popularity scan from a specific artist"""
+    """API endpoint to start a popularity scan from a specific artist or letter"""
     global scan_process_popularity
     
     try:
         data = request.json or {}
         artist = data.get("artist", "").strip()
+        letter = data.get("letter", "").strip()
         scan_mode = data.get("scan_mode", "changes")  # 'changes' or 'forced'
         
+        # If letter is provided, query Navidrome for first artist starting with that letter
+        if letter:
+            try:
+                # Get Navidrome configuration
+                config_data, _ = _read_yaml(CONFIG_PATH)
+                current_user = session.get("username")
+                navidrome_users = config_data.get("navidrome_users", [])
+                nav_cfg = None
+
+                if navidrome_users and current_user:
+                    nav_cfg = next((u for u in navidrome_users if u.get("user") == current_user), None)
+                if not nav_cfg:
+                    nav_cfg = config_data.get("navidrome", {})
+
+                base_url = nav_cfg.get("base_url")
+                username = nav_cfg.get("user")
+                password = nav_cfg.get("pass")
+                
+                if not (base_url and username and password):
+                    return jsonify({"success": False, "error": "Navidrome not configured"}), 400
+                
+                # Query Navidrome for artists
+                from api_clients.navidrome import NavidromeClient
+                client = NavidromeClient(base_url, username, password)
+                artist_map = client.build_artist_index()
+                
+                if not artist_map:
+                    return jsonify({"success": False, "error": "No artists found in Navidrome"}), 400
+                
+                # Filter artists by letter and get the first one alphabetically
+                letter_upper = letter.upper()
+                matching_artists = []
+                for artist_name in sorted(artist_map.keys(), key=str.lower):
+                    if not artist_name:
+                        continue
+                    first_char = artist_name[0].upper()
+                    # Match letter or '#' for non-alphabetic characters
+                    if letter_upper == '#':
+                        if first_char not in 'ABCDEFGHIJKLMNOPQRSTUVWXYZ':
+                            matching_artists.append(artist_name)
+                    elif first_char == letter_upper:
+                        matching_artists.append(artist_name)
+                
+                if not matching_artists:
+                    return jsonify({"success": False, "error": f"No artists found in Navidrome starting with '{letter}'"}), 400
+                
+                # Use the first artist from Navidrome for this letter
+                artist = matching_artists[0]
+                logging.info(f"Letter '{letter}' scan: Using first artist from Navidrome: '{artist}'")
+                
+            except Exception as e:
+                logging.error(f"Error querying Navidrome for letter '{letter}': {e}", exc_info=True)
+                return jsonify({"success": False, "error": f"Failed to query Navidrome: {str(e)}"}), 500
+        
         if not artist:
-            return jsonify({"success": False, "error": "Artist name is required"}), 400
+            return jsonify({"success": False, "error": "Artist name or letter is required"}), 400
         
         with scan_lock:
             # Check if popularity scan is already running
@@ -6513,7 +6568,8 @@ def api_scan_from_artist():
             scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
             
             mode_desc = "Full (Forced)" if force_rescan else "Changes Only"
-            logging.info(f"Popularity scan thread started from artist '{artist}' ({mode_desc})")
+            message_suffix = f" (from Navidrome letter '{letter}')" if letter else ""
+            logging.info(f"Popularity scan thread started from artist '{artist}' ({mode_desc}){message_suffix}")
             
             return jsonify({
                 "success": True,
