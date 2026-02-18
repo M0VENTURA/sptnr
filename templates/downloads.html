@@ -3638,10 +3638,23 @@ async function searchMusicBrainzRelease(event, artist, album) {
 function displayMusicBrainzResults(results) {
   const container = document.getElementById('mbSearchResults');
   
+  // Global storage for release data to avoid JSON escaping in HTML attributes
+  if (!window.mbReleaseData) {
+    window.mbReleaseData = {};
+  }
+  
   let html = '<div class="accordion" id="mbResultsAccordion">';
   
   results.forEach((release, index) => {
     const releaseId = `mbRelease${index}`;
+    const dataKey = `release_${Date.now()}_${index}`;
+    
+    // Store release data in global object for safe access
+    window.mbReleaseData[dataKey] = {
+      artist: release.artist,
+      album: release.title,
+      tracks: release.tracks
+    };
     
     // Handle both MusicBrainz and Discogs formats
     const source = release.source || 'musicbrainz';
@@ -3704,9 +3717,7 @@ function displayMusicBrainzResults(results) {
           <div class="accordion-body">
             <div class="mb-3">
               <button class="btn btn-success mb-download-release" 
-                data-artist="${escapeHtml(release.artist)}"
-                data-album="${escapeHtml(release.title)}"
-                data-tracks='${JSON.stringify(release.tracks)}'>
+                data-release-key="${dataKey}">
                 <i class="bi bi-download"></i> Download All Tracks (${release.track_count})
               </button>
             </div>
@@ -3734,10 +3745,15 @@ function displayMusicBrainzResults(results) {
   // Attach event listeners to download buttons
   container.querySelectorAll('.mb-download-release').forEach(button => {
     button.addEventListener('click', function() {
-      const artist = this.dataset.artist;
-      const album = this.dataset.album;
-      const tracks = JSON.parse(this.dataset.tracks);
-      downloadMusicBrainzRelease(artist, album, tracks);
+      const dataKey = this.dataset.releaseKey;
+      const releaseData = window.mbReleaseData[dataKey];
+      
+      if (!releaseData) {
+        alert('Error: Release data not found');
+        return;
+      }
+      
+      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks);
     });
   });
 }
