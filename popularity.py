@@ -2156,7 +2156,9 @@ def popularity_scan(
         log_debug(f"Executing SQL: {sql.strip()} with params: {sql_params}")
         cursor.execute(sql, sql_params)
 
-        tracks = cursor.fetchall()
+        tracks_raw = cursor.fetchall()
+        # Convert sqlite3.Row objects to dictionaries to allow item assignment
+        tracks = [dict(row) for row in tracks_raw]
         log_info(f"Found {len(tracks)} tracks to scan for popularity")
         log_debug(f"Fetched {len(tracks)} tracks from database")
 
