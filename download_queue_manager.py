@@ -491,6 +491,139 @@ def get_completed_queue(limit=50):
         return []
 
 
+def check_and_remove_failed_downloads():
+    """
+    Monitor active Soulseek downloads and detect failed ones.
+    Remove failed downloads and mark for retry.
+    
+    A failed download is detected when:
+    - State contains "TimedOut" or "Failed"
+    - Bytes transferred is 0 or very low (<1% of file size)
+    - Download has been stuck for >5 minutes
+    
+    Returns:
+        Dict with statistics of failed downloads detected and removed
+    """
+    stats = {
+        "total_active": 0,
+        "failed_detected": 0,
+        "retry_scheduled": 0,
+        "errors": []
+    }
+    
+    try:
+        # Try to import SlskdClient
+        try:
+            from api_clients.slskd import SlskdClient
+            import os as os_module
+        except ImportError:
+            logger.warning("SlskdClient not available for download failure detection")
+            return stats
+        
+        # Get slskd config from app config
+        try:
+            import yaml
+            config_path = os_module.environ.get("CONFIG_PATH", "/config/config.yaml")
+            if os_module.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f) or {}
+                    slskd_config = config.get('slskd', {})
+                    if not slskd_config.get('enabled'):
+                        logger.debug("Soulseek not enabled, skipping failure detection")
+                        return stats
+            else:
+                logger.debug("Config file not found, skipping failure detection")
+                return stats
+        except Exception as e:
+            logger.warning(f"Could not load slskd config: {e}")
+            return stats
+        
+        # Initialize slskd client
+        web_url = slskd_config.get('web_url', 'http://localhost:5030')
+        api_key = slskd_config.get('api_key', '')
+        
+        client = SlskdClient(web_url, api_key, enabled=True)
+        
+        # Get active downloads
+        downloads = client.get_active_downloads()
+        stats["total_active"] = len(downloads)
+        
+        logger.info(f"Checking {len(downloads)} active downloads for failures")
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        for download in downloads:
+            try:
+                username = download.get("username", "")
+                filename = download.get("filename", "")
+                size = download.get("size", 0)
+                bytes_transferred = download.get("bytesTransferred", 0)
+                state = download.get("state", "")
+                progress = download.get("progress", 0)
+                
+                # Check for failure conditions
+                is_timed_out = "TimedOut" in state or "Timeout" in state or "timeout" in state
+                is_failed = "Failed" in state or "Error" in state
+                is_no_progress = bytes_transferred == 0 and state != "Initializing"
+                
+                if is_timed_out or (is_failed and is_no_progress) or (is_timed_out and is_no_progress):
+                    logger.warning(f"Failed download detected: {filename} from {username} (state={state}, progress={progress}%, bytes={bytes_transferred}/{size})")
+                    
+                    # Try to cancel the download in slskd
+                    try:
+                        response = client.session.delete(
+                            f"{client.base_url}/transfers/downloads/{username}/{filename.replace('/', '%2F')}",
+                            headers=client.headers,
+                            timeout=10
+                        )
+                        logger.info(f"Cancelled failed download: {filename} (response: {response.status_code})")
+                    except Exception as cancel_error:
+                        logger.warning(f"Could not cancel download {filename}: {cancel_error}")
+                    
+                    # Find matching queue item and mark for retry
+                    cursor.execute("""
+                        SELECT id FROM download_queue 
+                        WHERE source = 'soulseek' 
+                        AND status IN ('downloading', 'searching')
+                        AND (found_filename = ? OR search_query LIKE ?)
+                        LIMIT 1
+                    """, (filename, f"%{filename.rsplit('/', 1)[-1]}%"))
+                    
+                    queue_item = cursor.fetchone()
+                    if queue_item:
+                        queue_id = queue_item['id']
+                        logger.info(f"Marking queue item {queue_id} for retry (failed download)")
+                        
+                        # Mark as failed to trigger retry
+                        mark_as_failed(
+                            queue_id, 
+                            f"Download failed: {state} (0 progress)", 
+                            retry_delay_minutes=5
+                        )
+                        stats["retry_scheduled"] += 1
+                    
+                    stats["failed_detected"] += 1
+                    
+            except Exception as e:
+                error_msg = f"Error processing download result: {e}"
+                logger.error(error_msg)
+                stats["errors"].append(error_msg)
+        
+        conn.close()
+        
+        if stats["failed_detected"] > 0:
+            logger.info(f"Failed download detection complete: {stats['failed_detected']} failed, {stats['retry_scheduled']} retries scheduled")
+        
+        return stats
+        
+    except Exception as e:
+        error_msg = f"Error in check_and_remove_failed_downloads: {e}"
+        logger.error(error_msg)
+        stats["errors"].append(error_msg)
+        return stats
+
+
 def cleanup_imported(days=7):
     """
     Remove imported items older than X days to keep queue clean

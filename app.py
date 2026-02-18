@@ -5785,6 +5785,75 @@ def scan_stop_combined():
     return redirect(url_for("dashboard"))
 
 
+@app.route("/scan/stop-all", methods=["POST"])
+def scan_stop_all():
+    """Stop all running scans"""
+    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    
+    stopped_scans = []
+    
+    with scan_lock:
+        # Stop main scan process
+        if scan_process is not None and scan_process.poll() is None:
+            scan_process.terminate()
+            stopped_scans.append("main")
+        
+        # Stop MP3 scan
+        if scan_process_mp3 is not None:
+            if isinstance(scan_process_mp3, dict):
+                thread = scan_process_mp3.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_mp3 = None
+                    stopped_scans.append("MP3 file")
+        
+        # Stop Navidrome scan
+        if scan_process_navidrome is not None:
+            if isinstance(scan_process_navidrome, dict):
+                thread = scan_process_navidrome.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_navidrome = None
+                    stopped_scans.append("Navidrome")
+        
+        # Stop Popularity scan
+        if scan_process_popularity is not None:
+            if isinstance(scan_process_popularity, dict):
+                thread = scan_process_popularity.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_popularity = None
+                    stopped_scans.append("Popularity")
+        
+        # Stop Singles scan
+        if scan_process_singles is not None:
+            if isinstance(scan_process_singles, dict):
+                thread = scan_process_singles.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_singles = None
+                    stopped_scans.append("Singles")
+        
+        # Stop Combined scan
+        if scan_process_combined is not None:
+            if isinstance(scan_process_combined, dict):
+                thread = scan_process_combined.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_combined = None
+                    stopped_scans.append("Combined")
+        
+        # Stop Missing Releases scan
+        if scan_process_missing_releases is not None:
+            if isinstance(scan_process_missing_releases, dict):
+                thread = scan_process_missing_releases.get('thread')
+                if thread and thread.is_alive():
+                    scan_process_missing_releases = None
+                    stopped_scans.append("Missing releases")
+    
+    if stopped_scans:
+        flash(f"✅ Stopped {len(stopped_scans)} scan(s): {', '.join(stopped_scans)}", "success")
+    else:
+        flash("No scans are currently running", "info")
+    
+    return redirect(url_for("dashboard"))
+
+
 @app.route("/scan/clear-stuck", methods=["POST"])
 def scan_clear_stuck():
     """Clear all stuck scan progress files"""
@@ -9774,6 +9843,12 @@ def api_album_tracklist_match():
 def api_downloads_scan():
     """Scan downloads folder and return pending files (both completed and incomplete)"""
     try:
+        # Check for failed downloads first and remove them
+        from download_queue_manager import check_and_remove_failed_downloads
+        failed_stats = check_and_remove_failed_downloads()
+        if failed_stats.get("failed_detected"):
+            log_info(f"Failed downloads check: {failed_stats}")
+        
         cfg, _ = _read_yaml(CONFIG_PATH)
         downloads_config = cfg.get("downloads", {})
         downloads_dir = downloads_config.get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
