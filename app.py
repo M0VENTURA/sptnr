@@ -6464,6 +6464,69 @@ def api_scan_single_artist():
         return jsonify({"success": False, "error": str(e)}), 500
 
 
+@app.route("/api/scan/from-artist", methods=["POST"])
+def api_scan_from_artist():
+    """API endpoint to start a popularity scan from a specific artist"""
+    global scan_process_popularity
+    
+    try:
+        data = request.json or {}
+        artist = data.get("artist", "").strip()
+        scan_mode = data.get("scan_mode", "changes")  # 'changes' or 'forced'
+        
+        if not artist:
+            return jsonify({"success": False, "error": "Artist name is required"}), 400
+        
+        with scan_lock:
+            # Check if popularity scan is already running
+            if scan_process_popularity is not None:
+                if isinstance(scan_process_popularity, dict):
+                    thread = scan_process_popularity.get('thread')
+                    if thread and thread.is_alive():
+                        return jsonify({"success": False, "error": "Popularity scan is already running"}), 400
+                elif hasattr(scan_process_popularity, 'is_alive') and scan_process_popularity.is_alive():
+                    return jsonify({"success": False, "error": "Popularity scan is already running"}), 400
+            
+            # Determine scan parameters
+            force_rescan = (scan_mode == "forced")
+            
+            # Start the popularity scan from this artist
+            from popularity import popularity_scan as scan_popularity_func
+            import threading
+            
+            db_dir = os.path.dirname(DB_PATH)
+            popularity_progress_file = os.path.join(db_dir, "popularity_scan_progress.json")
+            _write_progress_file(popularity_progress_file, "popularity_scan", True, {"status": "starting", "resume_from": artist})
+            
+            def run_popularity_scan_bg():
+                try:
+                    logging.info(f"Starting popularity scan from artist '{artist}' (force={force_rescan})")
+                    scan_popularity_func(verbose=False, force=force_rescan, resume_from=artist)
+                    _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "complete", "exit_code": 0})
+                    logging.info(f"Popularity scan from '{artist}' completed successfully")
+                except Exception as e:
+                    logging.error(f"Error in popularity scan from '{artist}': {e}", exc_info=True)
+                    _write_progress_with_current_artist(popularity_progress_file, "popularity_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
+            
+            scan_thread = threading.Thread(target=run_popularity_scan_bg, daemon=False)
+            scan_thread.start()
+            scan_process_popularity = {'thread': scan_thread, 'type': 'popularity'}
+            
+            mode_desc = "Full (Forced)" if force_rescan else "Changes Only"
+            logging.info(f"Popularity scan thread started from artist '{artist}' ({mode_desc})")
+            
+            return jsonify({
+                "success": True,
+                "message": f"Popularity scan started from artist: {artist}",
+                "artist": artist,
+                "mode": mode_desc
+            })
+    
+    except Exception as e:
+        logging.error(f"Error starting scan from artist: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
+
+
 @app.route("/api/scan-status")
 def api_scan_status():
     """API endpoint to get status of all scan types"""

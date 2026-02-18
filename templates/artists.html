@@ -377,7 +377,7 @@ function jumpToLetter(letter) {
     }
 }
 
-// Scan all artists in a letter section
+// Start a full scan from the first artist in a letter section
 async function scanLetterArtists(letter, scanType) {
     const table = document.getElementById('artistsTable');
     const rows = table.querySelectorAll(`tbody tr[data-letter="${letter}"]`);
@@ -396,46 +396,36 @@ async function scanLetterArtists(letter, scanType) {
         return;
     }
     
+    // Get the first artist in this letter section
+    const firstArtist = artists[0];
     const fullScan = scanType === 'forced';
-    const message = `Scan ${fullScan ? 'Full' : 'Changes'} for ${artists.length} artist(s) in section "${letter}"?`;
+    const scanMode = fullScan ? 'forced' : 'changes';
+    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from "${firstArtist}" (section "${letter}")?\\n\\nThis will scan "${firstArtist}" and all artists that come after it in the library.`;
     
     if (!confirm(message)) {
         return;
     }
     
-    let completed = 0;
-    let failed = 0;
-    
-    for (const artist of artists) {
-        try {
-            const response = await fetch('/api/scan/artist', {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ 
-                    artist: artist,
-                    full_scan: fullScan
-                })
-            });
-            
-            const data = await response.json();
-            if (data.success) {
-                completed++;
-            } else {
-                failed++;
-                console.error('Scan failed for ' + artist + ':', data.error);
-            }
-        } catch (error) {
-            failed++;
-            console.error('Error scanning ' + artist + ':', error);
+    try {
+        const response = await fetch('/api/scan/from-artist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ 
+                artist: firstArtist,
+                scan_mode: scanMode
+            })
+        });
+        
+        const data = await response.json();
+        if (data.success) {
+            alert(`✅ Scan started successfully (${data.mode})\\n\\nCheck the dashboard for progress.`);
+        } else {
+            alert(`❌ Error: ${data.error}`);
         }
+    } catch (error) {
+        console.error('Error starting scan:', error);
+        alert(`❌ Error starting scan: ${error.message}`);
     }
-    
-    alert(`Completed ${completed} scans${failed > 0 ? ', ' + failed + ' failed' : ''}`);
-    
-    // Reload the page to show updated data
-    setTimeout(() => {
-        window.location.reload();
-    }, 1000);
 }
 </script>
 
