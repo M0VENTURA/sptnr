@@ -10610,8 +10610,22 @@ def api_queue_add_batch():
         
         logging.info(f"Adding {len(items)} items to queue in batch")
         
-        # Generate a unique import group ID for this batch
-        import_group_id = str(uuid.uuid4())
+        # Use provided import_group_id, or generate one based on artist+album if available
+        # This allows downloads from the same album to be grouped together for batch organization
+        import_group_id = data.get('import_group')
+        
+        if not import_group_id and items:
+            # Generate group ID from artist + album of first item
+            first_item = items[0]
+            artist = first_item.get('artist', '').strip() if first_item.get('artist') else 'Unknown'
+            album = first_item.get('album', '').strip() if first_item.get('album') else None
+            
+            if album:
+                # Use artist+album as group identifier: safe for filesystem and URLs
+                import_group_id = f"{artist}_{album}".replace(' ', '_')[:100]
+            else:
+                # Fallback to UUID if no album
+                import_group_id = str(uuid.uuid4())
         
         # Determine import type based on context and number of items
         import_type = data.get('import_type', 'playlist' if len(items) > 1 else 'song')

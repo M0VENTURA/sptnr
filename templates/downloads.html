@@ -3774,14 +3774,18 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
       priority: 5
     }));
     
-    // Send batch request with import_type='album' so all tracks are tagged together
+    // Send batch request with import_group based on artist+album
+    // This tags all tracks from this specific album together
     // Once all downloads complete, they can be organized together using "Organize All" button
+    const import_group = `${artist}_${album}`.replace(/\s+/g, '_').substring(0, 100);
+    
     const response = await fetch('/api/queue/add-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         items: trackItems,
-        import_type: 'album'  // Tag all tracks from this release as an album group
+        import_group: import_group,  // Group by artist + album
+        import_type: 'album'  // Mark as album import
       })
     });
     
@@ -3813,7 +3817,7 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
       
       // Inform user about grouping and organization
       if (added > 0 && importGroup) {
-        message += `\n\n📦 All ${importType} tracks are tagged together (Group ID: ${importGroup.substring(0, 8)}...)`;
+        message += `\n\n📦 All ${importType} tracks are grouped as: "${album}"`;
         message += `\nOnce downloads complete, use "Organize All" in the Completed section to move them to /music`;
       }
       
