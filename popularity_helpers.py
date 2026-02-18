@@ -309,6 +309,112 @@ def score_by_age(playcount: Any, release_str: str):
     return _score_by_age(playcount, release_str)
 
 
+def apply_mean_popularity_adjustment(
+    track_popularity: float,
+    artist_name: str,
+    release_year: int | None = None,
+    conn = None
+) -> float:
+    """
+    Apply mean-based popularity adjustment with optional time decay for pre-2005 releases.
+    
+    Algorithm:
+    1. Calculate track z-score relative to artist mean: (track_pop - artist_mean) / artist_stddev
+    2. Apply time decay for releases before 2005 (account for sparse Last.fm data pre-2005)
+    3. Convert z-score to 0-100 scale using formula: 50 + (z_score * 16.7)
+    
+    Rationale:
+    - Avoids algorithmic bias (Spotify weighting issue)
+    - Artist context improves accuracy (top 5% of artist > absolute score)
+    - Time adjustment acknowledges data sparsity pre-2005
+    - Z-score threshold of 1.8 aligns with single detection logic
+    
+    Args:
+        track_popularity: Current popularity score (0-100, weighted average)
+        artist_name: Artist name for context lookup
+        release_year: Optional year to apply time decay (pre-2005 reduces confidence)
+        conn: Optional database connection to fetch artist stats
+        
+    Returns:
+        Adjusted popularity score (0-100)
+    """
+    if track_popularity <= 0:
+        return 0.0
+    
+    # If no connection provided, create one
+    if conn is None:
+        try:
+            conn = get_db_connection()
+            should_close = True
+        except Exception:
+            # If we can't get DB connection, return original score
+            return track_popularity
+    else:
+        should_close = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Fetch artist statistics (mean, stddev)
+        cursor.execute("""
+            SELECT mean_popularity, popularity_stddev
+            FROM artist_stats
+            WHERE artist_name = ?
+        """, (artist_name,))
+        
+        row = cursor.fetchone()
+        if not row:
+            # Artist stats not yet computed, return original score
+            return track_popularity
+        
+        artist_mean, artist_stddev = row[0], row[1]
+        
+        if artist_mean is None or artist_mean <= 0:
+            # No valid mean, return original score
+            return track_popularity
+        
+        # Calculate z-score relative to artist mean
+        if artist_stddev and artist_stddev > 0:
+            z_score = (track_popularity - artist_mean) / artist_stddev
+        else:
+            # No variance, track is at mean
+            z_score = 0.0
+        
+        # Apply time decay for pre-2005 releases
+        # Pre-2005: Last.fm had fewer active users, resulting in sparse/incomplete data
+        # Reduce confidence by scaling down the z-score
+        # Linear decay: 2005 = 1.0x, 2000 = 0.8x, 1995 = 0.6x, 1990 = 0.4x, pre-1990 = 0.2x
+        if release_year and release_year < 2005:
+            years_before_2005 = 2005 - release_year
+            # Decay formula: 1.0 - (years_before * 0.04) with floor at 0.2
+            # This gives ~4% reduction per year pre-2005
+            decay_factor = max(0.2, 1.0 - (years_before_2005 * 0.04))
+            z_score *= decay_factor
+            logging.debug(f"Applied time decay to '{artist_name}' release ({release_year}): z_score {(track_popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0:.2f} -> {z_score:.2f} (decay_factor={decay_factor:.2f})")
+        
+        # Convert z-score to 0-100 scale
+        # Formula: 50 + (z_score * 16.7)
+        # This maps:
+        #   z_score = -3 → 0 points
+        #   z_score = -1 → 33.3 points (1 stdev below artist mean)
+        #   z_score = 0 → 50 points (at artist mean)
+        #   z_score = +1 → 66.7 points (1 stdev above artist mean)
+        #   z_score = +3 → 100 points
+        adjusted_score = 50.0 + (z_score * 16.7)
+        adjusted_score = min(100.0, max(0.0, adjusted_score))
+        
+        logging.debug(f"Mean popularity adjustment for '{artist_name}': original={track_popularity:.1f}, z_score={z_score:.2f}, adjusted={adjusted_score:.1f} (artist_mean={artist_mean:.1f}, stddev={artist_stddev:.1f})")
+        
+        return adjusted_score
+        
+    except Exception as e:
+        logging.debug(f"Error applying mean popularity adjustment for '{artist_name}': {e}")
+        return track_popularity
+    
+    finally:
+        if should_close and conn:
+            conn.close()
+
 
 # --- Shared DB/API/Helper Functions (moved from start.py) ---
 from db_utils import get_db_connection

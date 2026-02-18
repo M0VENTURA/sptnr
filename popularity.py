@@ -1024,6 +1024,7 @@ from popularity_helpers import (
     get_lastfm_track_info,
     calculate_lastfm_popularity_score,
     score_by_age,
+    apply_mean_popularity_adjustment,
     update_artist_id_for_artist,
     get_lastfm_client,
     SPOTIFY_WEIGHT,
@@ -3386,11 +3387,30 @@ def popularity_scan(
                         if scores and weights:
                             total_weight = sum(weights)
                             popularity_score = sum(s * w for s, w in zip(scores, weights)) / total_weight
-                            track_updates.append((popularity_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
+                            
+                            # Extract release year from spotify_release_date (format: YYYY or YYYY-MM-DD)
+                            release_year = None
+                            if spotify_release_date:
+                                try:
+                                    release_year = int(spotify_release_date.split('-')[0])
+                                except (ValueError, IndexError):
+                                    pass
+                            
+                            # Apply mean popularity adjustment with time decay for pre-2005 releases
+                            # Note: This normalizes the score relative to artist mean catalog popularity
+                            # and reduces confidence for pre-2005 releases (sparse Last.fm data)
+                            adjusted_score = apply_mean_popularity_adjustment(
+                                track_popularity=popularity_score,
+                                artist_name=artist,
+                                release_year=release_year,
+                                conn=conn
+                            )
+                            
+                            track_updates.append((adjusted_score, spotify_score, lastfm_score, spotify_genres_json, lastfm_tags_json, discogs_genres_json, musicbrainz_genres_json, album_art_url, track_id))
                             scanned_count += 1
                             album_scanned += 1
-                            log_info(f'Track scanned successfully: "{title}" (score: {popularity_score:.1f})')
-                            log_debug(f'Weighted popularity calculation - spotify: {spotify_score:.1f}, lastfm: {lastfm_score:.1f}, listenbrainz: {listenbrainz_score:.1f}, age: {age_score:.1f}, final: {popularity_score:.1f}')
+                            log_info(f'Track scanned successfully: "{title}" (weighted: {popularity_score:.1f}, adjusted: {adjusted_score:.1f})')
+                            log_debug(f'Weighted popularity calculation - spotify: {spotify_score:.1f}, lastfm: {lastfm_score:.1f}, listenbrainz: {listenbrainz_score:.1f}, age: {age_score:.1f}, weighted: {popularity_score:.1f}, adjusted: {adjusted_score:.1f}')
                         else:
                             log_info(f"No popularity score found for {artist} - {title}")
                             log_debug(f'No data sources available for scoring')
@@ -3889,14 +3909,15 @@ def popularity_scan(
                 # Just update the artist_stats table with popularity statistics
                 if artist_stats['track_count'] > 0:
                     # Update artist_stats table with popularity statistics
+                    # Columns: mean_popularity, median_popularity, popularity_stddev
                     cursor.execute("""
                         UPDATE artist_stats 
-                        SET avg_popularity = ?, median_popularity = ?, popularity_stddev = ?
+                        SET mean_popularity = ?, median_popularity = ?, popularity_stddev = ?
                         WHERE artist_name = ?
                     """, (artist_stats['avg_popularity'], artist_stats['median_popularity'], 
                           artist_stats['stddev_popularity'], artist))
                     conn.commit()
-                    log_debug(f"Updated artist_stats table for {artist}")
+                    log_debug(f"Updated artist_stats table for {artist} - mean: {artist_stats['avg_popularity']:.1f}, median: {artist_stats['median_popularity']:.1f}, stddev: {artist_stats['stddev_popularity']:.1f}")
                 
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
