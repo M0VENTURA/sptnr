@@ -2513,13 +2513,6 @@ def popularity_scan(
                 log_debug(f"Discogs token validation failed: token length={len(discogs_token)}, expected 20+ characters")
                 discogs_token = None  # Disable Discogs if token looks invalid
             
-            # Initialize artist-level accumulators for z-score detection logging
-            # These will accumulate results across all albums and be logged once at the end
-            artist_detected_singles = []
-            artist_standout_tracks = []
-            artist_possible_singles = []
-            artist_rest_of_album = []
-            
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
@@ -4047,27 +4040,43 @@ def popularity_scan(
                             # 3. Close Matches (medium confidence or has sources but not single)
                             # 4. Rest of Album (everything else)
                             
-                            # Append to artist-level lists (will be logged after all albums are processed)
+                            # Append to album-level lists (will be logged immediately after album scan)
                             if is_detected_single:
                                 detected_singles.append((track_title, stars_str, reason_str))
-                                artist_detected_singles.append((track_title, stars_str, reason_str))
                             elif is_standout:
                                 standout_tracks.append((track_title, stars_str, reason_str))
-                                artist_standout_tracks.append((track_title, stars_str, reason_str))
                             elif is_close_match:
                                 possible_singles.append((track_title, stars_str, reason_str))
-                                artist_possible_singles.append((track_title, stars_str, reason_str))
                             else:
                                 rest_of_album.append((track_title, stars_str, reason_str))
-                                artist_rest_of_album.append((track_title, stars_str, reason_str))
                         
-                        # Log categorized results for this album (debug only)
+                        # Log categorized results for this album (output immediately after album scan)
                         total_logged = len(detected_singles) + len(standout_tracks) + len(possible_singles) + len(rest_of_album)
                         log_debug(f"Track categorization for {album}: detected_singles={len(detected_singles)}, standout={len(standout_tracks)}, close_matches={len(possible_singles)}, rest={len(rest_of_album)}, total={total_logged}")
                         
-                        # NOTE: Unified logging of z-score detection has been moved to after all albums are processed
-                        # This prevents premature logging after each album and instead logs once per artist
-                        log_debug(f"Successfully categorized tracks for album {album} (unified logging will happen after all albums)")
+                        # Output album results immediately after scanning (not after all albums)
+                        try:
+                            if detected_singles:
+                                log_unified(f"Single Detection Scan - ===== {album} - Detected Singles =====")
+                                for title, stars, reason in detected_singles:
+                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
+                            
+                            if standout_tracks:
+                                log_unified(f"Single Detection Scan - ===== {album} - Popular Tracks =====")
+                                for title, stars, reason in standout_tracks:
+                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
+                            
+                            if possible_singles:
+                                log_unified(f"Single Detection Scan - ===== {album} - Close Matches =====")
+                                for title, stars, reason in possible_singles:
+                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
+                            
+                            if rest_of_album and (detected_singles or standout_tracks or possible_singles):
+                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                                for title, stars, _ in rest_of_album:
+                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
+                        except Exception as e:
+                            log_debug(f"Exception logging album results for {album}: {type(e).__name__}: {str(e)}")
                         
                     except Exception as e:
                         log_info(f"Error logging categorized tracks for album {album}: {e}")
@@ -4090,47 +4099,15 @@ def popularity_scan(
                 log_album_scan(artist, album, 'popularity', album_scanned, 'completed')
                 log_debug(f"Logged album scan to scan_history - album: {album}, tracks_scanned: {album_scanned}")
 
-            # After all albums processed for this artist, log the accumulated z-score detection results
-            # This ensures z-score detection is only logged once at the end of the full artist scan
+            # After all albums processed for this artist, show artist scan completion summary
+            # (Individual album details were logged immediately after each album scan)
             try:
-                # Log categorized results with improved spacing
-                total_logged = len(artist_detected_singles) + len(artist_standout_tracks) + len(artist_possible_singles) + len(artist_rest_of_album)
-                log_debug(f"Artist-level track categorization for {artist}: detected_singles={len(artist_detected_singles)}, standout={len(artist_standout_tracks)}, close_matches={len(artist_possible_singles)}, rest={len(artist_rest_of_album)}, total={total_logged}")
-                
-                if artist_detected_singles:
-                    log_unified(f"Single Detection Scan - ===== Detected Singles =====")
-                    log_debug(f"Logging {len(artist_detected_singles)} detected singles for artist: {artist}")
-                    for title, stars, reason in artist_detected_singles:
-                        log_entry = f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}"
-                        log_debug(f"About to log: {log_entry}")
-                        log_unified(log_entry)
-                
-                if artist_standout_tracks:
-                    log_unified(f"Single Detection Scan - ===== Popular Track Match =====")
-                    for title, stars, reason in artist_standout_tracks:
-                        log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
-                
-                if artist_possible_singles:
-                    log_unified(f"Single Detection Scan - ===== Close Matches =====")
-                    for title, stars, reason in artist_possible_singles:
-                        log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
-                
-                # Log rest of album tracks if there are any
-                if artist_rest_of_album:
-                    # Only show header if there were detected singles/standout/possible singles
-                    if artist_detected_singles or artist_standout_tracks or artist_possible_singles:
-                        log_unified(f"Single Detection Scan - ===== Rest of Album =====")
-                    # Log individual rest-of-album tracks (no reasons shown for regular tracks)
-                    for title, stars, _ in artist_rest_of_album:
-                        log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
-                
-                log_debug(f"Successfully logged all categorized tracks for artist {artist}")
+                log_unified(f"✅ Scan complete for artist '{artist}'")
+                log_debug(f"Artist '{artist}' scan completed. All album details logged above during individual album scans.")
                 
             except Exception as e:
-                log_info(f"Error logging categorized tracks for artist {artist}: {e}")
-                log_debug(f"Exception in artist-level track categorization: {type(e).__name__}: {str(e)}")
-                import traceback
-                log_debug(f"Traceback: {traceback.format_exc()}")
+                log_info(f"Error completing artist scan summary for {artist}: {e}")
+                log_debug(f"Exception in artist scan summary: {type(e).__name__}: {str(e)}")
 
             # After artist scans, evaluate essential playlist for artist (Case A: 10+ five-star OR Case B: 100+ tracks)
             # Get ALL tracks for this artist (not just 5-star) to properly apply Case A/B logic
