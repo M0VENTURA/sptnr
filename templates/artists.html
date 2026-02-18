@@ -379,28 +379,9 @@ function jumpToLetter(letter) {
 
 // Start a full scan from the first artist in a letter section
 async function scanLetterArtists(letter, scanType) {
-    const table = document.getElementById('artistsTable');
-    const rows = table.querySelectorAll(`tbody tr[data-letter="${letter}"]`);
-    
-    // Filter out the header row and collect artist names
-    const artists = [];
-    rows.forEach(row => {
-        const artistName = row.getAttribute('data-artist');
-        if (artistName && !row.getAttribute('data-letter-header')) {
-            artists.push(artistName);
-        }
-    });
-    
-    if (artists.length === 0) {
-        alert('No artists found for letter ' + letter);
-        return;
-    }
-    
-    // Get the first artist in this letter section
-    const firstArtist = artists[0];
     const fullScan = scanType === 'forced';
     const scanMode = fullScan ? 'forced' : 'changes';
-    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from "${firstArtist}" (section "${letter}")?\\n\\nThis will scan "${firstArtist}" and all artists that come after it in the library.`;
+    const message = `Start ${fullScan ? 'Full' : 'Changes'} scan from letter "${letter}"?\\n\\nThis will query Navidrome for the first artist starting with "${letter}" and scan from there.`;
     
     if (!confirm(message)) {
         return;
@@ -411,14 +392,14 @@ async function scanLetterArtists(letter, scanType) {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ 
-                artist: firstArtist,
+                letter: letter,
                 scan_mode: scanMode
             })
         });
         
         const data = await response.json();
         if (data.success) {
-            alert(`✅ Scan started successfully (${data.mode})\\n\\nCheck the dashboard for progress.`);
+            alert(`✅ Scan started successfully (${data.mode})\\n\\nStarting from: ${data.artist}\\n\\nCheck the dashboard for progress.`);
         } else {
             alert(`❌ Error: ${data.error}`);
         }
