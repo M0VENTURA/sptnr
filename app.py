@@ -2792,7 +2792,7 @@ def api_cleanup_false_positive_missing():
 
 @app.route("/api/artist/bio")
 def api_artist_bio():
-    """Get artist biography from cached metadata or external sources"""
+    """Get artist biography from database cache only (fetched during scans, not real-time online)"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         return jsonify({"error": "Artist name required"}), 400
@@ -2801,143 +2801,40 @@ def api_artist_bio():
         conn = get_db()
         cursor = conn.cursor()
         
-        # First check if we have cached biography in artist_metadata table
-        try:
-            cursor.execute("""
-                SELECT biography, image_url 
-                FROM artist_metadata 
-                WHERE artist_name = ?
-            """, (artist_name,))
-            metadata_row = cursor.fetchone()
-            
-            if metadata_row and metadata_row[0]:
-                # Clean up the biography text (for old cached data with artist IDs)
-                cleaned_bio = clean_discogs_biography(metadata_row[0])
-                
-                # Return cached biography
-                conn.close()
-                return jsonify({
-                    "bio": cleaned_bio,
-                    "source": "Cached (Discogs)",
-                    "image_url": metadata_row[1] if len(metadata_row) > 1 else ""
-                })
-        except Exception as e:
-            logging.debug(f"artist_metadata table query failed: {e}")
-        
-        # Get artist MBID from database for MusicBrainz lookup
-        cursor.execute("SELECT musicbrainz_artist_id FROM tracks WHERE artist = ? AND musicbrainz_artist_id IS NOT NULL LIMIT 1", (artist_name,))
-        row = cursor.fetchone()
+        # Return cached biography from database only - no online calls
+        cursor.execute("""
+            SELECT bio, image_url 
+            FROM artists 
+            WHERE name = ?
+        """, (artist_name,))
+        artist_row = cursor.fetchone()
         conn.close()
         
-        artist_mbid = row['musicbrainz_artist_id'] if row else None
-        bio = ""
-        source = "Unknown"
-        mbid_newly_found = False
-        
-        # Try MusicBrainz first with shorter timeout
-        if not artist_mbid:
-            try:
-                search_url = "https://musicbrainz.org/ws/2/artist"
-                params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-                
-                resp = requests.get(search_url, params=params, headers=headers, timeout=5)
-                resp.raise_for_status()
-                data = resp.json()
-                
-                artists = data.get("artists", [])
-                if artists:
-                    artist_mbid = artists[0].get("id")
-                    mbid_newly_found = True
-            except Exception as e:
-                logging.debug(f"MusicBrainz artist search failed: {e}")
-                artist_mbid = None
-        
-        # Fetch from MusicBrainz if we have MBID
-        if artist_mbid:
-            try:
-                artist_url = f"https://musicbrainz.org/ws/2/artist/{artist_mbid}"
-                params = {"fmt": "json", "inc": "annotation"}
-                headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-                
-                resp = requests.get(artist_url, params=params, headers=headers, timeout=5)
-                resp.raise_for_status()
-                artist_data = resp.json()
-                
-                bio = artist_data.get("annotation", {}).get("text", "") or artist_data.get("disambiguation", "")
-                if bio:
-                    source = "MusicBrainz"
-            except Exception as e:
-                logging.debug(f"MusicBrainz bio fetch failed: {e}")
-                bio = ""
-        
-        # Fallback to Discogs if MusicBrainz failed or returned empty
-        if not bio:
-            try:
-                from api_clients.discogs import DiscogsClient
-                
-                config_data, _ = _read_yaml(CONFIG_PATH)
-                discogs_config = config_data.get("api_integrations", {}).get("discogs", {})
-                discogs_token = discogs_config.get("token", "") or os.environ.get("DISCOGS_TOKEN", "")
-                
-                if discogs_token:
-                    discogs_client = DiscogsClient(discogs_token)
-                    # Use session to search since search_artist is not available
-                    search_url = f"https://api.discogs.com/database/search"
-                    params = {"q": artist_name, "type": "artist", "per_page": 1}
-                    res = discogs_client.session.get(search_url, headers=discogs_client.headers, params=params, timeout=10)
-                    if res.status_code == 200:
-                        results = res.json().get("results", [])
-                        if results:
-                            artist_data = results[0]
-                            bio = artist_data.get("profile", "") or artist_data.get("basic_information", {}).get("notes", "")
-                            if bio:
-                                source = "Discogs"
-            except Exception as e:
-                logging.debug(f"Discogs bio fetch failed: {e}")
-        
-        # Save the MusicBrainz artist ID and bio to the database
-        if artist_mbid and mbid_newly_found:
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                # Update both lastfm_artist_mbid and musicbrainz_artist_id fields
-                # for backwards compatibility and consistency
-                cursor.execute("""
-                    UPDATE tracks 
-                    SET lastfm_artist_mbid = ?, musicbrainz_artist_id = ?
-                    WHERE artist = ?
-                """, (artist_mbid, artist_mbid, artist_name))
-                conn.commit()
-                conn.close()
-                logging.info(f"Saved MusicBrainz artist ID {artist_mbid} for {artist_name}")
-            except Exception as e:
-                logging.error(f"Failed to save MusicBrainz artist ID: {e}")
-        
-        # Cache the bio in the artists table
-        if bio:
-            try:
-                conn = get_db()
-                cursor = conn.cursor()
-                cursor.execute("""
-                    UPDATE artists
-                    SET bio = ?
-                    WHERE name = ?
-                """, (bio, artist_name))
-                conn.commit()
-                conn.close()
-                logging.debug(f"Cached artist bio for {artist_name}")
-            except Exception as e:
-                logging.debug(f"Failed to cache artist bio: {e}")
-        
-        return jsonify({
-            "bio": bio,
-            "source": source,
-            "artist_mbid": artist_mbid
-        })
+        if artist_row:
+            bio = artist_row['bio'] if artist_row['bio'] else ""
+            image_url = artist_row['image_url'] if artist_row['image_url'] else ""
+            
+            # Clean up the biography text (for old cached data with artist IDs)
+            if bio:
+                cleaned_bio = clean_discogs_biography(bio)
+            else:
+                cleaned_bio = ""
+            
+            return jsonify({
+                "bio": cleaned_bio,
+                "source": "Database (from scan)",
+                "image_url": image_url
+            })
+        else:
+            # Artist not in database yet - return empty
+            return jsonify({
+                "bio": "",
+                "source": "Not available (run artist scan to fetch)",
+                "image_url": ""
+            })
         
     except Exception as e:
-        logging.error(f"Error fetching artist bio from all sources: {e}")
+        logging.error(f"Error fetching artist bio from database: {e}")
         return jsonify({"bio": "", "source": "Error"}), 200
 
 
@@ -3019,7 +2916,7 @@ def api_create_essential_playlist():
 
 @app.route("/api/artist/image")
 def api_artist_image():
-    """Get artist image - from database, external sources, or placeholder"""
+    """Get artist image from database cache only (fetched during scans, not real-time online)"""
     artist_name = request.args.get("name", "").strip()
     if not artist_name:
         svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
@@ -3031,19 +2928,14 @@ def api_artist_image():
     try:
         conn = get_db()
         cursor = conn.cursor()
-        # First check custom artist_images table
+        
+        # Return cached image URL from database only - no online calls
         cursor.execute("""
-            SELECT image_url FROM artist_images WHERE artist_name = ?
+            SELECT image_url 
+            FROM artists 
+            WHERE name = ?
         """, (artist_name,))
         row = cursor.fetchone()
-        
-        # If not found, check artist_metadata table
-        if not row or not row['image_url']:
-            cursor.execute("""
-                SELECT image_url FROM artist_metadata WHERE artist_name = ?
-            """, (artist_name,))
-            row = cursor.fetchone()
-        
         conn.close()
         
         if row and row['image_url']:
@@ -3051,89 +2943,9 @@ def api_artist_image():
             return redirect(row['image_url'])
         
     except Exception as e:
-        logging.error(f"Error fetching artist image: {e}")
+        logging.error(f"Error fetching artist image from database: {e}")
     
-    # Try to fetch from external sources as fallback
-    try:
-        # Try to get artist MBID from database (check all MBID fields)
-        conn = get_db()
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT 
-                COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid
-            FROM tracks 
-            WHERE artist = ? 
-            AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL)
-            LIMIT 1
-        """, (artist_name,))
-        result = cursor.fetchone()
-        conn.close()
-        
-        artist_mbid = result['artist_mbid'] if result else None
-        
-        # If no MBID in database, search for it
-        if not artist_mbid:
-            search_url = "https://musicbrainz.org/ws/2/artist"
-            params = {"query": f'artist:"{artist_name}"', "fmt": "json", "limit": 1}
-            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-            resp = requests.get(search_url, params=params, headers=headers, timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-                artists = data.get("artists", [])
-                if artists:
-                    artist_mbid = artists[0].get("id")
-        
-        # Try to get a release by this artist and use its cover art
-        if artist_mbid:
-            # Search for releases by this artist
-            search_url = "https://musicbrainz.org/ws/2/release-group"
-            params = {
-                "artist": artist_mbid,
-                "fmt": "json",
-                "limit": 1,
-                "type": "album"
-            }
-            headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
-            resp = requests.get(search_url, params=params, headers=headers, timeout=3)
-            if resp.status_code == 200:
-                data = resp.json()
-                release_groups = data.get("release-groups", [])
-                if release_groups:
-                    rg_id = release_groups[0].get("id")
-                    if rg_id:
-                        # Try to fetch cover art for this release group
-                        caa_url = f"https://coverartarchive.org/release-group/{rg_id}/front-250"
-                        art_resp = requests.get(caa_url, timeout=3)
-                        if art_resp.status_code == 200:
-                            # Save the URL to database for future use
-                            try:
-                                conn = get_db()
-                                cursor = conn.cursor()
-                                # Create artist_images table if it doesn't exist
-                                cursor.execute("""
-                                    CREATE TABLE IF NOT EXISTS artist_images (
-                                        artist_name TEXT PRIMARY KEY,
-                                        image_url TEXT NOT NULL,
-                                        updated_at TEXT NOT NULL
-                                    )
-                                """)
-                                # Save the image URL
-                                cursor.execute("""
-                                    INSERT OR REPLACE INTO artist_images (artist_name, image_url, updated_at)
-                                    VALUES (?, ?, ?)
-                                """, (artist_name, caa_url, datetime.now().isoformat()))
-                                conn.commit()
-                                conn.close()
-                                logging.info(f"Saved artist image URL for {artist_name}: {caa_url}")
-                            except Exception as save_error:
-                                logging.error(f"Failed to save artist image URL: {save_error}")
-                            
-                            # Redirect to the URL instead of returning binary data
-                            return redirect(caa_url)
-    except Exception as e:
-        logging.debug(f"External artist image fetch failed: {e}")
-    
-    # Return placeholder
+    # Return placeholder if no cached image
     svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
         <rect fill="#2a2a2a" width="200" height="200"/>
         <text x="50%" y="50%" text-anchor="middle" dy=".3em" fill="#666" font-size="16">No Image</text>

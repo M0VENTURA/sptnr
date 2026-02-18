@@ -19,7 +19,7 @@ import sqlite3
 import logging
 from typing import Dict, List, Tuple, Optional, Set
 from dataclasses import dataclass
-from statistics import mean, stdev
+from statistics import mean, stdev, median
 
 logger = logging.getLogger(__name__)
 
@@ -413,7 +413,7 @@ def detect_single_advanced(
     duration: Optional[float],
     popularity: float,
     album_type: Optional[str],
-    zscore_threshold: float = 0.20,
+    zscore_threshold: float = 1.0,
     verbose: bool = False,
     discogs_client=None
 ) -> Dict:
@@ -442,7 +442,7 @@ def detect_single_advanced(
         duration: Track duration in seconds (optional)
         popularity: Track popularity score
         album_type: Spotify album type (optional)
-        zscore_threshold: Z-score threshold for singles (default 0.20)
+        zscore_threshold: Z-score threshold for singles based on artist median (default 1.0)
         verbose: Enable verbose logging
         discogs_client: Optional DiscogsClient instance for Discogs single detection
         
@@ -452,7 +452,7 @@ def detect_single_advanced(
             - confidence: str ('high', 'medium', 'low')
             - sources: List[str]
             - global_popularity: float
-            - zscore: float
+            - zscore: float (calculated against artist median)
             - metadata_single: bool
             - is_compilation: bool
     """
@@ -547,7 +547,7 @@ def detect_single_advanced(
     """, (artist,))
     
     artist_pops = [row[0] for row in cursor.fetchall() if row[0]]
-    artist_mean_val = mean(artist_pops) if len(artist_pops) > 1 else 0.0
+    artist_median_val = median(artist_pops) if len(artist_pops) > 1 else 0.0
     artist_stddev_val = stdev(artist_pops) if len(artist_pops) > 1 else 1.0
     
     # TWO-STAGE Z-SCORE CALCULATION
@@ -564,7 +564,7 @@ def detect_single_advanced(
     artist_standout = True  # Default: pass
     artist_zscore = 0.0
     if len(artist_pops) >= 5:
-        artist_zscore = (global_pop - artist_mean_val) / artist_stddev_val if artist_stddev_val > 0 else 0.0
+        artist_zscore = (global_pop - artist_median_val) / artist_stddev_val if artist_stddev_val > 0 else 0.0
         artist_threshold = zscore_threshold
         artist_standout = artist_zscore >= artist_threshold
     
@@ -605,7 +605,7 @@ def detect_single_advanced(
     # Determine confidence
     if is_single:
         confidence = 'high'
-    elif metadata_single or (zscore >= zscore_threshold):
+    elif metadata_single or (artist_zscore >= zscore_threshold):
         confidence = 'medium'
     else:
         confidence = 'low'
@@ -615,7 +615,7 @@ def detect_single_advanced(
         'confidence': confidence,
         'sources': sources,
         'global_popularity': global_pop,
-        'zscore': zscore,
+        'zscore': artist_zscore,
         'metadata_single': metadata_single,
         'is_compilation': is_comp
     }
@@ -625,7 +625,7 @@ def batch_update_advanced_singles(
     conn: sqlite3.Connection,
     artist: Optional[str] = None,
     album: Optional[str] = None,
-    zscore_threshold: float = 0.20,
+    zscore_threshold: float = 1.0,
     verbose: bool = False,
     discogs_client=None
 ) -> int:

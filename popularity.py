@@ -48,6 +48,13 @@ except ImportError as e:
     HAVE_DISCOGS = False
     HAVE_DISCOGS_VIDEO = False
 
+try:
+    from api_clients.audiodb import get_artist_biography, get_artist_fanart
+    HAVE_AUDIODB = True
+except ImportError as e:
+    log_debug(f"AudioDB client unavailable: {e}")
+    HAVE_AUDIODB = False
+
 # Timeout-safe clients for use within _run_with_timeout() context
 # These use timeout_safe_session with reduced retry count to prevent exceeding timeout
 _timeout_safe_mb_client = None
@@ -1270,7 +1277,7 @@ def detect_single_for_track(
     popularity: float = None,
     album_type: str = None,
     use_advanced_detection: bool = True,
-    zscore_threshold: float = 0.20,
+    zscore_threshold: float = 1.0,
     # New parameters for conditional z-score detection
     album_is_underperforming: bool = False,
     artist_median_popularity: float = 0.0
@@ -1305,7 +1312,7 @@ def detect_single_for_track(
         popularity: Track popularity score for advanced detection (optional)
         album_type: Album type for advanced detection (optional)
         use_advanced_detection: Enable advanced detection logic (default True)
-        zscore_threshold: Z-score threshold for singles (default 0.20)
+        zscore_threshold: Z-score threshold for singles based on artist median (default 1.0)
         
     Returns:
         Dict with keys:
@@ -1313,7 +1320,7 @@ def detect_single_for_track(
             - confidence: 'high', 'medium', or 'low'
             - is_single: True if confidence is 'high', False otherwise
             - global_popularity: Global popularity across versions (if advanced)
-            - zscore: Z-score within album (if advanced)
+            - zscore: Z-score against artist median (if advanced)
             - metadata_single: Metadata single status (if advanced)
             - is_compilation: Compilation status (if advanced)
     """
@@ -2294,6 +2301,52 @@ def popularity_scan(
                                                  (artist_country, artist))
                                     conn.commit()
                                     log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
+                                    
+                                    # Fetch and save artist bio/image from AudioDB during scan
+                                    if HAVE_AUDIODB:
+                                        try:
+                                            log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
+                                            
+                                            # Fetch artist biography
+                                            artist_bio = _run_with_timeout(
+                                                get_artist_biography,
+                                                8,  # 8 second timeout for bio lookup
+                                                f"Artist bio lookup timed out after 8s",
+                                                artist,
+                                                enabled=True
+                                            )
+                                            
+                                            # Fetch artist image/fanart
+                                            artist_image = _run_with_timeout(
+                                                get_artist_fanart,
+                                                8,  # 8 second timeout for image lookup
+                                                f"Artist image lookup timed out after 8s",
+                                                artist,
+                                                enabled=True
+                                            )
+                                            
+                                            if artist_bio or artist_image:
+                                                # Update artist entry with bio and image
+                                                cursor.execute("""
+                                                    INSERT INTO artists (id, name, country, bio, image_url) 
+                                                    VALUES (?, ?, ?, ?, ?)
+                                                    ON CONFLICT(id) DO UPDATE SET 
+                                                        country = excluded.country,
+                                                        bio = excluded.bio,
+                                                        image_url = excluded.image_url
+                                                """, (artist, artist, artist_country, artist_bio or "", artist_image or ""))
+                                                conn.commit()
+                                                
+                                                if artist_bio:
+                                                    log_debug(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
+                                                if artist_image:
+                                                    log_debug(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
+                                            else:
+                                                log_debug(f'No bio or image found for artist: {artist}')
+                                        except TimeoutError as e:
+                                            log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
+                                        except Exception as e:
+                                            log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
                                 else:
                                     log_debug(f'No country information found for artist: {artist}')
                         except TimeoutError as e:
@@ -3347,6 +3400,86 @@ def popularity_scan(
                 log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({len(singles_updates)} tracks checked)')
                 log_debug(f'Singles detection summary - high_conf: {high_conf_count}, total_checked: {len(singles_updates)}')
 
+                # POST-PROCESSING: Detect album-level z-score outliers as medium confidence singles
+                # These are tracks that are strong album standouts: zscore >= 2.0 AND popularity >> album mean
+                # This works alongside existing single detection to identify standout album tracks
+                try:
+                    cursor.execute("""
+                        SELECT id, title, popularity_score, single_confidence, single_sources, is_single
+                        FROM tracks 
+                        WHERE artist = ? AND album = ?
+                        ORDER BY popularity_score DESC
+                    """, (artist, album))
+                    
+                    zscore_update_tracks = cursor.fetchall()
+                    
+                    if zscore_update_tracks:
+                        # Calculate album statistics for z-score
+                        album_pops = [t["popularity_score"] for t in zscore_update_tracks if t["popularity_score"]]
+                        
+                        if album_pops and len(album_pops) > 1:
+                            album_pop_mean = mean(album_pops)
+                            album_pop_stddev = stdev(album_pops)
+                            
+                            zscore_outliers = []
+                            for track in zscore_update_tracks:
+                                track_id = track["id"]
+                                track_title = track["title"]
+                                track_pop = track["popularity_score"] or 0
+                                track_single_confidence = track["single_confidence"] or ""
+                                track_is_single = track["is_single"] or 0
+                                track_sources_json = track["single_sources"] or "[]"
+                                
+                                # Skip high confidence - those are already confirmed
+                                if track_single_confidence == "high":
+                                    continue
+                                
+                                # Calculate album z-score
+                                if album_pop_stddev > 0:
+                                    album_zscore = (track_pop - album_pop_mean) / album_pop_stddev
+                                else:
+                                    album_zscore = 0
+                                
+                                # Check if this is a strong album outlier
+                                if album_zscore >= 2.0 and track_pop > (album_pop_mean * 1.5):
+                                    # This is a strong standout - mark as medium confidence unless already marked
+                                    if not track_single_confidence or track_single_confidence == "low":
+                                        try:
+                                            track_sources = json.loads(track_sources_json) if track_sources_json else []
+                                        except json.JSONDecodeError:
+                                            track_sources = []
+                                        
+                                        # Add zscore as detection source if not already present
+                                        if "album_zscore" not in track_sources:
+                                            track_sources.append("album_zscore")
+                                        
+                                        # Update to medium confidence
+                                        zscore_outliers.append((
+                                            "medium",
+                                            json.dumps(track_sources),
+                                            track_id
+                                        ))
+                                        
+                                        log_debug(f"Album z-score detection: {track_title} (zscore={album_zscore:.2f}, pop={track_pop:.1f} vs mean={album_pop_mean:.1f})")
+                            
+                            # Batch update z-score outliers
+                            if zscore_outliers:
+                                for single_confidence, sources, track_id in zscore_outliers:
+                                    cursor.execute("""
+                                        UPDATE tracks 
+                                        SET single_confidence = ?, single_sources = ?
+                                        WHERE id = ?
+                                    """, (single_confidence, sources, track_id))
+                                
+                                conn.commit()
+                                log_info(f"Album z-score detection: {len(zscore_outliers)} medium-confidence track(s) identified for '{artist} - {album}'")
+                                log_debug(f"Z-score outliers updated: {len(zscore_outliers)} tracks")
+                
+                except Exception as e:
+                    log_debug(f"Album z-score detection failed for '{album}': {e}")
+                    import traceback
+                    log_debug(f"Z-score detection error: {traceback.format_exc()}")
+
                 # Calculate star ratings for album tracks
                 log_info(f'Calculating star ratings for "{artist} - {album}"')
                 log_debug(f'Star rating calculation starting for album: {album}')
@@ -3545,12 +3678,6 @@ def popularity_scan(
                                     stars = 5
                                     log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                     log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                                # THIRD: High popularity + strong z-score (alternative 5-star method)
-                                # Track with z-score >= 2.0 AND popularity significantly above album mean gets 5 stars
-                                elif track_zscore >= 2.0 and popularity_score > popularity_mean * 1.5:
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (high popularity + strong outlier, pop={popularity_score:.1f} vs album_mean={popularity_mean:.1f}, zscore={track_zscore:.2f})")
-                                    log_debug(f"High pop+zscore met - track_id: {track_id}, pop: {popularity_score}, album_mean: {popularity_mean}, zscore: {track_zscore:.2f}")
                                 # User-set singles always get 5 stars
                                 elif single_confidence == "user":
                                     stars = 5
