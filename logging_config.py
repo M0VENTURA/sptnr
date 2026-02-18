@@ -210,6 +210,12 @@ def log_info(msg, level=logging.INFO):
     """
     _, info_logger, _ = get_loggers()
     info_logger.log(level, msg)
+    # Flush to ensure message is written immediately (for real-time monitoring)
+    for handler in info_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
 
 
 def log_debug(msg, level=logging.DEBUG, exc_info=False):
@@ -223,6 +229,12 @@ def log_debug(msg, level=logging.DEBUG, exc_info=False):
     """
     _, _, debug_logger = get_loggers()
     debug_logger.log(level, msg, exc_info=exc_info)
+    # Flush to ensure message is written immediately for debugging purposes
+    for handler in debug_logger.handlers:
+        try:
+            handler.flush()
+        except Exception:
+            pass
 
 
 def log_all(msg, level=logging.INFO):
@@ -237,6 +249,7 @@ def log_all(msg, level=logging.INFO):
     log_unified(msg, level)
     log_info(msg, level)
     log_debug(msg, level)
+    # All three log functions now flush internally
 
 
 # Initialize loggers on module import
