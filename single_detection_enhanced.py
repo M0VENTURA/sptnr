@@ -804,7 +804,7 @@ def infer_from_popularity(
     - album_z >= 1.0 AND artist_z >= 0.5
     
     MEDIUM-CONFIDENCE SINGLE:
-    - album_z >= 0.5 OR artist_z >= 1.0
+    - album_z >= 0.5 OR artist_z >= 1.8
     
     LOW-CONFIDENCE (legacy support):
     - album_z >= 0.2 AND >= 3 versions
@@ -828,8 +828,8 @@ def infer_from_popularity(
         if album_z >= 1.0 and artist_z >= 0.5:
             return 'high', True
         
-        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.0
-        if album_z >= 0.5 or artist_z >= 1.0:
+        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.8 (must match metadata-based confidence thresholds)
+        if album_z >= 0.5 or artist_z >= 1.8:
             return 'medium', True
         
         # LOW: Legacy support for album_z >= 0.2 AND >= 3 versions
@@ -880,7 +880,7 @@ def determine_final_status(
     - Discogs video confirms
     - Last.fm album has 1-3 tracks (single indicator)
     - Radio Edit found in Spotify search results
-    - Z-score >= 0.5 (album) OR >= 1.0 (artist) WITH metadata confirmation (required)
+    - Z-score >= 0.5 (album) OR >= 1.8 (artist) WITH metadata confirmation (required)
     
     LOW-CONFIDENCE:
     - album_z >= 0.2 AND >= 3 versions WITH metadata confirmation (required)
