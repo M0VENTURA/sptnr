@@ -170,7 +170,8 @@ def find_matching_versions(
     artist: str,
     isrc: Optional[str],
     duration: Optional[float],
-    is_live: bool
+    is_live: bool,
+    album: Optional[str] = None
 ) -> List[TrackVersion]:
     """
     Find all versions of the same song across different releases.
@@ -187,6 +188,7 @@ def find_matching_versions(
         isrc: ISRC code (optional)
         duration: Track duration in seconds (optional)
         is_live: Whether the current album is live/unplugged
+        album: Album name to verify live album detection (optional)
         
     Returns:
         List of TrackVersion objects for all matching versions
@@ -196,6 +198,18 @@ def find_matching_versions(
     
     # Normalize title for matching
     norm_title = normalize_title(title)
+    
+    # Verify live album detection if album name provided
+    if album:
+        try:
+            from popularity import is_live_or_alternate_album
+            album_is_live = is_live_or_alternate_album(album)
+            if album_is_live and not is_live:
+                # Log that we detected this is a live album but is_live parameter was False
+                logger.debug(f"Album detection found live album: {album} for track {title}")
+                is_live = True
+        except ImportError:
+            pass  # Fall back to is_live parameter alone
     
     # First try: Match by ISRC if available
     if isrc:
@@ -506,7 +520,7 @@ def detect_single_advanced(
             # Continue with other detection methods if Discogs fails
     
     # Find all matching versions (Rule 2)
-    versions = find_matching_versions(conn, title, artist, isrc, duration, is_live)
+    versions = find_matching_versions(conn, title, artist, isrc, duration, is_live, album)
     
     if verbose:
         logger.info(f"Found {len(versions)} matching versions for: {title}")

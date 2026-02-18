@@ -426,53 +426,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 current_single = get_current_single_detection(track_id)
                 log_debug(f"Track {track_id} - Current single detection: is_single={current_single['is_single']}, confidence={current_single['single_confidence']}")
                 
-                # Process genres and title for acoustic/live/unplugged tags
-                # Import the processor module
-                try:
-                    from genre_title_processor import process_track_genres_and_title, update_track_metadata_file
-                    
-                    # Get current genres as list
-                    current_genre_list = navidrome_genre_list.copy() if navidrome_genre_list else []
-                    
-                    # Process title and genres
-                    processed_title, processed_genres = process_track_genres_and_title(
-                        track_title,
-                        album_name,
-                        current_genre_list
-                    )
-                    
-                    # Check if anything changed
-                    title_changed = processed_title != track_title
-                    genres_changed = set(processed_genres) != set(current_genre_list)
-                    
-                    if title_changed or genres_changed:
-                        log_info(f"Track metadata updated: {track_title}")
-                        if title_changed:
-                            log_info(f"  Title: {track_title} -> {processed_title}")
-                        if genres_changed:
-                            log_info(f"  Genres: {current_genre_list} -> {processed_genres}")
-                        
-                        # Update the variables to use processed values
-                        track_title = processed_title
-                        navidrome_genre_list = processed_genres
-                        navidrome_genre = "\\".join(navidrome_genre_list) if navidrome_genre_list else ""
-                        
-                        # Update the audio file if file path exists
-                        if navidrome_path and os.path.exists(navidrome_path):
-                            try:
-                                if update_track_metadata_file(navidrome_path, processed_title, processed_genres):
-                                    log_info(f"Updated audio file: {navidrome_path}")
-                                else:
-                                    log_debug(f"Failed to update audio file: {navidrome_path}")
-                            except Exception as e:
-                                log_debug(f"Error updating audio file {navidrome_path}: {e}")
-                        else:
-                            log_debug(f"No file path available to update audio file for track: {track_title}")
-                    
-                except ImportError as e:
-                    log_debug(f"genre_title_processor module not available: {e}")
-                except Exception as e:
-                    log_debug(f"Error processing track genres and title: {e}")
+                # During Navidrome imports, use ONLY what Navidrome provides for genres and title
+                # Do NOT process through genre_title_processor which adds genres from album names
+                # This ensures imports from Navidrome are clean and not affected by album-based rules
+                log_debug(f"[GENRE] Track {track_id} - Using Navidrome genres directly (no processing): {navidrome_genre_list}")
                 
                 # Debug log: Show all genre fields being saved
                 log_debug(f"[GENRE] Track {track_id} ({track_title}) - Saving to DB with genres: '{navidrome_genre}'")

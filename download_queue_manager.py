@@ -86,7 +86,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
             cursor.execute("""
                 INSERT INTO download_queue 
                 (artist, title, album, search_query, source, status, priority, file_path, filename, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, '', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
             """, (artist, title, album, search_query, source, priority, search_query))
             
             conn.commit()
@@ -217,6 +217,8 @@ def update_queue_item(queue_id, **kwargs):
                 params.append(value)
         
         if not updates:
+            logger.warning(f"No valid fields to update for queue item {queue_id}")
+            conn.close()
             return None
         
         updates.append("updated_at = CURRENT_TIMESTAMP")
@@ -226,16 +228,32 @@ def update_queue_item(queue_id, **kwargs):
         cursor.execute(query, params)
         conn.commit()
         
+        if cursor.rowcount == 0:
+            logger.warning(f"No rows updated for queue item {queue_id} - item may not exist")
+            conn.close()
+            return None
+        
+        logger.debug(f"Updated {cursor.rowcount} row(s) for queue item {queue_id}: {list(kwargs.keys())}")
+        
         # Return updated item
         cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
         item = cursor.fetchone()
         conn.close()
         
-        logger.info(f"Updated queue item {queue_id}: {kwargs}")
-        return dict(item) if item else None
+        if item:
+            logger.info(f"Successfully updated queue item {queue_id}: status={kwargs.get('status', 'N/A')}")
+            return dict(item)
+        else:
+            logger.error(f"Failed to retrieve updated queue item {queue_id}")
+            return None
         
+    except sqlite3.IntegrityError as e:
+        logger.error(f"Database integrity error updating queue item {queue_id}: {e}")
+        return None
     except Exception as e:
-        logger.error(f"Error updating queue item: {e}")
+        logger.error(f"Error updating queue item {queue_id}: {type(e).__name__}: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return None
 
 
@@ -318,52 +336,76 @@ def check_downloads_folder():
         """)
         queue_items = [dict(row) for row in cursor.fetchall()]
         
-        # Get list of files in downloads folder
+        # Recursively get all audio files in downloads folder and subdirectories
         downloads_files = []
         if os.path.isdir(DOWNLOADS_DIR):
             try:
-                downloads_files = [f for f in os.listdir(DOWNLOADS_DIR) 
-                                 if f.endswith(('.mp3', '.flac', '.m4a'))]
+                for root, dirs, files in os.walk(DOWNLOADS_DIR):
+                    for f in files:
+                        if f.endswith(('.mp3', '.flac', '.m4a', '.ogg', '.wav')):
+                            # Store both filename and full path
+                            downloads_files.append({
+                                'filename': f,
+                                'full_path': os.path.join(root, f),
+                                'rel_path': os.path.relpath(os.path.join(root, f), DOWNLOADS_DIR)
+                            })
             except Exception as e:
                 logger.error(f"Error scanning downloads folder: {e}")
         
-        logger.info(f"Found {len(downloads_files)} files in {DOWNLOADS_DIR}, checking {len(queue_items)} queue items")
+        logger.info(f"Found {len(downloads_files)} audio files in {DOWNLOADS_DIR}, checking {len(queue_items)} queue items")
         
         # Try to match files to queue items
         for queue_item in queue_items:
             match_found = None
+            match_path = None
             
             # Try exact filename match first
-            if queue_item['found_filename'] and queue_item['found_filename'] in downloads_files:
-                match_found = queue_item['found_filename']
-            else:
-                # Try fuzzy matching based on artist/title
-                for filename in downloads_files:
-                    if is_match(filename, queue_item):
-                        match_found = filename
+            if queue_item['found_filename']:
+                for file_info in downloads_files:
+                    if file_info['filename'] == queue_item['found_filename'] or \
+                       file_info['rel_path'] == queue_item['found_filename'] or \
+                       file_info['full_path'] == queue_item['found_filename']:
+                        match_found = file_info['filename']
+                        match_path = file_info['full_path']
                         break
             
-            if match_found:
-                file_path = os.path.join(DOWNLOADS_DIR, match_found)
-                logger.info(f"Matched queue {queue_item['id']} to file: {match_found}")
+            # If not found by filename, try fuzzy matching based on artist/title
+            if not match_found:
+                for file_info in downloads_files:
+                    if is_match(file_info['rel_path'], queue_item):
+                        match_found = file_info['filename']
+                        match_path = file_info['full_path']
+                        logger.debug(f"Fuzzy matched '{queue_item['search_query']}' to '{file_info['rel_path']}'")
+                        break
+            
+            if match_found and match_path:
+                logger.info(f"Matched queue {queue_item['id']} ({queue_item['search_query']}) to file: {match_found}")
                 
-                # Update queue item
-                update_queue_item(
+                # Update queue item with completed status
+                result = update_queue_item(
                     queue_item['id'],
                     status='completed',
                     found_filename=match_found,
-                    file_path=file_path,
+                    file_path=match_path,
                     imported_at=datetime.now().isoformat()
                 )
                 
-                completed_items.append({
-                    'queue_id': queue_item['id'],
-                    'filename': match_found,
-                    'file_path': file_path,
-                    'artist': queue_item['artist'],
-                    'title': queue_item['title'],
-                    'album': queue_item['album']
-                })
+                if result:
+                    logger.info(f"Updated queue item {queue_item['id']} to completed")
+                    completed_items.append({
+                        'queue_id': queue_item['id'],
+                        'filename': match_found,
+                        'file_path': match_path,
+                        'artist': queue_item['artist'],
+                        'title': queue_item['title'],
+                        'album': queue_item['album']
+                    })
+                else:
+                    logger.warning(f"Failed to update queue item {queue_item['id']}")
+            else:
+                # Debug: show what we're looking for
+                search_query = queue_item.get('search_query', f"{queue_item.get('artist', '')} {queue_item.get('title', '')}")
+                logger.debug(f"No match found for queue item {queue_item['id']}: {search_query}")
         
         conn.close()
         
@@ -374,6 +416,8 @@ def check_downloads_folder():
         
     except Exception as e:
         logger.error(f"Error checking downloads folder: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
         return []
 
 
@@ -383,47 +427,58 @@ def is_match(filename, queue_item):
     Uses fuzzy matching on artist, album, and title
     
     Args:
-        filename: Filename to check
+        filename: Filename or relative path to check
         queue_item: Queue item dict
     
     Returns:
         bool - True if filename likely matches queue item
     """
     try:
-        filename_lower = filename.lower()
+        # Normalize path separators to forward slashes for consistent matching
+        filename_test = filename.lower().replace('\\', '/')
+        
         artist = (queue_item['artist'] or '').lower()
         title = (queue_item['title'] or '').lower()
         album = (queue_item['album'] or '').lower()
+        search_query = (queue_item.get('search_query') or '').lower()
         
-        # Count how many search terms are in the filename
+        # Count how many search terms are in the filename/path
         matches = 0
         total_terms = 0
         
+        # Check artist match (most important)
         if artist:
             total_terms += 1
-            if artist in filename_lower:
+            if artist in filename_test:
                 matches += 1
         
+        # Check title match
         if title:
             total_terms += 1
-            if title in filename_lower:
+            if title in filename_test:
                 matches += 1
         
+        # Check album match (less important, but helpful for disambiguation)
         if album:
             total_terms += 1
-            if album.replace(' ', '') in filename_lower.replace(' ', ''):
+            # Remove spaces for more flexible album name matching
+            album_normalized = album.replace(' ', '')
+            if album_normalized and album_normalized in filename_test.replace(' ', ''):
                 matches += 1
         
-        # Require at least 50% of terms to match
-        if total_terms > 0 and matches / total_terms >= 0.5:
+        # Require at least majority of terms to match
+        if total_terms > 0 and matches >= (total_terms * 0.6):  # 60% match threshold
             return True
         
         # Also try matching against search_query if set
-        if queue_item['search_query']:
-            search_terms = queue_item['search_query'].lower().split()
-            term_matches = sum(1 for term in search_terms if term in filename_lower)
-            if term_matches >= 2:  # At least 2 terms from search query
-                return True
+        if search_query:
+            # Split search query into individual terms and check for significant overlap
+            search_terms = [t for t in search_query.split() if len(t) > 2]  # Only meaningful terms
+            if search_terms:
+                term_matches = sum(1 for term in search_terms if term in filename_test)
+                # Require at least 60% of significant terms to match
+                if term_matches / len(search_terms) >= 0.6:
+                    return True
         
         return False
         
