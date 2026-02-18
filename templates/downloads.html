@@ -3774,12 +3774,14 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
       priority: 5
     }));
     
-    // Send batch request
+    // Send batch request with import_type='album' so all tracks are tagged together
+    // Once all downloads complete, they can be organized together using "Organize All" button
     const response = await fetch('/api/queue/add-batch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
-        items: trackItems
+        items: trackItems,
+        import_type: 'album'  // Tag all tracks from this release as an album group
       })
     });
     
@@ -3797,8 +3799,10 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
       const added = data.added || 0;
       const failed = data.failed || 0;
       const failedTracks = data.failed_tracks || [];
+      const importGroup = data.import_group;
+      const importType = data.import_type || 'album';
       
-      let message = `✅ Added ${added} tracks to download queue`;
+      let message = `✅ Added ${added} tracks from "${album}" to download queue`;
       if (failed > 0) {
         message += `\n⚠️ Failed to add ${failed} tracks`;
         if (failedTracks.length > 0) {
@@ -3806,6 +3810,13 @@ async function downloadMusicBrainzRelease(artist, album, tracks) {
           message += `:\n${failedList}${failedTracks.length > 5 ? '...' : ''}`;
         }
       }
+      
+      // Inform user about grouping and organization
+      if (added > 0 && importGroup) {
+        message += `\n\n📦 All ${importType} tracks are tagged together (Group ID: ${importGroup.substring(0, 8)}...)`;
+        message += `\nOnce downloads complete, use "Organize All" in the Completed section to move them to /music`;
+      }
+      
       alert(message);
       await loadQueueStatus();
     } else {
