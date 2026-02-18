@@ -931,11 +931,21 @@ def update_schema(db_path):
             # Disable foreign key checks
             cursor.execute("PRAGMA foreign_keys=OFF;")
             
-            # Backup data
+            # Drop backup table if it exists from a previous failed migration
+            try:
+                cursor.execute("DROP TABLE IF EXISTS download_queue_backup;")
+            except:
+                pass
+            
+            # Backup data - create table and copy only existing columns
             cursor.execute("""
                 CREATE TABLE download_queue_backup AS 
                 SELECT * FROM download_queue;
             """)
+            
+            # Get column names from backup
+            cursor.execute("PRAGMA table_info(download_queue_backup);")
+            backup_columns = [row[1] for row in cursor.fetchall()]
             
             # Drop old table
             cursor.execute("DROP TABLE download_queue;")
@@ -967,11 +977,22 @@ def update_schema(db_path):
                 );
             """)
             
-            # Restore data
-            cursor.execute("""
-                INSERT INTO download_queue 
-                SELECT * FROM download_queue_backup;
-            """)
+            # Get column names for new table
+            cursor.execute("PRAGMA table_info(download_queue);")
+            new_columns = [row[1] for row in cursor.fetchall()]
+            
+            # Only copy columns that exist in both tables
+            common_columns = [col for col in backup_columns if col in new_columns]
+            
+            if common_columns:
+                # Restore data using only common columns
+                columns_list = ', '.join(common_columns)
+                insert_sql = f"""
+                    INSERT INTO download_queue ({columns_list})
+                    SELECT {columns_list} FROM download_queue_backup;
+                """
+                cursor.execute(insert_sql)
+                print(f"✅ Restored {len(common_columns)} columns of data from backup")
             
             # Drop backup table
             cursor.execute("DROP TABLE download_queue_backup;")
@@ -982,7 +1003,10 @@ def update_schema(db_path):
             print("✅ download_queue table fixed successfully")
     except Exception as e:
         print(f"Migration error: {e}")
-        cursor.execute("PRAGMA foreign_keys=ON;")
+        try:
+            cursor.execute("PRAGMA foreign_keys=ON;")
+        except:
+            pass
 
     conn.commit()
     conn.close()
