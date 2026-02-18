@@ -202,7 +202,14 @@ required_columns = {
     "alternate_take": "INTEGER",               # 1 if track is alternate take (similar title with parenthesis)
     "base_track_id": "TEXT",                   # ID of base track (if this is an alternate take)
     "last_spotify_lookup": "TEXT",              # Timestamp of last Spotify API lookup (for 24hr caching)
-    "is_standout_track": "INTEGER"               # 1 if track is standout (artist-level z-score >= 2.0)
+    "is_standout_track": "INTEGER",             # 1 if track is standout (artist-level z-score >= 2.0)
+    # ✅ Last.fm Temporal Popularity Data (for trend detection)
+    "lastfm_7day_listeners": "INTEGER",         # Last.fm listeners in past 7 days
+    "lastfm_365day_listeners": "INTEGER",       # Last.fm listeners in past 365 days
+    "lastfm_alltime_listeners": "INTEGER",      # Last.fm all-time listeners (cache of existing data)
+    "momentum_score": "REAL",                   # Trend velocity: (7day/alltime) / (365day/alltime)
+    "popularity_trend": "TEXT",                 # Trend classification: 'accelerating', 'stable', 'declining'
+    "lastfm_temporal_last_updated": "TEXT"      # Timestamp of last temporal data fetch
 }
 
 # ✅ Define columns for the artists table

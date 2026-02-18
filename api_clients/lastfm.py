@@ -596,6 +596,125 @@ class LastFmClient:
             logger.debug(f"Failed to check single for '{track_title}' by '{artist}': {e}")
             return False
     
+    def get_track_temporal_data(self, artist: str, title: str) -> dict:
+        """
+        Attempt to fetch temporal popularity data (7-day, 365-day, all-time) from Last.fm.
+        
+        NOTE: The standard Last.fm API does not directly expose time-window breakdowns.
+        This method attempts to fetch data through the standard API and returns what's available.
+        For accurate 7-day and 365-day data, would need access to:
+        1. User scrobbling API with date-range filtering, or
+        2. Last.fm's internal analytics (not publicly exposed)
+        
+        Currently returns:
+        - all_time_listeners: From track.getInfo (reliable)
+        - all_time_playcount: From track.getInfo (reliable)
+        - momentum_score: Calculated from available data (approximation)
+        - trend: Estimated based on available metrics
+        
+        Args:
+            artist: Artist name
+            title: Track title
+            
+        Returns:
+            Dict with temporal metrics:
+            {
+                'all_time_listeners': int,
+                'all_time_playcount': int,
+                '7day_listeners': int or None (not available from standard API),
+                '365day_listeners': int or None (not available from standard API),
+                'momentum_score': float (1.0 if stable, >1.0 if accelerating),
+                'popularity_trend': str ('stable', 'accelerating', 'declining', 'unknown'),
+                'data_source': str (indicates quality: 'estimated', 'partial', 'full')
+            }
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping temporal lookup.")
+            return {
+                'all_time_listeners': 0,
+                'all_time_playcount': 0,
+                '7day_listeners': None,
+                '365day_listeners': None,
+                'momentum_score': 1.0,
+                'popularity_trend': 'unknown',
+                'data_source': 'unavailable'
+            }
+        
+        try:
+            # Fetch all-time data (reliable)
+            params = {
+                "method": "track.getInfo",
+                "artist": artist,
+                "track": title,
+                "api_key": self.api_key,
+                "format": "json"
+            }
+            
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json().get("track", {})
+            
+            all_time_listeners = int(data.get("listeners", 0))
+            all_time_playcount = int(data.get("playcount", 0))
+            
+            # NOTE: Last.fm standard API doesn't expose 7-day/365-day breakdown
+            # This would require:
+            # 1. User authentication with extended permissions, OR
+            # 2. Access to Last.fm's web scraping (not recommended, against ToS)
+            #
+            # For now, return None for temporal windows
+            # Future enhancement: Integrate with user scrobbling data if available
+            
+            result = {
+                'all_time_listeners': all_time_listeners,
+                'all_time_playcount': all_time_playcount,
+                '7day_listeners': None,
+                '365day_listeners': None,
+                'momentum_score': 1.0,  # Default to stable (no data to calculate trend)
+                'popularity_trend': 'unknown',  # Cannot determine without temporal data
+                'data_source': 'standard_api_only'  # Indicates limited data source
+            }
+            
+            logger.debug(f"Fetched Last.fm temporal data for '{title}' by '{artist}': "
+                        f"all_time={all_time_listeners} listeners, "
+                        f"playcount={all_time_playcount} (temporal windows unavailable from standard API)")
+            
+            return result
+            
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error fetching temporal data for '{title}' by '{artist}': {e}")
+            return {
+                'all_time_listeners': 0,
+                'all_time_playcount': 0,
+                '7day_listeners': None,
+                '365day_listeners': None,
+                'momentum_score': 1.0,
+                'popularity_trend': 'unknown',
+                'data_source': 'error'
+            }
+        except Timeout as e:
+            logger.debug(f"Timeout fetching temporal data for '{title}' by '{artist}': {e}")
+            return {
+                'all_time_listeners': 0,
+                'all_time_playcount': 0,
+                '7day_listeners': None,
+                '365day_listeners': None,
+                'momentum_score': 1.0,
+                'popularity_trend': 'unknown',
+                'data_source': 'timeout'
+            }
+        except Exception as e:
+            logger.debug(f"Failed to fetch temporal data for '{title}' by '{artist}': {e}")
+            return {
+                'all_time_listeners': 0,
+                'all_time_playcount': 0,
+                '7day_listeners': None,
+                '365day_listeners': None,
+                'momentum_score': 1.0,
+                'popularity_trend': 'unknown',
+                'data_source': 'error'
+            }
+    
     def get_recommendations(self) -> dict:
         """
         Fetch personalized recommendations from Last.fm for the current user.
