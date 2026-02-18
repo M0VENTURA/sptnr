@@ -12014,8 +12014,9 @@ def api_get_track(track_id):
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, title, artist, album, genre, stars, is_single, 
-                   single_confidence, duration, track_number, disc_number
+            SELECT id, title, artist, album, genres, stars, is_single, 
+                   single_confidence, duration, track_number, disc_number,
+                   year, album_artist, composer, comment, mbid
             FROM tracks 
             WHERE id = ?
         """, (track_id,))
@@ -12038,13 +12039,18 @@ def api_get_track(track_id):
                     'title': row[1],
                     'artist': row[2],
                     'album': row[3],
-                    'genre': row[4],
+                    'genres': row[4],
                     'stars': row[5],
                     'is_single': row[6],
                     'single_confidence': row[7],
                     'duration': row[8],
                     'track_number': row[9],
-                    'disc_number': row[10]
+                    'disc_number': row[10],
+                    'year': row[11],
+                    'album_artist': row[12],
+                    'composer': row[13],
+                    'comment': row[14],
+                    'mbid': row[15]
                 }
         except (IndexError, TypeError) as e:
             logging.error(f"[API] Error converting track row to dict: {e}")
@@ -13125,16 +13131,26 @@ def api_remove_genres():
 @app.route("/api/track/update-metadata", methods=["POST"])
 def api_track_update_metadata():
     """
-    Update track metadata (title, artist, genres) and file tags (MP3/FLAC)
+    Update track metadata (comprehensive - all fields)
     
     Request body:
     {
         "track_id": "track_id_from_db",
         "title": "new title (optional)",
         "artist": "new artist (optional)",
-        "genres": "new genres separated by backslash (optional)"
+        "album": "new album (optional)",
+        "genres": "new genres separated by backslash (optional)",
+        "stars": 0-5 (optional),
+        "is_single": 0 or 1 (optional),
+        "single_confidence": "low|medium|high" (optional),
+        "year": "YYYY (optional)",
+        "album_artist": "(optional)",
+        "composer": "(optional)",
+        "track_number": "(optional)",
+        "disc_number": "(optional)",
+        "comment": "(optional)",
+        "mbid": "(optional)"
     }
-    </param>
     """
     try:
         from track_tag_editor import update_track_file_tags
@@ -13145,33 +13161,91 @@ def api_track_update_metadata():
         if not track_id:
             return jsonify({"error": "track_id required"}), 400
         
-        # Build changes dict with only provided fields
-        changes = {}
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Build database update with provided fields
+        db_updates = {}
         if 'title' in data:
-            changes['title'] = data['title'].strip()
+            db_updates['title'] = data['title'].strip()
         if 'artist' in data:
-            changes['artist'] = data['artist'].strip()
+            db_updates['artist'] = data['artist'].strip()
+        if 'album' in data:
+            db_updates['album'] = data['album'].strip()
         if 'genres' in data:
-            changes['genres'] = data['genres'].strip()
+            db_updates['genres'] = data['genres'].strip()
+        if 'stars' in data:
+            db_updates['stars'] = int(data['stars']) if data['stars'] else 0
+        if 'is_single' in data:
+            db_updates['is_single'] = 1 if data['is_single'] else 0
+        if 'single_confidence' in data:
+            db_updates['single_confidence'] = data['single_confidence'].strip()
+        if 'year' in data:
+            db_updates['year'] = data['year'].strip() or None
+        if 'album_artist' in data:
+            db_updates['album_artist'] = data['album_artist'].strip() or None
+        if 'composer' in data:
+            db_updates['composer'] = data['composer'].strip() or None
+        if 'track_number' in data:
+            db_updates['track_number'] = data['track_number'].strip() or None
+        if 'disc_number' in data:
+            db_updates['disc_number'] = int(data['disc_number']) if data['disc_number'] else None
+        if 'comment' in data:
+            db_updates['comment'] = data['comment'].strip() or None
+        if 'mbid' in data:
+            db_updates['mbid'] = data['mbid'].strip() or None
         
-        if not changes:
-            return jsonify({"error": "At least one field (title, artist, or genres) required"}), 400
+        if not db_updates:
+            conn.close()
+            return jsonify({"error": "At least one field required"}), 400
         
-        # Update file tags and database
-        result = update_track_file_tags(track_id, DB_PATH, changes)
+        # Update database
+        set_clause = ", ".join([f"{k} = ?" for k in db_updates.keys()])
+        values = list(db_updates.values()) + [track_id]
+        cursor.execute(f"UPDATE tracks SET {set_clause} WHERE id = ?", values)
+        conn.commit()
         
-        if result['success']:
-            return jsonify({
-                "success": True,
-                "track_id": track_id,
-                "changes": result['changes'],
-                "message": "Track metadata updated successfully"
-            }), 200
-        else:
-            return jsonify({
-                "success": False,
-                "error": result.get('error', 'Failed to update track metadata')
-            }), 500
+        # Build changes dict for file tags (only basic fields supported by tags)
+        changes = {}
+        if 'title' in db_updates:
+            changes['title'] = db_updates['title']
+        if 'artist' in db_updates:
+            changes['artist'] = db_updates['artist']
+        if 'album' in db_updates:
+            changes['album'] = db_updates['album']
+        if 'genres' in db_updates:
+            changes['genres'] = db_updates['genres']
+        if 'year' in db_updates:
+            changes['year'] = db_updates['year']
+        if 'album_artist' in db_updates:
+            changes['album_artist'] = db_updates['album_artist']
+        if 'composer' in db_updates:
+            changes['composer'] = db_updates['composer']
+        if 'track_number' in db_updates:
+            changes['track_number'] = db_updates['track_number']
+        if 'disc_number' in db_updates:
+            changes['disc_number'] = db_updates['disc_number']
+        if 'comment' in db_updates:
+            changes['comment'] = db_updates['comment']
+        if 'mbid' in db_updates:
+            changes['mbid'] = db_updates['mbid']
+        
+        # Update file tags if available
+        file_update_result = None
+        if changes:
+            try:
+                file_update_result = update_track_file_tags(track_id, DB_PATH, changes)
+            except Exception as e:
+                logging.warning(f"Could not update file tags for track {track_id}: {e}")
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "changes": db_updates,
+            "message": "Track metadata updated successfully"
+        }), 200
             
     except Exception as e:
         logging.error(f"Error updating track metadata: {e}")
