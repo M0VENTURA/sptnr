@@ -3908,6 +3908,69 @@ def api_get_artist_genres(artist):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/artist/<path:artist>/similar", methods=["GET"])
+def api_get_similar_artists(artist):
+    """Get similar artists for a given artist (from Last.fm and ListenBrainz)"""
+    try:
+        from urllib.parse import unquote
+        import json
+        
+        artist = unquote(artist)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get similar artists from database
+        cursor.execute("""
+            SELECT similar_artists_lastfm, similar_artists_listenbrainz
+            FROM artists
+            WHERE name = ?
+            LIMIT 1
+        """, (artist,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        if not row:
+            return jsonify({
+                "success": True,
+                "artist": artist,
+                "similar_artists": {
+                    "lastfm": [],
+                    "listenbrainz": []
+                }
+            })
+        
+        # Parse JSON arrays
+        similar_lastfm = []
+        similar_listenbrainz = []
+        
+        try:
+            if row[0]:
+                similar_lastfm = json.loads(row[0]) if isinstance(row[0], str) else row[0]
+        except:
+            pass
+        
+        try:
+            if row[1]:
+                similar_listenbrainz = json.loads(row[1]) if isinstance(row[1], str) else row[1]
+        except:
+            pass
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "similar_artists": {
+                "lastfm": similar_lastfm[:10],  # Limit to 10
+                "listenbrainz": similar_listenbrainz[:10]
+            }
+        })
+    
+    except Exception as e:
+        logging.error(f"[SIMILAR ARTISTS] Error getting similar artists: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/search-art")
 def api_album_search_art():
     """Search for album art on MusicBrainz, Discogs, Spotify, or Apple Music"""
