@@ -11820,7 +11820,7 @@ def api_listenbrainz_sync_now():
 
 
 @app.route("/api/listenbrainz/recommendations", methods=["GET"])
-def api_listenbrainz_recommendations():
+def api_listenbrainz_recommendations_cached():
     """Get ListenBrainz recommendations from cache"""
     try:
         current_user = session.get("username", "default_user")
