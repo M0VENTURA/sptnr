@@ -13,7 +13,7 @@ import time
 from typing import Any, Tuple, List, Dict
 from datetime import datetime
 from collections import defaultdict
-from statistics import mean, stdev
+from statistics import mean, stdev, median
 
 from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient

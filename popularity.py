@@ -2220,19 +2220,21 @@ def popularity_scan(
         
         # Determine which APIs are enabled
         enabled_apis = []
-        # Check if Spotify is available (we always try to configure it)
-        enabled_apis.append("Spotify")
-        # Check if Last.fm and ListenBrainz are configured
+        # Check if Spotify is available based on configuration
         try:
             config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
             with open(config_path, 'r') as f:
                 config = yaml.safe_load(f)
+            if config.get("api_integrations", {}).get("spotify", {}).get("enabled", True):
+                enabled_apis.append("Spotify")
             if config.get("api_integrations", {}).get("lastfm", {}).get("api_key"):
                 enabled_apis.append("Last.FM")
             if config.get("api_integrations", {}).get("listenbrainz", {}).get("token"):
                 enabled_apis.append("ListenBrainz")
         except (FileNotFoundError, yaml.YAMLError, KeyError, AttributeError) as e:
             log_debug(f"Could not load API configuration: {e}")
+            # If config loading fails, default to Spotify enabled for backward compatibility
+            enabled_apis.append("Spotify")
         
         if enabled_apis:
             log_unified(f"Popularity Scan - Scanning {', '.join(enabled_apis)} for Metadata")
@@ -2752,7 +2754,7 @@ def popularity_scan(
                                 log_debug(f'Cached Spotify data reused for track {track_id}')
                     
                         try:
-                            if spotify_artist_id and not skip_spotify_lookup:
+                            if "Spotify" in enabled_apis and spotify_artist_id and not skip_spotify_lookup:
                                 # Check rate limit before making API call
                                 rate_limiter = get_rate_limiter()
                                 can_proceed, reason = rate_limiter.check_spotify_limit()
