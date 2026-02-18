@@ -2614,18 +2614,22 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   let artistGenresLoaded = false;
   
   document.addEventListener('DOMContentLoaded', function() {
-    const artistName = "{{ artist_name }}";
-    if (artistName) {
+    const artistName = "{{ artist_name }}".trim();
+    if (artistName && artistName.length > 0) {
       if (!artistGenresLoaded) {
         loadArtistGenres(artistName);
         artistGenresLoaded = true;
       }
       loadSimilarArtistsForArtist(artistName);
     } else {
-      // If no artist data, show error
+      // If no artist data, show error in both containers
       const genreContainer = document.getElementById('artistGenreSourcesContainer');
       if (genreContainer) {
         showArtistGenresError('Artist details not available');
+      }
+      const similarContainer = document.getElementById('artistSimilarArtistsContainer');
+      if (similarContainer) {
+        similarContainer.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> Artist details not available</div>';
       }
     }
   });
