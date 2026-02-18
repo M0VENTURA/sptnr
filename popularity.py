@@ -1854,7 +1854,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         
         if not listeners_list or len(listeners_list) < 2:
             return {
-                'mean': 0,
+                'median': 0,
                 'stdev': 0,
                 'min': 0,
                 'max': 0,
@@ -1901,7 +1901,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
     except Exception as e:
         log_debug(f"Error calculating artist Last.fm context: {e}")
         return {
-            'mean': 0,
+            'median': 0,
             'stdev': 0,
             'min': 0,
             'max': 0,
@@ -2260,7 +2260,7 @@ def popularity_scan(
             # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
             artist_lastfm_context = get_artist_lastfm_context(artist, conn)
             if artist_lastfm_context['track_count'] > 0:
-                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, mean={artist_lastfm_context['mean']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
+                log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, median={artist_lastfm_context['median']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
                 log_debug(f"Artist catalogue range: {artist_lastfm_context['min']:.0f} - {artist_lastfm_context['max']:.0f} listeners")
             else:
                 log_debug(f"No Last.fm listener data available for artist {artist} - will use base weights")
