@@ -3653,9 +3653,9 @@ function displayMusicBrainzResults(results) {
     const tracksHtml = release.tracks.map(track => {
       // MusicBrainz uses 'length' in milliseconds, Discogs uses 'duration' as string
       let duration = 'N/A';
-      if (track.length) {
+      if (track.length != null && track.length !== '') {
         duration = formatDuration(track.length);
-      } else if (track.duration) {
+      } else if (track.duration != null && track.duration !== '') {
         duration = track.duration;
       }
       
@@ -3670,9 +3670,14 @@ function displayMusicBrainzResults(results) {
     
     // Build release info
     let releaseInfo = [];
-    if (release.type) releaseInfo.push(release.type);
-    else if (release.formats && Array.isArray(release.formats) && release.formats.length > 0) releaseInfo.push(release.formats.join(', '));
-    else releaseInfo.push('Album');
+    if (release.type) {
+      releaseInfo.push(release.type);
+    } else if (release.formats && Array.isArray(release.formats) && release.formats.length > 0) {
+      const formatStr = release.formats.join(', ');
+      releaseInfo.push(formatStr);
+    } else {
+      releaseInfo.push('Album');
+    }
     
     if (release.date) releaseInfo.push(release.date);
     else if (release.year) releaseInfo.push(release.year);
