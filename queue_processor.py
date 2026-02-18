@@ -81,7 +81,8 @@ def get_queued_items(limit=10):
         # Get queued items and items scheduled for retry
         cursor.execute("""
             SELECT * FROM download_queue 
-            WHERE (status = 'queued' OR (status = 'queued' AND next_retry_at <= ?))
+            WHERE status = 'queued'
+            AND (next_retry_at IS NULL OR next_retry_at <= ?)
             AND source = 'soulseek'
             ORDER BY priority ASC, retry_count ASC, next_retry_at ASC, created_at ASC
             LIMIT ?
