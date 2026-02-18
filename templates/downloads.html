@@ -168,7 +168,12 @@
           <h5 class="card-title mb-0">
             <i class="bi bi-check-circle"></i> Completed & Ready to Organize
           </h5>
-          <span class="badge bg-success" id="completedBadge" style="display:none">0</span>
+          <div class="d-flex gap-2 align-items-center">
+            <span class="badge bg-success" id="completedBadge" style="display:none">0</span>
+            <button class="btn btn-sm btn-outline-info" onclick="toggleSelectAll()" id="selectAllBtn" style="display:none;">
+              <i class="bi bi-check-square"></i> Select All
+            </button>
+          </div>
         </div>
         <div class="card-body p-0">
           <div id="completedQueueEmpty" class="alert alert-info alert-sm mb-0">
@@ -178,6 +183,18 @@
             <!-- Completed items rendered here -->
           </div>
         </div>
+        <div id="completedQueueActions" class="card-footer d-flex gap-2" style="display:none;">
+          <button class="btn btn-sm btn-primary" onclick="groupSelectedItems()" id="groupBtn" disabled>
+            <i class="bi bi-collection"></i> Group Selected
+          </button>
+          <button class="btn btn-sm btn-outline-secondary" onclick="openBatchGroupModal()" id="batchGroupBtn" disabled>
+            <i class="bi bi-folder-plus"></i> New Album
+          </button>
+          <div class="ms-auto">
+            <span class="text-muted small" id="selectedCount">0 selected</span>
+          </div>
+        </div>
+      </div>
       </div>
 
       <!-- Failed Queue (With Retry Options) -->
@@ -3934,8 +3951,8 @@ document.addEventListener('DOMContentLoaded', function() {
   // Load queue status
   setTimeout(loadQueueStatus, 1000);
   
-  // Auto-refresh queue every 10 seconds
-  setInterval(loadQueueStatus, 10000);
+  // Initialize queue state management (persistence, auto-refresh, batch operations)
+  initQueueStateManagement();
   
   // Handle hash-based tab navigation (for links from artist/album pages)
   if (window.location.hash === '#upcoming') {
@@ -4139,12 +4156,15 @@ function renderCompletedQueue(completed) {
         for (const item of group.items) {
           html += `
                 <div class="d-flex justify-content-between align-items-start py-2 border-bottom">
-                  <div class="flex-grow-1">
-                    <small class="d-block">${escapeHtml(item.title)}</small>
-                    <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                  <div class="d-flex gap-2 flex-grow-1">
+                    <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
+                    <div>
+                      <small class="d-block">${escapeHtml(item.title)}</small>
+                      <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                    </div>
                   </div>
                   <div class="d-flex gap-1 flex-wrap justify-content-end">
-                    <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music using beets">
+                    <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
                       <i class="bi bi-folder-check"></i>
                     </button>
                     <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
@@ -4172,13 +4192,16 @@ function renderCompletedQueue(completed) {
           html += `
           <div class="list-group-item">
             <div class="d-flex justify-content-between align-items-start">
-              <div class="flex-grow-1">
-                <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-                <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-                <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+              <div class="d-flex gap-2 flex-grow-1">
+                <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()" style="margin-top: 0.5rem;">
+                <div class="flex-grow-1">
+                  <h6 class="mb-1">${escapeHtml(item.title)}</h6>
+                  <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+                  <small class="text-muted">File: ${escapeHtml(item.found_filename || 'unknown')}</small>
+                </div>
               </div>
               <div class="d-flex gap-2">
-                <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music using beets">
+                <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
                   <i class="bi bi-folder-check"></i> Organize
                 </button>
                 <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
@@ -4197,6 +4220,15 @@ function renderCompletedQueue(completed) {
   }
   
   container.innerHTML = html;
+  
+  // Show batch actions footer if there are completed items
+  const completedQueueEmptyDiv = document.getElementById('completedQueueEmpty');
+  const actionsDiv = document.getElementById('completedQueueActions');
+  if (completed.length > 0 && actionsDiv) {
+    actionsDiv.style.display = 'flex';
+  } else if (actionsDiv) {
+    actionsDiv.style.display = 'none';
+  }
 }
 
 function renderFailedQueue(failed) {
@@ -5241,5 +5273,400 @@ function openDownloadSearch(artist) {
         </div>
     </div>
 </div>
+
+<!-- Queue State Management & Batch Operations -->
+<script>
+
+// ===== Queue Selection & State Management =====
+
+// Configuration
+const QUEUE_STATE_KEY = 'downloads_queue_state';
+const AUTO_REFRESH_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes
+let autoRefreshTimer = null;
+let selectedItemIds = new Set();
+
+/**
+ * Initialize queue state management on page load
+ */
+function initQueueStateManagement() {
+  // Load persisted state from sessionStorage
+  loadQueueState();
+  
+  // Set up auto-refresh
+  setupAutoRefresh();
+  
+  // Listen for visibility changes (pause refresh when tab inactive)
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) {
+      pauseAutoRefresh();
+    } else {
+      resumeAutoRefresh();
+    }
+  });
+}
+
+/**
+ * Load queue state from sessionStorage
+ */
+function loadQueueState() {
+  try {
+    const saved = sessionStorage.getItem(QUEUE_STATE_KEY);
+    if (saved) {
+      const state = JSON.parse(saved);
+      selectedItemIds = new Set(state.selectedItemIds || []);
+      console.debug('Loaded queue state:', selectedItemIds.size, 'items selected');
+      
+      // Restore checkboxes to saved state
+      restoreCheckboxes();
+    }
+  } catch (error) {
+    console.error('Error loading queue state:', error);
+    selectedItemIds = new Set();
+  }
+}
+
+/**
+ * Save queue state to sessionStorage
+ */
+function saveQueueState() {
+  try {
+    const state = {
+      selectedItemIds: Array.from(selectedItemIds),
+      savedAt: new Date().toISOString()
+    };
+    sessionStorage.setItem(QUEUE_STATE_KEY, JSON.stringify(state));
+    console.debug('Saved queue state:', selectedItemIds.size, 'items selected');
+  } catch (error) {
+    console.error('Error saving queue state:', error);
+  }
+}
+
+/**
+ * Restore checkbox checked state from selectedItemIds
+ */
+function restoreCheckboxes() {
+  const checkboxes = document.querySelectorAll('.queue-item-checkbox');
+  checkboxes.forEach(checkbox => {
+    checkbox.checked = selectedItemIds.has(checkbox.value);
+  });
+  updateSelectedCount();
+}
+
+/**
+ * Update selected items count display
+ */
+function updateSelectedCount() {
+  // Sync selectedItemIds with current checkboxes
+  selectedItemIds.clear();
+  document.querySelectorAll('.queue-item-checkbox:checked').forEach(checkbox => {
+    selectedItemIds.add(checkbox.value);
+  });
+  
+  const count = selectedItemIds.size;
+  const countDiv = document.getElementById('selectedCount');
+  if (countDiv) {
+    countDiv.textContent = count > 0 ? `${count} selected` : '0 selected';
+  }
+  
+  // Show/hide batch action buttons
+  const groupBtn = document.getElementById('groupBtn');
+  const batchGroupBtn = document.getElementById('batchGroupBtn');
+  if (groupBtn) groupBtn.disabled = count === 0;
+  if (batchGroupBtn) batchGroupBtn.disabled = count === 0;
+  
+  // Save state
+  saveQueueState();
+}
+
+/**
+ * Toggle select all checkboxes
+ */
+function toggleSelectAll() {
+  const checkboxes = document.querySelectorAll('.queue-item-checkbox');
+  const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+  
+  checkboxes.forEach(checkbox => {
+    checkbox.checked = !allChecked;
+  });
+  
+  // Update button text
+  const selectAllBtn = document.getElementById('selectAllBtn');
+  if (selectAllBtn) {
+    selectAllBtn.innerHTML = allChecked ? 
+      '<i class="bi bi-check-square"></i> Select All' : 
+      '<i class="bi bi-dash-square"></i> Deselect All';
+  }
+  
+  updateSelectedCount();
+}
+
+/**
+ * Clear all selected items
+ */
+function clearSelection() {
+  document.querySelectorAll('.queue-item-checkbox:checked').forEach(checkbox => {
+    checkbox.checked = false;
+  });
+  updateSelectedCount();
+}
+
+// ===== Batch Operations =====
+
+/**
+ * Group selected items into custom album/playlist
+ */
+function groupSelectedItems() {
+  if (selectedItemIds.size === 0) {
+    alert('❌ No items selected');
+    return;
+  }
+  
+  // Show modal for creating new group
+  openBatchGroupModal();
+}
+
+/**
+ * Open modal for creating new album/playlist from selected items
+ */
+function openBatchGroupModal() {
+  if (selectedItemIds.size === 0) {
+    alert('❌ Please select items first');
+    return;
+  }
+  
+  // Clear modal form
+  document.getElementById('batchGroupType').value = 'album';
+  document.getElementById('batchGroupName').value = '';
+  document.getElementById('batchGroupArtist').value = '';
+  document.getElementById('batchGroupAlbumArtist').value = '';
+  document.getElementById('batchGroupYear').value = '';
+  
+  // Show modal
+  const modal = new bootstrap.Modal(document.getElementById('batchGroupModal'));
+  modal.show();
+}
+
+/**
+ * Confirm batch group creation
+ */
+function confirmBatchGroup() {
+  if (selectedItemIds.size === 0) {
+    alert('❌ No items selected');
+    return;
+  }
+  
+  const groupType = document.getElementById('batchGroupType')?.value || 'album';
+  const groupName = document.getElementById('batchGroupName')?.value || '';
+  const groupArtist = document.getElementById('batchGroupArtist')?.value || '';
+  
+  if (!groupName) {
+    alert('❌ Please enter a group name');
+    return;
+  }
+  
+  // Show confirmation
+  const itemCount = selectedItemIds.size;
+  const confirmMsg = `Move ${itemCount} track${itemCount > 1 ? 's' : ''} to "${groupName}"?`;
+  
+  if (!confirm(confirmMsg)) {
+    return;
+  }
+  
+  // Send batch operation to server
+  performBatchGrouping(groupType, groupName, groupArtist, Array.from(selectedItemIds));
+}
+
+/**
+ * Perform batch grouping operation on server
+ */
+async function performBatchGrouping(groupType, groupName, groupArtist, itemIds) {
+  try {
+    const response = await fetch('/api/downloads/queue/batch-group', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        item_ids: itemIds,
+        group_type: groupType,
+        group_name: groupName,
+        group_artist: groupArtist
+      })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert(`✅ Grouped ${itemIds.length} items into "${groupName}"`);
+      clearSelection();
+      await loadQueueStatus();
+      
+      // Close modal
+      const modal = bootstrap.Modal.getInstance(document.getElementById('batchGroupModal'));
+      if (modal) modal.hide();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to group items'));
+    }
+  } catch (error) {
+    console.error('Error grouping items:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+// ===== Auto-Refresh Management =====
+
+/**
+ * Set up auto-refresh interval
+ */
+function setupAutoRefresh() {
+  // Cancel any existing timer
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+  }
+  
+  // Set up new interval (5 minutes)
+  autoRefreshTimer = setInterval(() => {
+    console.debug('Auto-refreshing queue status');
+    loadQueueStatus();
+  }, AUTO_REFRESH_INTERVAL_MS);
+  
+  console.debug('Auto-refresh enabled: every', AUTO_REFRESH_INTERVAL_MS / 1000, 'seconds');
+}
+
+/**
+ * Pause auto-refresh (e.g., when tab is hidden)
+ */
+function pauseAutoRefresh() {
+  if (autoRefreshTimer) {
+    clearInterval(autoRefreshTimer);
+    autoRefreshTimer = null;
+    console.debug('Auto-refresh paused (tab hidden)');
+  }
+}
+
+/**
+ * Resume auto-refresh
+ */
+function resumeAutoRefresh() {
+  if (!autoRefreshTimer) {
+    setupAutoRefresh();
+    console.debug('Auto-refresh resumed (tab visible)');
+  }
+}
+
+/**
+ * Force immediate refresh
+ */
+async function forceRefreshQueue() {
+  console.debug('Force refreshing queue');
+  await loadQueueStatus();
+}
+
+// ===== Batch Group Modal HTML (injected if not present) =====
+
+/**
+ * Ensure batch group modal exists in DOM
+ */
+function ensureBatchGroupModal() {
+  if (document.getElementById('batchGroupModal')) {
+    return; // Already exists
+  }
+  
+  // Create modal HTML
+  const modalHtml = `
+    <div class="modal fade" id="batchGroupModal" tabindex="-1" aria-labelledby="batchGroupModalLabel" aria-hidden="true">
+      <div class="modal-dialog">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="batchGroupModalLabel">Create Album/Playlist from Selected</h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div class="mb-3">
+              <label for="batchGroupType" class="form-label">Type</label>
+              <select class="form-select" id="batchGroupType">
+                <option value="album">Album</option>
+                <option value="playlist">Playlist</option>
+              </select>
+            </div>
+            <div class="mb-3">
+              <label for="batchGroupName" class="form-label">Name *</label>
+              <input type="text" class="form-control" id="batchGroupName" placeholder="Album or Playlist name">
+            </div>
+            <div class="mb-3">
+              <label for="batchGroupArtist" class="form-label">Artist</label>
+              <input type="text" class="form-control" id="batchGroupArtist" placeholder="Primary artist (optional)">
+            </div>
+            <div class="mb-3">
+              <label for="batchGroupYear" class="form-label">Year</label>
+              <input type="text" class="form-control" id="batchGroupYear" placeholder="Release year (optional)" maxlength="4">
+            </div>
+            <div class="alert alert-info">
+              <i class="bi bi-info-circle"></i> 
+              <span id="batchGroupItemCount">0</span> selected items will be grouped
+            </div>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            <button type="button" class="btn btn-primary" onclick="confirmBatchGroup()">
+              <i class="bi bi-collection"></i> Create Group
+            </button>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+  
+  // Insert modal into page
+  const lastModal = document.querySelector('.modal:last-of-type');
+  if (lastModal) {
+    lastModal.insertAdjacentHTML('afterend', modalHtml);
+  } else {
+    document.body.insertAdjacentHTML('beforeend', modalHtml);
+  }
+}
+
+// ===== Initialization Hook =====
+
+// Hook into existing DOMContentLoaded or create new one
+if (document.readyState === 'loading') {
+  // Page still loading
+  document.addEventListener('DOMContentLoaded', initQueueStateManagement);
+} else {
+  // Page already loaded
+  initQueueStateManagement();
+}
+
+// Also hook after loadQueueStatus completes to restore select state
+const originalLoadQueueStatus = window.loadQueueStatus;
+if (originalLoadQueueStatus) {
+  window.loadQueueStatus = async function() {
+    const result = await originalLoadQueueStatus.apply(this, arguments);
+    // Restore selected items after render
+    setTimeout(() => {
+      restoreCheckboxes();
+      // Update item count in modal
+      const countSpan = document.getElementById('batchGroupItemCount');
+      if (countSpan) {
+        countSpan.textContent = selectedItemIds.size;
+      }
+    }, 100);
+    return result;
+  };
+}
+
+// Ensure batch group modal exists
+ensureBatchGroupModal();
+
+// Update modal count display when selections change
+const originalUpdateSelectedCount = window.updateSelectedCount;
+window.updateSelectedCount = function() {
+  const result = originalUpdateSelectedCount.apply(this, arguments);
+  const countSpan = document.getElementById('batchGroupItemCount');
+  if (countSpan) {
+    countSpan.textContent = selectedItemIds.size;
+  }
+  return result;
+};
+
+</script>
 
 {% endblock %}
