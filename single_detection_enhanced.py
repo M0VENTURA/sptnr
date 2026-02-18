@@ -975,10 +975,10 @@ def determine_final_status(
     if use_zscore_detection:
         log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
         
-        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.0 (with explicit metadata)
+        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.8 (with explicit metadata, must meet medium threshold)
         if has_metadata:
-            if album_z >= 0.5 or artist_z >= 1.0:
-                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.0, with metadata)")
+            if album_z >= 0.5 or artist_z >= 1.8:
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.8, with metadata)")
                 return 'medium'
             
             # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
@@ -987,7 +987,8 @@ def determine_final_status(
                 return 'low'
         
         # MEDIUM confidence for artist-level standouts WITHOUT metadata (popular across entire artist)
-        elif is_artist_level_standout and artist_z >= 1.0:
+        # Must meet the same z-score threshold as metadata-backed tracks: 1.8
+        elif is_artist_level_standout and artist_z >= 1.8:
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f})")
             return 'medium'
     
