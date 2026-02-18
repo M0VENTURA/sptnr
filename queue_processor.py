@@ -229,25 +229,33 @@ def search_and_download(queue_id, queue_item, client):
             try:
                 responses, state, is_complete = client.get_search_results(search_id)
                 
+                logger.debug(f"Queue {queue_id}: Poll {poll_attempt+1}/15 - Got {len(responses)} responses, state={state}")
+                
                 if responses:
                     # Find best result (first file from first user)
-                    for resp in responses:
+                    for resp_idx, resp in enumerate(responses):
                         if hasattr(resp, 'files') and resp.files:
+                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {resp.username} has {len(resp.files)} files")
                             best_result = {
                                 "username": resp.username,
                                 "filename": resp.files[0].filename,
                                 "size": getattr(resp.files[0], 'size', 0)
                             }
-                            logger.info(f"Queue {queue_id}: Found result after {poll_attempt}s: {best_result['filename']}")
+                            logger.info(f"Queue {queue_id}: ✓ Found result after {poll_attempt+1}s from {resp.username}")
+                            logger.info(f"Queue {queue_id}: File: {best_result['filename'][:80]}... ({best_result['size']} bytes)")
                             break
+                        else:
+                            logger.debug(f"Queue {queue_id}: Response {resp_idx} from {getattr(resp, 'username', 'unknown')} has no files")
                     
                     if best_result:
                         break
             except Exception as e:
-                logger.warning(f"Queue {queue_id}: Error polling results: {e}")
+                logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
+                import traceback
+                logger.debug(traceback.format_exc())
         
         if not best_result:
-            logger.warning(f"Queue {queue_id}: No results found after 15 seconds")
+            logger.warning(f"Queue {queue_id}: ✗ No results found after 15 seconds of polling")
             mark_failed(queue_id, f"No results found for '{search_query}'", schedule_retry=True, retry_delay_minutes=60)
             return False
         
@@ -371,9 +379,9 @@ def process_queue(client):
         items = get_queued_items(limit=5)
         
         if not items:
-            return 0
-        
-        logger.info(f"Processing {len(items)} queue items...")
+            logger.debug("No queued items to process")
+        else:
+            logger.info(f"Processing {len(items)} queue items...")
         
         processed = 0
         for item in items:
@@ -388,7 +396,8 @@ def process_queue(client):
                 logger.error(f"Error processing queue {item['id']}: {e}")
                 mark_failed(item['id'], f"Processing error: {str(e)}", schedule_retry=True)
         
-        # Check for completed downloads after processing
+        # Always check for completed downloads, even if no new items were processed
+        # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
         
         return processed

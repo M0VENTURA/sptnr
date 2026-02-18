@@ -217,22 +217,32 @@ class SlskdClient:
             True if enqueued successfully
         """
         if not self.enabled:
+            logger.warning("Slskd download_file called but client is not enabled")
             return False
         
         try:
             # slskd API expects POST with files array containing filename and size
             url = f"{self.base_url}/transfers/downloads/{username}"
             data = [{"filename": filename, "size": size}]
+            
+            logger.info(f"Enqueuing download: username={username}, file={filename[:80]}, size={size}")
+            logger.debug(f"POST {url} with data: {data}")
+            
             resp = self.session.post(url, json=data, headers=self.headers, timeout=timeout)
             
+            logger.debug(f"Slskd download response: status={resp.status_code}, body={resp.text[:500]}")
+            
             if resp.status_code in [200, 201, 204]:
-                logger.info(f"Download enqueued from {username} (file={filename[:60]}...)")
+                logger.info(f"✓ Download successfully enqueued in slskd from {username}")
                 return True
             else:
-                logger.warning(f"Slskd download failed: {resp.status_code} - {resp.text[:200]}")
+                logger.error(f"✗ Slskd download failed: HTTP {resp.status_code}")
+                logger.error(f"Response body: {resp.text[:500]}")
                 return False
         except Exception as e:
-            logger.error(f"Slskd download failed for {username}/{filename[:50]}: {e}")
+            logger.error(f"✗ Slskd download exception for {username}/{filename[:50]}: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return False
 
     def download_files(self, files: list[dict], timeout: int = 10) -> list[dict]:
