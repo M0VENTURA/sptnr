@@ -163,25 +163,18 @@
                                 <i class="bi bi-cloud"></i> Navidrome Sync
                             </h6>
                             <p class="small text-muted mb-3">Synchronize music library from Navidrome server</p>
-                            <div class="d-flex gap-2">
-                                <div class="btn-group w-100" role="group">
-                                    <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
-                                        <i class="bi bi-play-fill"></i> Start
-                                    </button>
-                                    <ul class="dropdown-menu">
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                    </ul>
-                                </div>
-                                <form method="POST" action="{{ url_for('scan_stop_navidrome') }}" class="d-flex">
-                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
-                                        <i class="bi bi-stop-fill"></i>
-                                    </button>
-                                </form>
+                            <div class="btn-group w-100" role="group">
+                                <button type="button" class="btn btn-primary btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="navidrome">
+                                    <i class="bi bi-play-fill"></i> Start
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="navidrome" data-action="navidrome" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -195,27 +188,20 @@
                                 <i class="bi bi-graph-up"></i> Popularity & Singles
                             </h6>
                             <p class="small text-muted mb-3">Calculate popularity ratings and identify singles</p>
-                            <div class="d-flex gap-2">
-                                <div class="btn-group w-100" role="group">
-                                    <button type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
-                                        <i class="bi bi-play-fill"></i> Start
-                                    </button>
-                                    <ul class="dropdown-menu">
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                    </ul>
-                                </div>
-                                <form method="POST" action="{{ url_for('scan_stop_popularity') }}" class="d-flex">
-                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
-                                        <i class="bi bi-stop-fill"></i>
-                                    </button>
-                                </form>
+                            <div class="btn-group w-100" role="group">
+                                <button type="button" class="btn btn-success btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="popularity">
+                                    <i class="bi bi-play-fill"></i> Start
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Rescan all, skip recently updated</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Rescan all, ignore updates</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="missing"><strong>Missing Only</strong><br><small class="text-muted d-block">Only new/incomplete entries</small></a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="singles"><strong>Singles Only</strong><br><small class="text-muted d-block">Rescan singles detection only</small></a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="popularity" data-action="popularity" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
+                                </ul>
                             </div>
                         </div>
                     </div>
@@ -229,48 +215,45 @@
                                 <i class="bi bi-lightning-fill"></i> Combined Scan
                             </h6>
                             <p class="small text-muted mb-3">Process each artist: Navidrome import → Popularity → Singles scan</p>
-                            <div class="d-flex gap-2">
-                                <div class="btn-group w-100" role="group">
-                                    <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="combined" style="color: #000; font-weight: 600;">
-                                        <i class="bi bi-play-fill"></i> Start
-                                    </button>
-                                    <ul class="dropdown-menu">
-                                        <!-- Note: No "Missing Only" mode - Combined scan processes each artist individually,
-                                             so it doesn't use bulk filtering like other scans. All artists are processed
-                                             sequentially with complete Navidrome→Popularity→Singles workflow. -->
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Process all artists sequentially</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
-                                        <li><hr class="dropdown-divider"></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
-                                        <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
-                                    </ul>
-                                </div>
-                                <form method="POST" action="{{ url_for('scan_stop_combined') }}" class="d-flex">
-                                    <button type="submit" class="btn btn-outline-danger btn-sm scan-stop-btn">
-                                        <i class="bi bi-stop-fill"></i>
-                                    </button>
-                                </form>
+                            <div class="btn-group w-100" role="group">
+                                <button type="button" class="btn btn-info btn-sm dropdown-toggle scan-dropdown-btn" data-bs-toggle="dropdown" aria-expanded="false" data-scan-type="combined" style="color: #000; font-weight: 600;">
+                                    <i class="bi bi-play-fill"></i> Start
+                                </button>
+                                <ul class="dropdown-menu">
+                                    <!-- Note: No "Missing Only" mode - Combined scan processes each artist individually,
+                                         so it doesn't use bulk filtering like other scans. All artists are processed
+                                         sequentially with complete Navidrome→Popularity→Singles workflow. -->
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="all"><strong>Full Scan</strong><br><small class="text-muted d-block">Process all artists sequentially</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="force"><strong>Full (Forced)</strong><br><small class="text-muted d-block">Force rescan all data</small></a></li>
+                                    <li><hr class="dropdown-divider"></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume"><strong>Resume from Last</strong><br><small class="text-muted d-block">Continue from last scanned artist</small></a></li>
+                                    <li><a class="dropdown-item scan-action-btn" href="#" data-scan-type="combined" data-action="combined" data-mode="resume_force"><strong>Resume (Forced)</strong><br><small class="text-muted d-block">Resume and force rescan all data</small></a></li>
+                                </ul>
                             </div>
                         </div>
                     </div>
                 </div>
             </div>
             
-            <!-- Clear Stuck Scans Button -->
-            <div class="mt-3 pt-3 border-top">
-                <div class="d-flex align-items-center justify-content-between">
-                    <div>
-                        <small class="text-muted">
-                            <i class="bi bi-info-circle"></i> If a scan appears stuck, click here to clear stale progress files
-                        </small>
-                    </div>
-                    <form method="POST" action="{{ url_for('scan_clear_stuck') }}">
-                        <button type="submit" class="btn btn-outline-warning btn-sm">
-                            <i class="bi bi-arrow-clockwise"></i> Clear Stuck Scans
-                        </button>
-                    </form>
-                </div>
+            <!-- Unified Stop and Clear Buttons -->
+            <div class="mt-3 pt-3 border-top d-flex gap-2 align-items-center">
+                <form method="POST" action="{{ url_for('scan_stop_all') }}" class="d-flex gap-1 flex-grow-1">
+                    <button type="submit" class="btn btn-danger btn-sm flex-grow-1" id="unified-stop-btn" style="display: none;">
+                        <i class="bi bi-stop-fill"></i> Stop All Scans
+                    </button>
+                </form>
+                <form method="POST" action="{{ url_for('scan_clear_stuck') }}">
+                    <button type="submit" class="btn btn-outline-warning btn-sm">
+                        <i class="bi bi-arrow-clockwise"></i> Clear Stuck Scans
+                    </button>
+                </form>
             </div>
+            
+            <!-- Stuck Scans Info -->
+            <div class="mt-2">
+                <small class="text-muted">
+                    <i class="bi bi-info-circle"></i> If a scan appears stuck, click "Clear Stuck Scans" to reset stale progress files
+                </small>
         </div>
     </div>
     
@@ -703,6 +686,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 const scanName = document.getElementById('current-scan-name');
                 const progressDetails = document.getElementById('unified-progress-details');
                 const startButtons = document.querySelectorAll('.scan-start-btn');
+                const stopButton = document.getElementById('unified-stop-btn');
                 
                 // Determine which scan is actually running and get its type
                 let activeScanType = null;
@@ -727,8 +711,9 @@ document.addEventListener('DOMContentLoaded', function() {
                         }
                     }
                     
-                    // Enable all start buttons
+                    // Enable all start buttons and hide stop button
                     startButtons.forEach(btn => btn.disabled = false);
+                    if (stopButton) stopButton.style.display = 'none';
                     runningScans.clear();
                     return;
                 }
@@ -848,8 +833,9 @@ document.addEventListener('DOMContentLoaded', function() {
                     progressDetails.textContent = details;
                 }
                 
-                // Disable all start buttons while scan is running
+                // Disable all start buttons and show stop button
                 startButtons.forEach(btn => btn.disabled = true);
+                if (stopButton) stopButton.style.display = 'block';
             })
             .catch(error => console.error('Error fetching scan progress:', error));
     }
