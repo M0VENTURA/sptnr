@@ -203,21 +203,17 @@
     </div>
     {% endif %}
     
-    <!-- Album Genres Section -->
-    {% if album_genres and album_genres|length > 0 %}
+    <!-- Album Genres Section (Dynamic) -->
     <div class="card mb-4">
         <div class="card-header">
-            <h6 class="card-title mb-0"><i class="bi bi-tags"></i> Album Genres</h6>
+            <h6 class="card-title mb-0"><i class="bi bi-tags-fill"></i> Album Genre & Tag Sources</h6>
         </div>
         <div class="card-body">
-            <div class="d-flex flex-wrap gap-2">
-                {% for genre in album_genres %}
-                <span class="badge bg-info" title="Genre tag for this album">{{ genre }}</span>
-                {% endfor %}
+            <div id="albumGenreSourcesContainer" class="spinner-border" role="status">
+                <span class="visually-hidden">Loading genres...</span>
             </div>
         </div>
     </div>
-    {% endif %}
     
     <!-- Album Release IDs Section -->
     {% if album_data %}
@@ -2464,6 +2460,105 @@
             });
     }
 
+    // Load album genres from API on page load
+    let albumGenresLoaded = false;
+    
+    document.addEventListener('DOMContentLoaded', function() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        if (album && artist && !albumGenresLoaded) {
+            loadAlbumGenres(album, artist);
+            albumGenresLoaded = true;
+        }
+    });
+    
+    async function loadAlbumGenres(album, artist) {
+        try {
+            const url = `/api/genres/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`;
+            const response = await fetch(url);
+            if (!response.ok) {
+                showAlbumGenresError('Failed to load genres');
+                return;
+            }
+            
+            const data = await response.json();
+            displayAlbumGenres(data);
+        } catch (error) {
+            console.error('Error loading album genres:', error);
+            showAlbumGenresError('Error loading genres: ' + error.message);
+        }
+    }
+    
+    function displayAlbumGenres(data) {
+        const container = document.getElementById('albumGenreSourcesContainer');
+        
+        if (!data.genres || Object.keys(data.genres).length === 0) {
+            container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
+            return;
+        }
+        
+        const sources = [
+            { key: 'spotify_genres', label: 'Spotify', color: 'success' },
+            { key: 'lastfm_tags', label: 'Last.fm', color: 'danger' },
+            { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
+            { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
+            { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'primary' }
+        ];
+        
+        let html = '<ul class="nav nav-tabs" role="tablist">';
+        let tabContent = '<div class="tab-content mt-3">';
+        
+        let firstTab = true;
+        sources.forEach((source, index) => {
+            const genres = data.genres[source.key] || [];
+            
+            if (genres.length > 0) {
+                const tabId = `albumGenreTab${source.key}`;
+                const activeClass = firstTab ? 'active' : '';
+                
+                html += `
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
+                                data-bs-target="#${tabId}-content" type="button" role="tab">
+                            <i class="bi bi-tag"></i> ${source.label}
+                            <span class="badge bg-secondary ms-2">${genres.length}</span>
+                        </button>
+                    </li>
+                `;
+                
+                let genresHtml = '';
+                genres.forEach(genre => {
+                    const count = genre.count ? ` <small class="text-muted">(${genre.count})</small>` : '';
+                    genresHtml += `<span class="badge bg-${source.color} me-2 mb-2">${escapeHtml(genre.name)}${count}</span>`;
+                });
+                
+                tabContent += `
+                    <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
+                        <p class="text-muted small mb-3">Aggregated from ${genres.length} track${genres.length === 1 ? '' : 's'}</p>
+                        <div class="d-flex flex-wrap gap-2">
+                            ${genresHtml}
+                        </div>
+                    </div>
+                `;
+                
+                firstTab = false;
+            }
+        });
+        
+        html += '</ul>';
+        tabContent += '</div>';
+        
+        if (firstTab) {
+            container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
+        } else {
+            container.innerHTML = html + tabContent;
+        }
+    }
+    
+    function showAlbumGenresError(message) {
+        const container = document.getElementById('albumGenreSourcesContainer');
+        container.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
+    }
 
 </script>
 <script src="{{ url_for('static', filename='js/genre-utils.js') }}"></script>

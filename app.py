@@ -3773,6 +3773,141 @@ def api_sync_track_to_file(track_id):
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/genres/track/<track_id>", methods=["GET"])
+def api_get_track_genres(track_id):
+    """Get all genre/tag sources for a single track"""
+    try:
+        from genre_tag_aggregator import get_track_genres_summary
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT * FROM tracks WHERE id = ?
+        """, (track_id,))
+        
+        track = cursor.fetchone()
+        conn.close()
+        
+        if not track:
+            return jsonify({"error": "Track not found"}), 404
+        
+        # Convert to dict if needed
+        if not isinstance(track, dict):
+            track = dict(track)
+        
+        genres_summary = get_track_genres_summary(track)
+        
+        return jsonify({
+            "success": True,
+            "track_id": track_id,
+            "track_title": track.get("title", "Unknown"),
+            "artist": track.get("artist", "Unknown"),
+            "genres": genres_summary
+        })
+    
+    except Exception as e:
+        logging.error(f"[GENRES] Error getting track genres: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/genres/album/<path:album>/<path:artist>", methods=["GET"])
+def api_get_album_genres(album, artist):
+    """Get aggregated genre/tag summary for an album"""
+    try:
+        from urllib.parse import unquote
+        from genre_tag_aggregator import get_album_genres_summary
+        
+        album = unquote(album)
+        artist = unquote(artist)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all tracks for this album
+        tracks = []
+        for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
+            cursor.execute(f"""
+                SELECT * FROM tracks
+                WHERE {artist_clause} = ? AND album = ?
+                ORDER BY COALESCE(disc_number, 1), COALESCE(track_number, 999)
+            """, (artist, album))
+            
+            tracks = cursor.fetchall()
+            if tracks:
+                break
+        
+        conn.close()
+        
+        if not tracks:
+            return jsonify({"error": "Album not found"}), 404
+        
+        # Convert rows to dicts if needed
+        if tracks and not isinstance(tracks[0], dict):
+            tracks = [dict(t) for t in tracks]
+        
+        genres_summary = get_album_genres_summary(tracks, limit=25)
+        
+        return jsonify({
+            "success": True,
+            "album": album,
+            "artist": artist,
+            "track_count": len(tracks),
+            "genres": genres_summary
+        })
+    
+    except Exception as e:
+        logging.error(f"[GENRES] Error getting album genres: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/genres/artist/<path:artist>", methods=["GET"])
+def api_get_artist_genres(artist):
+    """Get aggregated genre/tag summary for an artist (all tracks)"""
+    try:
+        from urllib.parse import unquote
+        from genre_tag_aggregator import get_artist_genres_summary
+        
+        artist = unquote(artist)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all tracks for this artist
+        cursor.execute("""
+            SELECT * FROM tracks
+            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+            ORDER BY album, COALESCE(disc_number, 1), COALESCE(track_number, 999)
+        """, (artist,))
+        
+        tracks = cursor.fetchall()
+        conn.close()
+        
+        if not tracks:
+            return jsonify({"error": "Artist not found"}), 404
+        
+        # Convert rows to dicts if needed
+        if tracks and not isinstance(tracks[0], dict):
+            tracks = [dict(t) for t in tracks]
+        
+        genres_summary = get_artist_genres_summary(tracks, limit=30)
+        
+        # Get album count
+        album_count = len(set(t.get("album", "") for t in tracks if t.get("album", "")))
+        
+        return jsonify({
+            "success": True,
+            "artist": artist,
+            "track_count": len(tracks),
+            "album_count": album_count,
+            "genres": genres_summary
+        })
+    
+    except Exception as e:
+        logging.error(f"[GENRES] Error getting artist genres: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/album/search-art")
 def api_album_search_art():
     """Search for album art on MusicBrainz, Discogs, Spotify, or Apple Music"""

@@ -297,78 +297,19 @@
                     </div>
                 </div>
 
-                <!-- Genres Information -->
-                {% if track.genres or track.navidrome_genres or track.spotify_genres or track.lastfm_tags or track.discogs_genres or track.musicbrainz_genres %}
+                <!-- Genres Information (Dynamic) -->
                 <div class="card mb-4">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-tags-fill"></i> Genre Sources
+                            <i class="bi bi-tags-fill"></i> Genre & Tag Sources
                         </h5>
                     </div>
                     <div class="card-body">
-                        {% if track.genres %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Merged Genres</div>
-                            <div class="metadata-value">
-                                {% for genre in track.genres|split_genres %}
-                                    <span class="badge badge-success">{{ genre }}</span>
-                                {% endfor %}
-                            </div>
+                        <div id="genreSourcesContainer" class="spinner-border" role="status">
+                            <span class="visually-hidden">Loading genres...</span>
                         </div>
-                        {% endif %}
-                        {% if track.navidrome_genres %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Navidrome</div>
-                            <div class="metadata-value">
-                                {% for genre in track.navidrome_genres|split_genres %}
-                                    <span class="badge bg-info">{{ genre }}</span>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.spotify_genres %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Spotify</div>
-                            <div class="metadata-value">
-                                {% for genre in track.spotify_genres|split_genres %}
-                                    <span class="badge bg-success">{{ genre }}</span>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.lastfm_tags %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Last.fm</div>
-                            <div class="metadata-value">
-                                {% for tag in track.lastfm_tags|split_genres %}
-                                    <span class="badge bg-danger">{{ tag }}</span>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.discogs_genres %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Discogs</div>
-                            <div class="metadata-value">
-                                {% for genre in track.discogs_genres|split_genres %}
-                                    <span class="badge bg-warning text-dark">{{ genre }}</span>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.musicbrainz_genres %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">MusicBrainz</div>
-                            <div class="metadata-value">
-                                {% for genre in track.musicbrainz_genres|split_genres %}
-                                    <span class="badge bg-primary">{{ genre }}</span>
-                                {% endfor %}
-                            </div>
-                        </div>
-                        {% endif %}
                     </div>
                 </div>
-                {% endif %}
                 <!-- Beets Metadata (MusicBrainz Recommendations) -->
                 {% if track.beets_mbid or track.beets_similarity or track.beets_album_artist %}
                 <div class="card mb-4">
@@ -1149,6 +1090,103 @@ function addRecommendedGenre(genre) {
     if (!recList.innerHTML.trim()) {
         document.getElementById('genreRecommendations').style.display = 'none';
     }
+}
+
+// Initialize genre loading on page load
+let genresLoaded = false;
+
+document.addEventListener('DOMContentLoaded', function() {
+    const trackId = '{{ track.id }}';
+    if (trackId && !genresLoaded) {
+        loadTrackGenres(trackId);
+        genresLoaded = true;
+    }
+});
+
+async function loadTrackGenres(trackId) {
+    try {
+        const response = await fetch(`/api/genres/track/${trackId}`);
+        if (!response.ok) {
+            showGenresError('Failed to load genres');
+            return;
+        }
+        
+        const data = await response.json();
+        displayTrackGenres(data);
+    } catch (error) {
+        console.error('Error loading genres:', error);
+        showGenresError('Error loading genres: ' + error.message);
+    }
+}
+
+function displayTrackGenres(data) {
+    const container = document.getElementById('genreSourcesContainer');
+    
+    if (!data.genres || Object.keys(data.genres).length === 0) {
+        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
+        return;
+    }
+    
+    const sources = [
+        { key: 'spotify_genres', label: 'Spotify', color: 'success' },
+        { key: 'lastfm_tags', label: 'Last.fm', color: 'danger' },
+        { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
+        { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
+        { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'primary' }
+    ];
+    
+    let html = '<ul class="nav nav-tabs" role="tablist">';
+    let tabContent = '<div class="tab-content mt-3">';
+    
+    let firstTab = true;
+    sources.forEach((source, index) => {
+        const genres = data.genres[source.key] || [];
+        
+        if (genres.length > 0) {
+            const tabId = `genreTab${source.key}`;
+            const activeClass = firstTab ? 'active' : '';
+            
+            html += `
+                <li class="nav-item" role="presentation">
+                    <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
+                            data-bs-target="#${tabId}-content" type="button" role="tab">
+                        <i class="bi bi-tag"></i> ${source.label}
+                        <span class="badge bg-secondary ms-2">${genres.length}</span>
+                    </button>
+                </li>
+            `;
+            
+            let genresHtml = '';
+            genres.forEach(genre => {
+                const count = genre.count ? ` <small class="text-muted">(${genre.count}${genre.count === 1 ? ' source' : ' sources'})</small>` : '';
+                genresHtml += `<span class="badge bg-${source.color} me-2 mb-2">${escapeHtml(genre.name)}${count}</span>`;
+            });
+            
+            tabContent += `
+                <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
+                    <div class="d-flex flex-wrap gap-2">
+                        ${genresHtml}
+                    </div>
+                </div>
+            `;
+            
+            firstTab = false;
+        }
+    });
+    
+    html += '</ul>';
+    tabContent += '</div>';
+    
+    if (firstTab) {
+        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
+    } else {
+        container.innerHTML = html + tabContent;
+    }
+}
+
+function showGenresError(message) {
+    const container = document.getElementById('genreSourcesContainer');
+    container.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
 }
 
 </script>
