@@ -14980,7 +14980,8 @@ def api_search_discogs_release():
             return jsonify({"error": "Artist and album name required"}), 400
         
         # Get Discogs configuration
-        discogs_config = config.get("discogs", {})
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        discogs_config = cfg.get("discogs", {})
         discogs_token = discogs_config.get("token", "")
         discogs_enabled = discogs_config.get("enabled", False)
         
