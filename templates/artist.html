@@ -2743,7 +2743,15 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   function displayArtistSimilarArtists(data) {
     const container = document.getElementById('artistSimilarArtistsContainer');
     
-    const totalArtists = data.similar_artists.lastfm.length + data.similar_artists.listenbrainz.length;
+    // Validate data structure
+    if (!data || !data.similar_artists) {
+      container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists data available</div>';
+      return;
+    }
+    
+    const lastfmArtists = data.similar_artists.lastfm || [];
+    const listenbrainzArtists = data.similar_artists.listenbrainz || [];
+    const totalArtists = lastfmArtists.length + listenbrainzArtists.length;
     
     if (totalArtists === 0) {
       container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
@@ -2755,7 +2763,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     let firstTab = true;
     
     // Last.fm similar artists
-    if (data.similar_artists.lastfm.length > 0) {
+    if (lastfmArtists.length > 0) {
       const tabId = 'artistSimilarArtistsLastfm';
       const activeClass = firstTab ? 'active' : '';
       
@@ -2763,13 +2771,13 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         <li class="nav-item" role="presentation">
           <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
                   data-bs-target="#${tabId}-content" type="button" role="tab">
-            <i class="bi bi-music"></i> Last.fm (${data.similar_artists.lastfm.length})
+            <i class="bi bi-music"></i> Last.fm (${lastfmArtists.length})
           </button>
         </li>
       `;
       
       let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
-      data.similar_artists.lastfm.forEach(artist => {
+      lastfmArtists.forEach(artist => {
         const match = artist.match ? ` <small class="text-muted">(${(artist.match * 100).toFixed(0)}%)</small>` : '';
         const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
         artistsHtml += `<span class="badge bg-danger"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a>${match}</span>`;
@@ -2786,7 +2794,7 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
     }
     
     // ListenBrainz similar artists
-    if (data.similar_artists.listenbrainz.length > 0) {
+    if (listenbrainzArtists.length > 0) {
       const tabId = 'artistSimilarArtistsListenbrainz';
       const activeClass = firstTab ? 'active' : '';
       
@@ -2794,13 +2802,13 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
         <li class="nav-item" role="presentation">
           <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
                   data-bs-target="#${tabId}-content" type="button" role="tab">
-            <i class="bi bi-music"></i> ListenBrainz (${data.similar_artists.listenbrainz.length})
+            <i class="bi bi-music"></i> ListenBrainz (${listenbrainzArtists.length})
           </button>
         </li>
       `;
       
       let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
-      data.similar_artists.listenbrainz.forEach(artist => {
+      listenbrainzArtists.forEach(artist => {
         const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
         artistsHtml += `<span class="badge bg-info"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a></span>`;
       });

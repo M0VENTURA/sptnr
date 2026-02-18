@@ -5434,16 +5434,31 @@ function openBatchGroupModal() {
     return;
   }
   
-  // Clear modal form
-  document.getElementById('batchGroupType').value = 'album';
-  document.getElementById('batchGroupName').value = '';
-  document.getElementById('batchGroupArtist').value = '';
-  document.getElementById('batchGroupAlbumArtist').value = '';
-  document.getElementById('batchGroupYear').value = '';
+  // Ensure modal exists
+  ensureBatchGroupModal();
   
-  // Show modal
-  const modal = new bootstrap.Modal(document.getElementById('batchGroupModal'));
-  modal.show();
+  // Wait a tick to ensure modal is in DOM
+  setTimeout(() => {
+    // Clear modal form (with null checks)
+    const typeEl = document.getElementById('batchGroupType');
+    const nameEl = document.getElementById('batchGroupName');
+    const artistEl = document.getElementById('batchGroupArtist');
+    const yearEl = document.getElementById('batchGroupYear');
+    
+    if (typeEl) typeEl.value = 'album';
+    if (nameEl) nameEl.value = '';
+    if (artistEl) artistEl.value = '';
+    if (yearEl) yearEl.value = '';
+    
+    // Show modal
+    const modalEl = document.getElementById('batchGroupModal');
+    if (modalEl) {
+      const modal = new bootstrap.Modal(modalEl);
+      modal.show();
+    } else {
+      alert('❌ Error: Modal not initialized');
+    }
+  }, 10);
 }
 
 /**
