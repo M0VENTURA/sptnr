@@ -24,11 +24,87 @@ from logging_config import log_unified, log_info, log_debug
 
 
 # ============================================================================
+# Constants for Safe Title Normalization
+# ============================================================================
+
+# Known release variant suffixes that should be stripped for metadata matching
+STRIPPABLE_SUFFIXES = [
+    "radio edit",
+    "single edit",
+    "edit",
+    "single version",
+    "radio version",
+    "radio mix",
+]
+
+# Separators that must precede strippable suffixes
+SEPARATORS = [" - ", " (", " ["]
+
+
+def strip_release_variant_suffix(title: str) -> str:
+    """
+    Strip known release variant suffixes from title for metadata matching.
+    
+    Only removes suffixes that:
+    1. Match the STRIPPABLE_SUFFIXES list (Radio Edit, Single Version, etc.)
+    2. Are preceded by one of the SEPARATORS (e.g., " - ", " (", " [")
+    3. Appear at the END of the title
+    
+    This ensures legitimate song titles like "8-bit Version" or "Acoustic Version"
+    are NOT affected, since "Version" would not be preceded by a recognized separator.
+    
+    Args:
+        title: Original track title
+        
+    Returns:
+        Title with release variant suffix stripped (if applicable)
+        
+    Examples:
+        "Spin (Radio Edit)" → "Spin"
+        "Track - Single Version" → "Track"
+        "Acoustic Version" → "Acoustic Version" (NOT stripped, no separator)
+        "8-bit Version" → "8-bit Version" (NOT stripped, no separator)
+        "Live Version (Radio Mix)" → "Live Version" (only radio mix portion stripped)
+    """
+    if not title:
+        return title
+    
+    # Check each separator and strippable suffix combo
+    for separator in SEPARATORS:
+        for suffix in STRIPPABLE_SUFFIXES:
+            # Build the pattern: separator + suffix + optional whitespace at end
+            # Example: " (radio edit)" or " - single version"
+            pattern = re.escape(separator) + r'\s*' + re.escape(suffix) + r'\s*$'
+            
+            # Search case-insensitively
+            match = re.search(pattern, title, re.IGNORECASE)
+            if match:
+                # Remove the matched suffix (separator + suffix)
+                return title[:match.start()].rstrip()
+    
+    # No strippable suffix found, return original
+    return title
+
+
+# ============================================================================
 # Helper Functions
 # ============================================================================
 
 def normalize_title_for_matching(title: str) -> str:
-    """Normalize title for version matching."""
+    """
+    Normalize title for version matching.
+    
+    Process:
+    1. Strip known release variant suffixes (Radio Edit, Single Version, etc.)
+    2. Remove bracketed/parenthesized content
+    3. Remove dash-based versions
+    4. Remove punctuation
+    5. Normalize case and whitespace
+    """
+    # Step 1: Strip known release variant suffixes FIRST (before other normalization)
+    # This ensures "Spin (Radio Edit)" matches "Spin" in metadata
+    title = strip_release_variant_suffix(title)
+    
     # Remove bracketed/parenthesized content
     normalized = re.sub(r'\s*[\(\[].*?[\)\]]', '', title)
     # Remove dash-based versions

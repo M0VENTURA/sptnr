@@ -264,6 +264,18 @@ def should_exclude_from_single_detection(genres: str, is_live_release: bool = Fa
 # Stage 6: Strict Version Matching Rules
 # ============================================================================
 
+# Constants for safe title normalization for known release variants
+STRIPPABLE_SUFFIXES = [
+    "radio edit",
+    "single edit",
+    "edit",
+    "single version",
+    "radio version",
+    "radio mix",
+]
+
+SEPARATORS = [" - ", " (", " ["]
+
 # Import improved matching utilities for better normalization and matching
 try:
     from matching_utils import (
@@ -285,14 +297,65 @@ except ImportError:
     PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
 
 
+def strip_release_variant_suffix(title: str) -> str:
+    """
+    Strip known release variant suffixes from title for metadata matching.
+    
+    Only removes suffixes that:
+    1. Match the STRIPPABLE_SUFFIXES list (Radio Edit, Single Version, etc.)
+    2. Are preceded by one of the SEPARATORS (e.g., " - ", " (", " [")
+    3. Appear at the END of the title
+    
+    This ensures legitimate song titles like "8-bit Version" or "Acoustic Version"
+    are NOT affected, since "Version" would not be preceded by a recognized separator.
+    
+    Args:
+        title: Original track title
+        
+    Returns:
+        Title with release variant suffix stripped (if applicable)
+        
+    Examples:
+        "Spin (Radio Edit)" → "Spin"
+        "Track - Single Version" → "Track"
+        "Acoustic Version" → "Acoustic Version" (NOT stripped, no separator)
+        "8-bit Version" → "8-bit Version" (NOT stripped, no separator)
+        "Live Version (Radio Mix)" → "Live Version" (only radio mix portion stripped)
+    """
+    if not title:
+        return title
+    
+    # Check each separator and strippable suffix combo
+    for separator in SEPARATORS:
+        for suffix in STRIPPABLE_SUFFIXES:
+            # Build the pattern: separator + suffix + optional whitespace at end
+            # Example: " (radio edit)" or " - single version"
+            pattern = re.escape(separator) + r'\s*' + re.escape(suffix) + r'\s*$'
+            
+            # Search case-insensitively
+            match = re.search(pattern, title, re.IGNORECASE)
+            if match:
+                # Remove the matched suffix (separator + suffix)
+                return title[:match.start()].rstrip()
+    
+    # No strippable suffix found, return original
+    return title
+
+
 def normalize_title_strict(title: str) -> str:
     """
     Normalize title per problem statement Stage 6.
     
     Now enhanced with Unicode normalization and accent removal when matching_utils available.
+    Applies safe stripping of known release variants BEFORE normalization.
     
     IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, etc.)
     to ensure different songs are not matched as the same track.
+    
+    Processing order:
+    1. Strip known release variant suffixes (Radio Edit, Single Version, etc.)
+    2. Apply full normalization (punctuation, accents, case, etc.)
+    3. Preserve special suffixes (!, +, ?, Roman numerals)
     
     - lowercase
     - remove accents (Unicode NFD decomposition)
@@ -302,6 +365,10 @@ def normalize_title_strict(title: str) -> str:
     - strip leading articles (a, an, the)
     - preserve Roman numerals at end
     """
+    # Step 1: Strip known release variant suffixes FIRST (before other normalization)
+    # This ensures "Spin (Radio Edit)" matches "Spin" in metadata
+    title = strip_release_variant_suffix(title)
+    
     if MATCHING_UTILS_AVAILABLE:
         # Use advanced normalization with Unicode accent removal
         return normalize_title_advanced(title)
@@ -804,7 +871,7 @@ def infer_from_popularity(
     - album_z >= 1.0 AND artist_z >= 0.5
     
     MEDIUM-CONFIDENCE SINGLE:
-    - album_z >= 0.5 OR artist_z >= 1.8
+    - album_z >= 0.5 OR artist_z >= 1.4
     
     LOW-CONFIDENCE (legacy support):
     - album_z >= 0.2 AND >= 3 versions
@@ -828,8 +895,8 @@ def infer_from_popularity(
         if album_z >= 1.0 and artist_z >= 0.5:
             return 'high', True
         
-        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.8 (must match metadata-based confidence thresholds)
-        if album_z >= 0.5 or artist_z >= 1.8:
+        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.4 (must match metadata-based confidence thresholds)
+        if album_z >= 0.5 or artist_z >= 1.4:
             return 'medium', True
         
         # LOW: Legacy support for album_z >= 0.2 AND >= 3 versions
@@ -975,10 +1042,10 @@ def determine_final_status(
     if use_zscore_detection:
         log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
         
-        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.8 (with explicit metadata, must meet medium threshold)
+        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.4 (with explicit metadata, must meet medium threshold)
         if has_metadata:
-            if album_z >= 0.5 or artist_z >= 1.8:
-                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.8, with metadata)")
+            if album_z >= 0.5 or artist_z >= 1.4:
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.4, with metadata)")
                 return 'medium'
             
             # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
@@ -987,8 +1054,8 @@ def determine_final_status(
                 return 'low'
         
         # MEDIUM confidence for artist-level standouts WITHOUT metadata (popular across entire artist)
-        # Must meet the same z-score threshold as metadata-backed tracks: 1.8
-        elif is_artist_level_standout and artist_z >= 1.8:
+        # Must meet the same z-score threshold as metadata-backed tracks: 1.4
+        elif is_artist_level_standout and artist_z >= 1.4:
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f})")
             return 'medium'
     
