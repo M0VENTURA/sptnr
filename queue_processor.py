@@ -134,9 +134,9 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get current retry count and max retries
+        # Get current retry count
         cursor.execute("""
-            SELECT retry_count, max_retries FROM download_queue WHERE id = ?
+            SELECT retry_count FROM download_queue WHERE id = ?
         """, (queue_id,))
         
         row = cursor.fetchone()
@@ -145,7 +145,6 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
-        max_retries = row['max_retries'] or 5
         
         next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
         
@@ -158,8 +157,8 @@ def increment_retry_count(queue_id, retry_delay_minutes=30):
         conn.commit()
         conn.close()
         
-        logger.info(f"Queue {queue_id}: retry count now {retry_count}/{max_retries}, next retry at {next_retry}")
-        return retry_count < max_retries
+        logger.info(f"Queue {queue_id}: retry count now {retry_count}, next retry at {next_retry}")
+        return True
         
     except Exception as e:
         logger.error(f"Error incrementing retry count: {e}")
@@ -171,8 +170,8 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get max retries
-        cursor.execute("SELECT retry_count, max_retries FROM download_queue WHERE id = ?", (queue_id,))
+        # Get current retry count
+        cursor.execute("SELECT retry_count FROM download_queue WHERE id = ?", (queue_id,))
         row = cursor.fetchone()
         
         if not row:
@@ -180,17 +179,16 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
             return False
         
         retry_count = (row['retry_count'] or 0) + 1
-        max_retries = row['max_retries'] or 5
         
-        # Determine if we should retry
-        if schedule_retry and retry_count < max_retries:
+        # Always schedule retry if requested - no max retry limit for Soulseek searches
+        if schedule_retry:
             next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
             new_status = 'queued'
-            logger.warning(f"Queue {queue_id}: Failed ({reason}), scheduling retry {retry_count}/{max_retries} at {next_retry}")
+            logger.warning(f"Queue {queue_id}: Failed ({reason}), scheduling retry #{retry_count} at {next_retry}")
         else:
             next_retry = None
             new_status = 'failed'
-            logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - exceeded max retries")
+            logger.error(f"Queue {queue_id}: Failed permanently ({reason}) - retry not requested")
         
         cursor.execute("""
             UPDATE download_queue 
@@ -202,7 +200,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         conn.commit()
         conn.close()
         
-        return retry_count < max_retries
+        return True
         
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
