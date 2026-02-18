@@ -737,7 +737,32 @@
     </div>
 </div>
 
-<!-- Edit Track Modal -->
+<!-- Simple Track Edit Modal -->
+<div class="modal fade" id="simpleEditTrackModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">Edit Track</h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <input type="hidden" id="editTrackId">
+                <input type="hidden" id="editTrackCurrentField">
+                <div class="mb-3">
+                    <label for="editTrackValue" class="form-label" id="editTrackLabel"></label>
+                    <input type="text" class="form-control" id="editTrackValue" placeholder="Enter value">
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveEditedTrack()">
+                    <i class="bi bi-check-circle"></i> Save
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Comprehensive Track Edit Modal -->
 <div class="modal fade" id="editTrackModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog modal-lg">
@@ -2218,7 +2243,7 @@
 
     // Track inline editing functions
     function editTrackTitle(trackId, currentTitle) {
-        const modal = new bootstrap.Modal(document.getElementById('editTrackModal'));
+        const modal = new bootstrap.Modal(document.getElementById('simpleEditTrackModal'));
         document.getElementById('editTrackId').value = trackId;
         document.getElementById('editTrackCurrentField').value = 'title';
         document.getElementById('editTrackLabel').textContent = 'Track Title';
@@ -2228,7 +2253,7 @@
     }
 
     function editTrackArtist(trackId, currentArtist) {
-        const modal = new bootstrap.Modal(document.getElementById('editTrackModal'));
+        const modal = new bootstrap.Modal(document.getElementById('simpleEditTrackModal'));
         document.getElementById('editTrackId').value = trackId;
         document.getElementById('editTrackCurrentField').value = 'artist';
         document.getElementById('editTrackLabel').textContent = 'Track Artist';
@@ -2267,7 +2292,7 @@
                         el.textContent = value || '—';
                     });
                 }
-                bootstrap.Modal.getInstance(document.getElementById('editTrackModal')).hide();
+                bootstrap.Modal.getInstance(document.getElementById('simpleEditTrackModal')).hide();
                 alert('✅ Track metadata updated');
             } else {
                 alert('❌ Error: ' + (data.error || 'Failed to update'));
