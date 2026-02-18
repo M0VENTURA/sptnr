@@ -602,11 +602,15 @@ def get_spotify_user_public_playlists(user_id: str, client_id: str, client_secre
                 for item in data.get("items", []):
                     # Only include public playlists
                     if item.get("public", False):
+                        # Handle image safely - item.get("images") might return None
+                        images = item.get("images") or []
+                        image_url = images[0].get("url") if images and isinstance(images[0], dict) else ""
+                        
                         playlists.append({
                             "id": item["id"],
                             "name": item["name"],
                             "description": item.get("description", ""),
-                            "image_url": (item.get("images", [{}])[0] or {}).get("url"),
+                            "image_url": image_url,
                             "track_count": item.get("tracks", {}).get("total", 0),
                             "owner": item.get("owner", {}).get("display_name", user_id),
                             "external_url": item.get("external_urls", {}).get("spotify", "")

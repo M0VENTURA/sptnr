@@ -657,7 +657,7 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
             
             for track in tracks:
                 artist = (track.get('artist', '') or '').lower()
-                title = (track.get('name', '') or '').lower()
+                title = (track.get('title', '') or '').lower()
                 key = f"{artist}|{title}"
                 
                 if key in collection_set:
