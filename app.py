@@ -14516,6 +14516,34 @@ def api_get_navidrome_scan_status():
         logging.error(f"Error getting Navidrome scan status: {e}")
         return jsonify({"error": str(e)}), 500
 
+@app.route("/api/navidrome/import/pre-sync-artists", methods=["POST"])
+def api_pre_sync_navidrome_artists():
+    """
+    Pre-import sync: Batch fetch and sync new album artists from Navidrome
+    
+    This is a quick operation that identifies all unique album artists in Navidrome
+    and adds any missing ones to the database in a single batch operation.
+    Can be run before a full import to ensure all artists exist.
+    
+    Query params:
+      - artist_id: Optional single artist ID to sync (instead of all artists)
+    """
+    try:
+        from navidrome_import import pre_import_sync_album_artists
+        
+        artist_id = request.args.get('artist_id')
+        
+        result = pre_import_sync_album_artists(artist_id=artist_id)
+        
+        if 'error' in result:
+            return jsonify(result), 400
+        
+        return jsonify(result), 200
+            
+    except Exception as e:
+        logging.error(f"Error syncing Navidrome album artists: {e}")
+        return jsonify({"error": str(e), "success": False}), 500
+
 @app.route("/api/genres/recent-updates", methods=["GET"])
 def api_recent_genre_updates():
     """
