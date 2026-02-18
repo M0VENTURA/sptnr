@@ -35,7 +35,7 @@ def get_db():
     return conn
 
 
-def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
+def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song'):
     """
     Add a song to the download queue
     
@@ -45,6 +45,8 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
         album: Album name (optional)
         source: 'soulseek' or 'qbittorrent'
         priority: Priority level (1-10, lower = higher priority)
+        import_group: Group ID for batch imports (optional, e.g., for albums/playlists)
+        import_type: Type of import - 'song', 'album', or 'playlist' (defaults to 'song')
     
     Returns:
         Queue item dict or None if failed
@@ -66,7 +68,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
         required_cols = {
             'search_query': "TEXT",
             'source': "TEXT DEFAULT 'soulseek'",
-            'priority': "INTEGER DEFAULT 5"
+            'priority': "INTEGER DEFAULT 5",
+            'import_group': "TEXT",
+            'import_type': "TEXT DEFAULT 'song'"
         }
         
         for col, col_type in required_cols.items():
@@ -85,9 +89,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
         try:
             cursor.execute("""
                 INSERT INTO download_queue 
-                (artist, title, album, search_query, source, status, priority, file_path, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (artist, title, album, search_query, source, priority))
+                (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (artist, title, album, search_query, source, priority, import_group, import_type))
             
             conn.commit()
             queue_id = cursor.lastrowid
@@ -144,7 +148,9 @@ def get_queue(status=None, source='soulseek', limit=50):
         missing_cols = {
             'source': "TEXT DEFAULT 'soulseek'",
             'priority': "INTEGER DEFAULT 5",
-            'search_query': "TEXT"
+            'search_query': "TEXT",
+            'import_group': "TEXT",
+            'import_type': "TEXT DEFAULT 'song'"
         }
         
         for col, col_type in missing_cols.items():

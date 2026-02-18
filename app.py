@@ -10597,6 +10597,7 @@ def api_queue_add_batch():
     """Add multiple songs/albums to download queue in a single request"""
     try:
         from download_queue_manager import add_to_queue
+        import uuid
         
         data = request.get_json()
         if not data or 'items' not in data:
@@ -10608,6 +10609,12 @@ def api_queue_add_batch():
             return jsonify({"error": "items must be an array"}), 400
         
         logging.info(f"Adding {len(items)} items to queue in batch")
+        
+        # Generate a unique import group ID for this batch
+        import_group_id = str(uuid.uuid4())
+        
+        # Determine import type based on context and number of items
+        import_type = data.get('import_type', 'playlist' if len(items) > 1 else 'song')
         
         added_count = 0
         failed_count = 0
@@ -10631,7 +10638,8 @@ def api_queue_add_batch():
                 continue
             
             try:
-                item = add_to_queue(artist, title, album, source, priority)
+                item = add_to_queue(artist, title, album, source, priority, 
+                                   import_group=import_group_id, import_type=import_type)
                 if item:
                     added_count += 1
                 else:
@@ -10647,6 +10655,8 @@ def api_queue_add_batch():
             "added": added_count,
             "failed": failed_count,
             "failed_tracks": failed_tracks,
+            "import_group": import_group_id,
+            "import_type": import_type,
             "message": f"Added {added_count} items to queue" + 
                       (f", {failed_count} failed" if failed_count > 0 else "")
         })
