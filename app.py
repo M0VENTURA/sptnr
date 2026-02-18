@@ -7181,7 +7181,6 @@ def scan_combined():
                 finally:
                     # Clean up thread reference when done
                     with scan_lock:
-                        global scan_process_combined
                         scan_process_combined = None
             
             # daemon=False matches other scan threads - allows scan to complete even during shutdown
