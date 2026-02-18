@@ -75,7 +75,7 @@ class SearchResponse:
 class SlskdClient:
     """Soulseek (slskd) API wrapper for search and downloads."""
     
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: int = 10):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: Optional[int] = 10):
         """
         Initialize slskd client.
         
@@ -94,7 +94,7 @@ class SlskdClient:
         self.base_url = f"{self.web_url}/api/v0"
         self.headers = {"X-API-Key": api_key} if api_key else {}
     
-    def start_search(self, query: str, timeout: int = None) -> Optional[str]:
+    def start_search(self, query: str, timeout: Optional[int] = None) -> Optional[str]:
         """
         Start a new search on Soulseek.
         
@@ -132,7 +132,7 @@ class SlskdClient:
             logger.error(f"Slskd search failed for query '{query}': {e}")
             return None
     
-    def get_search_results(self, search_id: str, timeout: int = None) -> tuple[list[SearchResponse], str, bool]:
+    def get_search_results(self, search_id: str, timeout: Optional[int] = None) -> tuple[list[SearchResponse], str, bool]:
         """
         Poll for search results from Soulseek.
         
@@ -210,7 +210,7 @@ class SlskdClient:
             logger.error(f"Slskd get results failed for search {search_id}: {e}")
             return [], "Error", True
     
-    def download_file(self, username: str, filename: str, size: int = 0, timeout: int = None) -> bool:
+    def download_file(self, username: str, filename: str, size: int = 0, timeout: Optional[int] = None) -> bool:
         """
         Enqueue a file for download from a peer.
         
@@ -253,7 +253,7 @@ class SlskdClient:
             logger.error(traceback.format_exc())
             return False
 
-    def download_files(self, files: list[dict], timeout: int = None) -> list[dict]:
+    def download_files(self, files: list[dict], timeout: Optional[int] = None) -> list[dict]:
         """
         Enqueue multiple files (potentially across users) for download.
 
@@ -358,7 +358,7 @@ class SlskdClient:
         min_bitrate: int = 320,
         wait_seconds: int = 5,
         poll_interval: float = 1.0,
-        timeout: int = None
+        timeout: Optional[int] = None
     ) -> list[dict]:
         """
         Execute a complete search workflow: start → poll → filter → return results.
@@ -411,7 +411,7 @@ class SlskdClient:
         
         return qualified
     
-    def get_active_downloads(self, timeout: int = None) -> list[dict]:
+    def get_active_downloads(self, timeout: Optional[int] = None) -> list[dict]:
         """
         Get list of active downloads from slskd.
         
@@ -474,7 +474,7 @@ class SlskdClient:
             logger.error(f"Slskd get active downloads failed: {e}")
             return []
     
-    def cancel_search(self, search_id: str, timeout: int = None) -> bool:
+    def cancel_search(self, search_id: str, timeout: Optional[int] = None) -> bool:
         """
         Cancel an active search.
         
@@ -504,7 +504,7 @@ class SlskdClient:
             logger.error(f"Slskd cancel search failed for {search_id}: {e}")
             return False
     
-    def cancel_download(self, transfer_id: str, timeout: int = None) -> bool:
+    def cancel_download(self, transfer_id: str, timeout: Optional[int] = None) -> bool:
         """
         Cancel a specific download by transfer ID.
         
@@ -534,7 +534,7 @@ class SlskdClient:
             logger.error(f"Slskd cancel download failed for {transfer_id}: {e}")
             return False
     
-    def get_transfer(self, transfer_id: str, timeout: int = None) -> Optional[dict]:
+    def get_transfer(self, transfer_id: str, timeout: Optional[int] = None) -> Optional[dict]:
         """
         Get details of a specific transfer by ID.
         
