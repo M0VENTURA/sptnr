@@ -626,8 +626,8 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
             return jsonify({"success": False, "error": "Spotify not configured"}), 400
         
         # Fetch playlist tracks
-        from api_clients.spotify import SpotifyAPI
-        spotify_client = SpotifyAPI(client_id, client_secret)
+        from api_clients.spotify import SpotifyClient
+        spotify_client = SpotifyClient(client_id, client_secret)
         tracks = spotify_client.get_playlist_tracks(playlist_id)
         
         if not tracks:
