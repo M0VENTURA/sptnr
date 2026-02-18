@@ -10829,6 +10829,103 @@ def api_queue_organize(queue_id):
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/organize-group", methods=["POST"])
+def api_queue_organize_group():
+    """Organize a group of downloads with metadata confirmation and custom folder structure"""
+    try:
+        import subprocess
+        from download_queue_manager import update_queue_item, get_queue
+        
+        data = request.get_json()
+        group_id = data.get('group_id')
+        metadata = data.get('metadata', {})
+        folder_format = data.get('folder_format', '{album_artist}/{year} - {album}')
+        
+        if not group_id:
+            return jsonify({"error": "group_id required"}), 400
+        
+        # Get all items in this group from completed queue
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        cursor.execute("""
+            SELECT id, file_path, artist, album, title FROM download_queue 
+            WHERE import_group = ? AND status = 'completed'
+        """, (group_id,))
+        
+        items = cursor.fetchall()
+        conn.close()
+        
+        if not items:
+            return jsonify({"error": "No completed items found for this group"}), 404
+        
+        # Update metadata for all tracks in the group
+        album_artist = metadata.get('album_artist') or metadata.get('artist', '')
+        year = metadata.get('year', '')
+        album_name = metadata.get('album', '')
+        
+        updated_count = 0
+        errors = []
+        
+        for item in items:
+            try:
+                if not os.path.exists(item['file_path']):
+                    errors.append(f"{item['title']}: File not found")
+                    continue
+                
+                # Update track metadata in database
+                update_queue_item(
+                    item['id'],
+                    artist=item['artist'],  # Keep original artist
+                    album=album_name,
+                    album_artist=album_artist if album_artist else item['artist'],
+                    year=year
+                )
+                
+                # Organize file with beets using the folder format
+                # Build beets config-based destination
+                beets_dest = folder_format.format(
+                    album_artist=album_artist or item['artist'],
+                    artist=item['artist'],
+                    album=album_name,
+                    year=year,
+                    track_number='$track'  # Beets template variable
+                )
+                
+                result = subprocess.run(
+                    ['beet', 'import', '-s', item['file_path']],
+                    capture_output=True,
+                    text=True,
+                    timeout=60
+                )
+                
+                if result.returncode == 0:
+                    update_queue_item(item['id'], status='imported')
+                    updated_count += 1
+                else:
+                    error_msg = result.stderr or "Beets import failed"
+                    errors.append(f"{item['title']}: {error_msg}")
+                    update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                    
+            except Exception as e:
+                errors.append(f"{item['title']}: {str(e)}")
+                update_queue_item(item['id'], status='failed', failure_reason=str(e))
+        
+        return jsonify({
+            "success": True,
+            "organized": updated_count,
+            "total": len(items),
+            "errors": errors,
+            "message": f"Organized {updated_count}/{len(items)} files with metadata: {album_artist} - {album_name} ({year})"
+        })
+        
+    except Exception as e:
+        logging.error(f"Error organizing group: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/queue-processor/status", methods=["GET"])
 def api_queue_processor_status():
     """Get queue processor status"""

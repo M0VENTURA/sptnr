@@ -4249,11 +4249,11 @@ async function organizeFile(queueId) {
   }
 }
 
+// Global storage for organize group modal
+let currentOrganizeGroupId = null;
+let currentOrganizeGroupItems = [];
+
 async function organizeGroup(groupId) {
-  if (!confirm('Organize all files in this group using beets?')) {
-    return;
-  }
-  
   try {
     // Get all completed items with this group ID
     const response = await fetch('/api/queue/status?limit=100');
@@ -4270,26 +4270,31 @@ async function organizeGroup(groupId) {
       return;
     }
     
-    // Organize each item
-    let successCount = 0;
-    for (const item of itemsInGroup) {
-      try {
-        const organizeResponse = await fetch(`/api/queue/${item.id}/organize`, {
-          method: 'POST'
-        });
-        const organizeData = await organizeResponse.json();
-        if (organizeData.success) {
-          successCount++;
-        }
-      } catch (e) {
-        console.error(`Error organizing item ${item.id}:`, e);
-      }
-    }
+    // Store group info for the modal
+    currentOrganizeGroupId = groupId;
+    currentOrganizeGroupItems = itemsInGroup;
     
-    alert(`✅ Organized ${successCount}/${itemsInGroup.length} files`);
-    await loadQueueStatus();
+    // Parse artist and album from group ID (format: "Artist_Album")
+    const parts = groupId.split('_');
+    const artist = parts.slice(0, -1).join(' ');  // All but last part
+    const album = parts[parts.length - 1];
+    
+    // Populate modal fields
+    document.getElementById('orgArtist').value = artist;
+    document.getElementById('orgAlbumArtist').value = artist;
+    document.getElementById('orgAlbum').value = album;
+    document.getElementById('orgYear').value = '';
+    
+    // Update group info display
+    document.getElementById('groupInfoText').textContent = `${artist} - ${album}`;
+    document.getElementById('groupItemCount').textContent = `${itemsInGroup.length}`;
+    
+    // Show the modal
+    const modal = new bootstrap.Modal(document.getElementById('organizeGroupModal'));
+    modal.show();
+    
   } catch (error) {
-    console.error('Error organizing group:', error);
+    console.error('Error preparing organize group:', error);
     alert('❌ Network error: ' + error.message);
   }
 }
@@ -4389,6 +4394,212 @@ function escapeHtml(text) {
   const div = document.createElement('div');
   div.textContent = text;
   return div.innerHTML;
+}
+
+// ===== Organize Group Modal Functions =====
+
+// Update preview when folder format changes
+document.addEventListener('DOMContentLoaded', function() {
+  const formatSelect = document.getElementById('orgFolderFormat');
+  if (formatSelect) {
+    formatSelect.addEventListener('change', function() {
+      if (this.value === 'custom') {
+        document.getElementById('customFormatDiv').style.display = 'block';
+      } else {
+        document.getElementById('customFormatDiv').style.display = 'none';
+      }
+      updateFolderPreview();
+    });
+  }
+  
+  // Update preview on metadata input
+  ['orgArtist', 'orgAlbumArtist', 'orgAlbum', 'orgYear'].forEach(id => {
+    const elem = document.getElementById(id);
+    if (elem) {
+      elem.addEventListener('input', updateFolderPreview);
+    }
+  });
+});
+
+function updateFolderPreview() {
+  try {
+    const artist = document.getElementById('orgArtist').value || 'Artist';
+    const albumArtist = document.getElementById('orgAlbumArtist').value || artist;
+    const album = document.getElementById('orgAlbum').value || 'Album';
+    const year = document.getElementById('orgYear').value || 'YYYY';
+    
+    let format = document.getElementById('orgFolderFormat').value;
+    if (format === 'custom') {
+      format = document.getElementById('orgCustomFormat').value || '{album_artist}/{year} - {album}';
+    }
+    
+    // Replace variables
+    let preview = format
+      .replace('{album_artist}', albumArtist)
+      .replace('{artist}', artist)
+      .replace('{album}', album)
+      .replace('{year}', year);
+    
+    const fullPath = `Music / ${preview} / 01. ${artist} - Track Title.mp3`;
+    document.getElementById('folderPreview').textContent = fullPath;
+  } catch (e) {
+    console.error('Error updating preview:', e);
+  }
+}
+
+async function searchMBForOrganize() {
+  const query = document.getElementById('mbSearchQuery').value;
+  if (!query) {
+    alert('Enter artist and album to search');
+    return;
+  }
+  
+  const artist = document.getElementById('orgArtist').value;
+  const album = document.getElementById('orgAlbum').value;
+  
+  document.getElementById('mbSearchLoading').classList.remove('d-none');
+  document.getElementById('mbSearchResults').innerHTML = '';
+  
+  try {
+    const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist: artist, album: album })
+    });
+    
+    const data = await response.json();
+    document.getElementById('mbSearchLoading').classList.add('d-none');
+    
+    if (!data.success || !data.results || data.results.length === 0) {
+      document.getElementById('mbSearchResults').innerHTML = '<div class="alert alert-info">No matches found</div>';
+      return;
+    }
+    
+    // Display results as cards
+    let html = '<div class="row g-2">';
+    data.results.slice(0, 5).forEach((result, index) => {
+      html += `
+        <div class="col-12">
+          <div class="card" style="cursor:pointer;" onclick="selectMBMatch(${index}, '${escapeHtml(result.title)}', '${escapeHtml(result.artist)}', '${result.year || ''}')">
+            <div class="card-body p-3">
+              <h6 class="card-title mb-1">${escapeHtml(result.title)}</h6>
+              <small class="text-muted">${escapeHtml(result.artist)} • ${result.year || 'N/A'} • ${result.track_count} tracks</small>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    document.getElementById('mbSearchResults').innerHTML = html;
+    
+  } catch (error) {
+    console.error('Error searching MusicBrainz:', error);
+    document.getElementById('mbSearchLoading').classList.add('d-none');
+    document.getElementById('mbSearchResults').innerHTML = '<div class="alert alert-danger">Search error: ' + error.message + '</div>';
+  }
+}
+
+function selectMBMatch(index, title, artist, year) {
+  document.getElementById('orgAlbum').value = title;
+  document.getElementById('orgArtist').value = artist;
+  document.getElementById('orgAlbumArtist').value = artist;
+  if (year) {
+    document.getElementById('orgYear').value = year;
+  }
+  
+  // Show selected match notification
+  document.getElementById('mbSelectedMatch').classList.remove('d-none');
+  document.getElementById('mbSelectedInfo').innerHTML = `
+    <strong>${escapeHtml(artist)}</strong> - <strong>${escapeHtml(title)}</strong> (${year || 'N/A'})
+  `;
+  document.getElementById('mbSearchResults').innerHTML = '';
+  
+  updateFolderPreview();
+}
+
+function clearMBSelection() {
+  document.getElementById('mbSelectedMatch').classList.add('d-none');
+  document.getElementById('mbSearchQuery').value = '';
+}
+
+async function confirmOrganizeGroup() {
+  // Get metadata from modal
+  const artist = document.getElementById('orgArtist').value;
+  const albumArtist = document.getElementById('orgAlbumArtist').value || artist;
+  const album = document.getElementById('orgAlbum').value;
+  const year = document.getElementById('orgYear').value;
+  
+  if (!artist || !album) {
+    alert('Artist and Album are required');
+    return;
+  }
+  
+  // Get folder format
+  let format = document.getElementById('orgFolderFormat').value;
+  if (format === 'custom') {
+    format = document.getElementById('orgCustomFormat').value;
+  }
+  
+  if (!currentOrganizeGroupId) {
+    alert('Error: Group ID not found');
+    return;
+  }
+  
+  // Show confirmation
+  if (!confirm(`Organize ${currentOrganizeGroupItems.length} tracks?\n\nMetadata:\n  Artist: ${artist}\n  Album: ${album}\n  Year: ${year || 'Not set'}\n\nFolder: ${format}`)) {
+    return;
+  }
+  
+  try {
+    // Disable button
+    const btn = event.target;
+    btn.disabled = true;
+    btn.innerHTML = '<span class="spinner-border spinner-border-sm me-2"></span>Organizing...';
+    
+    const response = await fetch('/api/queue/organize-group', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        group_id: currentOrganizeGroupId,
+        metadata: {
+          artist: artist,
+          album_artist: albumArtist,
+          album: album,
+          year: year
+        },
+        folder_format: format
+      })
+    });
+    
+    const data = await response.json();
+    
+    // Close modal
+    const modal = bootstrap.Modal.getInstance(document.getElementById('organizeGroupModal'));
+    if (modal) {
+      modal.hide();
+    }
+    
+    // Show result
+    let message = `✅ Organized ${data.organized}/${data.total} files`;
+    if (data.errors && data.errors.length > 0) {
+      message += `\n\n⚠️ Errors:\n${data.errors.slice(0, 3).join('\n')}`;
+      if (data.errors.length > 3) {
+        message += `\n... and ${data.errors.length - 3} more`;
+      }
+    }
+    alert(message);
+    
+    await loadQueueStatus();
+    
+  } catch (error) {
+    console.error('Error confirming organize group:', error);
+    alert('❌ Error: ' + error.message);
+  } finally {
+    if (event.target) {
+      event.target.disabled = false;
+      event.target.innerHTML = '<i class="bi bi-check-circle"></i> Organize & Move';
+    }
+  }
 }
 
 // ===== Spotify Playlist Downloads =====
@@ -4729,6 +4940,135 @@ async function createPlaylistDownloadSession(event) {
                     </div>
                 </div>
                 <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+            </div>
+        </div>
+    </div>
+</div>
+
+<!-- Modal: Organize Group with Metadata -->
+<div class="modal fade" id="organizeGroupModal" tabindex="-1" aria-labelledby="organizeGroupModalLabel" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title" id="organizeGroupModalLabel">
+                    <i class="bi bi-folder-check"></i> Organize Album Download
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <!-- Group Info -->
+                <div class="alert alert-info mb-4">
+                    <strong id="groupInfoText">Album Group</strong>
+                    <p class="small mb-0 mt-2">
+                        <span id="groupItemCount">Loading...</span> tracks to organize
+                    </p>
+                </div>
+
+                <!-- Tabs for Metadata and Folder Structure -->
+                <ul class="nav nav-tabs mb-3" role="tablist">
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link active" id="metadataTab" data-bs-toggle="tab" 
+                            data-bs-target="#metadataContent" type="button" role="tab">
+                            <i class="bi bi-file-earmark-music"></i> Metadata
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="folderTab" data-bs-toggle="tab" 
+                            data-bs-target="#folderContent" type="button" role="tab">
+                            <i class="bi bi-folder"></i> Folder Structure
+                        </button>
+                    </li>
+                    <li class="nav-item" role="presentation">
+                        <button class="nav-link" id="mbTab" data-bs-toggle="tab" 
+                            data-bs-target="#mbContent" type="button" role="tab">
+                            <i class="bi bi-disc"></i> MusicBrainz Lookup
+                        </button>
+                    </li>
+                </ul>
+
+                <div class="tab-content">
+                    <!-- Metadata Tab -->
+                    <div class="tab-pane fade show active" id="metadataContent" role="tabpanel">
+                        <div class="row g-3">
+                            <div class="col-md-6">
+                                <label for="orgArtist" class="form-label">Artist *</label>
+                                <input type="text" class="form-control" id="orgArtist" placeholder="e.g., The Beatles">
+                            </div>
+                            <div class="col-md-6">
+                                <label for="orgAlbumArtist" class="form-label">Album Artist</label>
+                                <input type="text" class="form-control" id="orgAlbumArtist" placeholder="e.g., The Beatles">
+                                <small class="text-muted">If different from artist</small>
+                            </div>
+                            <div class="col-md-9">
+                                <label for="orgAlbum" class="form-label">Album *</label>
+                                <input type="text" class="form-control" id="orgAlbum" placeholder="e.g., Abbey Road">
+                            </div>
+                            <div class="col-md-3">
+                                <label for="orgYear" class="form-label">Year</label>
+                                <input type="text" class="form-control" id="orgYear" placeholder="e.g., 1969" maxlength="4">
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- Folder Structure Tab -->
+                    <div class="tab-pane fade" id="folderContent" role="tabpanel">
+                        <div class="mb-3">
+                            <label for="orgFolderFormat" class="form-label">Folder Structure Format</label>
+                            <select class="form-select" id="orgFolderFormat">
+                                <option value="{album_artist}/{year} - {album}">Album Artist / Year - Album (Recommended)</option>
+                                <option value="{artist}/{album}">Artist / Album</option>
+                                <option value="{artist}/{year} - {album}">Artist / Year - Album</option>
+                                <option value="{album_artist}/{album}">Album Artist / Album</option>
+                                <option value="{year}/{album_artist} - {album}">Year / Album Artist - Album</option>
+                                <option value="custom">Custom...</option>
+                            </select>
+                            <div id="customFormatDiv" style="display:none" class="mt-2">
+                                <input type="text" class="form-control" id="orgCustomFormat" 
+                                    placeholder="e.g., {album_artist}/{year} - {album}">
+                                <small class="text-muted d-block mt-2">Available variables: {album_artist}, {artist}, {album}, {year}</small>
+                            </div>
+                        </div>
+                        <div class="alert alert-info">
+                            <strong>File Format:</strong> <code>&lt;number&gt;. &lt;artist&gt; - &lt;track&gt;.mp3</code>
+                        </div>
+                        <div class="alert alert-warning">
+                            <strong>Preview:</strong>
+                            <div id="folderPreview" class="mt-2 font-monospace">
+                                Music / Album Artist / 2025 - Album Name / 01. Artist - Track Title.mp3
+                            </div>
+                        </div>
+                    </div>
+
+                    <!-- MusicBrainz Lookup Tab -->
+                    <div class="tab-pane fade" id="mbContent" role="tabpanel">
+                        <p class="text-muted mb-3">Search MusicBrainz to auto-fill metadata fields</p>
+                        <div class="input-group mb-3">
+                            <input type="text" class="form-control" id="mbSearchQuery" 
+                                placeholder="Search MusicBrainz by artist & album...">
+                            <button class="btn btn-primary" onclick="searchMBForOrganize()">
+                                <i class="bi bi-search"></i> Search
+                            </button>
+                        </div>
+                        <div id="mbSearchResults" class="mb-3"></div>
+                        <div id="mbSearchLoading" class="spinner-border spinner-border-sm text-primary d-none" role="status">
+                            <span class="visually-hidden">Loading...</span>
+                        </div>
+                        <div id="mbSelectedMatch" class="alert alert-success d-none mt-3">
+                            <strong>Selected Match:</strong>
+                            <div id="mbSelectedInfo"></div>
+                            <button class="btn btn-sm btn-outline-secondary mt-2" onclick="clearMBSelection()">
+                                Choose Different
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="confirmOrganizeGroup()">
+                    <i class="bi bi-check-circle"></i> Organize & Move
+                </button>
             </div>
         </div>
     </div>
