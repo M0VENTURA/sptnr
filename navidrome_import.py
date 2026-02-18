@@ -59,6 +59,133 @@ except ImportError as e:
     def log_album_scan(*args, **kwargs):
         logging.debug(f"log_album_scan called but scan_history not available: {args}")
 
+
+def pre_import_sync_album_artists(artist_id: str = None) -> dict:
+    """
+    Pre-import sync: Batch fetch unique album artists from Navidrome and ensure they exist in database.
+    
+    This is called before the main Navidrome import to quickly identify and insert any new
+    album artists in a single pass, avoiding the need to check one-by-one during track import.
+    
+    Args:
+        artist_id: Single artist ID to sync (optional). If None, syncs all artists.
+        
+    Returns:
+        Dict with results: {
+            'unique_album_artists': int,
+            'new_artists_created': int,
+            'existing_artists': int,
+            'sync_time_ms': float,
+            'new_artists': [list of artist names that were created]
+        }
+    """
+    import time
+    from collections import defaultdict
+    
+    start_time = time.time()
+    
+    try:
+        nav_client = _get_nav_client()
+        if not nav_client:
+            return {'error': 'Navidrome client not available'}
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get current artists in database
+        cursor.execute("SELECT DISTINCT LOWER(name) FROM artists WHERE name IS NOT NULL AND name != ''")
+        existing_artists = set(row[0] for row in cursor.fetchall())
+        log_debug(f"Found {len(existing_artists)} existing artists in database")
+        
+        # Fetch all artists from Navidrome
+        if artist_id:
+            # Single artist sync
+            artist_info = nav_client.get_artists([artist_id])
+            artists_to_sync = artist_info if isinstance(artist_info, list) else [artist_info]
+        else:
+            # All artists
+            artists_to_sync = nav_client.get_artists()
+        
+        log_info(f"Pre-import sync: Scanning {len(artists_to_sync)} artist(s) from Navidrome")
+        
+        # Extract unique album artists from all albums of all artists
+        unique_album_artists = {}  # name -> count
+        
+        for artist_data in artists_to_sync:
+            artist_name = artist_data.get('name', '')
+            if not artist_name:
+                continue
+            
+            artist_id_val = artist_data.get('id', '')
+            
+            # Fetch albums for this artist
+            try:
+                albums = nav_client.get_albums(artist_id=artist_id_val)
+                for album in albums:
+                    album_artist = album.get('artist', '').strip()
+                    if album_artist:
+                        key = album_artist.lower()
+                        if key not in unique_album_artists:
+                            unique_album_artists[key] = {'original': album_artist, 'count': 0}
+                        unique_album_artists[key]['count'] += 1
+            except Exception as e:
+                log_debug(f"Error fetching albums for artist {artist_name}: {e}")
+                continue
+        
+        log_info(f"Pre-import sync: Found {len(unique_album_artists)} unique album artists across all albums")
+        
+        # Identify new artists
+        new_artists_to_add = []
+        for artist_key, artist_info in unique_album_artists.items():
+            if artist_key not in existing_artists:
+                new_artists_to_add.append(artist_info['original'])
+        
+        log_info(f"Pre-import sync: {len(new_artists_to_add)} new album artists need to be added to database")
+        
+        # Batch insert new artists in a single transaction
+        if new_artists_to_add:
+            try:
+                for artist_name in new_artists_to_add:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO artists (id, name)
+                        VALUES (?, ?)
+                    """, (artist_name.lower().replace(' ', '_'), artist_name))
+                    log_debug(f"Created artist record: {artist_name}")
+                
+                conn.commit()
+                log_info(f"Pre-import sync: Created {len(new_artists_to_add)} new artist record(s)")
+            except Exception as e:
+                log_debug(f"Error batch inserting artists: {e}")
+                conn.rollback()
+                return {
+                    'error': f'Failed to batch insert artists: {e}',
+                    'unique_album_artists': len(unique_album_artists),
+                    'new_artists_created': 0
+                }
+        
+        sync_time_ms = (time.time() - start_time) * 1000
+        
+        result = {
+            'unique_album_artists': len(unique_album_artists),
+            'new_artists_created': len(new_artists_to_add),
+            'existing_artists': len(unique_album_artists) - len(new_artists_to_add),
+            'sync_time_ms': round(sync_time_ms, 2),
+            'new_artists': new_artists_to_add,
+            'success': True
+        }
+        
+        log_info(f"Pre-import sync complete: {result['unique_album_artists']} unique album artists, {result['new_artists_created']} new, {result['existing_artists']} existing")
+        
+        conn.close()
+        return result
+        
+    except Exception as e:
+        log_debug(f"Pre-import artist sync failed: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'success': False
+        }
+
 try:
     from helpers import detect_live_album, detect_christmas_song
 except ImportError:
@@ -1207,7 +1334,7 @@ def get_database_library_stats() -> dict:
         return {"total_albums": 0, "total_tracks": 0}
 
 
-def scan_library_to_db(verbose: bool = False, force: bool = False):
+def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_artists: bool = True):
     """
     Scan the entire Navidrome library (artists -> albums -> tracks) and persist
     a lightweight representation of each track into the local DB.
@@ -1217,6 +1344,13 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
       - For each track, writes a minimal `track_data` record via `save_to_db()`
       - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
       - Supports auto-resume: If an interrupted scan is detected, resumes from last scanned artist
+      - Optional pre-sync of all album artists: If pre_sync_artists=True, batch-creates missing album artists
+        before the main import loop (significantly faster than creating per-item during main loop)
+    
+    Args:
+        verbose (bool): Enable verbose output logging
+        force (bool): Force re-import of all tracks
+        pre_sync_artists (bool): Enable pre-import batch sync of album artists (default: True)
     """
     from popularity_helpers import build_artist_index
     from scan_resume import should_resume_scan, get_artists_to_scan, mark_scan_completed
@@ -1398,6 +1532,27 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
     
     log_info(f"Missing artists found: {len(missing_artists)}, Artists with mismatched counts: {len(artists_with_mismatched_counts)}")
     
+    # Optional: Pre-import batch sync of all album artists before main loop
+    # This creates all unique album_artist entries in a single transaction,
+    # much faster than creating them one-by-one during the main import loop
+    if pre_sync_artists:
+        log_info("Pre-syncing album artists before main import (batch mode)...")
+        try:
+            sync_result = pre_import_sync_album_artists()
+            if sync_result.get("success"):
+                log_unified(f"Navidrome Import Scan - Pre-sync complete: {sync_result.get('new_artists_created', 0)} new artists, {sync_result.get('sync_time_ms', 0):.0f}ms")
+                log_info(f"Pre-sync results: Created {sync_result.get('new_artists_created', 0)} new artists, "
+                         f"Found {sync_result.get('unique_album_artists', 0)} unique album artists, "
+                         f"Already had {sync_result.get('existing_artists', 0)} artists ({sync_result.get('sync_time_ms', 0):.0f}ms)")
+                log_debug(f"New artists created: {sync_result.get('new_artists', [])}")
+            else:
+                log_info(f"Pre-sync encountered an error: {sync_result.get('error', 'Unknown error')}")
+                log_debug(f"Pre-sync error details: {sync_result}")
+        except Exception as e:
+            log_info(f"Pre-sync of album artists failed: {e}")
+            log_debug(f"Pre-sync exception: {e}", exc_info=True)
+            # Continue with main loop anyway - album artists will be created per-item if needed
+    
     for name in artists_to_scan:
         artist_count += 1
         info = artist_map_local.get(name)
@@ -1447,6 +1602,7 @@ if __name__ == "__main__":
     parser.add_argument("--verbose", action="store_true", help="Enable verbose output")
     parser.add_argument("--force", action="store_true", help="Force re-import of all tracks")
     parser.add_argument("--artist", type=str, help="Import specific artist by name")
+    parser.add_argument("--no-pre-sync", action="store_true", help="Disable pre-import batch sync of album artists")
     
     args = parser.parse_args()
     
@@ -1473,4 +1629,4 @@ if __name__ == "__main__":
         # Import entire library
         log_info("Full library import requested")
         log_debug("Starting full Navidrome library scan")
-        scan_library_to_db(verbose=args.verbose, force=args.force)
+        scan_library_to_db(verbose=args.verbose, force=args.force, pre_sync_artists=not args.no_pre_sync)
