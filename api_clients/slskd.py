@@ -75,7 +75,7 @@ class SearchResponse:
 class SlskdClient:
     """Soulseek (slskd) API wrapper for search and downloads."""
     
-    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True):
+    def __init__(self, web_url: str, api_key: str = "", http_session=None, enabled: bool = True, default_timeout: int = 10):
         """
         Initialize slskd client.
         
@@ -84,27 +84,31 @@ class SlskdClient:
             api_key: slskd API key (optional)
             http_session: Optional requests.Session (uses shared if not provided)
             enabled: Whether slskd is enabled
+            default_timeout: Default timeout for API requests in seconds
         """
         self.web_url = web_url.rstrip("/")
         self.api_key = api_key
         self.session = http_session or session
         self.enabled = enabled
+        self.default_timeout = default_timeout
         self.base_url = f"{self.web_url}/api/v0"
         self.headers = {"X-API-Key": api_key} if api_key else {}
     
-    def start_search(self, query: str, timeout: int = 10) -> Optional[str]:
+    def start_search(self, query: str, timeout: int = None) -> Optional[str]:
         """
         Start a new search on Soulseek.
         
         Args:
             query: Search query (e.g., "artist title")
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
             
         Returns:
             Search ID or None on failure
         """
         if not self.enabled:
             return None
+        
+        timeout = timeout or self.default_timeout
         
         try:
             url = f"{self.base_url}/searches"
@@ -128,13 +132,13 @@ class SlskdClient:
             logger.error(f"Slskd search failed for query '{query}': {e}")
             return None
     
-    def get_search_results(self, search_id: str, timeout: int = 10) -> tuple[list[SearchResponse], str, bool]:
+    def get_search_results(self, search_id: str, timeout: int = None) -> tuple[list[SearchResponse], str, bool]:
         """
         Poll for search results from Soulseek.
         
         Args:
             search_id: Search ID from start_search()
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
             
         Returns:
             Tuple of (responses, state, is_complete)
@@ -144,6 +148,8 @@ class SlskdClient:
         """
         if not self.enabled:
             return [], "Error", True
+        
+        timeout = timeout or self.default_timeout
         
         try:
             # First, get the search state
@@ -204,7 +210,7 @@ class SlskdClient:
             logger.error(f"Slskd get results failed for search {search_id}: {e}")
             return [], "Error", True
     
-    def download_file(self, username: str, filename: str, size: int = 0, timeout: int = 10) -> bool:
+    def download_file(self, username: str, filename: str, size: int = 0, timeout: int = None) -> bool:
         """
         Enqueue a file for download from a peer.
         
@@ -212,7 +218,7 @@ class SlskdClient:
             username: Peer username
             filename: Full file path from search results
             size: File size in bytes
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
             
         Returns:
             True if enqueued successfully
@@ -220,6 +226,8 @@ class SlskdClient:
         if not self.enabled:
             logger.warning("Slskd download_file called but client is not enabled")
             return False
+        
+        timeout = timeout or self.default_timeout
         
         try:
             # slskd API expects POST with files array containing filename and size
@@ -245,19 +253,21 @@ class SlskdClient:
             logger.error(traceback.format_exc())
             return False
 
-    def download_files(self, files: list[dict], timeout: int = 10) -> list[dict]:
+    def download_files(self, files: list[dict], timeout: int = None) -> list[dict]:
         """
         Enqueue multiple files (potentially across users) for download.
 
         Args:
             files: List of {username, filename, size} dicts
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
 
         Returns:
             List of result dicts per user with status and error (if any)
         """
         if not self.enabled:
             return []
+        
+        timeout = timeout or self.default_timeout
 
         # Group by username because slskd expects per-user batches
         grouped: dict[str, list[dict]] = {}
@@ -348,7 +358,7 @@ class SlskdClient:
         min_bitrate: int = 320,
         wait_seconds: int = 5,
         poll_interval: float = 1.0,
-        timeout: int = 10
+        timeout: int = None
     ) -> list[dict]:
         """
         Execute a complete search workflow: start → poll → filter → return results.
@@ -358,13 +368,15 @@ class SlskdClient:
             min_bitrate: Minimum bitrate requirement
             wait_seconds: Time to wait for results
             poll_interval: Time between polls
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
             
         Returns:
             List of qualified file results
         """
         if not self.enabled:
             return []
+        
+        timeout = timeout or self.default_timeout
         
         # Start search
         search_id = self.start_search(query, timeout)
@@ -399,18 +411,20 @@ class SlskdClient:
         
         return qualified
     
-    def get_active_downloads(self, timeout: int = 10) -> list[dict]:
+    def get_active_downloads(self, timeout: int = None) -> list[dict]:
         """
         Get list of active downloads from slskd.
         
         Args:
-            timeout: Request timeout
+            timeout: Request timeout (uses default_timeout if not specified)
             
         Returns:
             List of download dicts with progress information
         """
         if not self.enabled:
             return []
+        
+        timeout = timeout or self.default_timeout
         
         try:
             # Query the transfers/downloads endpoint
@@ -459,6 +473,95 @@ class SlskdClient:
         except Exception as e:
             logger.error(f"Slskd get active downloads failed: {e}")
             return []
+    
+    def cancel_search(self, search_id: str, timeout: int = None) -> bool:
+        """
+        Cancel an active search.
+        
+        Args:
+            search_id: Search ID from start_search()
+            timeout: Request timeout (uses default_timeout if not specified)
+            
+        Returns:
+            True if cancelled successfully
+        """
+        if not self.enabled:
+            return False
+        
+        timeout = timeout or self.default_timeout
+        
+        try:
+            url = f"{self.base_url}/searches/{search_id}"
+            resp = self.session.delete(url, headers=self.headers, timeout=timeout)
+            
+            if resp.status_code in [200, 204]:
+                logger.info(f"Slskd search {search_id} cancelled successfully")
+                return True
+            else:
+                logger.warning(f"Slskd search cancel failed: {resp.status_code} - {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"Slskd cancel search failed for {search_id}: {e}")
+            return False
+    
+    def cancel_download(self, transfer_id: str, timeout: int = None) -> bool:
+        """
+        Cancel a specific download by transfer ID.
+        
+        Args:
+            transfer_id: Transfer/download ID
+            timeout: Request timeout (uses default_timeout if not specified)
+            
+        Returns:
+            True if cancelled successfully
+        """
+        if not self.enabled:
+            return False
+        
+        timeout = timeout or self.default_timeout
+        
+        try:
+            url = f"{self.base_url}/transfers/{transfer_id}"
+            resp = self.session.delete(url, headers=self.headers, timeout=timeout)
+            
+            if resp.status_code in [200, 204]:
+                logger.info(f"Slskd download {transfer_id} cancelled successfully")
+                return True
+            else:
+                logger.warning(f"Slskd download cancel failed: {resp.status_code} - {resp.text[:200]}")
+                return False
+        except Exception as e:
+            logger.error(f"Slskd cancel download failed for {transfer_id}: {e}")
+            return False
+    
+    def get_transfer(self, transfer_id: str, timeout: int = None) -> Optional[dict]:
+        """
+        Get details of a specific transfer by ID.
+        
+        Args:
+            transfer_id: Transfer/download ID
+            timeout: Request timeout (uses default_timeout if not specified)
+            
+        Returns:
+            Transfer details dict or None if not found
+        """
+        if not self.enabled:
+            return None
+        
+        timeout = timeout or self.default_timeout
+        
+        try:
+            url = f"{self.base_url}/transfers/{transfer_id}"
+            resp = self.session.get(url, headers=self.headers, timeout=timeout)
+            
+            if resp.status_code == 200:
+                return resp.json()
+            else:
+                logger.debug(f"Slskd get transfer {transfer_id} failed: {resp.status_code}")
+                return None
+        except Exception as e:
+            logger.error(f"Slskd get transfer failed for {transfer_id}: {e}")
+            return None
 
 
 # Backward-compatible module functions
