@@ -200,7 +200,7 @@ def mark_failed(queue_id, reason, schedule_retry=True, retry_delay_minutes=30):
         conn.commit()
         conn.close()
         
-        return True
+        return schedule_retry  # Return whether retry was scheduled
         
     except Exception as e:
         logger.error(f"Error marking queue item as failed: {e}")
