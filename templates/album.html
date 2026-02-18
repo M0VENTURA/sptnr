@@ -2476,9 +2476,9 @@
     let albumGenresLoaded = false;
     
     document.addEventListener('DOMContentLoaded', function() {
-        const album = "{{ album_name }}";
-        const artist = "{{ artist_name }}";
-        if (album && artist) {
+        const album = "{{ album_name }}".trim();
+        const artist = "{{ artist_name }}".trim();
+        if (album && album.length > 0 && artist && artist.length > 0) {
             if (!albumGenresLoaded) {
                 loadAlbumGenres(album, artist);
                 albumGenresLoaded = true;
@@ -2491,7 +2491,7 @@
             }
         }
         
-        if (artist) {
+        if (artist && artist.length > 0) {
             loadSimilarArtistsForAlbum(artist);
         }
     });

@@ -1111,10 +1111,10 @@ function addRecommendedGenre(genre) {
 let genresLoaded = false;
 
 document.addEventListener('DOMContentLoaded', function() {
-    const trackId = '{{ track.id }}';
-    const artist = '{{ track.artist }}';
+    const trackId = '{{ track.id }}'.trim();
+    const artist = '{{ track.artist }}'.trim();
     
-    if (trackId) {
+    if (trackId && trackId.length > 0) {
         if (!genresLoaded) {
             loadTrackGenres(trackId);
             genresLoaded = true;
@@ -1127,7 +1127,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     }
     
-    if (artist) {
+    if (artist && artist.length > 0) {
         loadSimilarArtistsForTrack(artist);
     }
 });
