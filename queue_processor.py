@@ -13,6 +13,7 @@ import sys
 import time
 import sqlite3
 import logging
+import traceback
 from datetime import datetime, timedelta
 from pathlib import Path
 
@@ -251,7 +252,6 @@ def search_and_download(queue_id, queue_item, client):
                         break
             except Exception as e:
                 logger.warning(f"Queue {queue_id}: Error polling results (attempt {poll_attempt+1}): {e}")
-                import traceback
                 logger.debug(traceback.format_exc())
         
         if not best_result:
@@ -436,7 +436,6 @@ def run_processor(interval=30):
                 break
             except Exception as e:
                 logger.error(f"Error in processor loop: {e}")
-                import traceback
                 logger.error(traceback.format_exc())
                 time.sleep(interval)
                 

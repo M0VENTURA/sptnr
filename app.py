@@ -14513,7 +14513,6 @@ def api_search_discogs_release():
         
         logging.info(f"Searching Discogs for: {artist} - {album}")
         
-        import time
         time.sleep(1)  # Discogs rate limiting
         
         response = requests.get(search_url, headers=discogs_client.headers, params=search_params, timeout=15)

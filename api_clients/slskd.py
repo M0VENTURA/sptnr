@@ -1,6 +1,7 @@
 """Soulseek (slskd) API client for search and download operations."""
 import logging
 import time
+import traceback
 from typing import Optional
 from dataclasses import dataclass
 from . import session
@@ -241,7 +242,6 @@ class SlskdClient:
                 return False
         except Exception as e:
             logger.error(f"✗ Slskd download exception for {username}/{filename[:50]}: {type(e).__name__}: {e}")
-            import traceback
             logger.error(traceback.format_exc())
             return False
 

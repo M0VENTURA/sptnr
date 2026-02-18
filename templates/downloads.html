@@ -3671,7 +3671,7 @@ function displayMusicBrainzResults(results) {
     // Build release info
     let releaseInfo = [];
     if (release.type) releaseInfo.push(release.type);
-    else if (release.formats && release.formats.length > 0) releaseInfo.push(release.formats.join(', '));
+    else if (Array.isArray(release.formats) && release.formats.length > 0) releaseInfo.push(release.formats.join(', '));
     else releaseInfo.push('Album');
     
     if (release.date) releaseInfo.push(release.date);
