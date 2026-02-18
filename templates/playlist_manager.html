@@ -707,33 +707,43 @@ document.addEventListener('DOMContentLoaded', function() {
       });
     }
 
-    // Spotify Tab
+    // Spotify Tab - Show instructions (no auto-load)
     const spotifyTab = document.getElementById('spotifyTab');
     if (spotifyTab) {
       spotifyTab.addEventListener('show.bs.tab', function(e) {
         console.log('[Playlist Manager] Spotify tab shown');
-        // No automatic load - users click button to load
-        // But we could initialize the form here if needed
+        // Spotify content loads on-demand when user clicks button
+        // Initialize empty state if needed
+        const spotifyInput = document.getElementById('spotifyUserId');
+        if (spotifyInput && !spotifyInput.value) {
+          spotifyInput.placeholder = 'Enter Spotify User ID or leave blank for featured playlists';
+        }
       });
     }
 
-    // Last.fm Tab
+    // Last.fm Tab - Show instructions (no auto-load)
     const lastfmTab = document.getElementById('lastfmTab');
     if (lastfmTab) {
       lastfmTab.addEventListener('show.bs.tab', function(e) {
         console.log('[Playlist Manager] Last.fm tab shown');
-        // No automatic load - users click button to load
-        // But we could initialize the form here if needed
+        // Last.fm content loads on-demand when user clicks "Load Recommendations"
+        const lfmRecType = document.getElementById('lfmRecType');
+        if (lfmRecType) {
+          lfmRecType.focus();
+        }
       });
     }
 
-    // ListenBrainz Tab
+    // ListenBrainz Tab - Show instructions (no auto-load)
     const listenbrainzTab = document.getElementById('listenbrainzTab');
     if (listenbrainzTab) {
       listenbrainzTab.addEventListener('show.bs.tab', function(e) {
         console.log('[Playlist Manager] ListenBrainz tab shown');
-        // No automatic load - users click button to load
-        // But we could initialize the form here if needed
+        // ListenBrainz content loads on-demand when user clicks "Load Recommendations"
+        const lbRecType = document.getElementById('lbRecType');
+        if (lbRecType) {
+          lbRecType.focus();
+        }
       });
     }
 
