@@ -10563,6 +10563,26 @@ def api_downloads_get_retry_queue():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/downloads/queue/grouped", methods=["GET"])
+def api_downloads_get_queue_grouped():
+    """Get download queue grouped by album for smart display"""
+    try:
+        from downloads_watcher import get_download_queue_grouped
+        
+        status = request.args.get('status')
+        limit = int(request.args.get('limit', 50))
+        
+        groups = get_download_queue_grouped(status=status, limit=limit)
+        
+        return jsonify({
+            "count": len(groups),
+            "groups": groups,
+            "total_tracks": sum(g['track_count'] for g in groups)
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
 def api_downloads_manage_queue_item(queue_id):
     """Manage a queue item (mark as failed, successful, or delete)"""

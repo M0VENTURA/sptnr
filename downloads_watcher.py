@@ -244,6 +244,81 @@ def get_retry_queue(limit=50):
         logger.error(f"Error getting retry queue: {e}")
         return []
 
+def get_download_queue_grouped(status=None, limit=50):
+    """
+    Get download queue items grouped by album for smart matching.
+    
+    Groups songs from the same album together, allowing UI to display them
+    as album entries with expandable track lists instead of individual songs.
+    
+    Args:
+        status: Filter by status (e.g., 'completed')
+        limit: Maximum number of groups to return
+        
+    Returns:
+        List of album groups with track counts and album metadata
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get queue items
+        if status:
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                WHERE status = ?
+                ORDER BY artist ASC, album ASC, created_at ASC
+            """, (status,))
+        else:
+            cursor.execute("""
+                SELECT * FROM download_queue 
+                ORDER BY artist ASC, album ASC, created_at ASC
+            """)
+        
+        rows = cursor.fetchall()
+        items = [dict(row) for row in rows]
+        conn.close()
+        
+        # Group by import_group first (if set), then by artist/album
+        from collections import defaultdict
+        groups = defaultdict(list)
+        
+        for item in items:
+            import_group = item.get('import_group') or f"{item.get('artist', 'Unknown')}_{item.get('album', 'Unknown')}"
+            groups[import_group].append(item)
+        
+        # Build album group results
+        album_groups = []
+        for group_key, tracks in groups.items():
+            if not tracks:
+                continue
+            
+            # Use first track's metadata for the group
+            first_track = tracks[0]
+            artist = first_track.get('artist', 'Unknown')
+            album = first_track.get('album', 'Unknown')
+            
+            album_groups.append({
+                'group_id': group_key,
+                'artist': artist,
+                'album': album,
+                'track_count': len(tracks),
+                'status': first_track.get('status'),
+                'created_at': first_track.get('created_at'),
+                'updated_at': first_track.get('updated_at'),
+                'tracks': tracks
+            })
+        
+        # Sort by artist, album, then creation date
+        album_groups.sort(key=lambda x: (x['artist'].lower(), x['album'].lower(), x['created_at']))
+        
+        # Apply limit to groups
+        return album_groups[:limit]
+        
+    except Exception as e:
+        logger.error(f"Error getting grouped download queue: {e}")
+        return []
+
 def mark_download_as_failed(file_path, failure_reason):
     """Mark a download as failed and schedule retry"""
     try:

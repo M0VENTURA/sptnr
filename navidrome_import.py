@@ -470,7 +470,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "is_single": current_single["is_single"],  # Preserve user edits
                     "single_confidence": current_single["single_confidence"],  # Preserve user edits
                     "single_sources": current_single["single_sources"],  # Preserve user edits
-                    "mbid": t.get("mbid", "") or "",
+                    "mbid": t.get("musicBrainzId", "") or t.get("mbid", "") or "",  # Navidrome uses musicBrainzId field
                     "suggested_mbid": "",
                     "suggested_mbid_confidence": 0.0,
                     "stars": int(t.get("userRating", 0) or 0),
