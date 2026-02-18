@@ -1949,7 +1949,8 @@ def artist_detail(name):
         """, (name,))
         missing_releases_data = cursor.fetchall()
         
-        # Get potential compilation albums using local heuristics only (avoid blocking API calls)
+        # Get potential compilation albums using cached compilation detection from background scan
+        # Combined with fallback local heuristics in case scan hasn't run yet
         # Query albums where this artist appears as a track artist
         cursor.execute("""
             SELECT 
@@ -1960,7 +1961,8 @@ def artist_detail(name):
                 MAX(last_scanned) as last_updated,
                 MIN(year) as album_year,
                 MAX(spotify_album_type) as album_type,
-                MAX(album_artist) as album_artist
+                MAX(album_artist) as album_artist,
+                MAX(is_compilation) as is_compilation
             FROM tracks
             WHERE artist = ?
             GROUP BY album
@@ -1969,18 +1971,22 @@ def artist_detail(name):
         potential_albums = cursor.fetchall()
         
         # Filter to only include albums that are actually compilations
-        # Use fast local heuristics only - NO blocking MusicBrainz API calls
+        # Use cached is_compilation field from background scan, with fallback to local heuristics
         compilation_albums = []
         
         for album_row in potential_albums:
             album_artist = row_get(album_row, 'album_artist', '')
             spotify_type = row_get(album_row, 'album_type', '')
+            is_compilation_cached = row_get(album_row, 'is_compilation')
             
-            # Check if it's obviously a Various Artists/Compilation album (from local data only)
-            if album_artist and album_artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack'):
+            # Primary method: use cached compilation detection from background scan
+            if is_compilation_cached:
+                compilation_albums.append(album_row)
+            # Fallback to local heuristics in case scan hasn't run yet
+            elif album_artist and album_artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack'):
                 compilation_albums.append(album_row)
             elif spotify_type and spotify_type.lower() == 'compilation':
-                # Also check Spotify's designation
+                # Also check Spotify's designation as backup
                 compilation_albums.append(album_row)
         
         # Get artist metadata (country, image, bio) from artists table if it exists

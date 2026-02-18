@@ -278,6 +278,56 @@ def detect_alternate_takes(tracks: list) -> dict:
     return alternate_takes
 
 
+def detect_compilation_album(artist: str, album: str, tracks: list, album_artist: str = None, spotify_album_type: str = None) -> bool:
+    """
+    Detect if an album is a compilation using local heuristics only (no API calls).
+    
+    Checks:
+    1. album_artist field for Various Artists, Compilation, Soundtrack
+    2. Spotify album type is "compilation"
+    3. Multiple distinct artists in track listing
+    
+    Args:
+        artist: Primary artist name
+        album: Album name
+        tracks: List of tracks in the album
+        album_artist: Album artist from metadata (if available)
+        spotify_album_type: Spotify album type classification
+        
+    Returns:
+        True if album appears to be a compilation, False otherwise
+    """
+    # Check album_artist field first (most reliable)
+    if album_artist:
+        album_artist_lower = album_artist.lower()
+        if album_artist_lower in ('various artists', 'various', 'compilation', 'soundtrack'):
+            log_debug(f'Compilation detected for "{album}": album_artist="{album_artist}"')
+            return True
+    
+    # Check Spotify classification
+    if spotify_album_type and spotify_album_type.lower() == 'compilation':
+        log_debug(f'Compilation detected for "{album}": spotify_album_type="compilation"')
+        return True
+    
+    # Check if there are multiple distinct artists in the track listing
+    # (indicates compilation even if not explicitly marked)
+    try:
+        track_artists = set()
+        for track in tracks:
+            track_artist = row_get(track, 'artist', '')
+            if track_artist and track_artist.lower() != artist.lower():
+                track_artists.add(track_artist.lower())
+        
+        # If we found 3+ different artists on this album, it's likely a compilation
+        if len(track_artists) >= 3:
+            log_debug(f'Compilation likely for "{album}": found {len(track_artists)} distinct artists ({", ".join(list(track_artists)[:3])}...)')
+            return True
+    except Exception as e:
+        log_debug(f'Error checking track artists for compilation detection: {e}')
+    
+    return False
+
+
 def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
     """
     Check if Spotify lookup should be skipped based on 24-hour cache.
@@ -2535,6 +2585,24 @@ def popularity_scan(
                     conn.commit()
                     log_info(f'Detected {len(alternate_takes_map)} alternate take(s) in album')
                     log_debug(f'Alternate takes map: {alternate_takes_map}')
+                
+                # Detect if this album is a compilation (using local heuristics and track listing analysis)
+                # Get album metadata from first track to access album_artist and spotify_album_type
+                sample_track = album_tracks_list[0] if album_tracks_list else {}
+                album_artist = row_get(sample_track, 'album_artist')
+                spotify_album_type = row_get(sample_track, 'spotify_album_type')
+                
+                is_compilation = detect_compilation_album(artist, album, album_tracks_list, album_artist, spotify_album_type)
+                if is_compilation:
+                    # Update all tracks in this album to mark as compilation
+                    cursor.execute("""
+                        UPDATE tracks 
+                        SET is_compilation = 1
+                        WHERE artist = ? AND album = ?
+                    """, (artist, album))
+                    conn.commit()
+                    log_info(f'Marked album as compilation: "{artist} - {album}"')
+                    log_debug(f'Compilation detected for album: album_artist="{album_artist}", spotify_type="{spotify_album_type}"')
                 
                 # Cache Spotify search results for singles detection reuse
                 # Initialize unconditionally for both singles_only and normal mode
