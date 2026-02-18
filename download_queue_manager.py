@@ -9,6 +9,7 @@ import os
 import sqlite3
 import json
 import logging
+import time
 from datetime import datetime, timedelta
 from pathlib import Path
 from metadata_reader import read_mp3_metadata
@@ -28,10 +29,41 @@ DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads")
 MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
 
 
+def retry_on_db_lock(max_retries=5, initial_delay=0.1):
+    """Decorator to retry database operations on locked database error"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            delay = initial_delay
+            last_error = None
+            
+            for attempt in range(max_retries):
+                try:
+                    return func(*args, **kwargs)
+                except sqlite3.OperationalError as e:
+                    if 'database is locked' in str(e):
+                        last_error = e
+                        if attempt < max_retries - 1:
+                            time.sleep(delay)
+                            delay = min(delay * 2, 5.0)  # Exponential backoff, max 5 seconds
+                            logger.warning(f"Database locked, retrying (attempt {attempt + 1}/{max_retries})...")
+                            continue
+                    raise
+            
+            if last_error:
+                raise last_error
+        return wrapper
+    return decorator
+
+
 def get_db():
-    """Get database connection"""
-    conn = sqlite3.connect(DB_PATH)
+    """Get database connection with proper timeout and locking"""
+    conn = sqlite3.connect(DB_PATH, timeout=30.0)  # Increased timeout to 30 seconds
     conn.row_factory = sqlite3.Row
+    # Enable WAL mode for better concurrent access
+    try:
+        conn.execute("PRAGMA journal_mode=WAL")
+    except Exception as e:
+        logger.warning(f"Could not enable WAL mode: {e}")
     return conn
 
 
@@ -199,7 +231,7 @@ def get_queue(status=None, source='soulseek', limit=50):
 
 def update_queue_item(queue_id, **kwargs):
     """
-    Update a queue item
+    Update a queue item with retry logic for database locks
     
     Args:
         queue_id: Queue item ID
@@ -208,64 +240,98 @@ def update_queue_item(queue_id, **kwargs):
     Returns:
         Updated item dict or None
     """
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Build update query
-        updates = []
-        params = []
-        
-        for key, value in kwargs.items():
-            if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
-                       'retry_count', 'last_failure_time', 'imported_at', 'metadata']:
-                updates.append(f"{key} = ?")
-                params.append(value)
-        
-        if not updates:
-            logger.warning(f"No valid fields to update for queue item {queue_id}")
+    max_retries = 5
+    retry_delay = 0.1
+    last_error = None
+    
+    for attempt in range(max_retries):
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Build update query
+            updates = []
+            params = []
+            
+            for key, value in kwargs.items():
+                if key in ['status', 'source_id', 'found_filename', 'file_path', 'failure_reason', 
+                           'retry_count', 'last_failure_time', 'imported_at', 'metadata', 'import_group', 'import_type']:
+                    # Special handling for file_path to avoid UNIQUE constraint issues
+                    if key == 'file_path' and value:
+                        # Check if this file_path is already in use by another item
+                        cursor.execute("SELECT COUNT(*) as cnt FROM download_queue WHERE file_path = ? AND id != ?", 
+                                     (value, queue_id))
+                        result = cursor.fetchone()
+                        if result and result['cnt'] > 0:
+                            logger.warning(f"File path {value} already in use by another queue item, skipping update")
+                            continue
+                    
+                    updates.append(f"{key} = ?")
+                    params.append(value)
+            
+            if not updates:
+                logger.warning(f"No valid fields to update for queue item {queue_id}")
+                conn.close()
+                return None
+            
+            updates.append("updated_at = CURRENT_TIMESTAMP")
+            params.append(queue_id)
+            
+            query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = ?"
+            cursor.execute(query, params)
+            conn.commit()
+            
+            if cursor.rowcount == 0:
+                logger.warning(f"No rows updated for queue item {queue_id} - item may not exist")
+                conn.close()
+                return None
+            
+            logger.debug(f"Updated {cursor.rowcount} row(s) for queue item {queue_id}: {list(kwargs.keys())}")
+            
+            # Return updated item
+            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            item = cursor.fetchone()
             conn.close()
+            
+            if item:
+                logger.info(f"Successfully updated queue item {queue_id}: status={kwargs.get('status', 'N/A')}")
+                return dict(item)
+            else:
+                logger.error(f"Failed to retrieve updated queue item {queue_id}")
+                return None
+        
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e):
+                last_error = e
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 5.0)  # Exponential backoff
+                    logger.warning(f"Database locked updating queue item {queue_id}, retrying (attempt {attempt + 1}/{max_retries})...")
+                    continue
+            logger.error(f"OperationalError updating queue item {queue_id}: {e}")
             return None
-        
-        updates.append("updated_at = CURRENT_TIMESTAMP")
-        params.append(queue_id)
-        
-        query = f"UPDATE download_queue SET {', '.join(updates)} WHERE id = ?"
-        cursor.execute(query, params)
-        conn.commit()
-        
-        if cursor.rowcount == 0:
-            logger.warning(f"No rows updated for queue item {queue_id} - item may not exist")
-            conn.close()
+        except sqlite3.IntegrityError as e:
+            logger.error(f"Database integrity error updating queue item {queue_id}: {e}")
+            if attempt < max_retries - 1:
+                time.sleep(retry_delay)
+                retry_delay = min(retry_delay * 2, 5.0)
+                logger.warning(f"Integrity error, retrying (attempt {attempt + 1}/{max_retries})...")
+                continue
             return None
-        
-        logger.debug(f"Updated {cursor.rowcount} row(s) for queue item {queue_id}: {list(kwargs.keys())}")
-        
-        # Return updated item
-        cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
-        item = cursor.fetchone()
-        conn.close()
-        
-        if item:
-            logger.info(f"Successfully updated queue item {queue_id}: status={kwargs.get('status', 'N/A')}")
-            return dict(item)
-        else:
-            logger.error(f"Failed to retrieve updated queue item {queue_id}")
+        except Exception as e:
+            logger.error(f"Error updating queue item {queue_id}: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             return None
-        
-    except sqlite3.IntegrityError as e:
-        logger.error(f"Database integrity error updating queue item {queue_id}: {e}")
-        return None
-    except Exception as e:
-        logger.error(f"Error updating queue item {queue_id}: {type(e).__name__}: {e}")
-        import traceback
-        logger.error(traceback.format_exc())
-        return None
+    
+    if last_error:
+        logger.error(f"Failed to update queue item {queue_id} after {max_retries} retries: {last_error}")
+    return None
 
 
 def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     """
-    Mark queue item as failed and schedule retry
+    Mark queue item as failed and schedule retry with retry logic for database locks
     
     Args:
         queue_id: Queue item ID
@@ -275,46 +341,63 @@ def mark_as_failed(queue_id, reason, retry_delay_minutes=30):
     Returns:
         Updated item or None
     """
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
+    max_retries = 5
+    retry_delay = 0.1
+    
+    for attempt in range(max_retries):
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Get current retry count
+            cursor.execute("SELECT retry_count, max_retries FROM download_queue WHERE id = ?", (queue_id,))
+            row = cursor.fetchone()
+            
+            if not row:
+                conn.close()
+                return None
+            
+            retry_count = (row['retry_count'] or 0) + 1
+            next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
+            
+            # Check if we've exceeded max retries
+            if retry_count >= row['max_retries']:
+                new_status = 'failed'
+                logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{row['max_retries']}): {reason}")
+            else:
+                new_status = 'queued'
+                logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{row['max_retries']}) at {next_retry}: {reason}")
+            
+            cursor.execute("""
+                UPDATE download_queue 
+                SET status = ?, retry_count = ?, failure_reason = ?, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP
+                WHERE id = ?
+            """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
+            
+            conn.commit()
+            
+            # Return updated item
+            cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
+            item = cursor.fetchone()
+            conn.close()
+            
+            return dict(item) if item else None
         
-        # Get current retry count
-        cursor.execute("SELECT retry_count, max_retries FROM download_queue WHERE id = ?", (queue_id,))
-        row = cursor.fetchone()
-        
-        if not row:
+        except sqlite3.OperationalError as e:
+            if 'database is locked' in str(e):
+                if attempt < max_retries - 1:
+                    time.sleep(retry_delay)
+                    retry_delay = min(retry_delay * 2, 5.0)
+                    logger.warning(f"Database locked marking failed, retrying (attempt {attempt + 1}/{max_retries})...")
+                    continue
+            logger.error(f"OperationalError marking failed: {e}")
             return None
-        
-        retry_count = (row['retry_count'] or 0) + 1
-        next_retry = datetime.now() + timedelta(minutes=retry_delay_minutes)
-        
-        # Check if we've exceeded max retries
-        if retry_count >= row['max_retries']:
-            new_status = 'failed'
-            logger.warning(f"Queue item {queue_id} exceeded max retries ({retry_count}/{row['max_retries']}): {reason}")
-        else:
-            new_status = 'queued'
-            logger.info(f"Queue item {queue_id} scheduled for retry (attempt {retry_count}/{row['max_retries']}) at {next_retry}: {reason}")
-        
-        cursor.execute("""
-            UPDATE download_queue 
-            SET status = ?, retry_count = ?, failure_reason = ?, last_failure_time = CURRENT_TIMESTAMP, next_retry_at = ?, updated_at = CURRENT_TIMESTAMP
-            WHERE id = ?
-        """, (new_status, retry_count, reason, next_retry.isoformat(), queue_id))
-        
-        conn.commit()
-        
-        # Return updated item
-        cursor.execute("SELECT * FROM download_queue WHERE id = ?", (queue_id,))
-        item = cursor.fetchone()
-        conn.close()
-        
-        return dict(item) if item else None
-        
-    except Exception as e:
-        logger.error(f"Error marking queue item as failed: {e}")
-        return None
+        except Exception as e:
+            logger.error(f"Error marking queue item as failed: {e}")
+            return None
+    
+    logger.error(f"Failed to mark queue item {queue_id} as failed after {max_retries} retries")
+    return None
 
 
 def check_downloads_folder():
