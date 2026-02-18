@@ -749,25 +749,12 @@ def api_create_playlist_session():
             conn = get_db_connection()
             cursor = conn.cursor()
             
-            # Check if playlist_downloads_sessions table exists
+            # Use the correct table name from schema (playlist_download_sessions)
             cursor.execute("""
-                CREATE TABLE IF NOT EXISTS playlist_downloads_sessions (
-                    id INTEGER PRIMARY KEY AUTOINCREMENT,
-                    session_name TEXT NOT NULL,
-                    playlist_name TEXT,
-                    playlist_id TEXT,
-                    download_method TEXT,
-                    total_tracks INTEGER,
-                    queued_count INTEGER,
-                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-                )
-            """)
-            
-            cursor.execute("""
-                INSERT INTO playlist_downloads_sessions 
-                (session_name, playlist_name, playlist_id, download_method, total_tracks, queued_count)
-                VALUES (?, ?, ?, ?, ?, ?)
-            """, (session_name, playlist_name, playlist_id, download_method, len(tracks), len(queued_tracks)))
+                INSERT INTO playlist_download_sessions 
+                (session_name, playlist_name, playlist_id, download_method, total_tracks, queued_count, status, user, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, 'in_progress', ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (session_name, playlist_name, playlist_id, download_method, len(tracks), len(queued_tracks), 'unknown'))
             
             conn.commit()
             conn.close()
@@ -6441,6 +6428,40 @@ def api_stats():
     except Exception as e:
         logging.error(f"Error getting stats: {e}")
         return jsonify({"artists": 0, "albums": 0, "tracks": 0}), 500
+
+
+@app.route("/api/scan/artist", methods=["POST"])
+def api_scan_single_artist():
+    """API endpoint to scan a single artist"""
+    try:
+        data = request.json or {}
+        artist = data.get("artist", "").strip()
+        
+        if not artist:
+            return jsonify({"success": False, "error": "Artist name is required"}), 400
+        
+        # Run the artist scan pipeline in the background
+        from threading import Thread
+        
+        def run_scan():
+            try:
+                _run_artist_scan_pipeline(artist)
+                logging.info(f"✅ Scan completed for artist: {artist}")
+            except Exception as e:
+                logging.error(f"❌ Scan failed for artist {artist}: {e}", exc_info=True)
+        
+        thread = Thread(target=run_scan, daemon=True)
+        thread.start()
+        
+        return jsonify({
+            "success": True,
+            "message": f"Scan started for artist: {artist}",
+            "artist": artist
+        })
+    
+    except Exception as e:
+        logging.error(f"Error starting artist scan: {e}", exc_info=True)
+        return jsonify({"success": False, "error": str(e)}), 500
 
 
 @app.route("/api/scan-status")
