@@ -824,6 +824,37 @@
     </div>
     <!-- End Upcoming Releases Tab -->
 
+    <!-- MusicBrainz Search Modal -->
+    <div class="modal fade" id="musicBrainzModal" tabindex="-1" aria-labelledby="musicBrainzModalLabel" aria-hidden="true">
+      <div class="modal-dialog modal-xl">
+        <div class="modal-content">
+          <div class="modal-header">
+            <h5 class="modal-title" id="musicBrainzModalLabel">
+              <i class="bi bi-music-note-list"></i> MusicBrainz Release Search
+            </h5>
+            <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+          </div>
+          <div class="modal-body">
+            <div id="mbSearchInfo" class="alert alert-info mb-3" style="display:none;">
+              Searching <strong id="mbSearchArtist"></strong> - <strong id="mbSearchAlbum"></strong>
+            </div>
+            
+            <div id="mbSearchStatus" class="text-center py-4" style="display:none;">
+              <div class="spinner-border text-primary" role="status">
+                <span class="visually-hidden">Loading...</span>
+              </div>
+              <p class="mt-2 text-muted">Searching MusicBrainz...</p>
+            </div>
+            
+            <div id="mbSearchError" class="alert alert-danger" style="display:none;"></div>
+            
+            <div id="mbSearchResults"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <!-- End MusicBrainz Search Modal -->
+
   </div>
   <!-- End tab-content -->
 </div>
@@ -3446,9 +3477,9 @@ async function refreshUpcomingReleases() {
             <td>${escapeHtml(release.album_name)}${albumStatus}</td>
             <td><small>${release.release_date || 'TBA'}</small></td>
             <td>
-              <button type="button" class="btn btn-sm btn-outline-success" title="Add to download queue"
-                onclick="searchReleaseDownloads(event, '${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
-                <i class="bi bi-plus-circle"></i> Download
+              <button type="button" class="btn btn-sm btn-outline-primary" title="Search on MusicBrainz"
+                onclick="searchMusicBrainzRelease(event, '${escapeHtml(release.artist_name)}', '${escapeHtml(release.album_name)}')">
+                <i class="bi bi-search"></i> Search
               </button>
             </td>
           </tr>
@@ -3519,6 +3550,196 @@ async function addReleaseToQueue(artist, album) {
     console.error('Error adding release to queue:', error);
     alert('❌ Network error: ' + error.message);
   }
+}
+
+// MusicBrainz search for Wikipedia releases
+async function searchMusicBrainzRelease(event, artist, album) {
+  event.preventDefault();
+  event.stopPropagation();
+  
+  // Show modal
+  const modal = new bootstrap.Modal(document.getElementById('musicBrainzModal'));
+  modal.show();
+  
+  // Update search info
+  document.getElementById('mbSearchArtist').textContent = artist;
+  document.getElementById('mbSearchAlbum').textContent = album;
+  document.getElementById('mbSearchInfo').style.display = 'block';
+  
+  // Show loading
+  document.getElementById('mbSearchStatus').style.display = 'block';
+  document.getElementById('mbSearchError').style.display = 'none';
+  document.getElementById('mbSearchResults').innerHTML = '';
+  
+  try {
+    const response = await fetch('/api/upcoming-releases/search-musicbrainz', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist: artist, album: album })
+    });
+    
+    const data = await response.json();
+    
+    // Hide loading
+    document.getElementById('mbSearchStatus').style.display = 'none';
+    
+    if (!data.success || !data.results || data.results.length === 0) {
+      document.getElementById('mbSearchError').textContent = 
+        data.message || 'No releases found on MusicBrainz';
+      document.getElementById('mbSearchError').style.display = 'block';
+      return;
+    }
+    
+    // Display results
+    displayMusicBrainzResults(data.results);
+    
+  } catch (error) {
+    console.error('MusicBrainz search error:', error);
+    document.getElementById('mbSearchStatus').style.display = 'none';
+    document.getElementById('mbSearchError').textContent = 
+      'Error searching MusicBrainz: ' + error.message;
+    document.getElementById('mbSearchError').style.display = 'block';
+  }
+}
+
+function displayMusicBrainzResults(results) {
+  const container = document.getElementById('mbSearchResults');
+  
+  let html = '<div class="accordion" id="mbResultsAccordion">';
+  
+  results.forEach((release, index) => {
+    const releaseId = `mbRelease${index}`;
+    const tracksHtml = release.tracks.map(track => `
+      <tr>
+        <td>${escapeHtml(track.position)}</td>
+        <td>${escapeHtml(track.title)}</td>
+        <td>${track.length ? formatDuration(track.length) : 'N/A'}</td>
+      </tr>
+    `).join('');
+    
+    html += `
+      <div class="accordion-item">
+        <h2 class="accordion-header" id="heading${releaseId}">
+          <button class="accordion-button ${index === 0 ? '' : 'collapsed'}" type="button" 
+            data-bs-toggle="collapse" data-bs-target="#${releaseId}" 
+            aria-expanded="${index === 0 ? 'true' : 'false'}" aria-controls="${releaseId}">
+            <div class="w-100">
+              <strong>${escapeHtml(release.title)}</strong>
+              <small class="text-muted ms-2">
+                ${release.type || 'Album'} · ${release.date || 'Unknown date'} · ${release.track_count} tracks
+              </small>
+            </div>
+          </button>
+        </h2>
+        <div id="${releaseId}" class="accordion-collapse collapse ${index === 0 ? 'show' : ''}" 
+          aria-labelledby="heading${releaseId}" data-bs-parent="#mbResultsAccordion">
+          <div class="accordion-body">
+            <div class="mb-3">
+              <button class="btn btn-success mb-download-release" 
+                data-artist="${escapeHtml(release.artist)}"
+                data-album="${escapeHtml(release.title)}"
+                data-tracks='${JSON.stringify(release.tracks)}'>
+                <i class="bi bi-download"></i> Download All Tracks (${release.track_count})
+              </button>
+            </div>
+            <table class="table table-sm table-hover">
+              <thead>
+                <tr>
+                  <th style="width: 60px;">#</th>
+                  <th>Title</th>
+                  <th style="width: 100px;">Duration</th>
+                </tr>
+              </thead>
+              <tbody>
+                ${tracksHtml}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  html += '</div>';
+  container.innerHTML = html;
+  
+  // Attach event listeners to download buttons
+  container.querySelectorAll('.mb-download-release').forEach(button => {
+    button.addEventListener('click', function() {
+      const artist = this.dataset.artist;
+      const album = this.dataset.album;
+      const tracks = JSON.parse(this.dataset.tracks);
+      downloadMusicBrainzRelease(artist, album, tracks);
+    });
+  });
+}
+
+async function downloadMusicBrainzRelease(artist, album, tracks) {
+  if (!tracks || tracks.length === 0) {
+    alert('No tracks to download');
+    return;
+  }
+  
+  try {
+    // Batch add all tracks in a single API call
+    const trackItems = tracks.map(track => ({
+      artist: artist,
+      title: track.title,
+      album: album,
+      source: 'soulseek',
+      priority: 5
+    }));
+    
+    // Send batch request
+    const response = await fetch('/api/queue/add-batch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        items: trackItems
+      })
+    });
+    
+    const data = await response.json();
+    
+    // Close modal
+    const modalEl = document.getElementById('musicBrainzModal');
+    const modal = bootstrap.Modal.getInstance(modalEl);
+    if (modal) {
+      modal.hide();
+    }
+    
+    // Show result message
+    if (data.success) {
+      const added = data.added || 0;
+      const failed = data.failed || 0;
+      const failedTracks = data.failed_tracks || [];
+      
+      let message = `✅ Added ${added} tracks to download queue`;
+      if (failed > 0) {
+        message += `\n⚠️ Failed to add ${failed} tracks`;
+        if (failedTracks.length > 0) {
+          const failedList = failedTracks.slice(0, 5).join(', ');
+          message += `:\n${failedList}${failedTracks.length > 5 ? '...' : ''}`;
+        }
+      }
+      alert(message);
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add tracks to queue'));
+    }
+    
+  } catch (error) {
+    console.error('Error downloading release:', error);
+    alert('❌ Error: ' + error.message);
+  }
+}
+
+function formatDuration(ms) {
+  if (!ms) return 'N/A';
+  const seconds = Math.floor(ms / 1000);
+  const mins = Math.floor(seconds / 60);
+  const secs = seconds % 60;
+  return `${mins}:${secs.toString().padStart(2, '0')}`;
 }
 
 // Load upcoming releases when tab is shown

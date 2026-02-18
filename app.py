@@ -10477,6 +10477,72 @@ def api_queue_add():
         return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
 
 
+@app.route("/api/queue/add-batch", methods=["POST"])
+def api_queue_add_batch():
+    """Add multiple songs/albums to download queue in a single request"""
+    try:
+        from download_queue_manager import add_to_queue
+        
+        data = request.get_json()
+        if not data or 'items' not in data:
+            logging.warning(f"Batch queue add called with no items")
+            return jsonify({"error": "No items provided"}), 400
+        
+        items = data.get('items', [])
+        if not isinstance(items, list):
+            return jsonify({"error": "items must be an array"}), 400
+        
+        logging.info(f"Adding {len(items)} items to queue in batch")
+        
+        added_count = 0
+        failed_count = 0
+        failed_tracks = []
+        
+        for item_data in items:
+            artist = item_data.get('artist', '').strip() if item_data.get('artist') else ''
+            title = item_data.get('title', '').strip() if item_data.get('title') else ''
+            album = item_data.get('album', '').strip() if item_data.get('album') else None
+            source = item_data.get('source', 'soulseek')
+            
+            try:
+                priority = int(item_data.get('priority', 5))
+            except (ValueError, TypeError):
+                priority = 5
+            
+            if not artist or not title:
+                failed_count += 1
+                failed_tracks.append(title or 'Unknown')
+                logging.warning(f"Skipping item with missing fields: artist='{artist}', title='{title}'")
+                continue
+            
+            try:
+                item = add_to_queue(artist, title, album, source, priority)
+                if item:
+                    added_count += 1
+                else:
+                    failed_count += 1
+                    failed_tracks.append(title)
+            except Exception as e:
+                failed_count += 1
+                failed_tracks.append(title)
+                logging.error(f"Error adding track '{title}' to queue: {e}")
+        
+        return jsonify({
+            "success": True,
+            "added": added_count,
+            "failed": failed_count,
+            "failed_tracks": failed_tracks,
+            "message": f"Added {added_count} items to queue" + 
+                      (f", {failed_count} failed" if failed_count > 0 else "")
+        })
+        
+    except Exception as e:
+        logging.error(f"Unexpected error in batch queue add: {type(e).__name__}: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
+        return jsonify({"error": f"Server error: {type(e).__name__}"}), 500
+
+
 @app.route("/api/queue/status", methods=["GET"])
 def api_queue_status():
     """Get queue status and items"""
@@ -14229,6 +14295,128 @@ def api_clear_upcoming_releases():
             return jsonify(result), 500
     except Exception as e:
         logging.error(f"Error clearing upcoming releases: {str(e)}")
+        return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/upcoming-releases/search-musicbrainz", methods=["POST"])
+def api_search_musicbrainz_release():
+    """Search MusicBrainz for a release and return track listings"""
+    try:
+        data = request.get_json() or {}
+        artist = data.get("artist", "")
+        album = data.get("album", "")
+        
+        if not artist or not album:
+            return jsonify({"error": "Artist and album name required"}), 400
+        
+        # Search MusicBrainz for release groups
+        headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+        search_url = "https://musicbrainz.org/ws/2/release-group"
+        
+        # Build search query
+        query = f'artist:"{artist}" AND releasegroup:"{album}"'
+        params = {
+            "fmt": "json",
+            "query": query,
+            "limit": 10
+        }
+        
+        logging.info(f"Searching MusicBrainz for: {artist} - {album}")
+        
+        response = requests.get(search_url, headers=headers, params=params, timeout=15)
+        response.raise_for_status()
+        data = response.json()
+        
+        release_groups = data.get("release-groups", [])
+        
+        if not release_groups:
+            return jsonify({
+                "success": True,
+                "results": [],
+                "message": f"No releases found for {artist} - {album}"
+            })
+        
+        # For each release group, fetch one representative release with tracks
+        results = []
+        for rg in release_groups[:5]:  # Limit to first 5 matches
+            rg_id = rg.get("id", "")
+            rg_title = rg.get("title", "")
+            rg_type = rg.get("primary-type", "")
+            first_release_date = rg.get("first-release-date", "")
+            
+            # Fetch releases in this release group
+            releases_url = f"https://musicbrainz.org/ws/2/release-group/{rg_id}"
+            releases_params = {
+                "fmt": "json",
+                "inc": "releases"
+            }
+            
+            time.sleep(1)  # Rate limiting
+            
+            try:
+                releases_response = requests.get(releases_url, headers=headers, params=releases_params, timeout=15)
+                releases_response.raise_for_status()
+                rg_data = releases_response.json()
+                
+                releases = rg_data.get("releases", [])
+                if not releases:
+                    continue
+                
+                # Pick the first release to get tracks
+                release = releases[0]
+                release_id = release.get("id", "")
+                
+                # Fetch full release with tracks
+                release_url = f"https://musicbrainz.org/ws/2/release/{release_id}"
+                release_params = {
+                    "fmt": "json",
+                    "inc": "recordings"
+                }
+                
+                time.sleep(1)  # Rate limiting
+                
+                release_response = requests.get(release_url, headers=headers, params=release_params, timeout=15)
+                release_response.raise_for_status()
+                release_data = release_response.json()
+                
+                # Extract tracks
+                media = release_data.get("media", [])
+                tracks = []
+                for disc in media:
+                    for track in disc.get("tracks", []):
+                        recording = track.get("recording", {})
+                        tracks.append({
+                            "title": recording.get("title", "Unknown"),
+                            "position": track.get("position", ""),
+                            "length": recording.get("length", 0)
+                        })
+                
+                results.append({
+                    "release_group_id": rg_id,
+                    "release_id": release_id,
+                    "title": rg_title,
+                    "artist": artist,
+                    "type": rg_type,
+                    "date": first_release_date,
+                    "track_count": len(tracks),
+                    "tracks": tracks
+                })
+                
+            except Exception as e:
+                logging.warning(f"Error fetching tracks for release group {rg_id}: {e}")
+                continue
+        
+        return jsonify({
+            "success": True,
+            "results": results,
+            "total": len(results)
+        })
+        
+    except requests.exceptions.HTTPError as e:
+        logging.error(f"MusicBrainz API error: {e}")
+        return jsonify({"error": f"MusicBrainz API error: {e.response.status_code if hasattr(e, 'response') else str(e)}"}), 500
+    except Exception as e:
+        logging.error(f"Error searching MusicBrainz: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 
