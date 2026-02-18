@@ -2269,10 +2269,11 @@ def popularity_scan(
             
             # Get Spotify artist ID once per artist (before album loop)
             # Skip for compilation albums (Various Artists, Compilation, Soundtrack)
+            # Also skip if Spotify weight is 0 (API calls would be wasted)
             spotify_artist_id = None
             is_compilation_group = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack')
             
-            if not is_compilation_group:
+            if not is_compilation_group and SPOTIFY_WEIGHT > 0:
                 # Lookup Spotify artist ID for non-compilation artists
                 try:
                     # First, try to get cached artist ID from database
@@ -2754,7 +2755,7 @@ def popularity_scan(
                                 log_debug(f'Cached Spotify data reused for track {track_id}')
                     
                         try:
-                            if "Spotify" in enabled_apis and spotify_artist_id and not skip_spotify_lookup:
+                            if "Spotify" in enabled_apis and SPOTIFY_WEIGHT > 0 and spotify_artist_id and not skip_spotify_lookup:
                                 # Check rate limit before making API call
                                 rate_limiter = get_rate_limiter()
                                 can_proceed, reason = rate_limiter.check_spotify_limit()
