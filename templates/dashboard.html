@@ -569,7 +569,7 @@ document.addEventListener('DOMContentLoaded', function() {
     function renderRecentScans(scans) {
         if (!recentScansBody) return;
         if (!scans || scans.length === 0) {
-            recentScansBody.innerHTML = '<tr><td colspan="5" class="text-center text-muted">No recent scans yet</td></tr>';
+            recentScansBody.innerHTML = '<tr><td colspan="6" class="text-center text-muted">No recent scans yet</td></tr>';
             return;
         }
 
@@ -581,8 +581,12 @@ document.addEventListener('DOMContentLoaded', function() {
                 badge = '<span class="badge bg-primary"><i class="bi bi-cloud"></i> Navidrome</span>';
             } else if (scan.scan_type === 'popularity') {
                 badge = '<span class="badge bg-success"><i class="bi bi-graph-up"></i> Popularity</span>';
+            } else if (scan.scan_type === 'singles') {
+                badge = '<span class="badge bg-warning text-dark"><i class="bi bi-star"></i> Singles</span>';
             } else if (scan.scan_type === 'combined') {
                 badge = '<span class="badge bg-info text-dark"><i class="bi bi-lightning-fill"></i> Combined</span>';
+            } else if (scan.scan_type === 'unified') {
+                badge = '<span class="badge bg-secondary"><i class="bi bi-layers"></i> Unified</span>';
             }
 
             return `
@@ -598,6 +602,10 @@ document.addEventListener('DOMContentLoaded', function() {
                     <td data-label="Type" class="d-flex justify-content-between d-md-table-cell">
                         <span class="d-md-none text-muted fw-bold">Type</span>
                         ${badge}
+                    </td>
+                    <td data-label="Source" class="d-flex justify-content-between d-md-table-cell">
+                        <span class="d-md-none text-muted fw-bold">Source</span>
+                        <small class="text-muted">${scan.source || '-'}</small>
                     </td>
                     <td data-label="Scanned" class="d-flex justify-content-between d-md-table-cell text-muted">
                         <span class="d-md-none text-muted fw-bold">Scanned</span>
@@ -857,7 +865,16 @@ document.addEventListener('DOMContentLoaded', function() {
             .then(data => {
                 const logEl = document.getElementById('unifiedLog');
                 if (logEl && data && data.lines) {
-                    logEl.textContent = data.lines.join('\n');
+                    // Properly escape HTML and join with actual newlines for <pre> tag
+                    const escapedLines = data.lines.map(line => {
+                        return line
+                            .replace(/&/g, '&amp;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/'/g, '&#39;');
+                    });
+                    logEl.textContent = escapedLines.join('\n');
                     logEl.scrollTop = logEl.scrollHeight;
                 }
             })

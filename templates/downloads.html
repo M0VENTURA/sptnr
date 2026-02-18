@@ -3005,12 +3005,18 @@ async function refreshPlaylistSessions() {
     
     if (!response.ok) {
       console.error('Error fetching sessions:', data.error);
-      document.getElementById('playlistSessionsContainer').innerHTML = 
-        `<div class="alert alert-danger">Error loading sessions: ${data.error}</div>`;
+      const container = document.getElementById('playlistSessionsContainer');
+      if (container) {
+        container.innerHTML = `<div class="alert alert-danger">Error loading sessions: ${data.error}</div>`;
+      }
       return;
     }
     
     const container = document.getElementById('playlistSessionsContainer');
+    if (!container) {
+      console.warn('playlistSessionsContainer element not found');
+      return;
+    }
     
     if (!data.sessions || data.sessions.length === 0) {
       container.innerHTML = '<p class="text-muted text-center py-4">No active sessions yet. Create one above to get started!</p>';
@@ -3080,12 +3086,16 @@ async function refreshPlaylistSessions() {
       `;
     }
     
-    container.innerHTML = html;
+    if (container) {
+      container.innerHTML = html;
+    }
     
   } catch (error) {
     console.error('Error refreshing sessions:', error);
-    document.getElementById('playlistSessionsContainer').innerHTML = 
-      `<div class="alert alert-danger">Error loading sessions: ${error.message}</div>`;
+    const container = document.getElementById('playlistSessionsContainer');
+    if (container) {
+      container.innerHTML = `<div class="alert alert-danger">Error loading sessions: ${error.message}</div>`;
+    }
   }
 }
 
@@ -3899,7 +3909,8 @@ async function lookupSpotifyUser() {
     data.playlists.forEach(playlist => {
       const option = document.createElement('option');
       option.value = playlist.id;
-      option.textContent = `${playlist.name} (${playlist.tracks.total || playlist.track_count} tracks)`;
+      const trackCount = (playlist.tracks && playlist.tracks.total) ? playlist.tracks.total : (playlist.track_count || 0);
+      option.textContent = `${playlist.name} (${trackCount} tracks)`;
       select.appendChild(option);
     });
 

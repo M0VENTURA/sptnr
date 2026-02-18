@@ -329,7 +329,7 @@
                                 {% for genre in album_genres %}
                                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                                     {{ genre }}
-                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre }}')" aria-label="Remove"></button>
+                                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('{{ genre }}', '{{ artist_name }}', '{{ album_name }}')" aria-label="Remove"></button>
                                 </span>
                                 {% endfor %}
                             {% else %}
@@ -1664,36 +1664,42 @@
         input.focus();
     }
     
-    function removeAlbumGenre(genre) {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
-        
-        // Call API to remove genre
-        fetch('/api/genres/remove', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-                artist_name: artistName,
-                album_name: albumName,
-                genres: [genre]
+    // removeAlbumGenre function is now provided by genre-utils.js
+    // Fallback defined if genre-utils.js fails to load
+    if (typeof removeAlbumGenre === 'undefined') {
+        window.removeAlbumGenre = function(genre, artistName, albumName) {
+            if (!artistName) artistName = {{ artist_name|tojson }};
+            if (!albumName) albumName = {{ album_name|tojson }};
+            
+            // Call API to remove genre
+            fetch('/api/genres/remove', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    artist_name: artistName,
+                    album_name: albumName,
+                    genres: [genre]
+                })
             })
-        })
-        .then(r => r.json())
-        .then(data => {
-            if (data.error) {
-                console.error('Error removing genre:', data.error);
-                alert('❌ Error: ' + data.error);
-            } else {
-                // Remove from local Set and update display
-                currentAlbumGenres.delete(genre);
-                updateAlbumGenresDisplay();
-                alert(`✅ Genre "${genre}" removed from all tracks`);
-            }
-        })
-        .catch(error => {
-            console.error('Failed to remove genre:', error);
-            alert('❌ Failed to remove genre: ' + error.message);
-        });
+            .then(r => r.json())
+            .then(data => {
+                if (data.error) {
+                    console.error('Error removing genre:', data.error);
+                    alert('❌ Error: ' + data.error);
+                } else {
+                    // Remove from local Set and update display
+                    if (typeof currentAlbumGenres !== 'undefined') {
+                        currentAlbumGenres.delete(genre);
+                        updateAlbumGenresDisplay();
+                    }
+                    alert(`✅ Genre "${genre}" removed from all tracks`);
+                }
+            })
+            .catch(error => {
+                console.error('Failed to remove genre:', error);
+                alert('❌ Failed to remove genre: ' + error.message);
+            });
+        };
     }
     
     function updateAlbumGenresDisplay() {
@@ -1711,7 +1717,7 @@
             html += `
                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
                     ${escapeHtml(genre)}
-                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('${escapeHtml(genre)}')" aria-label="Remove"></button>
+                    <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeAlbumGenre('${escapeHtml(genre)}', {{ artist_name|tojson }}, {{ album_name|tojson }})" aria-label="Remove"></button>
                 </span>
             `;
         });

@@ -85,9 +85,9 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5):
         try:
             cursor.execute("""
                 INSERT INTO download_queue 
-                (artist, title, album, search_query, source, status, priority, filename, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (artist, title, album, search_query, source, priority, search_query))
+                (artist, title, album, search_query, source, status, priority, file_path, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (artist, title, album, search_query, source, priority))
             
             conn.commit()
             queue_id = cursor.lastrowid

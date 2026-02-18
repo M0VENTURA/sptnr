@@ -2166,23 +2166,44 @@ def popularity_scan(
 
         # Group tracks by album_artist and album
         # For compilation albums, album_artist is "Various Artists", so all tracks group together
+        # For collaboration albums with guest artists, ensure all tracks from same album group together
         # Each track still uses its individual track["artist"] field for API lookups
         from collections import defaultdict
-        artist_album_tracks = defaultdict(lambda: defaultdict(list))
+        
+        # First pass: determine canonical album_artist for each album
+        # This ensures tracks with NULL or missing album_artist still group with their album
+        album_canonical_artist = {}  # Map of album_name -> canonical_album_artist
         
         for track in tracks:
-            # Get album_artist, fall back to artist if not set
-            album_artist = track.get('album_artist', '') if isinstance(track, dict) else (
+            album_name = track["album"]
+            album_artist_value = track.get('album_artist', '') if isinstance(track, dict) else (
                 track['album_artist'] if hasattr(track, '__getitem__') and 'album_artist' in track.keys() else ''
             )
             
-            # Use album_artist for grouping (or fall back to artist)
-            grouping_artist = album_artist if album_artist else track["artist"]
+            # If we don't have a canonical artist yet, use the first non-empty album_artist found
+            # Otherwise, preserve existing (only update if current is empty and we find a non-empty one)
+            if album_name not in album_canonical_artist:
+                # First track with this album - set initial value
+                album_canonical_artist[album_name] = album_artist_value if album_artist_value else track["artist"]
+            elif not album_canonical_artist[album_name] and album_artist_value:
+                # Update if canonical is empty but current track has a value
+                album_canonical_artist[album_name] = album_artist_value
+        
+        log_debug(f"Determined canonical artists for {len(album_canonical_artist)} album(s)")
+        for album_name, canonical_artist in list(album_canonical_artist.items())[:5]:  # Log first 5
+            log_debug(f"  Album '{album_name}' -> canonical artist: '{canonical_artist}'")
+        
+        # Second pass: group tracks using canonical album_artist
+        artist_album_tracks = defaultdict(lambda: defaultdict(list))
+        
+        for track in tracks:
             album_name = track["album"]
+            # Use the canonical artist we determined in first pass
+            grouping_artist = album_canonical_artist.get(album_name, track["artist"])
             
             artist_album_tracks[grouping_artist][album_name].append(track)
             
-            log_debug(f"Track grouping: grouping_artist={grouping_artist}, album_artist={album_artist}, track_artist={track['artist']}, title={track['title']}")
+            log_debug(f"Track grouping: album='{album_name}', grouping_artist='{grouping_artist}', track_artist='{track['artist']}', title='{track['title']}'")
 
         # Handle resume logic
         resume_hit = False if resume_from else True
@@ -2465,6 +2486,29 @@ def popularity_scan(
                     log_info(f'Detected live/unplugged album: "{album}"')
                     log_info(f'Track lookups will include album context to avoid matching studio versions')
                     log_debug(f'Live album detection: album="{album}"')
+                    
+                    # Update all track titles in this album to add (Live) suffix if not already present
+                    live_tracks_updated = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        original_title = track["title"]
+                        
+                        # Only add (Live) suffix if it's not already there
+                        if not re.search(r'\(live\)', original_title, re.IGNORECASE):
+                            new_title = f"{original_title} (Live)"
+                            cursor.execute("""
+                                UPDATE tracks 
+                                SET title = ?
+                                WHERE id = ?
+                            """, (new_title, track_id))
+                            live_tracks_updated += 1
+                            log_debug(f'Updated track title: "{original_title}" → "{new_title}"')
+                            # Update the track dict for use in rest of scan
+                            track["title"] = new_title
+                    
+                    if live_tracks_updated > 0:
+                        conn.commit()
+                        log_info(f'Updated {live_tracks_updated} track title(s) to add (Live) suffix in album "{album}"')
                 
                 # Detect alternate takes for this album (tracks with parentheses matching base tracks)
                 album_tracks_list = list(album_tracks)
