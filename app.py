@@ -663,13 +663,13 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
                 if key in collection_set:
                     matched_tracks.append({
                         'artist': track.get('artist', ''),
-                        'title': track.get('name', ''),
+                        'title': track.get('title', ''),
                         'album': track.get('album', '')
                     })
                 else:
                     missing_tracks.append({
                         'artist': track.get('artist', ''),
-                        'title': track.get('name', ''),
+                        'title': track.get('title', ''),
                         'album': track.get('album', '')
                     })
             
