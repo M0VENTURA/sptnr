@@ -10622,13 +10622,22 @@ def api_downloads_batch_group():
                 if not item:
                     continue
                 
-                # Update with new group name and artist if provided
-                cursor.execute(
-                    """UPDATE download_queue 
-                       SET album = ?, album_artist = ?
-                       WHERE id = ?""",
-                    (group_name, group_artist or item[1], item_id)
-                )
+                # Update with new group name
+                # If group_artist is provided, also update the artist for grouping consistency
+                if group_artist:
+                    cursor.execute(
+                        """UPDATE download_queue 
+                           SET album = ?, artist = ?
+                           WHERE id = ?""",
+                        (group_name, group_artist, item_id)
+                    )
+                else:
+                    cursor.execute(
+                        """UPDATE download_queue 
+                           SET album = ?
+                           WHERE id = ?""",
+                        (group_name, item_id)
+                    )
                 updated_count += 1
             except Exception as e:
                 logging.warning(f"Failed to update queue item {item_id}: {e}")

@@ -4083,12 +4083,32 @@ function renderCompletedQueue(completed) {
   document.getElementById('completedBadge').textContent = completed.length;
   document.getElementById('completedBadge').style.display = 'inline-block';
   
-  // Group items by import_type and import_group
+  // Group items strategically:
+  // 1. If item has album set, group by artist+album (these are batch-grouped items)
+  // 2. If item has import_group set, group by import_type+import_group
+  // 3. Otherwise treat as single item
   const groups = {};
   for (const item of completed) {
-    const type = item.import_type || 'song';
-    const groupId = item.import_group || `solo_${item.id}`;
-    const key = `${type}_${groupId}`;
+    let type, groupId, key;
+    
+    // Priority 1: If album is set (batch-grouped items), group by artist+album
+    if (item.album) {
+      type = 'album';
+      groupId = `${item.artist || 'Various'}_${item.album}`;
+      key = `album_${groupId}`;
+    } 
+    // Priority 2: If import_group is set, group by import_type+import_group
+    else if (item.import_group) {
+      type = item.import_type || 'song';
+      groupId = item.import_group;
+      key = `${type}_${groupId}`;
+    }
+    // Priority 3: Individual items
+    else {
+      type = item.import_type || 'song';
+      groupId = `solo_${item.id}`;
+      key = `${type}_${groupId}`;
+    }
     
     if (!groups[key]) {
       groups[key] = {
@@ -4101,11 +4121,11 @@ function renderCompletedQueue(completed) {
     }
     groups[key].items.push(item);
     
-    // Try to determine album name from items
-    if (item.album && !groups[key].album) {
+    // Set album/artist from the items
+    if (!groups[key].album && item.album) {
       groups[key].album = item.album;
     }
-    if (item.artist && !groups[key].artist) {
+    if (!groups[key].artist && item.artist) {
       groups[key].artist = item.artist;
     }
   }
