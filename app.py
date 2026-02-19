@@ -10583,6 +10583,66 @@ def api_downloads_get_queue_grouped():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/downloads/queue/batch-group", methods=["POST"])
+def api_downloads_batch_group():
+    """Group selected queue items into a new album/playlist"""
+    try:
+        data = request.get_json()
+        item_ids = data.get('item_ids', [])
+        group_type = data.get('group_type', 'album')
+        group_name = data.get('group_name', '')
+        group_artist = data.get('group_artist', '')
+        
+        if not item_ids or not group_name:
+            return jsonify({"error": "item_ids and group_name are required"}), 400
+        
+        if not isinstance(item_ids, list):
+            return jsonify({"error": "item_ids must be an array"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Update all items in this batch to have the new group info
+        updated_count = 0
+        for item_id in item_ids:
+            try:
+                # Get current item
+                cursor.execute(
+                    "SELECT id, artist, title FROM download_queue WHERE id = ?",
+                    (item_id,)
+                )
+                item = cursor.fetchone()
+                
+                if not item:
+                    continue
+                
+                # Update with new group name and artist if provided
+                cursor.execute(
+                    """UPDATE download_queue 
+                       SET album = ?, album_artist = ?
+                       WHERE id = ?""",
+                    (group_name, group_artist or item[1], item_id)
+                )
+                updated_count += 1
+            except Exception as e:
+                logging.warning(f"Failed to update queue item {item_id}: {e}")
+                continue
+        
+        conn.commit()
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "updated": updated_count,
+            "total": len(item_ids),
+            "message": f"Grouped {updated_count} items into '{group_name}'"
+        })
+    
+    except Exception as e:
+        logging.error(f"Error batch grouping queue items: {e}", exc_info=True)
+        return jsonify({"error": str(e)}), 500
+
+
 @app.route("/api/downloads/queue/<int:queue_id>", methods=["POST"])
 def api_downloads_manage_queue_item(queue_id):
     """Manage a queue item (mark as failed, successful, or delete)"""
@@ -13443,8 +13503,24 @@ def api_album_track_recommendations(artist, album):
                             genre_list = json.loads(field_value)
                             if isinstance(genre_list, list):
                                 for g in genre_list:
-                                    if g and isinstance(g, str) and len(g.strip()) > 2:
-                                        genres_set.add(g.strip())
+                                    genre_str = None
+                                    if isinstance(g, str):
+                                        genre_str = g
+                                    elif isinstance(g, dict):
+                                        # Try to extract from dict (could be {"name": "Rock"} or {"genre": "Rock"})
+                                        genre_str = g.get('name') or g.get('genre') or g.get('title') or str(g)
+                                    else:
+                                        genre_str = str(g)
+                                    
+                                    if genre_str and isinstance(genre_str, str) and len(genre_str.strip()) > 2:
+                                        genres_set.add(genre_str.strip())
+                            elif isinstance(genre_list, dict):
+                                # If parsed JSON is a dict, try to extract 'genres' key
+                                if 'genres' in genre_list and isinstance(genre_list['genres'], list):
+                                    for g in genre_list['genres']:
+                                        genre_str = g if isinstance(g, str) else str(g)
+                                        if genre_str and len(genre_str.strip()) > 2:
+                                            genres_set.add(genre_str.strip())
                         except (json.JSONDecodeError, TypeError):
                             # Handle comma or backslash-separated genres
                             delimiter = '\\' if '\\' in field_value else ','
