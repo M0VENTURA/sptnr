@@ -29,9 +29,18 @@ RUN pip install --no-cache-dir --upgrade pip && \
 # App files - COPY ALL FILES INCLUDING STATIC FOLDER
 COPY . /app
 
-# Verify static folder exists
-RUN if [ ! -d /app/static ]; then mkdir -p /app/static; fi && \
-    echo "Static folder verification: $(ls -la /app/static | head -3)"
+# Verify static folder and files are present (run AFTER COPY to catch issues)
+RUN echo "=== STATIC FOLDER VERIFICATION ===" && \
+    if [ -d /app/static ]; then \
+        echo "✓ Static folder exists at /app/static"; \
+        file_count=$(find /app/static -type f | wc -l); \
+        echo "✓ Found $file_count files in static folder:"; \
+        find /app/static -type f | head -10; \
+    else \
+        echo "✗ ERROR: Static folder missing at /app/static"; \
+        mkdir -p /app/static; \
+    fi && \
+    echo "=== END VERIFICATION ==="
 
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh
