@@ -11073,6 +11073,13 @@ def api_queue_add_batch():
             album = item_data.get('album', '').strip() if item_data.get('album') else None
             source = item_data.get('source', 'soulseek')
             
+            # Extract MusicBrainz/Discogs metadata if provided
+            track_number = item_data.get('track_number', '').strip() if item_data.get('track_number') else None
+            album_artist = item_data.get('album_artist', '').strip() if item_data.get('album_artist') else None
+            year = item_data.get('year', '').strip() if item_data.get('year') else None
+            release_id = item_data.get('release_id', '').strip() if item_data.get('release_id') else None
+            release_source = item_data.get('release_source', '').strip() if item_data.get('release_source') else None
+            
             try:
                 priority = int(item_data.get('priority', 5))
             except (ValueError, TypeError):
@@ -11086,7 +11093,9 @@ def api_queue_add_batch():
             
             try:
                 item = add_to_queue(artist, title, album, source, priority, 
-                                   import_group=import_group_id, import_type=import_type)
+                                   import_group=import_group_id, import_type=import_type,
+                                   track_number=track_number, album_artist=album_artist, 
+                                   year=year, release_id=release_id, release_source=release_source)
                 if item:
                     added_count += 1
                 else:

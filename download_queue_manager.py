@@ -67,7 +67,8 @@ def get_db():
     return conn
 
 
-def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song'):
+def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
+                 track_number=None, album_artist=None, year=None, release_id=None, release_source=None):
     """
     Add a song to the download queue
     
@@ -79,6 +80,11 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         priority: Priority level (1-10, lower = higher priority)
         import_group: Group ID for batch imports (optional, e.g., for albums/playlists)
         import_type: Type of import - 'song', 'album', or 'playlist' (defaults to 'song')
+        track_number: Track number from MusicBrainz/Discogs (optional)
+        album_artist: Album artist from MusicBrainz/Discogs (optional)
+        year: Release year from MusicBrainz/Discogs (optional)
+        release_id: MusicBrainz/Discogs release ID (optional)
+        release_source: Source of metadata - 'musicbrainz' or 'discogs' (optional)
     
     Returns:
         Queue item dict or None if failed
@@ -102,7 +108,12 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             'source': "TEXT DEFAULT 'soulseek'",
             'priority': "INTEGER DEFAULT 5",
             'import_group': "TEXT",
-            'import_type': "TEXT DEFAULT 'song'"
+            'import_type': "TEXT DEFAULT 'song'",
+            'track_number': "TEXT",
+            'album_artist': "TEXT",
+            'year': "TEXT",
+            'release_id': "TEXT",
+            'release_source': "TEXT"
         }
         
         for col, col_type in required_cols.items():
@@ -121,9 +132,11 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
         try:
             cursor.execute("""
                 INSERT INTO download_queue 
-                (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-            """, (artist, title, album, search_query, source, priority, import_group, import_type))
+                (artist, title, album, search_query, source, status, priority, file_path, import_group, import_type, 
+                 track_number, album_artist, year, release_id, release_source, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, 'queued', ?, NULL, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+            """, (artist, title, album, search_query, source, priority, import_group, import_type,
+                  track_number, album_artist, year, release_id, release_source))
             
             conn.commit()
             queue_id = cursor.lastrowid
