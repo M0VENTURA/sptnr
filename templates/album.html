@@ -240,10 +240,22 @@
         </div>
         <div class="card-body">
             <div class="row g-3">
-                <div class="col-md-4">
-                    <label class="form-label fw-bold small">Spotify Album ID</label>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="spotifyAlbumId" value="{{ album_data.spotify_album_id or '' }}" readonly>
+                    <div class="col-md-6">
+                        <label for="album_artist" class="form-label">Album Artist</label>
+                        <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
+                    </div>
+                </div>
+                <!-- Bulk Track Artist Edit -->
+                <div class="row g-3 align-items-end mb-2">
+                    <div class="col-md-8">
+                        <label for="bulkArtistEditInput" class="form-label">Track Artist (Bulk Edit)</label>
+                        <input type="text" class="form-control" id="bulkArtistEditInput" placeholder="Enter new artist for all tracks">
+                    </div>
+                    <div class="col-md-4 d-flex align-items-end">
+                        <button type="button" class="btn btn-outline-primary w-100" onclick="bulkUpdateTrackArtists()">
+                            <i class="bi bi-people-fill me-1"></i> Apply to All Tracks
+                        </button>
+                    </div>
                         {% if album_data.spotify_album_id %}
                         <a href="https://open.spotify.com/album/{{ album_data.spotify_album_id }}" target="_blank" class="btn btn-outline-secondary">
                             <i class="bi bi-box-arrow-up-right"></i>

@@ -91,6 +91,8 @@ IGNORE_SINGLE_KEYWORDS = [
     "remaster", "remastered"  # remasters
 ]
 
+# Minimum tracks required for artist-level standout/star rating comparison
+MIN_TRACKS_FOR_ARTIST_COMPARISON = 10
 # Subset of keywords to check in Spotify album names (for album-level filtering)
 # These are the most common alternate version album types
 # Note: List is used (not set) since we perform substring matching with 'any(k in album_name...)'

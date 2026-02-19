@@ -1094,7 +1094,7 @@ async function restartQueueProcessor() {
             btn.disabled = false;
         }, 3000);
     }
-}
+} // <-- Ensure this closes restartQueueProcessor
 
 // Check status on page load and refresh every 30 seconds
 document.addEventListener('DOMContentLoaded', function() {
