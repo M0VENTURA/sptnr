@@ -255,7 +255,13 @@ def log_verbose(msg):
     if VERBOSE:
         log_debug(f"[VERBOSE] {msg}")
 
-app = Flask(__name__)
+
+# Determine the app root directory (handles both local and Docker execution)
+app_root = os.path.abspath(os.path.dirname(__file__))
+static_folder = os.path.join(app_root, 'static')
+
+# Initialize Flask with explicit static folder configuration
+app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
 
 # Add Jinja2 filter to split genres on both backslash and comma
 @app.template_filter('split_genres')
