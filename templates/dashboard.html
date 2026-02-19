@@ -254,6 +254,7 @@
                 <small class="text-muted">
                     <i class="bi bi-info-circle"></i> If a scan appears stuck, click "Clear Stuck Scans" to reset stale progress files
                 </small>
+            </div>
         </div>
     </div>
     
@@ -883,7 +884,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Poll every 3 seconds (reduced from multiple intervals)
     setInterval(updateAll, 3000);
-// ...existing code... (no stray closing braces at the end)
+});
 
 // Switch between Navidrome users
 function switchUser(userIndex) {

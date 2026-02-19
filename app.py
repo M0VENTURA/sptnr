@@ -13431,20 +13431,29 @@ def api_album_track_recommendations(artist, album):
             for field_name, field_value in genre_fields.items():
                 if field_value:
                     try:
+                        # Ensure field_value is a string
+                        if isinstance(field_value, dict):
+                            # If it's already a dict (unlikely), skip it
+                            continue
+                        if not isinstance(field_value, str):
+                            field_value = str(field_value)
+                        
                         # Try to parse as JSON array
-                        if isinstance(field_value, str):
+                        try:
                             genre_list = json.loads(field_value)
                             if isinstance(genre_list, list):
                                 for g in genre_list:
-                                    if g and len(g.strip()) > 2:
+                                    if g and isinstance(g, str) and len(g.strip()) > 2:
                                         genres_set.add(g.strip())
-                    except (json.JSONDecodeError, TypeError):
-                        # Handle comma or backslash-separated genres
-                        delimiter = '\\' if isinstance(field_value, str) and '\\' in field_value else ','
-                        if isinstance(field_value, str):
+                        except (json.JSONDecodeError, TypeError):
+                            # Handle comma or backslash-separated genres
+                            delimiter = '\\' if '\\' in field_value else ','
                             for g in field_value.split(delimiter):
-                                if g and len(g.strip()) > 2:
+                                if g and isinstance(g, str) and len(g.strip()) > 2:
                                     genres_set.add(g.strip())
+                    except Exception as e:
+                        logger.debug(f"Error processing genre field {field_name}: {e}")
+                        continue
             
             # Format and deduplicate genres
             recommendations = []
