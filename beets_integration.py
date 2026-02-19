@@ -581,6 +581,18 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
     try:
         from mutagen.id3 import ID3, TIT2, TPE1, TALB, TPE2, TCON, TDRC, TCOM, TRCK, TPOS, COMM, TXXX
         from mutagen.mp3 import MP3
+        import time
+        
+        # Log initial state
+        logger.debug(f"Starting MP3 metadata update for {file_path}")
+        
+        # Check file existence before opening
+        if not os.path.exists(file_path):
+            logger.error(f"File does not exist before save attempt: {file_path}")
+            return False
+        
+        # Get initial modification time
+        initial_mtime = os.path.getmtime(file_path)
         
         # Load the MP3 file
         audio = MP3(file_path, ID3=ID3)
@@ -595,12 +607,15 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
         
         if 'artist' in metadata and metadata['artist']:
             audio.tags['TPE1'] = TPE1(encoding=3, text=metadata['artist'])
+            logger.debug(f"Set artist tag to: {metadata['artist']}")
         
         if 'album' in metadata and metadata['album']:
             audio.tags['TALB'] = TALB(encoding=3, text=metadata['album'])
+            logger.debug(f"Set album tag to: {metadata['album']}")
         
         if 'albumartist' in metadata and metadata['albumartist']:
             audio.tags['TPE2'] = TPE2(encoding=3, text=metadata['albumartist'])
+            logger.debug(f"Set album artist tag to: {metadata['albumartist']}")
         
         if 'genre' in metadata and metadata['genre']:
             # Handle genre - can be string or list
@@ -621,6 +636,7 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             
             # Pass the list directly to TCON - mutagen handles the ID3v2 format internally
             audio.tags['TCON'] = TCON(encoding=3, text=genre_list)
+            logger.debug(f"Set genre tags to: {genre_list}")
         
         if 'year' in metadata and metadata['year']:
             audio.tags['TDRC'] = TDRC(encoding=3, text=str(metadata['year']))
@@ -658,11 +674,22 @@ def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
             ))
         
         # Save changes
+        logger.debug(f"Calling audio.save() for {file_path}")
         audio.save()
-        return True
+        
+        # Verify the file was actually modified
+        time.sleep(0.1)  # Brief delay to ensure filesystem update
+        new_mtime = os.path.getmtime(file_path)
+        
+        if new_mtime > initial_mtime:
+            logger.info(f"✓ MP3 file successfully modified: {file_path} (mtime changed from {initial_mtime} to {new_mtime})")
+            return True
+        else:
+            logger.warning(f"⚠ MP3 file modification time did not change - tags may not have been saved: {file_path}")
+            return False
         
     except Exception as e:
-        logger.error(f"Failed to update MP3 metadata for {file_path}: {e}")
+        logger.error(f"Failed to update MP3 metadata for {file_path}: {e}", exc_info=True)
         return False
 
 
