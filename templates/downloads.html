@@ -4142,7 +4142,9 @@ function renderCompletedQueue(completed) {
       
       if (group.items.length > 1 && groupTitle) {
         // Show collapsible group
-        const groupKey = `group_${group.groupId}`;
+        // Sanitize groupId for safe CSS selector (replace special chars with underscores)
+        const safeGroupId = group.groupId.replace(/[^a-zA-Z0-9_-]/g, '_');
+        const groupKey = `group_${safeGroupId}`;
         html += `
           <div class="list-group-item">
             <div class="d-flex align-items-center gap-2 mb-2">
