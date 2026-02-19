@@ -27,6 +27,182 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================================
+# Artist Stats Caching (Performance Improvement)
+# ============================================================================
+# Cache artist stats to avoid recalculating for each track
+# This improves performance from O(n×m×k) to O(n) where k = tracks per artist
+_artist_stats_cache = {}
+
+
+def get_cached_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
+    """
+    Get artist stats from cache, or calculate and cache if not present.
+    
+    Args:
+        conn: Database connection
+        artist: Artist name
+        
+    Returns:
+        Tuple of (mean, stddev, count) from cache
+    """
+    if artist not in _artist_stats_cache:
+        from single_detection_enhanced import calculate_artist_stats as calc_stats
+        _artist_stats_cache[artist] = calc_stats(conn, artist)
+    return _artist_stats_cache[artist]
+
+
+def clear_artist_stats_cache():
+    """Clear the artist stats cache. Call between scan runs."""
+    global _artist_stats_cache
+    _artist_stats_cache.clear()
+
+
+# ============================================================================
+# Input Validation & Sanitization
+# ============================================================================
+
+def validate_track_data(
+    track_id: str,
+    title: str,
+    artist: str,
+    album: str,
+    popularity: float
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validate required track data before processing.
+    
+    Args:
+        track_id: Track ID
+        title: Track title
+        artist: Artist name
+        album: Album name
+        popularity: Track popularity (0-100)
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+        - (True, None) if valid
+        - (False, error_msg) if invalid
+    """
+    # Validate required fields
+    if not track_id or not isinstance(track_id, str):
+        return False, "Invalid track_id: must be non-empty string"
+    
+    if not title or not isinstance(title, str):
+        return False, f"Invalid title for track {track_id}: must be non-empty string"
+    
+    if not artist or not isinstance(artist, str):
+        return False, f"Invalid artist for track {track_id}: must be non-empty string"
+    
+    if not album or not isinstance(album, str):
+        return False, f"Invalid album for track {track_id}: must be non-empty string"
+    
+    # Validate popularity score
+    if not isinstance(popularity, (int, float)):
+        return False, f"Invalid popularity for {title}: must be numeric"
+    
+    if popularity < 0 or popularity > 100:
+        return False, f"Invalid popularity for {title}: must be 0-100, got {popularity}"
+    
+    return True, None
+
+
+def validate_artist_stats(
+    artist: str,
+    mean_val: float,
+    stddev_val: float,
+    track_count: int
+) -> Tuple[bool, Optional[str]]:
+    """
+    Validate artist statistics before use in calculations.
+    
+    Args:
+        artist: Artist name
+        mean_val: Artist mean popularity
+        stddev_val: Artist standard deviation
+        track_count: Number of tracks in artist catalog
+        
+    Returns:
+        Tuple of (is_valid, error_message)
+    """
+    if not artist or not isinstance(artist, str):
+        return False, "Invalid artist name"
+    
+    if not isinstance(mean_val, (int, float)) or mean_val < 0:
+        return False, f"Invalid mean popularity for {artist}: {mean_val}"
+    
+    if not isinstance(stddev_val, (int, float)) or stddev_val < 0:
+        return False, f"Invalid stddev for {artist}: {stddev_val}"
+    
+    if not isinstance(track_count, int) or track_count < 0:
+        return False, f"Invalid track count for {artist}: {track_count}"
+    
+    # Warn if track count too low for reliable statistics
+    if track_count < 3:
+        log_debug(f"[VALIDATION] Warning: {artist} has only {track_count} tracks, z-scores may be unreliable")
+    
+    return True, None
+
+
+# ============================================================================
+# Dynamic Z-Score Threshold Calculation
+# ============================================================================
+
+def get_dynamic_z_threshold(
+    track_count: int,
+    release_year: Optional[int] = None,
+    is_compilation: bool = False
+) -> float:
+    """
+    Calculate dynamic z-score threshold based on catalog size and release date.
+    
+    Rationale:
+    - Larger catalogs: stricter threshold (more data = more confident detection)
+    - Smaller catalogs: relaxed threshold (fewer data points = less reliable)
+    - Pre-2000 releases: relaxed threshold (sparse Last.fm data)
+    - Compilations: stricter threshold (higher baseline popularity)
+    
+    Args:
+        track_count: Number of tracks in artist catalog
+        release_year: Optional release year of track
+        is_compilation: Whether this is a compilation album
+        
+    Returns:
+        Dynamic z-score threshold (typically 1.5-2.5)
+    """
+    # Base threshold depends on catalog size
+    if track_count < 5:
+        # Very small catalog: very relaxed threshold
+        threshold = 1.5
+    elif track_count < 10:
+        # Small catalog: relaxed threshold
+        threshold = 1.8
+    elif track_count < 50:
+        # Medium catalog: normal threshold
+        threshold = 2.0
+    elif track_count < 200:
+        # Large catalog: stricter threshold
+        threshold = 1.9
+    else:
+        # Very large catalog: very strict threshold
+        threshold = 1.8
+    
+    # Age adjustment: pre-2000 releases are less reliable (sparse Last.fm data)
+    if release_year and release_year < 2000:
+        # Reduce threshold by 0.2-0.3 for pre-2000 releases
+        years_before_2000 = 2000 - release_year
+        age_reduction = min(0.3, years_before_2000 * 0.02)  # ~2% per year, max 0.3
+        threshold = max(1.2, threshold - age_reduction)
+    
+    # Compilation adjustment: stricter threshold (popularity spread usually lower)
+    if is_compilation:
+        threshold = min(threshold + 0.2, 2.5)  # Compilations need higher standout score
+    
+    log_debug(f"[THRESHOLD] Dynamic z-threshold: {threshold:.2f} (tracks={track_count}, year={release_year}, compilation={is_compilation})")
+    
+    return threshold
+
+
+# ============================================================================
 # Configuration Loading
 # ============================================================================
 
@@ -1231,6 +1407,13 @@ def detect_single_enhanced(
         'single_detection_last_updated': datetime.now().isoformat()
     }
     
+    # VALIDATION: Check input data integrity
+    is_valid, validation_error = validate_track_data(track_id, title, artist, album, popularity)
+    if not is_valid:
+        log_debug(f"[VALIDATION] Track validation failed: {validation_error}")
+        log_info(f"   ⚠ Skipping {title}: {validation_error}")
+        return result
+    
     # Load source confidence settings from config
     source_confidence_settings = get_source_confidence_settings()
     log_debug(f"[CONFIG] Source confidence settings: {source_confidence_settings}")
@@ -1240,12 +1423,27 @@ def detect_single_enhanced(
 
     # Get ARTIST-level statistics (across entire catalogue for comparison)
     # This identifies true standouts in the artist's body of work
-    artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
+    # Use cached version to improve performance (O(n) instead of O(n×m×k))
+    artist_mean, artist_stddev, artist_track_count = get_cached_artist_stats(conn, artist)
     log_debug(f"[ARTIST_STATS] Mean: {artist_mean:.1f}, StdDev: {artist_stddev:.1f}, Tracks: {artist_track_count}")
 
+    # VALIDATION: Check artist stats integrity
+    is_valid, validation_error = validate_artist_stats(artist, artist_mean, artist_stddev, artist_track_count)
+    if not is_valid:
+        log_debug(f"[VALIDATION] Artist stats validation failed: {validation_error}")
+        # Continue with 0 values rather than failing
+        artist_mean, artist_stddev, artist_track_count = 0.0, 0.0, 0
+    
     # Get album statistics for album-level filtering (two-stage approach)
     album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
     log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
+    
+    # VALIDATION: Check album stats integrity
+    is_valid, validation_error = validate_artist_stats(album, album_mean, album_stddev, album_track_count)
+    if not is_valid:
+        log_debug(f"[VALIDATION] Album stats validation failed: {validation_error}")
+        # Continue with 0 values rather than failing
+        album_mean, album_stddev, album_median, album_track_count = 0.0, 0.0, 0.0, 0
 
     # Create cursor for queries
     cursor = conn.cursor()
@@ -1375,7 +1573,7 @@ def detect_single_enhanced(
                     album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                     result['z_score'] = album_z
                     result['album_z_score'] = album_z
-                    artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                     artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                     result['artist_z_score'] = artist_z
                     return result
@@ -1416,12 +1614,13 @@ def detect_single_enhanced(
             # Quick z-score check to see if we can skip MusicBrainz
             temp_album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
             # Get artist stats for quick artist_z check
-            temp_artist_mean, temp_artist_stddev, _ = calculate_artist_stats(conn, artist)
+            temp_artist_mean, temp_artist_stddev, _ = get_cached_artist_stats(conn, artist)
             temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
             
             # Only skip MusicBrainz if we already have HIGH confidence (z-scores indicate album/artist standout)
             # Medium confidence is not sufficient - allow MusicBrainz to run and add source confirmation
-            if temp_album_z >= 2.0 or temp_artist_z >= 2.0:
+            dynamic_threshold = get_dynamic_z_threshold(artist_track_count, release_year=None, is_compilation=is_compilation)
+            if temp_album_z >= dynamic_threshold or temp_artist_z >= dynamic_threshold:
                 log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
                 musicbrainz_confirmed = False
             else:
@@ -1472,7 +1671,7 @@ def detect_single_enhanced(
                             album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                             result['z_score'] = album_z
                             result['album_z_score'] = album_z
-                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                             artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                             result['artist_z_score'] = artist_z
                             return result
@@ -1548,7 +1747,7 @@ def detect_single_enhanced(
                         album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                         result['z_score'] = album_z
                         result['album_z_score'] = album_z
-                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                         artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                         result['artist_z_score'] = artist_z
                         return result
@@ -1596,7 +1795,7 @@ def detect_single_enhanced(
                         album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                         result['z_score'] = album_z
                         result['album_z_score'] = album_z
-                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                         artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                         result['artist_z_score'] = artist_z
                         return result
@@ -1651,7 +1850,7 @@ def detect_single_enhanced(
                             album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                             result['z_score'] = album_z
                             result['album_z_score'] = album_z
-                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                             artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                             result['artist_z_score'] = artist_z
                             return result
@@ -1691,12 +1890,13 @@ def detect_single_enhanced(
             # Quick z-score check to see if we can skip MusicBrainz
             temp_album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
             # Get artist stats for quick artist_z check
-            temp_artist_mean, temp_artist_stddev, _ = calculate_artist_stats(conn, artist)
+            temp_artist_mean, temp_artist_stddev, _ = get_cached_artist_stats(conn, artist)
             temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
             
             # Only skip MusicBrainz if we already have HIGH confidence (z-scores indicate album/artist standout)
             # Medium confidence is not sufficient - allow MusicBrainz to run and add source confirmation
-            if temp_album_z >= 2.0 or temp_artist_z >= 2.0:
+            dynamic_threshold = get_dynamic_z_threshold(artist_track_count, release_year=None, is_compilation=is_compilation)
+            if temp_album_z >= dynamic_threshold or temp_artist_z >= dynamic_threshold:
                 log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
                 musicbrainz_confirmed = False
             else:
@@ -1747,7 +1947,7 @@ def detect_single_enhanced(
                             album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                             result['z_score'] = album_z
                             result['album_z_score'] = album_z
-                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                             artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                             result['artist_z_score'] = artist_z
                             return result
@@ -1828,7 +2028,7 @@ def detect_single_enhanced(
                             album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                             result['z_score'] = album_z
                             result['album_z_score'] = album_z
-                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                             artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                             result['artist_z_score'] = artist_z
                             return result
@@ -1895,7 +2095,7 @@ def detect_single_enhanced(
                         album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                         result['z_score'] = album_z
                         result['album_z_score'] = album_z
-                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                         artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                         result['artist_z_score'] = artist_z
                         return result
@@ -1943,7 +2143,7 @@ def detect_single_enhanced(
                         album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
                         result['z_score'] = album_z
                         result['album_z_score'] = album_z
-                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
                         artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
                         result['artist_z_score'] = artist_z
                         return result
