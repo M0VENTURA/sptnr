@@ -383,6 +383,7 @@
                             </button>
                         </div>
                         <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
+                        <input type="hidden" id="album_mbid" name="album_mbid" value="">
                         <div class="form-text">These genres will be applied to all tracks in the album.</div>
                     </div>
                 </div>
@@ -1080,7 +1081,7 @@
                                 <div class="small text-muted mb-2">
                                     <strong>MBID:</strong> <code style="font-size: 0.75rem;">${result.mbid}</code>
                                 </div>
-                                 <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}')">
+                                 <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${year}', '${result.primary_type || 'album'}', '${result.mbid}', '', '${result.cover_art_url || ''}', '')">
                                     <i class="bi bi-check-circle"></i> Use This Album
                                 </button>
                             </div>
@@ -1112,9 +1113,32 @@
                             ${genres ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Genres:</strong> ' + genres + '</p>' : ''}
                             ${styles ? '<p class="mb-2" style="font-size: 0.85rem;"><strong>Styles:</strong> ' + styles + '</p>' : ''}
                             <div class="gap-2">
-                                <button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}')">
-                                    <i class="bi bi-check-circle"></i> Use This Album
-                                </button>
+                                ${(() => {
+                                    // Infer album type from Discogs format
+                                    const formats = (result.format || []).map(f => f.toLowerCase().trim());
+                                    let inferredType = '';
+                                    
+                                    // Check if it's explicitly a Single
+                                    if (formats.some(f => f.includes('single'))) {
+                                        inferredType = 'single';
+                                    }
+                                    // Check if it's explicitly an EP
+                                    else if (formats.some(f => f.includes('ep'))) {
+                                        inferredType = 'ep';
+                                    }
+                                    // Check if it's a Compilation
+                                    else if (formats.some(f => f.includes('compilation'))) {
+                                        inferredType = 'compilation';
+                                    }
+                                    // Default to album if ambiguous
+                                    else {
+                                        inferredType = 'album';
+                                    }
+                                    
+                                    return `<button class="btn btn-sm btn-primary" onclick="populateAlbumFields('${escapeJsString(result.title)}', '${result.year || ''}', '${inferredType}', '', '${result.discogs_id || ''}', '', '${genres.replace(/'/g, "\\'")}')" style="width: 100%;">
+                                        <i class="bi bi-check-circle"></i> Use This Album
+                                    </button>`;
+                                })()}
                             </div>
                         </div>
                     </div>
