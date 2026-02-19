@@ -107,14 +107,22 @@ GENRE_WEIGHTS = {
     "spotify": 0.05        # Keep low (too granular)
 }
 
-# Popularity-based confidence system constants
-DEFAULT_POPULARITY_MEAN = 10  # Default mean when no valid scores
-DEFAULT_HIGH_CONF_OFFSET = 6  # Offset above mean for high confidence (popularity >= mean + 6)
-DEFAULT_MEDIUM_CONF_THRESHOLD = -0.3  # Threshold below top 50% mean for medium confidence
 
-# Artist-level popularity comparison constants
-UNDERPERFORMING_THRESHOLD = 0.6  # Album median must be >= 60% of artist median to not be underperforming
-MIN_TRACKS_FOR_ARTIST_COMPARISON = 10  # Minimum tracks needed for reliable artist-level comparison
+# --- Standout & Star Rating Config ---
+STANDOUT_CONFIG = {
+    'album_zscore_threshold': 1.0,         # Album standout: z >= 1.0
+    'album_top_n': 2,                     # Or top 2 in album
+    'artist_zscore_threshold': 1.5,       # Artist standout: z >= 1.5
+    'artist_top_percentile': 0.10,        # Top 10% of artist catalog
+    'artist_min_tracks': 10,              # Min tracks for artist-level filter
+    'star_5': {'album_z': 1.0, 'artist_z': 1.5, 'artist_pct': 0.10},
+    'star_4': {'album_z': 1.0, 'artist_z': 1.0, 'artist_pct': 0.20},
+    'star_3': {'album_z': 0.0},
+    'star_2': {'album_mean': True},
+    'star_1': {'default': True},
+}
+
+# --- End Config ---
 
 # Metadata source display constant
 POPULARITY_METADATA_SOURCE_NAME = "Spotify/Last.fm popularity"  # Display name for tracks with popularity data but no single sources
@@ -3448,67 +3456,83 @@ def popularity_scan(
                     log_unified(f'Popularity Scan - Popularity Scanning for {album} Complete')
                     log_info(f'Album "{artist} - {album}" scanned. Popularity applied to {album_scanned} tracks')
                     
-                    # After album complete, calculate standout tracks for artist
-                    # Standout = z-score >= 2.0 (2+ stdev above artist mean) + >= 1000 listeners
-                    if album_scanned > 0:
-                        try:
-                            log_info(f'Analyzing standout tracks for artist: {artist}')
+                    # --- Standout & Star Rating Assignment ---
+                    #
+                    # This section applies album- and artist-normalized standout detection and star rating assignment.
+                    #
+                    # Album standout: z >= config or top N in album
+                    # Artist standout: z >= config and in top X% of artist catalog
+                    # 5★: Both album and artist standout, top 10% of artist
+                    # 4★: Album standout and artist z >= 1.0 or top 20%
+                    # 3★: Album standout only or above album median
+                    # 2★: Not standout, but above album mean
+                    # 1★: Below album mean or excluded from stats
+                    try:
+                        log_info(f'Analyzing standout/star ratings for artist: {artist}')
+                        cursor.execute("""
+                            SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
+                            WHERE artist = ? AND is_single = 0 AND album NOT IN (
+                                SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
+                            ) AND album NOT IN (
+                                SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
+                            )
+                        """, (artist, artist, artist))
+                        artist_tracks = cursor.fetchall()
+                        if not artist_tracks:
+                            return
+                        # Gather all popularity scores for artist
+                        artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
+                        if len(artist_scores) < 2:
+                            return
+                        artist_mean = mean(artist_scores)
+                        artist_stdev = stdev(artist_scores) if len(artist_scores) > 1 else 1
+                        sorted_artist_scores = sorted(artist_scores, reverse=True)
+                        def artist_percentile(score):
+                            return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
+                        for track in artist_tracks:
+                            track_id = row_get(track, 'id')
+                            track_title = row_get(track, 'title')
+                            album = row_get(track, 'album', '')
+                            score = row_get(track, 'popularity_score', 0)
+                            if score <= 0 or artist_stdev == 0:
+                                cursor.execute("""
+                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, star_rating = 1
+                                    WHERE id = ?
+                                """, (track_id,))
+                                continue
+                            # Album-level stats
                             cursor.execute("""
-                                SELECT id, title, lastfm_track_playcount FROM tracks
-                                WHERE artist = ? AND is_single = 0 AND album NOT IN (
-                                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND album_context_live = 1
-                                ) AND album NOT IN (
-                                    SELECT DISTINCT album FROM tracks WHERE artist = ? AND discogs_format_descriptions LIKE '%live%'
-                                )
-                            """, (artist, artist, artist))
-                            artist_tracks = cursor.fetchall()
-                            
-                            if artist_tracks:
-                                listeners_list = [row_get(t, 'lastfm_track_playcount', 0) for t in artist_tracks if row_get(t, 'lastfm_track_playcount', 0) > 0]
-                                
-                                if len(listeners_list) >= 2:
-                                    artist_mean = mean(listeners_list)
-                                    artist_stdev = stdev(listeners_list) if len(listeners_list) > 1 else 0
-                                    
-                                    log_debug(f'Artist {artist} listener stats: mean={artist_mean:.0f}, stdev={artist_stdev:.0f}')
-                                    standup_count = 0
-                                    for track in artist_tracks:
-                                        track_id = row_get(track, 'id')
-                                        track_title = row_get(track, 'title')
-                                        listeners = row_get(track, 'lastfm_track_playcount', 0)
-                                        
-                                        if listeners > 0 and artist_stdev > 0:
-                                            track_zscore = (listeners - artist_mean) / artist_stdev
-                                            
-                                            # Mark as standout if z-score >= 2.0 AND listeners >= 1000
-                                            is_standout = 1 if (track_zscore >= 2.0 and listeners >= 1000) else 0
-                                            
-                                            if is_standout:
-                                                cursor.execute("""
-                                                    UPDATE tracks SET is_standout_track = ?, artist_z_score = ?
-                                                    WHERE id = ?
-                                                """, (is_standout, track_zscore, track_id))
-                                                standup_count += 1
-                                                log_info(f'Marked as standout: {track_title} (z-score: {track_zscore:.2f}, listeners: {listeners})')
-                                            else:
-                                                cursor.execute("""
-                                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = ?
-                                                    WHERE id = ?
-                                                """, (track_zscore, track_id))
-                                        else:
-                                            cursor.execute("""
-                                                UPDATE tracks SET is_standout_track = 0
-                                                WHERE id = ?
-                                            """, (track_id,))
-                                    
-                                    conn.commit()
-                                    if standup_count > 0:
-                                        log_unified(f'Popularity Scan - Identified {standup_count} standout tracks for {artist}')
-                        
-                        except Exception as e:
-                            log_debug(f'Standout track analysis failed for {artist}: {e}')
-                
-                # End of popularity scanning section (skipped in singles_only mode)
+                                SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
+                            """, (artist, album))
+                            album_scores = [row[0] for row in cursor.fetchall()]
+                            album_mean = mean(album_scores) if album_scores else 0
+                            album_stdev = stdev(album_scores) if len(album_scores) > 1 else 1
+                            sorted_album_scores = sorted(album_scores, reverse=True)
+                            album_z = (score - album_mean) / album_stdev if album_stdev > 0 else 0
+                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] or score in sorted_album_scores[:STANDOUT_CONFIG['album_top_n']])
+                            # Artist-level stats
+                            artist_z = (score - artist_mean) / artist_stdev if artist_stdev > 0 else 0
+                            is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
+                            # Star rating assignment
+                            if is_album_standout and is_artist_standout:
+                                star = 5
+                            elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
+                                star = 4
+                            elif is_album_standout:
+                                star = 3
+                            elif album_mean and score > album_mean:
+                                star = 2
+                            else:
+                                star = 1
+                            cursor.execute("""
+                                UPDATE tracks SET is_standout_track = ?, artist_z_score = ?, star_rating = ?
+                                WHERE id = ?
+                            """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
+                            log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
+                        conn.commit()
+                    except Exception as e:
+                        log_debug(f'Standout/star rating analysis failed for {artist}: {e}')
+                    # --- End standout/star rating section ---
 
                 # CRITICAL FIX: Close the read cursor BEFORE single detection to prevent lock contention
                 # The original cursor from line ~1949 holds a READ lock on the database.
