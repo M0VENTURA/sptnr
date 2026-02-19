@@ -1304,10 +1304,11 @@ function attachSlskdEventHandlers() {
 
   document.querySelectorAll('.slskd-album-header').forEach(header => {
     header.addEventListener('click', function(e) {
-      // Only toggle if the click is not on the download button
       if (e.target.closest('.slskd-album-download')) return;
       const targetId = this.getAttribute('data-target');
-      const filesDiv = document.getElementById(targetId);
+      // Sanitize targetId for selector
+      const safeTargetId = sanitizeId(targetId);
+      const filesDiv = document.getElementById(safeTargetId);
       const chevron = this.querySelector('.slskd-chevron');
       if (!filesDiv || !chevron) return;
       const shouldShow = filesDiv.style.display === 'none' || filesDiv.style.display === '';
@@ -1315,6 +1316,10 @@ function attachSlskdEventHandlers() {
       chevron.classList.toggle('rotated', shouldShow);
     });
   });
+// Helper to sanitize IDs for use as element IDs/selectors
+function sanitizeId(id) {
+  return String(id).replace(/[^a-zA-Z0-9_-]/g, '_');
+}
 
   document.querySelectorAll('.slskd-album-download').forEach(btn => {
     btn.addEventListener('click', function(e) {
@@ -5506,14 +5511,24 @@ async function performBatchGrouping(groupType, groupName, groupArtist, itemIds) 
         group_artist: groupArtist
       })
     });
-    
-    const data = await response.json();
-    
+    let data;
+    const text = await response.text();
+    try {
+      data = JSON.parse(text);
+    } catch (err) {
+      // If response is HTML, show user-friendly error
+      if (text.startsWith('<!doctype') || text.startsWith('<html')) {
+        alert('❌ Server error: Received HTML instead of JSON. Please check server logs or try again later.');
+        return;
+      } else {
+        alert('❌ Unexpected server response.');
+        return;
+      }
+    }
     if (data.success) {
       alert(`✅ Grouped ${itemIds.length} items into "${groupName}"`);
       clearSelection();
       await loadQueueStatus();
-      
       // Close modal
       const modal = bootstrap.Modal.getInstance(document.getElementById('batchGroupModal'));
       if (modal) modal.hide();
