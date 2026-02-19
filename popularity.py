@@ -4445,7 +4445,8 @@ def popularity_scan(
                 "scan_type": "popularity_scan",
                 "processed_artists": total_artists,
                 "total_artists": total_artists,
-                "percent_complete": 100
+                "percent_complete": 100,
+                "current_artist": None  # Clear current artist when scan completes
             }
             with open(POPULARITY_PROGRESS_FILE, 'w') as f:
                 json.dump(progress_data, f)
