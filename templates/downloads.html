@@ -4381,7 +4381,24 @@ async function organizeGroup(groupId) {
       return;
     }
     
-    const itemsInGroup = data.completed.filter(item => item.import_group === groupId);
+    // Handle two types of grouping:
+    // 1. Batch-grouped items (album + artist set): groupId = "artist_album"
+    // 2. Import-based grouping: groupId = import_group value
+    let itemsInGroup = [];
+    
+    // Try to parse batch-grouped format: "Artist_Album"
+    // Find items where artist + "_" + album matches the groupId
+    itemsInGroup = data.completed.filter(item => {
+      // Check for batch-grouped items (have album field)
+      if (item.album) {
+        const batchGroupId = `${item.artist || 'Various'}_${item.album}`;
+        if (batchGroupId === groupId) return true;
+      }
+      // Check for import-based grouping
+      if (item.import_group === groupId) return true;
+      return false;
+    });
+    
     if (itemsInGroup.length === 0) {
       alert('❌ No items found in this group');
       return;
@@ -4391,10 +4408,9 @@ async function organizeGroup(groupId) {
     currentOrganizeGroupId = groupId;
     currentOrganizeGroupItems = itemsInGroup;
     
-    // Parse artist and album from group ID (format: "Artist_Album")
-    const parts = groupId.split('_');
-    const artist = parts.slice(0, -1).join(' ');  // All but last part
-    const album = parts[parts.length - 1];
+    // Determine artist and album from items
+    const artist = itemsInGroup[0].artist || 'Various';
+    const album = itemsInGroup[0].album || 'Unknown Album';
     
     // Populate modal fields
     document.getElementById('orgArtist').value = artist;
@@ -4431,7 +4447,24 @@ async function deleteGroup(groupId) {
       return;
     }
     
-    const itemsInGroup = data.completed.filter(item => item.import_group === groupId);
+    // Handle two types of grouping:
+    // 1. Batch-grouped items (album + artist set): groupId = "artist_album"
+    // 2. Import-based grouping: groupId = import_group value
+    let itemsInGroup = [];
+    
+    // Try to parse batch-grouped format: "Artist_Album"
+    // Find items where artist + "_" + album matches the groupId
+    itemsInGroup = data.completed.filter(item => {
+      // Check for batch-grouped items (have album field)
+      if (item.album) {
+        const batchGroupId = `${item.artist || 'Various'}_${item.album}`;
+        if (batchGroupId === groupId) return true;
+      }
+      // Check for import-based grouping
+      if (item.import_group === groupId) return true;
+      return false;
+    });
+    
     if (itemsInGroup.length === 0) {
       alert('❌ No items found in this group');
       return;
