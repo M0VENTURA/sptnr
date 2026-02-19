@@ -3733,7 +3733,10 @@ function displayMusicBrainzResults(results) {
     window.mbReleaseData[dataKey] = {
       artist: release.artist,
       album: release.title,
-      tracks: release.tracks
+      tracks: release.tracks,
+      year: release.date || release.year || null,
+      release_id: release.release_id || release.release_group_id || null,
+      source: release.source || 'musicbrainz'
     };
     
     // Handle both MusicBrainz and Discogs formats
@@ -3833,25 +3836,36 @@ function displayMusicBrainzResults(results) {
         return;
       }
       
-      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks);
+      downloadMusicBrainzRelease(releaseData.artist, releaseData.album, releaseData.tracks, releaseData.year, releaseData.release_id, releaseData.source);
     });
   });
 }
 
-async function downloadMusicBrainzRelease(artist, album, tracks) {
+async function downloadMusicBrainzRelease(artist, album, tracks, year, release_id, source) {
   if (!tracks || tracks.length === 0) {
     alert('No tracks to download');
     return;
   }
   
   try {
-    // Batch add all tracks in a single API call
+    // Extract year from date string if needed (e.g., "2023-04-15" -> "2023")
+    let releaseYear = null;
+    if (year) {
+      releaseYear = year.toString().substring(0, 4);
+    }
+    
+    // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata
     const trackItems = tracks.map(track => ({
       artist: artist,
       title: track.title,
       album: album,
       source: 'soulseek',
-      priority: 5
+      priority: 5,
+      track_number: track.position || null,
+      album_artist: artist,
+      year: releaseYear,
+      release_id: release_id,
+      release_source: source || 'musicbrainz'
     }));
     
     // Send batch request with import_group based on artist+album

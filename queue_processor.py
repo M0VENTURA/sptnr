@@ -413,6 +413,15 @@ def process_queue(client):
         # This ensures downloads that complete between processing cycles are detected
         check_completed_downloads()
         
+        # Process completed downloads with MusicBrainz/Discogs metadata
+        try:
+            from post_download_processor import process_pending_completed_items
+            post_stats = process_pending_completed_items(limit=5)
+            if post_stats.get('processed', 0) > 0:
+                logger.info(f"Post-download processing: {post_stats['processed']} items organized")
+        except Exception as e:
+            logger.error(f"Error in post-download processing: {e}")
+        
         return processed
         
     except Exception as e:

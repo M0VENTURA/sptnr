@@ -535,7 +535,12 @@ def update_schema(db_path):
         "last_failure_time": "TIMESTAMP",
         "retry_delay_minutes": "INTEGER DEFAULT 30",
         "next_retry_at": "TIMESTAMP",
-        "imported_at": "TIMESTAMP"
+        "imported_at": "TIMESTAMP",
+        "track_number": "TEXT",
+        "album_artist": "TEXT",
+        "year": "TEXT",
+        "release_id": "TEXT",
+        "release_source": "TEXT"
     }
     
     queue_columns_added = []
