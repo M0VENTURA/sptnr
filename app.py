@@ -5322,6 +5322,7 @@ def album_edit(artist, album):
     # Get form data
     album_title = request.form.get("album_title", "").strip()
     album_artist = request.form.get("album_artist", "").strip()
+    track_artist = request.form.get("track_artist", "").strip()  # New: Track artist to apply to all tracks
     release_year = request.form.get("release_year", "").strip() or None
     album_type = request.form.get("album_type", "").strip() or None
     album_mbid = request.form.get("album_mbid", "").strip() or None
@@ -5330,6 +5331,7 @@ def album_edit(artist, album):
     # Debug logging for character encoding issues (use debug level to avoid log noise)
     logging.debug(f"Album edit - URL artist: {repr(artist)}, form album_artist: {repr(album_artist)}")
     logging.debug(f"Album edit - URL album: {repr(album)}, form album_title: {repr(album_title)}")
+    logging.debug(f"Album edit - track_artist: {repr(track_artist)}")
     
     if not album_title or not album_artist:
         flash("Album title and artist are required", "danger")
@@ -5410,6 +5412,10 @@ def album_edit(artist, album):
                             'album': album_title,
                             'albumartist': album_artist,
                         }
+                        
+                        # Add track artist if provided - update individual track artist tag
+                        if track_artist:
+                            metadata_updates['artist'] = track_artist
                         
                         if release_year:
                             metadata_updates['year'] = release_year
@@ -13958,6 +13964,53 @@ def api_album_apply_discogs_id():
     except Exception as e:
         logger = logging.getLogger('sptnr')
         logger.error(f"Apply Discogs ID error: {e}")
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/album/majority-artist", methods=["POST"])
+def api_album_majority_artist():
+    """Get the most common artist from all tracks in an album"""
+    from collections import Counter
+    try:
+        data = request.get_json()
+        artist = data.get("artist", "").strip()
+        album = data.get("album", "").strip()
+        
+        if not artist or not album:
+            return jsonify({"error": "Missing required fields"}), 400
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all track artists from this album
+        cursor.execute("""
+            SELECT artist FROM tracks 
+            WHERE album = ? 
+            ORDER BY track_number ASC
+        """, (album,))
+        
+        tracks = cursor.fetchall()
+        conn.close()
+        
+        if not tracks:
+            # No tracks found, return the album artist as default
+            return jsonify({"majority_artist": artist}), 200
+        
+        # Count occurrences of each artist
+        artists = [t['artist'] for t in tracks]
+        artist_counts = Counter(artists)
+        
+        # Get the most common artist
+        most_common_artist = artist_counts.most_common(1)[0][0] if artist_counts else artist
+        
+        # Also return the count and total tracks for reference
+        return jsonify({
+            "majority_artist": most_common_artist,
+            "count": artist_counts[most_common_artist],
+            "total_tracks": len(artists)
+        }), 200
+    except Exception as e:
+        logger = logging.getLogger('sptnr')
+        logger.error(f"Get majority artist error: {e}")
         return jsonify({"error": str(e)}), 500
 
 @app.route("/api/album/apply-genres", methods=["POST"])

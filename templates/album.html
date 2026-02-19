@@ -321,6 +321,17 @@
                         <label for="album_artist" class="form-label">Album Artist</label>
                         <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
                     </div>
+                    <div class="col-md-6">
+                        <label for="track_artist" class="form-label">Track Artist(s)</label>
+                        <div class="input-group">
+                            <input type="text" class="form-control" id="track_artist" name="track_artist" placeholder="Artist name to apply to all track tags">
+                            <button class="btn btn-outline-secondary" type="button" onclick="populateMajorityArtist()">
+                                <i class="bi bi-magic"></i> Auto-Fill
+                            </button>
+                        </div>
+                        <div class="form-text">Auto-Fill will detect the most common artist name across all tracks in this album and populate this field.</div>
+                    </div>
+                    <div class="col-md-6"></div>
                     <div class="col-md-4">
                         <label for="release_year" class="form-label">Release Year</label>
                         <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
@@ -335,6 +346,7 @@
                             <option value="compilation" {% if album_data and album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Compilation</option>
                         </select>
                     </div>
+                    <div class="col-md-4"></div>
                     
                     <!-- Genre Multi-Select -->
                     <div class="col-12">
@@ -1638,6 +1650,44 @@
         
         // Scroll to the form
         document.getElementById('albumMetadataForm').scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    
+    function populateMajorityArtist() {
+        const album = "{{ album_name }}";
+        const artist = "{{ artist_name }}";
+        const trackArtistInput = document.getElementById('track_artist');
+        
+        // Show loading state
+        const originalText = trackArtistInput.value;
+        trackArtistInput.disabled = true;
+        trackArtistInput.placeholder = 'Loading...';
+        
+        fetch('/api/album/majority-artist', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ album: album, artist: artist })
+        })
+        .then(response => {
+            if (!response.ok) {
+                throw new Error(`HTTP error! status: ${response.status}`);
+            }
+            return response.json();
+        })
+        .then(data => {
+            if (data.majority_artist) {
+                trackArtistInput.value = data.majority_artist;
+                trackArtistInput.disabled = false;
+                trackArtistInput.placeholder = 'Artist name to apply to all track tags';
+            } else {
+                throw new Error('No artist data returned');
+            }
+        })
+        .catch(error => {
+            alert('❌ Error loading majority artist: ' + error.message);
+            trackArtistInput.disabled = false;
+            trackArtistInput.placeholder = 'Artist name to apply to all track tags';
+            trackArtistInput.value = originalText;
+        });
     }
     
     // Album genre management (currentAlbumGenres declared at top of script)
