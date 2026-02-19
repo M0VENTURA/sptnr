@@ -4348,8 +4348,13 @@ def popularity_scan(
                                 for title, stars, reason in possible_singles:
                                     log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
                             
-                            if rest_of_album and (detected_singles or standout_tracks or possible_singles):
-                                log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                            if rest_of_album:
+                                # If there are special tracks (singles/standouts/close matches), label as "Rest of Album"
+                                # Otherwise, label as "All Tracks" since there are no special categories
+                                if detected_singles or standout_tracks or possible_singles:
+                                    log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
+                                else:
+                                    log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
                                 for title, stars, _ in rest_of_album:
                                     log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
                         except Exception as e:
@@ -4440,7 +4445,8 @@ def popularity_scan(
                 "scan_type": "popularity_scan",
                 "processed_artists": total_artists,
                 "total_artists": total_artists,
-                "percent_complete": 100
+                "percent_complete": 100,
+                "current_artist": None  # Clear current artist when scan completes
             }
             with open(POPULARITY_PROGRESS_FILE, 'w') as f:
                 json.dump(progress_data, f)
