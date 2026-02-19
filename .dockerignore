@@ -30,3 +30,5 @@ batch_rate.py
 # Ignore OS-specific files
 .DS_Store
 Thumbs.db
+
+# NOTE: Do NOT ignore static/ - it contains critical frontend assets (genre-utils.js, etc.)

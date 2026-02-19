@@ -26,8 +26,12 @@ RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
     pip install --no-cache-dir flask beautifulsoup4 beets gunicorn pyyaml
 
-# App files
+# App files - COPY ALL FILES INCLUDING STATIC FOLDER
 COPY . /app
+
+# Verify static folder exists
+RUN if [ ! -d /app/static ]; then mkdir -p /app/static; fi && \
+    echo "Static folder verification: $(ls -la /app/static | head -3)"
 
 # Make entrypoint executable
 RUN chmod +x /app/entrypoint.sh

@@ -124,6 +124,9 @@ STANDOUT_CONFIG = {
     'star_1': {'default': True},
 }
 
+# Threshold for detecting underperforming albums (album median < artist_median * this value)
+UNDERPERFORMING_THRESHOLD = 0.7
+
 # --- End Config ---
 
 # Metadata source display constant
