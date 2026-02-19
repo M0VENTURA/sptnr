@@ -14,49 +14,78 @@
     <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
   </div>
 
-  <!-- Tabs -->
-  <ul class="nav nav-tabs mb-4" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="monitorTab" data-bs-toggle="tab" data-bs-target="#monitorContent" type="button" role="tab">
-        <i class="bi bi-arrow-down-circle"></i> Download Monitor
+  <!-- Navigation Dropdown Bar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary mb-4" style="margin: -1rem -1rem 0 -1rem; padding: 0;">
+    <div class="container-fluid" style="padding: 0 1rem;">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#downloadsNav" aria-controls="downloadsNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
       </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
-        <i class="bi bi-cloud-download"></i> qBittorrent
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="slskdTab" data-bs-toggle="tab" data-bs-target="#slskdContent" type="button" role="tab">
-        <i class="bi bi-music-note-list"></i> Soulseek
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="mbTab" data-bs-toggle="tab" data-bs-target="#mbContent" type="button" role="tab">
-        <i class="bi bi-disc"></i> MusicBrainz
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="playlistTab" data-bs-toggle="tab" data-bs-target="#playlistContent" type="button" role="tab">
-        <i class="bi bi-collection-play"></i> Playlist Downloads
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab">
-        <i class="bi bi-heart"></i> Last.fm Recommendations
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="similarArtistsTab" data-bs-toggle="tab" data-bs-target="#similarArtistsContent" type="button" role="tab">
-        <i class="bi bi-person-heart"></i> Similar Artists
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="upcomingTab" data-bs-toggle="tab" data-bs-target="#upcomingContent" type="button" role="tab">
-        <i class="bi bi-calendar-event"></i> Upcoming Releases
-      </button>
-    </li>
-  </ul>
+      <div class="collapse navbar-collapse" id="downloadsNav">
+        <ul class="navbar-nav ms-auto" role="tablist">
+          <!-- Queue & Monitor -->
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="monitorTab" data-bs-toggle="tab" data-bs-target="#monitorContent" type="button" role="tab">
+              <i class="bi bi-arrow-down-circle"></i> Download Monitor
+            </button>
+          </li>
+
+          <!-- Search & Download Dropdown -->
+          <li class="nav-item dropdown" role="presentation">
+            <a class="nav-link dropdown-toggle" href="#" id="downloadsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-search"></i> Search & Download
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="downloadsDropdown">
+              <li role="presentation">
+                <button class="dropdown-item" id="qbitTab" data-bs-toggle="tab" data-bs-target="#qbitContent" type="button" role="tab">
+                  <i class="bi bi-cloud-download"></i> qBittorrent
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="slskdTab" data-bs-toggle="tab" data-bs-target="#slskdContent" type="button" role="tab">
+                  <i class="bi bi-music-note-list"></i> Soulseek
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="mbTab" data-bs-toggle="tab" data-bs-target="#mbContent" type="button" role="tab">
+                  <i class="bi bi-disc"></i> MusicBrainz
+                </button>
+              </li>
+              <li><hr class="dropdown-divider"></li>
+              <li role="presentation">
+                <button class="dropdown-item" id="playlistTab" data-bs-toggle="tab" data-bs-target="#playlistContent" type="button" role="tab">
+                  <i class="bi bi-collection-play"></i> Playlist Downloads
+                </button>
+              </li>
+            </ul>
+          </li>
+
+          <!-- Discover Dropdown -->
+          <li class="nav-item dropdown" role="presentation">
+            <a class="nav-link dropdown-toggle" href="#" id="discoverDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-compass"></i> Discover
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="discoverDropdown">
+              <li role="presentation">
+                <button class="dropdown-item" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab">
+                  <i class="bi bi-heart"></i> Last.fm Recommendations
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="similarArtistsTab" data-bs-toggle="tab" data-bs-target="#similarArtistsContent" type="button" role="tab">
+                  <i class="bi bi-person-heart"></i> Similar Artists
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="upcomingTab" data-bs-toggle="tab" data-bs-target="#upcomingContent" type="button" role="tab">
+                  <i class="bi bi-calendar-event"></i> Upcoming Releases
+                </button>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
 
   <div class="tab-content">
     <!-- Download Queue Monitor Tab -->

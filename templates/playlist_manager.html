@@ -14,34 +14,62 @@
     <p class="text-muted mb-0">Create, manage, and import playlists from multiple sources</p>
   </div>
 
-  <!-- Tabs Navigation -->
-  <ul class="nav nav-tabs mb-4" role="tablist">
-    <li class="nav-item" role="presentation">
-      <button class="nav-link active" id="browseTab" data-bs-toggle="tab" data-bs-target="#browseContent" type="button" role="tab" aria-controls="browseContent" aria-selected="true">
-        <i class="bi bi-folder2-open"></i> Browse & Manage
+  <!-- Navigation Dropdown Bar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary mb-4" style="margin: -1rem -1rem 0 -1rem; padding: 0;">
+    <div class="container-fluid" style="padding: 0 1rem;">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#playlistsNav" aria-controls="playlistsNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
       </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="spotifyTab" data-bs-toggle="tab" data-bs-target="#spotifyContent" type="button" role="tab" aria-controls="spotifyContent" aria-selected="false">
-        <i class="bi bi-spotify"></i> Import from Spotify
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="smartTab" data-bs-toggle="tab" data-bs-target="#smartContent" type="button" role="tab" aria-controls="smartContent" aria-selected="false">
-        <i class="bi bi-sliders"></i> Smart Playlists
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab" aria-controls="lastfmContent" aria-selected="false">
-        <i class="bi bi-heart"></i> Last.fm Recommendations
-      </button>
-    </li>
-    <li class="nav-item" role="presentation">
-      <button class="nav-link" id="listenbrainzTab" data-bs-toggle="tab" data-bs-target="#listenbrainzContent" type="button" role="tab" aria-controls="listenbrainzContent" aria-selected="false">
-        <i class="bi bi-brain"></i> ListenBrainz
-      </button>
-    </li>
-  </ul>
+      <div class="collapse navbar-collapse" id="playlistsNav">
+        <ul class="navbar-nav ms-auto" role="tablist">
+          <!-- Browse -->
+          <li class="nav-item" role="presentation">
+            <button class="nav-link active" id="browseTab" data-bs-toggle="tab" data-bs-target="#browseContent" type="button" role="tab" aria-controls="browseContent" aria-selected="true">
+              <i class="bi bi-folder2-open"></i> Browse & Manage
+            </button>
+          </li>
+
+          <!-- Create & Manage Dropdown -->
+          <li class="nav-item dropdown" role="presentation">
+            <a class="nav-link dropdown-toggle" href="#" id="createDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-sliders"></i> Create
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="createDropdown">
+              <li role="presentation">
+                <button class="dropdown-item" id="smartTab" data-bs-toggle="tab" data-bs-target="#smartContent" type="button" role="tab" aria-controls="smartContent" aria-selected="false">
+                  <i class="bi bi-sliders"></i> Smart Playlists
+                </button>
+              </li>
+            </ul>
+          </li>
+
+          <!-- Import Dropdown -->
+          <li class="nav-item dropdown" role="presentation">
+            <a class="nav-link dropdown-toggle" href="#" id="importDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-download"></i> Import
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="importDropdown">
+              <li role="presentation">
+                <button class="dropdown-item" id="spotifyTab" data-bs-toggle="tab" data-bs-target="#spotifyContent" type="button" role="tab" aria-controls="spotifyContent" aria-selected="false">
+                  <i class="bi bi-spotify"></i> Spotify
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="lastfmTab" data-bs-toggle="tab" data-bs-target="#lastfmContent" type="button" role="tab" aria-controls="lastfmContent" aria-selected="false">
+                  <i class="bi bi-heart"></i> Last.fm Recommendations
+                </button>
+              </li>
+              <li role="presentation">
+                <button class="dropdown-item" id="listenbrainzTab" data-bs-toggle="tab" data-bs-target="#listenbrainzContent" type="button" role="tab" aria-controls="listenbrainzContent" aria-selected="false">
+                  <i class="bi bi-brain"></i> ListenBrainz
+                </button>
+              </li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
 
   <div class="tab-content">
     <!-- Browse & Manage Tab -->
