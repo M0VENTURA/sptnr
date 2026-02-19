@@ -137,9 +137,118 @@ def update_file_metadata(file_path, metadata):
         return False
 
 
+def organize_via_beets(file_path):
+    """
+    Organize a file using beets (update mode).
+    
+    After post-download processor updates file metadata tags, 
+    use beets to move the file to its final location based on 
+    the metadata tags that were just written.
+    
+    Args:
+        file_path: Path to audio file with updated tags
+    
+    Returns:
+        dict: {'success': bool, 'target_path': str, 'error': str}
+    """
+    try:
+        import subprocess
+        from pathlib import Path
+        
+        # Get the directory containing the file
+        file_dir = str(Path(file_path).parent)
+        
+        try:
+            # Try to import BeetsAutoImporter
+            from beets_auto_import import BeetsAutoImporter
+            
+            importer = BeetsAutoImporter()
+            
+            # Ensure we're using the update config for file moves
+            importer.ensure_beets_config(use_update=True)
+            
+            logger.info(f"Running beets import (update mode) on {file_dir}")
+            
+            # Run beets with update config to organize the file
+            cmd = [
+                "beet",
+                "-c", str(importer.beets_config),
+                "import",
+                file_dir
+            ]
+            
+            result = subprocess.run(
+                cmd,
+                capture_output=True,
+                text=True,
+                timeout=30
+            )
+            
+            if result.returncode == 0:
+                logger.info(f"Beets successfully organized file from {file_path}")
+                
+                # Query beets database to find the new location
+                try:
+                    import sqlite3
+                    beets_conn = sqlite3.connect(str(importer.beets_db))
+                    beets_cursor = beets_conn.cursor()
+                    
+                    # Find the file in beets database by path (before organization)
+                    # Beets renames files, so we need to find the organized path
+                    filename = Path(file_path).name
+                    beets_cursor.execute("""
+                        SELECT path FROM items WHERE path LIKE ?
+                    """, (f"%{filename}%",))
+                    
+                    organized_row = beets_cursor.fetchone()
+                    organized_path = organized_row[0] if organized_row else None
+                    
+                    beets_conn.close()
+                    
+                    if organized_path:
+                        logger.info(f"File organized to: {organized_path}")
+                        return {
+                            'success': True,
+                            'target_path': organized_path,
+                            'error': None
+                        }
+                except Exception as e:
+                    logger.warning(f"Could not determine organized path from beets DB: {e}")
+                    # Still consider it success since beets completed
+                    return {
+                        'success': True,
+                        'target_path': None,  # We don't have the exact path, but beets moved it
+                        'error': None
+                    }
+            else:
+                logger.error(f"Beets import failed: {result.stderr}")
+                return {
+                    'success': False,
+                    'target_path': None,
+                    'error': f"Beets failed: {result.stderr}"
+                }
+                
+        except ImportError:
+            logger.error("beets_auto_import module not available, cannot organize via beets")
+            return {
+                'success': False,
+                'target_path': None,
+                'error': "Beets integration not available"
+            }
+            
+    except Exception as e:
+        logger.error(f"Error organizing file via beets {file_path}: {e}")
+        return {
+            'success': False,
+            'target_path': None,
+            'error': str(e)
+        }
+
+
 def rename_and_move_file(file_path, metadata):
     """
-    Rename file and move to proper folder structure
+    Fallback: Rename file and move to proper folder structure
+    (used if beets is unavailable)
     
     Args:
         file_path: Current path to audio file
@@ -248,28 +357,41 @@ def process_completed_queue_item(queue_item):
         
         logger.info(f"Queue {queue_id}: Processing with metadata from {queue_item.get('release_source')}")
         
-        # Step 1: Update file metadata
+        # Step 1: Update file metadata tags
         metadata_updated = update_file_metadata(file_path, metadata)
         if not metadata_updated:
             logger.warning(f"Queue {queue_id}: Failed to update file metadata")
+            # Don't abort, still try to organize via beets with what we have
         
-        # Step 2: Rename and move file
-        result = rename_and_move_file(file_path, metadata)
+        # Step 2: Organize file via beets (using update mode to move files)
+        result = organize_via_beets(file_path)
         
         if result['success']:
-            logger.info(f"Queue {queue_id}: Successfully processed - {result['target_path']}")
+            target_path = result['target_path'] or file_path  # Use either organized path or original
+            logger.info(f"Queue {queue_id}: Successfully processed - {target_path}")
             return {
                 'success': True,
-                'message': 'Successfully processed and organized',
-                'target_path': result['target_path']
+                'message': 'Successfully processed and organized via beets',
+                'target_path': target_path
             }
         else:
-            logger.error(f"Queue {queue_id}: Failed to organize file - {result['error']}")
-            return {
-                'success': False,
-                'message': result['error'],
-                'target_path': None
-            }
+            # Fallback to manual organization if beets unavailable
+            logger.warning(f"Queue {queue_id}: Beets organization failed, falling back to manual move")
+            result_fallback = rename_and_move_file(file_path, metadata)
+            if result_fallback['success']:
+                logger.info(f"Queue {queue_id}: Successfully organized via fallback - {result_fallback['target_path']}")
+                return {
+                    'success': True,
+                    'message': 'Successfully processed (fallback organization)',
+                    'target_path': result_fallback['target_path']
+                }
+            else:
+                logger.error(f"Queue {queue_id}: Both beets and fallback failed - {result_fallback['error']}")
+                return {
+                    'success': False,
+                    'message': result_fallback['error'],
+                    'target_path': None
+                }
             
     except Exception as e:
         logger.error(f"Error processing queue item {queue_item.get('id')}: {e}")

@@ -181,7 +181,8 @@ class BeetsAutoImporter:
                         "write": True,
                         "incremental": True,
                         "resume": True,
-                        "quiet": False
+                        "quiet": False,
+                        "timid": False
                     },
                     "musicbrainz": {
                         "enabled": True
@@ -195,16 +196,7 @@ class BeetsAutoImporter:
                         "albumtype:soundtrack": "Soundtrack/$year - $album/$disc_and_track. $artist - $title",
                         "singleton": "$artist/$year - $title/$track. $artist - $title"
                     },
-                    "convert": {
-                        "auto": False,
-                        "copy": True,
-                        "format": "mp3",
-                        "bitrate": 320,
-                        "threads": 2,
-                        "dest": "/music/mp3",
-                        "never_convert_lossy": True
-                    },
-                    "plugins": ["duplicates", "info", "convert"]
+                    "plugins": ["duplicates", "info"]
                 }
             
             with open(config_path, 'w') as f:
