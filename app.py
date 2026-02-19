@@ -263,6 +263,20 @@ static_folder = os.path.join(app_root, 'static')
 # Initialize Flask with explicit static folder configuration
 app = Flask(__name__, static_folder=static_folder, static_url_path='/static')
 
+# Debug: Log static folder configuration on startup
+print(f"\n{'='*60}")
+print(f"Flask Static Configuration:")
+print(f"  App Root: {app_root}")
+print(f"  Static Folder: {static_folder}")
+print(f"  Static Folder Exists: {os.path.isdir(static_folder)}")
+if os.path.isdir(static_folder):
+    try:
+        static_files = os.listdir(static_folder)
+        print(f"  Files in static folder: {static_files[:5]}...")  # Show first 5 files
+    except Exception as e:
+        print(f"  Error listing files: {e}")
+print(f"{'='*60}\n")
+
 # Add Jinja2 filter to split genres on both backslash and comma
 @app.template_filter('split_genres')
 def split_genres(s):
@@ -1527,6 +1541,33 @@ def get_db():
         conn.execute("PRAGMA journal_mode=WAL")
         conn.row_factory = sqlite3.Row
         return conn
+
+
+@app.route("/debug/static")
+def debug_static():
+    """Debug endpoint to check static file configuration"""
+    import os
+    response = {
+        "app_root": app_root,
+        "static_folder": static_folder,
+        "static_folder_exists": os.path.isdir(static_folder),
+        "app_static_folder": app.static_folder,
+        "app_static_url_path": app.static_url_path,
+    }
+    
+    if os.path.isdir(static_folder):
+        try:
+            files = {}
+            for root, dirs, filenames in os.walk(static_folder):
+                rel_root = os.path.relpath(root, static_folder)
+                if rel_root not in files:
+                    files[rel_root] = []
+                files[rel_root].extend(filenames)
+            response["files"] = files
+        except Exception as e:
+            response["file_error"] = str(e)
+    
+    return jsonify(response)
 
 
 @app.route("/")
