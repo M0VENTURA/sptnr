@@ -924,7 +924,9 @@
     // Global variables for album page
     let currentEditTrackId = null;
     let currentEditTrackTitle = null;
-    let addGenreModalInstance = null;
+    if (typeof addGenreModalInstance === 'undefined') {
+        var addGenreModalInstance = null;
+    // Removed stray closing brace causing declaration error
     let currentAlbumGenres = new Set();
 
     function openAlbumLookupModal() {
@@ -1676,8 +1678,8 @@
     // Fallback defined if genre-utils.js fails to load
     if (typeof removeAlbumGenre === 'undefined') {
         window.removeAlbumGenre = function(genre, artistName, albumName) {
-            if (!artistName) artistName = {{ artist_name|tojson }};
-            if (!albumName) albumName = {{ album_name|tojson }};
+            if (!artistName) artistName = "{{ artist_name|escapejs }}";
+            if (!albumName) albumName = "{{ album_name|escapejs }}";
             
             // Call API to remove genre
             fetch('/api/genres/remove', {
@@ -2100,7 +2102,9 @@
     });
     }
 
-    let addGenreModalInstance = null;
+    if (typeof addGenreModalInstance === 'undefined') {
+        var addGenreModalInstance = null;
+    }
     
     function openAddGenreModal(trackId, trackTitle) {
         currentEditTrackId = trackId;
