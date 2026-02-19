@@ -1473,6 +1473,9 @@ def inject_custom_bookmarks():
 def enforce_setup_wizard():
     try:
         exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
+        # Exempt all API routes from login requirements
+        if request.path.startswith("/api/"):
+            return
         if not request.endpoint or request.endpoint in exempt or request.endpoint.startswith("static"):
             try:
                 exempt = {"setup", "static", "config_edit", "config_editor", "login", "logout"}
@@ -4110,6 +4113,92 @@ def api_library_similar_artists():
     except Exception as e:
         logging.error(f"[LIBRARY SIMILAR] Error aggregating similar artists: {e}")
         return jsonify({"error": str(e)}), 500
+
+
+@app.route("/api/debug/genres/<path:album>/<path:artist>", methods=["GET"])
+def api_debug_album_genres(album, artist):
+    """Debug endpoint to check genre data in database for album"""
+    try:
+        from urllib.parse import unquote
+        
+        album = unquote(album)
+        artist = unquote(artist)
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        rows = []
+        # Get all tracks for this album
+        for artist_clause in ["COALESCE(NULLIF(album_artist, ''), artist)", "artist"]:
+            cursor.execute(f"""
+                SELECT id, title, 
+                       spotify_genres, lastfm_tags, listenbrainz_genres, 
+                       discogs_genres, musicbrainz_genres
+                FROM tracks
+                WHERE {artist_clause} = ? AND album = ?
+                LIMIT 20
+            """, (artist, album))
+            
+            rows = cursor.fetchall()
+            if rows:
+                break
+        
+        conn.close()
+        
+        # Format for debugging
+        debug_data = {
+            "album": album,
+            "artist": artist,
+            "track_count": len(rows) if rows else 0,
+            "tracks": []
+        }
+        
+        if rows:
+            for row in rows:
+                track_id, title = row[0], row[1]
+                spotify_genres = row[2]
+                lastfm_tags = row[3]
+                listenbrainz_genres = row[4]
+                discogs_genres = row[5]
+                musicbrainz_genres = row[6]
+                
+                debug_data["tracks"].append({
+                    "id": track_id,
+                    "title": title,
+                    "spotify_genres": {
+                        "raw": spotify_genres,
+                        "length": len(spotify_genres) if spotify_genres else 0,
+                        "is_null": spotify_genres is None
+                    },
+                    "lastfm_tags": {
+                        "raw": lastfm_tags,
+                        "length": len(lastfm_tags) if lastfm_tags else 0,
+                        "is_null": lastfm_tags is None
+                    },
+                    "listenbrainz_genres": {
+                        "raw": listenbrainz_genres,
+                        "length": len(listenbrainz_genres) if listenbrainz_genres else 0,
+                        "is_null": listenbrainz_genres is None
+                    },
+                    "discogs_genres": {
+                        "raw": discogs_genres,
+                        "length": len(discogs_genres) if discogs_genres else 0,
+                        "is_null": discogs_genres is None
+                    },
+                    "musicbrainz_genres": {
+                        "raw": musicbrainz_genres,
+                        "length": len(musicbrainz_genres) if musicbrainz_genres else 0,
+                        "is_null": musicbrainz_genres is None
+                    }
+                })
+        
+        return jsonify(debug_data), 200
+        
+    except Exception as e:
+        logging.error(f"[DEBUG GENRES] Error: {e}")
+        import traceback
+        return jsonify({"error": str(e), "traceback": traceback.format_exc()}), 500
+
 
 
 @app.route("/api/album/search-art")
@@ -12510,8 +12599,8 @@ def smart_playlists():
 
 
 @app.route("/downloads-monitor")
-def downloads_monitor():
-    """Downloads monitoring UI page"""
+def downloads_monitor_legacy():
+    """Downloads monitoring UI page (legacy route)"""
     # Legacy route: redirect to unified downloads page (search + monitor)
     return redirect(url_for("downloads"))
 
