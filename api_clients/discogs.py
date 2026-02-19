@@ -319,11 +319,12 @@ class DiscogsClient:
     
     def _is_official_video_for_track(self, video: dict, track_title_lower: str) -> bool:
         """
-        Check if a video is an official video for a given track.
+        Check if a video is an official or promotional video for a given track.
         
-        A video is considered official if:
-        1. The word "official" appears in the video title or description
+        A video is considered valid if:
+        1. The word "official" OR "promo" appears in the video title or description
            (avoiding false positives like "unofficial" by checking word boundaries)
+           (includes promotional videos like "DVD, DVD-Video, Promo" format on Discogs)
         2. The track title matches the video title exactly (after cleaning)
            (requires exact match to avoid false positives like "Song" matching "Song II")
         
@@ -332,24 +333,24 @@ class DiscogsClient:
             track_title_lower: Track title in lowercase for case-insensitive matching
             
         Returns:
-            True if both conditions are met (official video that matches the track)
+            True if both conditions are met (official or promo video that matches the track)
         """
         video_title = (video.get("title") or "").lower()
         video_desc = (video.get("description") or "").lower()
         
-        # Check for "official" as a whole word to avoid matching "unofficial"
-        # Use word boundary checking with common separators
-        official_pattern = r'\bofficial\b'
-        is_official = (
+        # Check for "official" or "promo" as whole words to avoid false positives
+        # This includes promotional videos like DVD/DVD-Video promos on Discogs
+        official_pattern = r'\b(official|promo)\b'
+        is_official_or_promo = (
             re.search(official_pattern, video_title) is not None or
             re.search(official_pattern, video_desc) is not None
         )
         
         # Track title matching: Extract the title part from video title before comparing
-        # Remove common video suffixes like "official video", "music video", "hd", etc.
+        # Remove common video suffixes like "official video", "music video", "hd", "promo", etc.
         # Also remove common artist name prefixes like "Artist - Title"
         video_title_cleaned = re.sub(
-            r'\s*[\(\[]?(official|music)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*$',
+            r'\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*$',
             '', video_title, flags=re.IGNORECASE
         ).strip()
         
@@ -369,7 +370,7 @@ class DiscogsClient:
         # Also check description with exact matching
         if not matches_title and video_desc:
             desc_cleaned = re.sub(
-                r'\s*[\(\[]?(official|music)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*',
+                r'\s*[\(\[]?(official|music|promo)?\s*(video|music video|mv|hd|4k|lyric video)[\)\]]?\s*',
                 '', video_desc, flags=re.IGNORECASE
             ).strip()
             if ' - ' in desc_cleaned:
@@ -378,7 +379,7 @@ class DiscogsClient:
                     desc_cleaned = parts[1].strip()
             matches_title = track_title_lower == desc_cleaned.lower()
         
-        return is_official and matches_title
+        return is_official_or_promo and matches_title
     
     def _get_artist_id(self, artist: str, timeout: tuple[int, int] | int = (5, 10)) -> Optional[int]:
         """
