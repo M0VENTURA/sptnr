@@ -71,30 +71,31 @@ def get_track_genres_and_tags(track_dict: dict) -> Dict[str, list]:
     Returns:
         Dict mapping source name to list of tags
         Example: {
-            'lastfm': [{'name': 'rock', 'count': 100}, ...],
-            'listenbrainz': [{'name': 'alternative rock', 'count': 80}, ...],
-            'discogs': [{'name': 'Rock', ...}, ...],
-            'spotify': [{'name': 'rock', ...}, ...],
-            'musicbrainz': [...]
+            'lastfm_tags': [{'name': 'rock', 'count': 100}, ...],
+            'listenbrainz_genres': [{'name': 'alternative rock', 'count': 80}, ...],
+            'discogs_genres': [{'name': 'Rock', ...}, ...],
+            'spotify_genres': [{'name': 'rock', ...}, ...],
+            'musicbrainz_genres': [...]
         }
     """
     sources = {}
     
     # Parse each source's tags
+    # Use full column names as keys to match frontend expectations
     if track_dict.get("lastfm_tags"):
-        sources["lastfm"] = parse_json_tags(track_dict["lastfm_tags"])
+        sources["lastfm_tags"] = parse_json_tags(track_dict["lastfm_tags"])
     
     if track_dict.get("listenbrainz_genres"):
-        sources["listenbrainz"] = parse_json_tags(track_dict["listenbrainz_genres"])
+        sources["listenbrainz_genres"] = parse_json_tags(track_dict["listenbrainz_genres"])
     
     if track_dict.get("discogs_genres"):
-        sources["discogs"] = parse_json_tags(track_dict["discogs_genres"])
+        sources["discogs_genres"] = parse_json_tags(track_dict["discogs_genres"])
     
     if track_dict.get("spotify_genres"):
-        sources["spotify"] = parse_json_tags(track_dict["spotify_genres"])
+        sources["spotify_genres"] = parse_json_tags(track_dict["spotify_genres"])
     
     if track_dict.get("musicbrainz_genres"):
-        sources["musicbrainz"] = parse_json_tags(track_dict["musicbrainz_genres"])
+        sources["musicbrainz_genres"] = parse_json_tags(track_dict["musicbrainz_genres"])
     
     return sources
 
@@ -109,8 +110,8 @@ def aggregate_tags_with_counts(track_list: list) -> Dict[str, Counter]:
     Returns:
         Dict mapping source name to Counter of tag names and their counts
         Example: {
-            'lastfm': Counter({'rock': 5, 'alternative': 3, ...}),
-            'listenbrainz': Counter({...}),
+            'lastfm_tags': Counter({'rock': 5, 'alternative': 3, ...}),
+            'listenbrainz_genres': Counter({...}),
             ...
         }
     """
