@@ -523,21 +523,20 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    const initialRecentScans = {{ recent_scans|tojson|safe }} || [];
-    const recentScansBody = document.getElementById('recent-scans-body');
-    const popButton = document.getElementById('popularity-start-btn');
-    const popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
+    var initialRecentScans = {{ recent_scans|default([])|tojson|safe }};
+    var recentScansBody = document.getElementById('recent-scans-body');
+    var popButton = document.getElementById('popularity-start-btn');
+    var popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
 
     // Handle scan action dropdown clicks
     document.querySelectorAll('.scan-action-btn').forEach(btn => {
         btn.addEventListener('click', function(e) {
             e.preventDefault();
-            const scanType = this.getAttribute('data-scan-type');
-            const action = this.getAttribute('data-action');
-            const mode = this.getAttribute('data-mode');
-            
+            var scanType = this.getAttribute('data-scan-type');
+            var action = this.getAttribute('data-action');
+            var mode = this.getAttribute('data-mode');
             // Build the form and submit it
-            let actionUrl = '';
+            var actionUrl = '';
             if (action === 'navidrome') {
                 actionUrl = '{{ url_for("scan_navidrome") }}';
             } else if (action === 'popularity') {
@@ -547,13 +546,11 @@ document.addEventListener('DOMContentLoaded', function() {
             } else if (action === 'mp3') {
                 actionUrl = '{{ url_for("scan_mp3") }}';
             }
-            
             // Add query parameters to URL
-            const url = new URL(actionUrl, window.location.origin);
+            var url = new URL(actionUrl, window.location.origin);
             url.searchParams.append('mode', mode);
-            
             // Submit via POST form
-            const form = document.createElement('form');
+            var form = document.createElement('form');
             form.method = 'POST';
             form.action = url.toString();
             document.body.appendChild(form);
@@ -562,9 +559,9 @@ document.addEventListener('DOMContentLoaded', function() {
     });
 
     // Cache previous state to avoid unnecessary DOM updates
-    let previousScanStates = {};
-    let previousProgress = {};
-    let lastRenderedRecentScans = JSON.stringify(initialRecentScans);
+    var previousScanStates = {};
+    var previousProgress = {};
+    var lastRenderedRecentScans = JSON.stringify(initialRecentScans);
 
     function renderRecentScans(scans) {
         if (!recentScansBody) return;
@@ -681,7 +678,7 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Track which scans are currently running
-    let runningScans = new Set();
+    var runningScans = new Set();
     
     // Poll scan progress and update unified progress bar
     function updateIndividualScanProgress() {
@@ -849,8 +846,8 @@ document.addEventListener('DOMContentLoaded', function() {
     }
     
     // Update unified log area
-    let logPaused = false;
-    const pauseLogBtn = document.getElementById('pauseLogBtn');
+    var logPaused = false;
+    var pauseLogBtn = document.getElementById('pauseLogBtn');
     if (pauseLogBtn) {
         pauseLogBtn.addEventListener('click', function() {
             logPaused = !logPaused;
@@ -1104,5 +1101,7 @@ document.addEventListener('DOMContentLoaded', function() {
     checkQueueProcessorStatus();
     setInterval(checkQueueProcessorStatus, 30 * 1000);
 });
+// ...existing code...
+// (No stray closing braces at the end)
 </script>
 {% endblock %}
