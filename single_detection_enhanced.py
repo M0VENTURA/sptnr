@@ -1399,148 +1399,293 @@ def detect_single_enhanced(
                 log_info(f"   ⓘ Discogs client is disabled")
                 log_debug(f"   Discogs: Client is disabled in configuration")
     
-    # STAGE 3: Spotify (Secondary Source)
+    # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
+    # Declare all source variables first
+    musicbrainz_confirmed = False
     spotify_confirmed = False
     radio_edit_found = False
-    musicbrainz_confirmed = False
-    if spotify_results:
-        log_debug(f"[SPOTIFY] Checking {len(spotify_results)} Spotify results for single")
-        norm_title = normalize_title_strict(title)
+    discogs_video_confirmed = False
+    lastfm_single_confirmed = False
+    
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
+        # If we already have medium-confidence from z-score, skip MusicBrainz (saves ~1-2 seconds)
+        early_z_check_needed = not discogs_confirmed
         
-        # Get album release date from database for time window validation
-        album_release_date = None
-        try:
-            cursor = conn.cursor()
-            cursor.execute("""
-                SELECT spotify_release_date, year
-                FROM tracks
-                WHERE artist = ? AND album = ?
-                ORDER BY year DESC, spotify_release_date DESC
-                LIMIT 1
-            """, (artist, album))
-            row = cursor.fetchone()
-            if row:
-                # Use spotify_release_date if available, otherwise fall back to year
-                album_release_date = row[0] if row[0] else (str(row[1]) if row[1] else None)
-                log_debug(f"[SPOTIFY] Album release date for time window check: {album_release_date}")
-        except Exception as e:
-            log_debug(f"[SPOTIFY] Failed to get album release date: {e}")
-        
-        # Import time window validation
-        try:
-            from album_matching_enhancements import should_apply_time_window_restriction
-        except ImportError:
-            # If module not available, define a no-op function
-            def should_apply_time_window_restriction(album_name, track_date, album_date):
-                return False, True
-        
-        for result_item in spotify_results:
-            result_title = result_item.get('name', '')
-            album_info = result_item.get('album', {})
-            album_type_check = album_info.get('album_type', '').lower()
-            album_name = album_info.get('name', '')
-            track_release_date = album_info.get('release_date', '')
+        if early_z_check_needed:
+            # Quick z-score check to see if we can skip MusicBrainz
+            temp_album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+            # Get artist stats for quick artist_z check
+            temp_artist_mean, temp_artist_stddev, _ = calculate_artist_stats(conn, artist)
+            temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
             
-            log_debug(f"[SPOTIFY] Checking result: '{result_title}' (type: {album_type_check}, album: '{album_name}', release: {track_release_date})")
-            
-            # Check for "Radio Edit" in title (medium confidence indicator for singles)
-            # This handles cases like "Song Name - Radio Edit" or "Song Name (Radio Edit)"
-            if re.search(r'[-\s\(]radio\s+edit', result_title, re.IGNORECASE):
-                # Verify base title matches by removing the radio edit suffix
-                base_title = re.sub(r'\s*[-\(]\s*radio\s+edit.*$', '', result_title, flags=re.IGNORECASE).strip()
-                if normalize_title_strict(base_title) == norm_title:
-                    radio_edit_found = True
-                    log_debug(f"[SPOTIFY] ✓ Radio Edit found: '{result_title}' (medium confidence indicator)")
-                    # Don't break, continue checking for exact matches
-            
-            # Check title match
-            if normalize_title_strict(result_title) != norm_title:
-                log_debug(f"[SPOTIFY] Title mismatch: '{result_title}' != '{title}'")
-                continue
-            
-            # Reject non-canonical
-            if is_non_canonical_version_strict(result_title):
-                log_debug(f"[SPOTIFY] Rejected non-canonical version: '{result_title}'")
-                continue
-            
-            # Apply time window restriction for special albums (live/symphony/acoustic/unplugged)
-            should_restrict, is_within = should_apply_time_window_restriction(
-                album, track_release_date, album_release_date
-            )
-            if should_restrict and not is_within:
-                log_info(f"[SPOTIFY] Rejected due to time window: '{result_title}' from '{album_name}' (release: {track_release_date})")
-                log_debug(f"[SPOTIFY] Time window restriction: Track outside ±1 year window for special album")
-                continue
-            
-            # Check if single or EP with matching title
-            if album_type_check == 'single':
-                spotify_confirmed = True
-                log_debug(f"[SPOTIFY] ✓ CONFIRMED - Found as Spotify single")
-                break
-            elif album_type_check == 'ep' and normalize_title_strict(album_name) == norm_title:
-                spotify_confirmed = True
-                log_debug(f"[SPOTIFY] ✓ CONFIRMED - Found as Spotify EP with matching title")
-                break
-        
-        if spotify_confirmed:
-            result['single_sources'].append('spotify')
-            result['single_sources_used'].append('spotify')
-            log_debug(f"[SPOTIFY] Spotify confirmed single for {title}")
-            
-            # Check if HIGH confidence reached after this confirmation
-            if check_high_confidence_dynamic(
-                discogs_confirmed, spotify_confirmed, musicbrainz_confirmed, 
-                False, False, radio_edit_found,
-                source_confidence_settings
-            ):
-                # HIGH confidence achieved - can skip remaining sources
-                log_debug(f"[DETECT] Stopping early with HIGH confidence after Spotify confirmation")
-                result['single_status'] = 'high'
-                result['single_confidence'] = 'high'
-                result['is_single'] = True
-                result['single_confidence_score'] = 1.0
-                album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-                result['z_score'] = album_z
-                result['album_z_score'] = album_z
-                artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
-                artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-                result['artist_z_score'] = artist_z
-                return result
-        elif radio_edit_found:
-            result['single_sources'].append('radio_edit')
-            result['single_sources_used'].append('radio_edit')
-            log_debug(f"[SPOTIFY] Radio Edit detected for {title} (medium confidence)")
-            
-            # Check if HIGH confidence reached after radio edit detection
-            if check_high_confidence_dynamic(
-                discogs_confirmed, spotify_confirmed, musicbrainz_confirmed, 
-                False, False, radio_edit_found,
-                source_confidence_settings
-            ):
-                # HIGH confidence achieved - can skip remaining sources
-                log_debug(f"[DETECT] Stopping early with HIGH confidence after Radio Edit detection")
-                result['single_status'] = 'high'
-                result['single_confidence'] = 'high'
-                result['is_single'] = True
-                result['single_confidence_score'] = 1.0
-                album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-                result['z_score'] = album_z
-                result['album_z_score'] = album_z
-                artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
-                artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-                result['artist_z_score'] = artist_z
-                return result
+            # Only skip MusicBrainz if we already have HIGH confidence (z-scores indicate album/artist standout)
+            # Medium confidence is not sufficient - allow MusicBrainz to run and add source confirmation
+            if temp_album_z >= 2.0 or temp_artist_z >= 2.0:
+                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
+                musicbrainz_confirmed = False
+            else:
+                # Need to call MusicBrainz
+                try:
+                    # Log MusicBrainz checks to info log only (not unified)
+                    log_debug(f"[MUSICBRAINZ] Querying MusicBrainz API for single: {title} by {artist}")
+                    log_info(f"   Checking MusicBrainz for single: {title}")
+                    log_debug(f"   MusicBrainz API: Searching for single '{title}' by '{artist}'")
+                    
+                    # Get artist MBID if available (for more accurate lookup)
+                    # Check both beets_artist_mbid (from Beets import) and musicbrainz_artist_id (from scan)
+                    artist_mbid = None
+                    try:
+                        cursor = conn.cursor()
+                        cursor.execute(
+                            "SELECT COALESCE(musicbrainz_artist_id, lastfm_artist_mbid) as artist_mbid FROM tracks WHERE artist = ? AND (musicbrainz_artist_id IS NOT NULL OR lastfm_artist_mbid IS NOT NULL) LIMIT 1", 
+                            (artist,)
+                        )
+                        row = cursor.fetchone()
+                        if row:
+                            artist_mbid = row[0]
+                            log_debug(f"[MUSICBRAINZ] Found artist MBID for '{artist}': {artist_mbid}")
+                    except Exception as e:
+                        log_debug(f"[MUSICBRAINZ] Could not fetch artist MBID: {e}")
+                    
+                    # Use is_single method with artist MBID (preferred) and fallback to name-based search
+                    musicbrainz_confirmed = musicbrainz_client.is_single(title, artist, artist_mbid=artist_mbid)
+                    if musicbrainz_confirmed:
+                        result['single_sources'].append('musicbrainz')
+                        result['single_sources_used'].append('musicbrainz')
+                        log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED as single")
+                        log_info(f"   ✓ MusicBrainz confirms single: {title}")
+                        log_debug(f"   MusicBrainz result: Single confirmed for '{title}'")
+                        
+                        # Check if HIGH confidence reached after this confirmation
+                        if check_high_confidence_dynamic(
+                            discogs_confirmed, False, musicbrainz_confirmed, 
+                            False, False, False,
+                            source_confidence_settings
+                        ):
+                            # HIGH confidence achieved - can skip remaining sources
+                            log_debug(f"[DETECT] Stopping early with HIGH confidence after MusicBrainz confirmation")
+                            result['single_status'] = 'high'
+                            result['single_confidence'] = 'high'
+                            result['is_single'] = True
+                            result['single_confidence_score'] = 1.0
+                            album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                            result['z_score'] = album_z
+                            result['album_z_score'] = album_z
+                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                            result['artist_z_score'] = artist_z
+                            return result
+                    else:
+                        log_debug(f"[MUSICBRAINZ] ✗ NOT confirmed as single by MusicBrainz")
+                        log_info(f"   ⓘ MusicBrainz does not confirm single: {title}")
+                        log_debug(f"   MusicBrainz result: No single found for '{title}'")
+                except Exception as e:
+                    # Log SSL and connection errors more gracefully
+                    error_type = type(e).__name__
+                    if 'SSL' in error_type or 'ssl' in str(e).lower():
+                        log_debug(f"[MUSICBRAINZ] SSL ERROR: {error_type}")
+                        log_info(f"   ⚠ MusicBrainz SSL connection error for {title}: {error_type}")
+                        log_debug(f"   MusicBrainz API SSL error: {error_type}: {str(e)}")
+                    elif 'timeout' in str(e).lower() or 'Timeout' in error_type:
+                        log_debug(f"[MUSICBRAINZ] TIMEOUT ERROR: {error_type}")
+                        log_info(f"   ⏱ MusicBrainz check timed out for {title}: {error_type}")
+                        log_debug(f"   MusicBrainz API timeout: {error_type}: {str(e)}")
+                    else:
+                        log_debug(f"[MUSICBRAINZ] ERROR during lookup: {error_type}: {str(e)}")
+                        log_info(f"   ⚠ MusicBrainz single check failed for {title}: {e}")
+                        log_debug(f"   MusicBrainz API error: {type(e).__name__}: {str(e)}")
+                    musicbrainz_confirmed = False
         else:
-            log_debug(f"[SPOTIFY] ✗ NOT confirmed - No single/EP matches found")
+            musicbrainz_confirmed = False
     else:
-        log_debug(f"[SPOTIFY] No Spotify results available")
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not musicbrainz_client:
+                log_debug(f"[MUSICBRAINZ] Client not available (module import failed)")
+                log_info(f"   ⓘ MusicBrainz client not available")
+                log_debug(f"   MusicBrainz: Client not available (module import failed)")
+            elif not getattr(musicbrainz_client, 'enabled', True):
+                log_debug(f"[MUSICBRAINZ] Client disabled in configuration")
+                log_info(f"   ⓘ MusicBrainz client is disabled")
+                log_debug(f"   MusicBrainz: Client is disabled in configuration")
+        musicbrainz_confirmed = False
+    
+    # STAGE 4: Last.fm Single Check (MEDIUM CONFIDENCE - checked before Spotify per new ordering)
+    # Check if the track exists as a single/album on Last.fm (by track title)
+    # Also check album track count for traditional single detection
+    
+    # Check if we should skip Last.fm based on current confidence
+    if not check_high_confidence_dynamic(
+        discogs_confirmed, False, musicbrainz_confirmed, 
+        False, False, False,
+        source_confidence_settings
+    ):
+        if lastfm_client:
+            try:
+                # First, check if track exists as a single on Last.fm (by track title)
+                log_debug(f"[LASTFM] Checking if track exists as single: {title} by {artist}")
+                track_is_single = lastfm_client.check_track_as_single(artist, title)
+                
+                if track_is_single:
+                    result['single_sources'].append('lastfm_track_title')
+                    result['single_sources_used'].append('lastfm_track_title')
+                    lastfm_single_confirmed = True
+                    log_debug(f"[LASTFM] ✓ CONFIRMED - Track '{title}' exists as single/album on Last.fm")
+                    
+                    # Check if HIGH confidence reached after this confirmation
+                    if check_high_confidence_dynamic(
+                        discogs_confirmed, False, musicbrainz_confirmed, 
+                        False, lastfm_single_confirmed, False,
+                        source_confidence_settings
+                    ):
+                        # HIGH confidence achieved
+                        log_debug(f"[DETECT] HIGH confidence achieved from Last.fm confirmation")
+                        result['single_status'] = 'high'
+                        result['single_confidence'] = 'high'
+                        result['is_single'] = True
+                        result['single_confidence_score'] = 1.0
+                        album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                        result['z_score'] = album_z
+                        result['album_z_score'] = album_z
+                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                        result['artist_z_score'] = artist_z
+                        return result
+                else:
+                    # Fallback to album track count check
+                    log_debug(f"[LASTFM] Track not found as single, checking album track count: {album} by {artist}")
+                    album_track_count_lastfm = lastfm_client.get_album_track_count(artist, album)
+                    
+                    # Check if the album has a title track (song name matching release name)
+                    has_title_track = False
+                    if 4 <= album_track_count_lastfm <= 6:
+                        # Only check for title track if we're in the 4-6 range
+                        has_title_track = lastfm_client.has_title_track(artist, album)
+                        if has_title_track:
+                            log_debug(f"[LASTFM] Album has title track (song name matches release name)")
+                    
+                    # Singles on Last.fm typically have 1-3 tracks
+                    # Or up to 6 tracks if the song name matches the release name (singles released as EPs)
+                    if 1 <= album_track_count_lastfm <= 3:
+                        result['single_sources'].append('lastfm_album_type')
+                        result['single_sources_used'].append('lastfm_album_type')
+                        lastfm_single_confirmed = True
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) (single indicator)")
+                    elif 4 <= album_track_count_lastfm <= 6 and has_title_track:
+                        result['single_sources'].append('lastfm_album_type')
+                        result['single_sources_used'].append('lastfm_album_type')
+                        lastfm_single_confirmed = True
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) with title track (single EP indicator)")
+                    else:
+                        log_debug(f"[LASTFM] Track count: {album_track_count_lastfm} (not in single range)")
+                        lastfm_single_confirmed = False
+                    
+                    # Check if HIGH confidence reached after album count confirmation
+                    if lastfm_single_confirmed and check_high_confidence_dynamic(
+                        discogs_confirmed, False, musicbrainz_confirmed, 
+                        False, lastfm_single_confirmed, False,
+                        source_confidence_settings
+                    ):
+                        # HIGH confidence achieved
+                        log_debug(f"[DETECT] HIGH confidence achieved from Last.fm album track count confirmation")
+                        result['single_status'] = 'high'
+                        result['single_confidence'] = 'high'
+                        result['is_single'] = True
+                        result['single_confidence_score'] = 1.0
+                        album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                        result['z_score'] = album_z
+                        result['album_z_score'] = album_z
+                        artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                        artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                        result['artist_z_score'] = artist_z
+                        return result
+            except Exception as e:
+                log_debug(f"[LASTFM] Error checking single: {e}")
+                lastfm_single_confirmed = False
+        else:
+            log_debug(f"[LASTFM] Client not available")
+    else:
+        log_debug(f"[LASTFM] SKIPPED - HIGH confidence already achieved")
+        lastfm_single_confirmed = False
+    
+    # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE - checked before Spotify per new ordering)
+    
+    # Check if we should skip Video checks based on current confidence
+    current_confidence_high = check_high_confidence_dynamic(
+        discogs_confirmed, False, musicbrainz_confirmed, 
+        False, lastfm_single_confirmed, False,
+        source_confidence_settings
+    )
+    
+    if not current_confidence_high:
+        if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
+            if hasattr(discogs_client, 'has_official_video'):
+                try:
+                    # Log Discogs video checks to info log only (not unified)
+                    log_debug(f"[DISCOGS_VIDEO] Querying Discogs for music video: {title} by {artist}")
+                    log_info(f"   Checking Discogs for music video: {title}")
+                    log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
+                    
+                    # Check for official music video
+                    discogs_video_confirmed = discogs_client.has_official_video(title, artist)
+                    if discogs_video_confirmed:
+                        result['single_sources'].append('discogs_video')
+                        result['single_sources_used'].append('discogs_video')
+                        log_debug(f"[DISCOGS_VIDEO] ✓ CONFIRMED - Official video found")
+                        log_info(f"   ✓ Discogs confirms music video: {title}")
+                        log_debug(f"   Discogs result: Music video confirmed for '{title}'")
+                        
+                        # Check if HIGH confidence reached after this confirmation
+                        if check_high_confidence_dynamic(
+                            discogs_confirmed, False, musicbrainz_confirmed, 
+                            discogs_video_confirmed, lastfm_single_confirmed, False,
+                            source_confidence_settings
+                        ):
+                            # HIGH confidence achieved - can skip Spotify
+                            log_debug(f"[DETECT] Stopping early with HIGH confidence after Discogs Video confirmation")
+                            result['single_status'] = 'high'
+                            result['single_confidence'] = 'high'
+                            result['is_single'] = True
+                            result['single_confidence_score'] = 1.0
+                            album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+                            result['z_score'] = album_z
+                            result['album_z_score'] = album_z
+                            artist_mean, artist_stddev, _ = calculate_artist_stats(conn, artist)
+                            artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+                            result['artist_z_score'] = artist_z
+                            return result
+                    else:
+                        log_debug(f"[DISCOGS_VIDEO] ✗ NOT confirmed - No official video found")
+                        log_info(f"   ⓘ Discogs does not confirm music video: {title}")
+                        log_debug(f"   Discogs result: No music video found for '{title}'")
+                except Exception as e:
+                    log_debug(f"[DISCOGS_VIDEO] ERROR during lookup: {type(e).__name__}: {str(e)}")
+                    log_info(f"   ⚠ Discogs video check failed for {title}: {e}")
+                    log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
+                    discogs_video_confirmed = False
+        elif verbose:
+            log_debug(f"[DISCOGS_VIDEO] has_official_video method not available")
+            log_info(f"   ⓘ Discogs video method not available")
+            log_debug(f"   Discogs: has_official_video method not available")
+    else:
+        # Only log client availability messages in verbose mode to reduce log noise
+        if verbose:
+            if not discogs_client:
+                log_debug(f"[DISCOGS_VIDEO] Client not available")
+                log_info(f"   ⓘ Discogs video client not available")
+                log_debug(f"   Discogs: Video client not available")
+            elif not getattr(discogs_client, 'enabled', True):
+                log_debug(f"[DISCOGS_VIDEO] Client disabled")
+                log_info(f"   ⓘ Discogs client is disabled")
+                log_debug(f"   Discogs: Client is disabled in configuration")
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
         # If we already have medium-confidence from z-score, skip MusicBrainz (saves ~1-2 seconds)
-        early_z_check_needed = not (spotify_confirmed or discogs_confirmed)
+        early_z_check_needed = not discogs_confirmed
         
         if early_z_check_needed:
             # Quick z-score check to see if we can skip MusicBrainz
@@ -1835,7 +1980,6 @@ def detect_single_enhanced(
     # If track.popularity < artist_mean_popularity:
     #     Reject single detection UNLESS the track has explicit metadata:
     #     - Discogs single
-    #     - Spotify single (strict)
     #     - MusicBrainz single (strict)
     #     - Discogs music video
     #     - Last.fm single confirmation
