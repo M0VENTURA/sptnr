@@ -47,13 +47,27 @@ cursor.execute("""
 
 ### Issue 2: Discarded Reason String
 
-**Location**: `popularity.py` line 4358
+**Location**: `popularity.py` lines 4310-4316 and 4358
 
-**Problem**: The code builds a `reason_str` containing detection source and z-score info (lines 4285-4311), stores it in tuples for each track category (lines 4321-4328), but then **discards** it for `rest_of_album` tracks:
+**Problem 1**: The code builds a `reason_str` containing detection source and z-score info (lines 4285-4309), stores it in tuples for each track category (lines 4321-4328), but then **discards** it for `rest_of_album` tracks at line 4358:
 
 ```python
 for title, stars, _ in rest_of_album:  # ❌ underscore ignores reason
     log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
+```
+
+**Problem 2**: The reason string is only populated for specific categories (singles, standouts, close matches) but NOT for regular rest_of_album tracks. At lines 4288-4309, there's no `else` clause to handle tracks that don't fall into special categories:
+
+```python
+if is_detected_single and sources_str:
+    # ... populate reason for singles
+elif is_standout:
+    # ... populate reason for standouts
+elif is_close_match:
+    # ... populate reason for close matches
+# ❌ No else clause for rest_of_album tracks!
+
+reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
 ```
 
 Meanwhile, other categories include the reason:
@@ -80,7 +94,21 @@ And updated all references in lines 3516-3533 to use `track_album`, `track_album
 
 This prevents the outer `album` variable from being overwritten.
 
-### Fix 2: Include Reason String
+### Fix 2a: Add Z-Score for All Tracks
+
+Added an `else` clause at lines 4310-4314 to populate z-score for rest_of_album tracks:
+
+```python
+else:
+    # Rest of album: still show z-score if available
+    if track_zscore:
+        methods.append(f"z-score: {track_zscore:.2f}")
+        reasons.append("; ".join(methods))
+```
+
+This ensures all tracks have their z-score included in the reason string.
+
+### Fix 2b: Include Reason String
 
 Changed line 4358 from:
 ```python
@@ -100,6 +128,7 @@ This ensures all tracks display their detection method and z-score consistently.
 
 - `popularity.py`:
   - Lines 3505, 3516-3521, 3533: Renamed `album` to `track_album` in nested loop
+  - Lines 4310-4314: Added z-score display for rest_of_album tracks
   - Lines 4358-4359: Include `reason` string in rest_of_album logging
 
 ## Testing
@@ -133,10 +162,12 @@ Two test scripts were created:
 2026-02-19 17:21:36.546 [INFO] Single Detection - 75% completed - 9/12 tracks
 2026-02-19 17:21:47.512 [INFO] Star Ratings - Album 'This Is the End of Control' by Cherri Bomb: ...
 2026-02-19 17:21:47.513 [INFO] Single Detection Scan - ===== This Is the End of Control - All Tracks =====
-2026-02-19 17:21:47.513 [INFO] Single Detection Scan - ★★★★  Cherri Bomb - Track Name (Spotify; MusicBrainz; z-score: 2.15)
+2026-02-19 17:21:47.513 [INFO] Single Detection Scan - ★★★★  Cherri Bomb - Track Name (z-score: 2.15)
+2026-02-19 17:21:47.514 [INFO] Single Detection Scan - ★★★   Cherri Bomb - Another Track (z-score: 0.87)
+2026-02-19 17:21:47.515 [INFO] Single Detection Scan - ★★    Cherri Bomb - Third Track (z-score: -0.23)
 ```
 *Correct: Shows the actual album that was just scanned*
-*Complete: Detection source and z-score displayed for all tracks*
+*Complete: Z-score displayed for ALL tracks, including regular album tracks*
 
 ## Memory to Store
 
