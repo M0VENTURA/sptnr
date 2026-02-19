@@ -4240,7 +4240,7 @@ def popularity_scan(
                         
                         # If no results from first query, fall back to matching on album_artist
                         if not final_tracks:
-                            log_debug(f"No tracks found with artist field match for artist '{artist}', falling back to album_artist field match")
+                            log_debug(f"No tracks found matching by artist field for artist '{artist}', falling back to matching by album_artist field")
                             cursor.execute(
                                 """SELECT id, title, artist, stars, is_single, single_confidence, single_sources, 
                                           is_standout_track, artist_z_score
@@ -4266,7 +4266,7 @@ def popularity_scan(
                         
                         for track_row in final_tracks:
                             track_title = track_row["title"]
-                            track_artist = track_row["artist"]
+                            track_artist = track_row["artist"] if track_row["artist"] else artist  # Fallback to album artist if track artist is None/empty
                             track_stars = track_row["stars"] if track_row["stars"] else 0
                             track_is_single = track_row["is_single"] if track_row["is_single"] else 0
                             track_is_standout = track_row["is_standout_track"] if track_row["is_standout_track"] else 0
