@@ -127,6 +127,11 @@ STANDOUT_CONFIG = {
 # Threshold for detecting underperforming albums (album median < artist_median * this value)
 UNDERPERFORMING_THRESHOLD = 0.7
 
+# --- Single Detection Confidence Thresholds ---
+DEFAULT_HIGH_CONF_OFFSET = 15        # Tracks with popularity > (mean + 15) are "high confidence" singles
+DEFAULT_MEDIUM_CONF_THRESHOLD = 0.5  # Z-score threshold for medium confidence (0.5 above mean of top 50%)
+DEFAULT_POPULARITY_MEAN = 50         # Default mean popularity if no valid scores available (0-100 scale)
+
 # --- End Config ---
 
 # Metadata source display constant
