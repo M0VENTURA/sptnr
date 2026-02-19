@@ -481,11 +481,11 @@
                                 </td>
                                 <td class="d-none d-lg-table-cell text-center">
                                     {% if track.single_confidence %}
-                                        <span class="badge bg-secondary" style="font-size: 0.75rem;">
-                                            {{ track.single_confidence }}
-                                        </span>
+                                    <span class="badge bg-secondary" style="font-size: 0.75rem;">
+                                        {{ track.single_confidence }}
+                                    </span>
                                     {% else %}
-                                        <span class="text-muted">—</span>
+                                    <span class="text-muted">—</span>
                                     {% endif %}
                                 </td>
                                 <td class="d-none d-lg-table-cell">
@@ -1243,8 +1243,8 @@
     }
 
     function openAlbumArtModal() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         
         const modalHtml = `
             <div class="modal fade" id="albumArtModal" tabindex="-1">
@@ -1378,8 +1378,8 @@
     let selectedGenres = new Set();
 
     function fetchGenreRecommendations() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         const btn = document.getElementById('fetchGenresBtn');
         const container = document.getElementById('recommendedGenres');
         const section = document.getElementById('recommendedGenresSection');
@@ -1485,15 +1485,15 @@
 
     // Remove single genre from all album tracks (uses shared utilities)
     function removeGenreFromAlbum(genre) {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         handleGenreRemoval(artistName, albumName, [genre], 'album');
     }
 
     // Remove selected genres from all album tracks (batch removal)
     function removeSelectedAlbumGenres() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         const selectedGenres = getSelectedGenres('albumGenresForRemoval');
         
         if (selectedGenres.length === 0) {
@@ -1506,8 +1506,8 @@
     
     // Load track-level recommendations when page loads
     async function loadTrackRecommendations() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         
         try {
             const response = await fetch(`/api/album/${encodeURIComponent(artistName)}/${encodeURIComponent(albumName)}/track-recommendations`);
@@ -1744,8 +1744,8 @@
     }
 
     function openEditAlbumIdsModal() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         const spotifyId = document.getElementById('spotifyAlbumId').value;
         const musicbrainzId = document.getElementById('musicbrainzReleaseId').value;
         const discogsId = document.getElementById('discogsReleaseId').value;
@@ -1802,8 +1802,8 @@
     }
 
     function saveAlbumIds() {
-        const artistName = {{ artist_name|tojson }};
-        const albumName = {{ album_name|tojson }};
+        const artistName = "{{ artist_name|escapejs }}";
+        const albumName = "{{ album_name|escapejs }}";
         const spotifyId = document.getElementById('editSpotifyAlbumId').value.trim();
         const musicbrainzId = document.getElementById('editMusicbrainzReleaseId').value.trim();
         const discogsId = document.getElementById('editDiscogsReleaseId').value.trim();
@@ -2531,8 +2531,8 @@
         
         let html = '<ul class="nav nav-tabs" role="tablist">';
         let tabContent = '<div class="tab-content mt-3">';
-        
         let firstTab = true;
+        
         sources.forEach((source, index) => {
             const genres = data.genres[source.key] || [];
             
@@ -2684,6 +2684,34 @@
     function showAlbumSimilarArtistsError(message) {
         const container = document.getElementById('albumSimilarArtistsContainer');
         container.innerHTML = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
+    }
+
+    // Bulk update track artists for album
+    function bulkUpdateTrackArtists() {
+        const newArtist = document.getElementById('bulkArtistEditInput').value.trim();
+        if (!newArtist) {
+            alert('Please enter a new artist name.');
+            return;
+        }
+        const album = "{{ album_name|escapejs }}";
+        const artist = "{{ artist_name|escapejs }}";
+        fetch(`/api/tags/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ tags: { artist: newArtist } })
+        })
+        .then(r => r.json())
+        .then(data => {
+            if (data.success) {
+                alert('✅ All track artists updated successfully!');
+                setTimeout(() => location.reload(), 500);
+            } else {
+                alert('❌ Error: ' + (data.error || 'Failed to update track artists.'));
+            }
+        })
+        .catch(err => {
+            alert('❌ Network error: ' + err.message);
+        });
     }
 
 </script>
