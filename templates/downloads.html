@@ -3851,7 +3851,9 @@ async function downloadMusicBrainzRelease(artist, album, tracks, year, release_i
     // Extract year from date string if needed (e.g., "2023-04-15" -> "2023")
     let releaseYear = null;
     if (year) {
-      releaseYear = year.toString().substring(0, 4);
+      // Handle both string and number types
+      const yearStr = String(year);
+      releaseYear = yearStr.substring(0, 4);
     }
     
     // Batch add all tracks in a single API call with MusicBrainz/Discogs metadata

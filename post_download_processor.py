@@ -93,10 +93,10 @@ def update_file_metadata(file_path, metadata):
                 audio.tags['TALB'] = TALB(encoding=3, text=[metadata['album']])
             
             if metadata.get('year'):
-                audio.tags['TDRC'] = TDRC(encoding=3, text=[metadata['year']])
+                audio.tags['TDRC'] = TDRC(encoding=3, text=[str(metadata['year'])])
             
             if metadata.get('track_number'):
-                audio.tags['TRCK'] = TRCK(encoding=3, text=[metadata['track_number']])
+                audio.tags['TRCK'] = TRCK(encoding=3, text=[str(metadata['track_number'])])
             
             audio.save()
             logger.info(f"Updated MP3 metadata: {file_path}")
@@ -119,10 +119,10 @@ def update_file_metadata(file_path, metadata):
                 audio['album'] = [metadata['album']]
             
             if metadata.get('year'):
-                audio['date'] = [metadata['year']]
+                audio['date'] = [str(metadata['year'])]
             
             if metadata.get('track_number'):
-                audio['tracknumber'] = [metadata['track_number']]
+                audio['tracknumber'] = [str(metadata['track_number'])]
             
             audio.save()
             logger.info(f"Updated FLAC metadata: {file_path}")
@@ -151,13 +151,13 @@ def rename_and_move_file(file_path, metadata):
     try:
         music_dir = get_music_dir()
         
-        # Extract metadata with fallbacks
-        track_number = str(metadata.get('track_number', '00')).zfill(2)
+        # Extract metadata with fallbacks - ensure proper string conversions
+        track_number = str(metadata.get('track_number') or '00').zfill(2)
         artist = metadata.get('artist', 'Unknown Artist').strip()
         album_artist = metadata.get('album_artist', artist).strip()
         album = metadata.get('album', 'Unknown Album').strip()
         title = metadata.get('title', Path(file_path).stem).strip()
-        year = str(metadata.get('year', 'Unknown')).strip()
+        year = str(metadata.get('year') or 'Unknown').strip()
         
         # Get file extension
         ext = os.path.splitext(file_path)[1]
