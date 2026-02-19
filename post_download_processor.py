@@ -14,26 +14,36 @@ import logging
 from pathlib import Path
 from datetime import datetime
 
+# Setup logging with fallback for when /config doesn't exist (e.g., in tests)
+log_handlers = [logging.StreamHandler()]
+try:
+    log_handlers.append(logging.FileHandler("/config/post_download.log"))
+except (FileNotFoundError, PermissionError):
+    pass  # Fallback to StreamHandler only
+
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - [Post-Download] %(levelname)s - %(message)s',
-    handlers=[
-        logging.FileHandler("/config/post_download.log"),
-        logging.StreamHandler()
-    ]
+    handlers=log_handlers
 )
 logger = logging.getLogger(__name__)
 
-DB_PATH = os.environ.get("DB_PATH", "/database/sptnr.db")
-DOWNLOADS_DIR = os.environ.get("DOWNLOADS_DIR", "/downloads")
-MUSIC_DIR = os.environ.get("MUSIC_ROOT", "/music")
-
-
 def get_db():
     """Get database connection"""
-    conn = sqlite3.connect(DB_PATH, timeout=30.0)
+    db_path = os.environ.get("DB_PATH", "/database/sptnr.db")
+    conn = sqlite3.connect(db_path, timeout=30.0)
     conn.row_factory = sqlite3.Row
     return conn
+
+
+def get_music_dir():
+    """Get music directory path"""
+    return os.environ.get("MUSIC_ROOT", "/music")
+
+
+def get_downloads_dir():
+    """Get downloads directory path"""
+    return os.environ.get("DOWNLOADS_DIR", "/downloads")
 
 
 def sanitize_filename(filename):
@@ -139,6 +149,8 @@ def rename_and_move_file(file_path, metadata):
         dict: {'success': bool, 'target_path': str, 'error': str}
     """
     try:
+        music_dir = get_music_dir()
+        
         # Extract metadata with fallbacks
         track_number = str(metadata.get('track_number', '00')).zfill(2)
         artist = metadata.get('artist', 'Unknown Artist').strip()
@@ -151,7 +163,7 @@ def rename_and_move_file(file_path, metadata):
         ext = os.path.splitext(file_path)[1]
         
         # Build directory structure: [album_artist]/[year] - [album]/
-        artist_dir = os.path.join(MUSIC_DIR, sanitize_filename(album_artist))
+        artist_dir = os.path.join(music_dir, sanitize_filename(album_artist))
         album_dir = os.path.join(artist_dir, sanitize_filename(f"{year} - {album}"))
         
         # Create directories
