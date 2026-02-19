@@ -128,9 +128,9 @@ STANDOUT_CONFIG = {
 UNDERPERFORMING_THRESHOLD = 0.7
 
 # --- Single Detection Confidence Thresholds ---
-DEFAULT_HIGH_CONF_OFFSET = 15        # Tracks with popularity > (mean + 15) are "high confidence" singles
-DEFAULT_MEDIUM_CONF_THRESHOLD = 0.5  # Z-score threshold for medium confidence (0.5 above mean of top 50%)
-DEFAULT_POPULARITY_MEAN = 50         # Default mean popularity if no valid scores available (0-100 scale)
+DEFAULT_HIGH_CONF_OFFSET = 2.0        # High confidence: z-score >= 2.0
+DEFAULT_MEDIUM_CONF_THRESHOLD = 1.5   # Medium confidence: z-score >= 1.5
+DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scores available (0-100 scale)
 
 # --- End Config ---
 
