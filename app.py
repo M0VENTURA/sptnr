@@ -36,7 +36,7 @@ except ImportError:
 from contextlib import closing
 import json
 import yaml
-from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session
+from flask import Flask, render_template, request, redirect, url_for, flash, jsonify, Response, send_file, session, abort
 from datetime import datetime
 import copy
 from functools import wraps
@@ -7203,14 +7203,63 @@ def api_track_count():
 
 @app.route("/downloads")
 def downloads():
-    """Downloads page with qBittorrent and slskd search"""
+    """Redirect to download monitor (default page)"""
+    return redirect("/downloads/monitor")
+
+
+@app.route("/downloads/monitor")
+def downloads_monitor():
+    """Download monitor page - queue status and management"""
     cfg, _ = _read_yaml(CONFIG_PATH)
     qbit_config = cfg.get("qbittorrent", {"enabled": False})
     slskd_config = cfg.get("slskd", {"enabled": False})
     
-    return render_template("downloads.html", 
+    return render_template("downloads_monitor.html", 
                          qbit_config=qbit_config,
                          slskd_config=slskd_config)
+
+
+@app.route("/downloads/search/<source>")
+def downloads_search(source):
+    """Search pages for different sources"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    qbit_config = cfg.get("qbittorrent", {"enabled": False})
+    slskd_config = cfg.get("slskd", {"enabled": False})
+    
+    # Route to appropriate template
+    templates = {
+        'soulseek': 'downloads_search_soulseek.html',
+        'qbittorrent': 'downloads_search_qbittorrent.html',
+        'musicbrainz': 'downloads_search_musicbrainz.html',
+        'playlists': 'downloads_search_playlists.html'
+    }
+    
+    template = templates.get(source)
+    if not template:
+        abort(404)
+    
+    return render_template(template,
+                         qbit_config=qbit_config,
+                         slskd_config=slskd_config)
+
+
+@app.route("/downloads/discover/<category>")
+def downloads_discover(category):
+    """Discover pages for recommendations"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    
+    # Route to appropriate template
+    templates = {
+        'lastfm': 'downloads_discover_lastfm.html',
+        'similar-artists': 'downloads_discover_similar_artists.html',
+        'upcoming': 'downloads_discover_upcoming.html'
+    }
+    
+    template = templates.get(category)
+    if not template:
+        abort(404)
+    
+    return render_template(template)
 
 
 @app.route("/api/slskd/search", methods=["POST"])
@@ -14809,7 +14858,31 @@ def api_recent_genre_updates():
 
 @app.route("/playlist-manager")
 def playlist_manager():
-    """Unified Playlist manager page with all playlist functionality"""
+    """Redirect to playlists browse (default page)"""
+    return redirect("/playlists/browse")
+
+
+@app.route("/playlists/browse")
+def playlists_browse():
+    """Browse playlists page"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    navidrome_config = cfg.get("navidrome", {})
+    navidrome_users = cfg.get("navidrome_users", [])
+    
+    # If navidrome_users not configured, use single user
+    if not navidrome_users and navidrome_config.get("user"):
+        navidrome_users = [{
+            "base_url": navidrome_config.get("base_url"),
+            "user": navidrome_config.get("user")
+        }]
+    
+    return render_template('playlists_browse.html', 
+                         navidrome_users=navidrome_users)
+
+
+@app.route("/playlists/create/<playlist_type>")
+def playlists_create(playlist_type):
+    """Create playlist pages"""
     cfg, _ = _read_yaml(CONFIG_PATH)
     navidrome_config = cfg.get("navidrome", {})
     navidrome_users = cfg.get("navidrome_users", [])
@@ -14823,44 +14896,71 @@ def playlist_manager():
     
     # Get top 20 most used genres for Smart Playlists section
     top_genres = []
-    try:
-        conn = get_db()
-        cursor = conn.cursor()
-        
-        # Query to get all genres and count songs
-        # Genres are stored as comma-separated values in the 'genres' field
-        cursor.execute("""
-            SELECT genres FROM tracks 
-            WHERE genres IS NOT NULL AND genres != ''
-        """)
-        
-        # Count genre occurrences
-        genre_counts = {}
-        for row in cursor.fetchall():
-            genres_str = row[0]
-            if genres_str:
-                # Split by comma and trim whitespace
-                genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
-                for genre in genres_list:
-                    genre_counts[genre] = genre_counts.get(genre, 0) + 1
-        
-        # Sort by count (descending) and get top 20
-        sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
-        top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
-        
-        conn.close()
-    except Exception as e:
-        logging.error(f"Error fetching top genres: {e}")
+    if playlist_type == 'smart':
+        try:
+            conn = get_db()
+            cursor = conn.cursor()
+            
+            # Query to get all genres and count songs
+            # Genres are stored as comma-separated values in the 'genres' field
+            cursor.execute("""
+                SELECT genres FROM tracks 
+                WHERE genres IS NOT NULL AND genres != ''
+            """)
+            
+            # Count genre occurrences
+            genre_counts = {}
+            for row in cursor.fetchall():
+                genres_str = row[0]
+                if genres_str:
+                    # Split by comma and trim whitespace
+                    genres_list = [g.strip() for g in genres_str.split(',') if g.strip()]
+                    for genre in genres_list:
+                        genre_counts[genre] = genre_counts.get(genre, 0) + 1
+            
+            # Sort by count (descending) and get top 20
+            sorted_genres = sorted(genre_counts.items(), key=lambda x: x[1], reverse=True)[:20]
+            top_genres = [{'name': genre, 'count': count} for genre, count in sorted_genres]
+            
+            conn.close()
+        except Exception as e:
+            logging.error(f"Error fetching top genres: {e}")
     
     # Check service configurations
     spotify_enabled = cfg.get("api_integrations", {}).get("spotify", {}).get("enabled", False)
     lastfm_enabled = cfg.get("api_integrations", {}).get("lastfm", {}).get("enabled", False)
     
-    return render_template('playlist_manager.html', 
+    return render_template('playlists_create.html',
+                         playlist_type=playlist_type,
                          navidrome_users=navidrome_users,
                          top_genres=top_genres,
                          spotify_enabled=spotify_enabled,
                          lastfm_enabled=lastfm_enabled)
+
+
+@app.route("/playlists/import")
+def playlists_import():
+    """Import playlists page"""
+    cfg, _ = _read_yaml(CONFIG_PATH)
+    navidrome_config = cfg.get("navidrome", {})
+    navidrome_users = cfg.get("navidrome_users", [])
+    
+    # If navidrome_users not configured, use single user
+    if not navidrome_users and navidrome_config.get("user"):
+        navidrome_users = [{
+            "base_url": navidrome_config.get("base_url"),
+            "user": navidrome_config.get("user")
+        }]
+    
+    # Check service configurations
+    spotify_enabled = cfg.get("api_integrations", {}).get("spotify", {}).get("enabled", False)
+    lastfm_enabled = cfg.get("api_integrations", {}).get("lastfm", {}).get("enabled", False)
+    
+    return render_template('playlists_import.html',
+                         navidrome_users=navidrome_users,
+                         spotify_enabled=spotify_enabled,
+                         lastfm_enabled=lastfm_enabled)
+
 
 @app.route("/api/playlist/list")
 def api_playlist_list():

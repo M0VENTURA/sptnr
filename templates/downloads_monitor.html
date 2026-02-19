@@ -1,0 +1,213 @@
+{% extends "base.html" %}
+
+{% block title %}Download Monitor · Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-download"></i> Music Downloads
+      <a href="/help/FEATURES_DOWNLOADS" class="btn btn-sm btn-outline-success ms-2" title="Help for Downloads">
+          <i class="bi bi-question-circle"></i>
+      </a>
+    </h1>
+    <p class="text-muted mb-0">Search and download music from qBittorrent and Soulseek</p>
+  </div>
+
+  <!-- Navigation Bar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary mb-4" style="margin: -1rem -1rem 0 -1rem; padding: 0;">
+    <div class="container-fluid" style="padding: 0 1rem;">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#downloadsNav" aria-controls="downloadsNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="downloadsNav">
+        <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+            <a class="nav-link active" href="/downloads/monitor">
+              <i class="bi bi-arrow-down-circle"></i> Download Monitor
+            </a>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="downloadsDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-search"></i> Search & Download
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="downloadsDropdown">
+              <li><a class="dropdown-item" href="/downloads/search/qbittorrent"><i class="bi bi-cloud-download"></i> qBittorrent</a></li>
+              <li><a class="dropdown-item" href="/downloads/search/soulseek"><i class="bi bi-music-note-list"></i> Soulseek</a></li>
+              <li><a class="dropdown-item" href="/downloads/search/musicbrainz"><i class="bi bi-disc"></i> MusicBrainz</a></li>
+              <li><hr class="dropdown-divider"></li>
+              <li><a class="dropdown-item" href="/downloads/search/playlists"><i class="bi bi-collection-play"></i> Playlist Downloads</a></li>
+            </ul>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="discoverDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-compass"></i> Discover
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="discoverDropdown">
+              <li><a class="dropdown-item" href="/downloads/discover/lastfm"><i class="bi bi-heart"></i> Last.fm Recommendations</a></li>
+              <li><a class="dropdown-item" href="/downloads/discover/similar-artists"><i class="bi bi-person-heart"></i> Similar Artists</a></li>
+              <li><a class="dropdown-item" href="/downloads/discover/upcoming"><i class="bi bi-calendar-event"></i> Upcoming Releases</a></li>
+            </ul>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <!-- Add to Queue Section -->
+  <div class="card mb-4">
+    <div class="card-header">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-plus-circle"></i> Add to Download Queue
+      </h5>
+    </div>
+    <div class="card-body">
+      <form id="addToQueueForm" onsubmit="addToQueue(event)">
+        <div class="row g-3 mb-3">
+          <div class="col-md-3">
+            <label for="queueArtist" class="form-label">Artist *</label>
+            <input type="text" id="queueArtist" class="form-control" placeholder="e.g., Daft Punk" required>
+          </div>
+          <div class="col-md-3">
+            <label for="queueTitle" class="form-label">Song Title *</label>
+            <input type="text" id="queueTitle" class="form-control" placeholder="e.g., Get Lucky" required>
+          </div>
+          <div class="col-md-3">
+            <label for="queueAlbum" class="form-label">Album (Optional)</label>
+            <input type="text" id="queueAlbum" class="form-control" placeholder="e.g., Random Access Memories">
+          </div>
+          <div class="col-md-3">
+            <label for="queuePriority" class="form-label">Priority</label>
+            <select id="queuePriority" class="form-select">
+              <option value="1">🔴 Critical</option>
+              <option value="3">🟠 High</option>
+              <option value="5" selected>🟡 Normal</option>
+              <option value="8">🟢 Low</option>
+            </select>
+          </div>
+        </div>
+        <div class="row g-3 mb-3">
+          <div class="col-md-6">
+            <label for="queueSource" class="form-label">Download Source</label>
+            <select id="queueSource" class="form-select">
+              <option value="soulseek" selected>🔍 Soulseek (Songs/Playlists)</option>
+              <option value="qbittorrent">⚡ qBittorrent (Albums)</option>
+            </select>
+          </div>
+          <div class="col-md-6 d-flex align-items-end">
+            <button type="submit" class="btn btn-primary w-100">
+              <i class="bi bi-plus-circle"></i> Add to Queue
+            </button>
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- Queue Status Cards -->
+  <div class="row g-3 mb-4">
+    <div class="col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="text-muted small mb-2">Active Downloads</div>
+          <h4 class="mb-0" id="queueActiveCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="text-muted small mb-2">Completed</div>
+          <h4 class="mb-0" id="queueCompletedCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <div class="card text-center h-100">
+        <div class="card-body">
+          <div class="text-muted small mb-2">Failed</div>
+          <h4 class="mb-0" id="queueFailedCount">0</h4>
+        </div>
+      </div>
+    </div>
+    <div class="col-md-3">
+      <button class="btn btn-outline-primary w-100 h-100" onclick="loadQueueStatus()">
+        <i class="bi bi-arrow-clockwise"></i> Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Active Queue -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-hourglass-split"></i> Active Queue
+      </h5>
+      <span class="badge bg-info" id="activeBadge" style="display:none">0</span>
+    </div>
+    <div class="card-body p-0">
+      <div id="activeQueueEmpty" class="alert alert-info alert-sm mb-0">
+        <i class="bi bi-info-circle"></i> No active downloads. Add one above!
+      </div>
+      <div id="activeQueueList" style="display:none">
+        <!-- Active items rendered here -->
+      </div>
+    </div>
+  </div>
+
+  <!-- Completed Queue (Ready for Organization) -->
+  <div class="card mb-4">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-check-circle"></i> Completed & Ready to Organize
+      </h5>
+      <div class="d-flex gap-2 align-items-center">
+        <span class="badge bg-success" id="completedBadge" style="display:none">0</span>
+        <button class="btn btn-sm btn-outline-info" onclick="toggleSelectAll()" id="selectAllBtn" style="display:none;">
+          <i class="bi bi-check-square"></i> Select All
+        </button>
+      </div>
+    </div>
+    <div class="card-body p-0">
+      <div id="completedQueueEmpty" class="alert alert-info alert-sm mb-0">
+        <i class="bi bi-info-circle"></i> No completed downloads yet.
+      </div>
+      <div id="completedQueueList" style="display:none">
+        <!-- Completed items rendered here -->
+      </div>
+    </div>
+    <div id="completedQueueActions" class="card-footer d-flex gap-2" style="display:none;">
+      <button class="btn btn-sm btn-primary" onclick="groupSelectedItems()" id="groupBtn" disabled>
+        <i class="bi bi-collection"></i> Group Selected
+      </button>
+      <button class="btn btn-sm btn-outline-secondary" onclick="openBatchGroupModal()" id="batchGroupBtn" disabled>
+        <i class="bi bi-folder-plus"></i> New Album
+      </button>
+      <div class="ms-auto">
+        <span class="text-muted small" id="selectedCount">0 selected</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- Failed Queue (With Retry Options) -->
+  <div class="card">
+    <div class="card-header d-flex justify-content-between align-items-center">
+      <h5 class="card-title mb-0">
+        <i class="bi bi-exclamation-circle"></i> Failed Downloads
+      </h5>
+      <span class="badge bg-danger" id="failedBadge" style="display:none">0</span>
+    </div>
+    <div class="card-body p-0">
+      <div id="failedQueueEmpty" class="alert alert-info alert-sm mb-0">
+        <i class="bi bi-info-circle"></i> No failed downloads.
+      </div>
+      <div id="failedQueueList" style="display:none">
+        <!-- Failed items rendered here -->
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- Include existing JavaScript -->
+<script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+{% endblock %}

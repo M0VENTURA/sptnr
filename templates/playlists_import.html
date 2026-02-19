@@ -1,0 +1,53 @@
+{% extends "base.html" %}
+
+{% block title %}Import Playlist · Popularr{% endblock %}
+
+{% block content %}
+<div class="container-fluid mt-4">
+  <div class="mb-4">
+    <h1 class="h2 mb-2">
+      <i class="bi bi-collection-play"></i> Playlists
+    </h1>
+    <p class="text-muted mb-0">Import playlists from external sources</p>
+  </div>
+
+  <!-- Navigation Bar -->
+  <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary mb-4" style="margin: -1rem -1rem 0 -1rem; padding: 0;">
+    <div class="container-fluid" style="padding: 0 1rem;">
+      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#playlistNav" aria-controls="playlistNav" aria-expanded="false" aria-label="Toggle navigation">
+        <span class="navbar-toggler-icon"></span>
+      </button>
+      <div class="collapse navbar-collapse" id="playlistNav">
+        <ul class="navbar-nav ms-auto">
+          <li class="nav-item">
+            <a class="nav-link" href="/playlists/browse">
+              <i class="bi bi-collection"></i> Browse
+            </a>
+          </li>
+          <li class="nav-item dropdown">
+            <a class="nav-link dropdown-toggle" href="#" id="createDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
+              <i class="bi bi-plus-circle"></i> Create
+            </a>
+            <ul class="dropdown-menu" aria-labelledby="createDropdown">
+              <li><a class="dropdown-item" href="/playlists/create/manual"><i class="bi bi-pencil"></i> Manual Playlist</a></li>
+              <li><a class="dropdown-item" href="/playlists/create/smart"><i class="bi bi-sparkles"></i> Smart Playlist</a></li>
+            </ul>
+          </li>
+          <li class="nav-item">
+            <a class="nav-link active" href="/playlists/import">
+              <i class="bi bi-cloud-download"></i> Import
+            </a>
+          </li>
+        </ul>
+      </div>
+    </div>
+  </nav>
+
+  <div class="alert alert-info">
+    <i class="bi bi-info-circle"></i> Import playlists functionality to be implemented
+  </div>
+</div>
+
+<!-- Include existing JavaScript -->
+<script src="{{url_for('static', filename='js/playlist.js')}}"></script>
+{% endblock %}
