@@ -523,7 +523,7 @@
 
 <script>
 document.addEventListener('DOMContentLoaded', function() {
-    var initialRecentScans = {{ recent_scans|default([])|tojson|safe }};
+    var initialRecentScans = JSON.parse('{{ recent_scans|default([])|tojson|safe }}');
     var recentScansBody = document.getElementById('recent-scans-body');
     var popButton = document.getElementById('popularity-start-btn');
     var popButtonDefaultLabel = popButton ? popButton.innerHTML : '';
@@ -883,7 +883,7 @@ document.addEventListener('DOMContentLoaded', function() {
     
     // Poll every 3 seconds (reduced from multiple intervals)
     setInterval(updateAll, 3000);
-});
+// ...existing code... (no stray closing braces at the end)
 
 // Switch between Navidrome users
 function switchUser(userIndex) {
