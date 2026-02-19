@@ -4307,6 +4307,11 @@ def popularity_scan(
                                     methods.append(f"z-score: {track_zscore:.2f}")
                                 if methods:
                                     reasons.append("; ".join(methods))
+                            else:
+                                # Rest of album: still show z-score if available
+                                if track_zscore:
+                                    methods.append(f"z-score: {track_zscore:.2f}")
+                                    reasons.append("; ".join(methods))
                             
                             reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
                             
