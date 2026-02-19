@@ -3502,7 +3502,7 @@ def popularity_scan(
                         for track in artist_tracks:
                             track_id = row_get(track, 'id')
                             track_title = row_get(track, 'title')
-                            album = row_get(track, 'album', '')
+                            track_album = row_get(track, 'album', '')
                             score = row_get(track, 'popularity_score', 0)
                             if score <= 0 or artist_stdev == 0:
                                 cursor.execute("""
@@ -3513,13 +3513,13 @@ def popularity_scan(
                             # Album-level stats
                             cursor.execute("""
                                 SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
-                            """, (artist, album))
-                            album_scores = [row[0] for row in cursor.fetchall()]
-                            album_mean = mean(album_scores) if album_scores else 0
-                            album_stdev = stdev(album_scores) if len(album_scores) > 1 else 1
-                            sorted_album_scores = sorted(album_scores, reverse=True)
-                            album_z = (score - album_mean) / album_stdev if album_stdev > 0 else 0
-                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] or score in sorted_album_scores[:STANDOUT_CONFIG['album_top_n']])
+                            """, (artist, track_album))
+                            track_album_scores = [row[0] for row in cursor.fetchall()]
+                            track_album_mean = mean(track_album_scores) if track_album_scores else 0
+                            track_album_stdev = stdev(track_album_scores) if len(track_album_scores) > 1 else 1
+                            sorted_track_album_scores = sorted(track_album_scores, reverse=True)
+                            album_z = (score - track_album_mean) / track_album_stdev if track_album_stdev > 0 else 0
+                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] or score in sorted_track_album_scores[:STANDOUT_CONFIG['album_top_n']])
                             # Artist-level stats
                             artist_z = (score - artist_mean) / artist_stdev if artist_stdev > 0 else 0
                             is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
@@ -3530,7 +3530,7 @@ def popularity_scan(
                                 star = 4
                             elif is_album_standout:
                                 star = 3
-                            elif album_mean and score > album_mean:
+                            elif track_album_mean and score > track_album_mean:
                                 star = 2
                             else:
                                 star = 1
@@ -4307,6 +4307,11 @@ def popularity_scan(
                                     methods.append(f"z-score: {track_zscore:.2f}")
                                 if methods:
                                     reasons.append("; ".join(methods))
+                            else:
+                                # Rest of album: still show z-score if available
+                                if track_zscore:
+                                    methods.append(f"z-score: {track_zscore:.2f}")
+                                    reasons.append("; ".join(methods))
                             
                             reason_str = " (" + ", ".join(reasons) + ")" if reasons else ""
                             
@@ -4355,8 +4360,8 @@ def popularity_scan(
                                     log_unified(f"Single Detection Scan - ===== {album} - Rest of Album =====")
                                 else:
                                     log_unified(f"Single Detection Scan - ===== {album} - All Tracks =====")
-                                for title, stars, _ in rest_of_album:
-                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}")
+                                for title, stars, reason in rest_of_album:
+                                    log_unified(f"Single Detection Scan - {stars:<5} {artist} - {title}{reason}")
                         except Exception as e:
                             log_debug(f"Exception logging album results for {album}: {type(e).__name__}: {str(e)}")
                         
