@@ -2635,9 +2635,16 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   });
   
   async function loadArtistGenres(artist) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
     try {
       const url = `/api/genres/artist/${encodeURIComponent(artist)}`;
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
       if (!response.ok) {
         showArtistGenresError('Failed to load genres');
         return;
@@ -2646,8 +2653,14 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       const data = await response.json();
       displayArtistGenres(data);
     } catch (error) {
-      console.error('Error loading artist genres:', error);
-      showArtistGenresError('Error loading genres: ' + error.message);
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        console.warn('Artist genres loading timeout (5s)');
+        showArtistGenresError('Genres loading timed out - server may be busy');
+      } else {
+        console.error('Error loading artist genres:', error);
+        showArtistGenresError('Error loading genres: ' + error.message);
+      }
     }
   }
   
@@ -2724,9 +2737,16 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
 
   // Similar Artists Loading
   async function loadSimilarArtistsForArtist(artist) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
     try {
       const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
-      const response = await fetch(url);
+      const response = await fetch(url, {
+        signal: controller.signal
+      });
+      clearTimeout(timeoutId);
+      
       if (!response.ok) {
         showArtistSimilarArtistsError('Failed to load similar artists');
         return;
@@ -2735,8 +2755,14 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
       const data = await response.json();
       displayArtistSimilarArtists(data);
     } catch (error) {
-      console.error('Error loading similar artists:', error);
-      showArtistSimilarArtistsError('Error loading similar artists: ' + error.message);
+      clearTimeout(timeoutId);
+      if (error.name === 'AbortError') {
+        console.warn('Similar artists loading timeout (5s)');
+        showArtistSimilarArtistsError('Similar artists loading timed out - server may be busy');
+      } else {
+        console.error('Error loading similar artists:', error);
+        showArtistSimilarArtistsError('Error loading similar artists: ' + error.message);
+      }
     }
   }
 

@@ -2564,9 +2564,16 @@
     });
     
     async function loadAlbumGenres(album, artist) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        
         try {
             const url = `/api/genres/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`;
-            const response = await fetch(url);
+            const response = await fetch(url, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            
             if (!response.ok) {
                 showAlbumGenresError('Failed to load genres');
                 return;
@@ -2575,8 +2582,14 @@
             const data = await response.json();
             displayAlbumGenres(data);
         } catch (error) {
-            console.error('Error loading album genres:', error);
-            showAlbumGenresError('Error loading genres: ' + error.message);
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                console.warn('Album genres loading timeout (5s)');
+                showAlbumGenresError('Genres loading timed out - server may be busy');
+            } else {
+                console.error('Error loading album genres:', error);
+                showAlbumGenresError('Error loading genres: ' + error.message);
+            }
         }
     }
     
@@ -2653,9 +2666,16 @@
 
     // Similar Artists Loading
     async function loadSimilarArtistsForAlbum(artist) {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        
         try {
             const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
-            const response = await fetch(url);
+            const response = await fetch(url, {
+                signal: controller.signal
+            });
+            clearTimeout(timeoutId);
+            
             if (!response.ok) {
                 showAlbumSimilarArtistsError('Failed to load similar artists');
                 return;
@@ -2664,8 +2684,14 @@
             const data = await response.json();
             displayAlbumSimilarArtists(data);
         } catch (error) {
-            console.error('Error loading similar artists:', error);
-            showAlbumSimilarArtistsError('Error loading similar artists: ' + error.message);
+            clearTimeout(timeoutId);
+            if (error.name === 'AbortError') {
+                console.warn('Similar artists loading timeout (5s)');
+                showAlbumSimilarArtistsError('Similar artists loading timed out - server may be busy');
+            } else {
+                console.error('Error loading similar artists:', error);
+                showAlbumSimilarArtistsError('Error loading similar artists: ' + error.message);
+            }
         }
     }
 

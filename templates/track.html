@@ -1121,10 +1121,7 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     } else {
         // If no track ID, show error in genre container
-        const genreContainer = document.getElementById('trackGenreSourcesContainer');
-        if (genreContainer) {
-            showGenresError('Track details not available');
-        }
+        showGenresError('Track details not available');
     }
     
     if (artist && artist.length > 0) {
@@ -1133,8 +1130,15 @@ document.addEventListener('DOMContentLoaded', function() {
 });
 
 async function loadTrackGenres(trackId) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
     try {
-        const response = await fetch(`/api/genres/track/${trackId}`);
+        const response = await fetch(`/api/genres/track/${trackId}`, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
         if (!response.ok) {
             showGenresError('Failed to load genres');
             return;
@@ -1143,8 +1147,14 @@ async function loadTrackGenres(trackId) {
         const data = await response.json();
         displayTrackGenres(data);
     } catch (error) {
-        console.error('Error loading genres:', error);
-        showGenresError('Error loading genres: ' + error.message);
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.warn('Genre loading timeout (5s)');
+            showGenresError('Genre loading timed out - server may be busy');
+        } else {
+            console.error('Error loading genres:', error);
+            showGenresError('Error loading genres: ' + error.message);
+        }
     }
 }
 
@@ -1220,9 +1230,16 @@ function showGenresError(message) {
 
 // Similar Artists Loading
 async function loadSimilarArtistsForTrack(artist) {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    
     try {
         const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
-        const response = await fetch(url);
+        const response = await fetch(url, {
+            signal: controller.signal
+        });
+        clearTimeout(timeoutId);
+        
         if (!response.ok) {
             showSimilarArtistsError('Failed to load similar artists');
             return;
@@ -1231,8 +1248,14 @@ async function loadSimilarArtistsForTrack(artist) {
         const data = await response.json();
         displaySimilarArtists(data);
     } catch (error) {
-        console.error('Error loading similar artists:', error);
-        showSimilarArtistsError('Error loading similar artists: ' + error.message);
+        clearTimeout(timeoutId);
+        if (error.name === 'AbortError') {
+            console.warn('Similar artists loading timeout (5s)');
+            showSimilarArtistsError('Similar artists loading timed out - server may be busy');
+        } else {
+            console.error('Error loading similar artists:', error);
+            showSimilarArtistsError('Error loading similar artists: ' + error.message);
+        }
     }
 }
 
