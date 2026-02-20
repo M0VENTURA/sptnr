@@ -198,6 +198,9 @@ required_columns = {
     "discogs_release_ids": "TEXT",            # JSON array of Discogs release IDs
     "musicbrainz_release_group_ids": "TEXT",  # JSON array of MusicBrainz release group IDs
     "single_detection_last_updated": "TEXT",   # Timestamp when single detection last ran
+    # ✅ Cover Song Detection
+    "is_cover": "INTEGER",                     # 1 if song is detected as a cover (different composer than artist's typical)
+    "is_cover_reason": "TEXT",                 # Reason for cover detection (e.g., "composer differs from artist's typical")
     # ✅ Alternate take detection fields (for parenthesis matching)
     "alternate_take": "INTEGER",               # 1 if track is alternate take (similar title with parenthesis)
     "base_track_id": "TEXT",                   # ID of base track (if this is an alternate take)

@@ -739,6 +739,82 @@ class MusicBrainzClient:
                 return ""
         
         return ""
+    
+    def get_composers_for_track(self, title: str, artist: str) -> list[str]:
+        """
+        Fetch composer(s) for a track from MusicBrainz.
+        
+        Looks up the recording and extracts composer information from relationships.
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            
+        Returns:
+            List of composer names (empty list if not found or error)
+        """
+        if not self.enabled:
+            return []
+        
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Use rate limiter
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
+                
+                # Search for recording with relationships
+                escaped_title = _escape_lucene_special_chars(title)
+                escaped_artist = _escape_lucene_special_chars(artist)
+                query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": 1,
+                    "inc": "relationships"
+                }
+                
+                r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
+                r.raise_for_status()
+                recordings = r.json().get("recordings", [])
+                
+                if not recordings:
+                    return []
+                
+                # Get the top match
+                recording = recordings[0]
+                relationships = recording.get("relationships", [])
+                
+                composers = []
+                for rel in relationships:
+                    # Look for composer, writer, or lyricist relationships
+                    rel_type = rel.get("type", "").lower()
+                    if rel_type in ("composer", "writer", "lyricist"):
+                        # Get the artist/person name from the relationship
+                        target = rel.get("artist", {})
+                        if target and target.get("name"):
+                            composers.append(target["name"])
+                
+                return list(dict.fromkeys(composers))  # Remove duplicates while preserving order
+                
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz composer lookup attempt {attempt + 1} failed for '{title}' by '{artist}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz composer lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
+                    return []
+            except Exception as e:
+                logger.debug(f"MusicBrainz composer lookup error for '{title}' by '{artist}': {e}")
+                return []
+        
+        return []
 
 
 # Backward-compatible module functions

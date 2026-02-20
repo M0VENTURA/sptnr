@@ -4600,6 +4600,15 @@ def popularity_scan(
                 log_debug(f"Calling playlist creation for artist: {artist} with {len(tracks_list)} tracks")
                 create_or_update_playlist_for_artist(artist, tracks_list)
 
+            # After playlist creation, detect cover songs for this artist
+            # This batch process runs once per artist after all their tracks/albums are scanned
+            # ensuring we have all composer data available before comparing
+            log_debug(f"Starting cover detection for artist: {artist}")
+            covers_found = detect_covers_for_artist(artist, conn)
+            if covers_found > 0:
+                conn.commit()  # Commit cover detection results
+                log_debug(f"Cover detection results committed - {covers_found} covers detected for {artist}")
+
             # Update artist progress tracking after completing all albums for this artist
             # Note: Progress is saved once per artist (not per track) to balance granularity
             # with I/O efficiency. Original code saved after every track which could result
@@ -4686,6 +4695,104 @@ def _create_nsp_file(playlist_name: str, playlist_data: dict) -> bool:
     except Exception as e:
         log_basic(f"Failed to create playlist '{playlist_name}': {e}")
         return False
+
+
+def detect_covers_for_artist(artist_name: str, conn: sqlite3.Connection) -> int:
+    """
+    Detect cover songs for an artist by comparing composers.
+    
+    Algorithm:
+    1. Get all tracks for the artist with their composers
+    2. Find the most common composer (artist's "typical" composer)
+    3. For each track with a DIFFERENT composer:
+       - Search for other artists with same song title AND same composer
+       - If found, mark as cover
+    4. Update is_cover and is_cover_reason fields in database
+    
+    Args:
+        artist_name: Artist name to check
+        conn: Database connection
+        
+    Returns:
+        Number of covers detected
+    """
+    try:
+        cursor = conn.cursor()
+        
+        # 1. Get all tracks for this artist with composers
+        cursor.execute("""
+            SELECT id, title, composer, artist
+            FROM tracks
+            WHERE artist = ? AND composer IS NOT NULL AND composer != ''
+            ORDER BY composer
+        """, (artist_name,))
+        
+        artist_tracks = cursor.fetchall()
+        if not artist_tracks:
+            return 0  # No tracks with composers
+        
+        # 2. Find the most common composer (artist's typical composer)
+        composer_counts = {}
+        for track in artist_tracks:
+            composer = track[2]  # composer field
+            composer_counts[composer] = composer_counts.get(composer, 0) + 1
+        
+        if not composer_counts:
+            return 0
+        
+        typical_composer = max(composer_counts.items(), key=lambda x: x[1])[0]
+        log_debug(f"Artist '{artist_name}' typical composer: '{typical_composer}' (appears {composer_counts[typical_composer]} times)")
+        
+        covers_detected = 0
+        
+        # 3. Check each track with a DIFFERENT composer
+        for track in artist_tracks:
+            track_id, title, composer, artist = track
+            
+            # Skip if composer matches typical composer
+            if composer == typical_composer:
+                continue
+            
+            # Search for other artists with same title AND same composer
+            cursor.execute("""
+                SELECT artist FROM tracks
+                WHERE title = ? AND composer = ? AND artist != ? AND composer IS NOT NULL
+                LIMIT 1
+            """, (title, composer, artist_name))
+            
+            other_artist = cursor.fetchone()
+            
+            if other_artist:
+                # Found another artist with this title + composer combo!
+                # Mark as cover
+                other_artist_name = other_artist[0]
+                reason = f"Cover detected: Original by '{other_artist_name}' (composer: '{composer}')"
+                
+                cursor.execute("""
+                    UPDATE tracks
+                    SET is_cover = 1, is_cover_reason = ?
+                    WHERE id = ?
+                """, (reason, track_id))
+                
+                log_debug(f"Cover detected: '{title}' by '{artist_name}' is a cover of original by '{other_artist_name}'")
+                covers_detected += 1
+            else:
+                # No other artist found - clear cover flag if it was previously set
+                cursor.execute("""
+                    UPDATE tracks
+                    SET is_cover = 0, is_cover_reason = NULL
+                    WHERE id = ?
+                """, (track_id,))
+        
+        if covers_detected > 0:
+            log_info(f"Cover Detection - Detected {covers_detected} covers for '{artist_name}'")
+        
+        return covers_detected
+        
+    except Exception as e:
+        log_info(f"Error detecting covers for artist '{artist_name}': {e}")
+        log_debug(f"Cover detection error details: {type(e).__name__}: {str(e)}")
+        return 0
 
 
 def create_or_update_playlist_for_artist(artist_name: str, tracks: list):
