@@ -3097,22 +3097,24 @@ def api_artist_bio():
             else:
                 cleaned_bio = ""
             
+            logging.debug(f"[ARTIST BIO] Found bio for {artist_name}: {len(cleaned_bio)} chars")
             return jsonify({
                 "bio": cleaned_bio,
                 "source": "Database (from scan)",
                 "image_url": image_url
             })
         else:
-            # Artist not in database yet - return empty
+            # Artist not in database yet - return empty with helpful message
+            logging.info(f"[ARTIST BIO] No artist record for {artist_name} - run scan to populate")
             return jsonify({
                 "bio": "",
-                "source": "Not available (run artist scan to fetch)",
+                "source": "Not yet populated (run Scan Artist button to fetch)",
                 "image_url": ""
             })
         
     except Exception as e:
-        logging.error(f"Error fetching artist bio from database: {e}")
-        return jsonify({"bio": "", "source": "Error"}), 200
+        logging.error(f"[ARTIST BIO] Error fetching bio for {artist_name}: {e}")
+        return jsonify({"bio": "", "source": "Error loading bio"}), 200
 
 
 @app.route("/api/artist/singles-count")
@@ -3217,10 +3219,13 @@ def api_artist_image():
         
         if row and row['image_url']:
             # Redirect to the stored image URL
+            logging.debug(f"[ARTIST IMAGE] Found image for {artist_name}")
             return redirect(row['image_url'])
+        else:
+            logging.debug(f"[ARTIST IMAGE] No image for {artist_name} - run scan to fetch")
         
     except Exception as e:
-        logging.error(f"Error fetching artist image from database: {e}")
+        logging.error(f"[ARTIST IMAGE] Error fetching image for {artist_name}: {e}")
     
     # Return placeholder if no cached image
     svg = '''<svg xmlns="http://www.w3.org/2000/svg" width="200" height="200">
@@ -3840,6 +3845,7 @@ def api_get_track_genres(track_id):
         conn.close()
         
         if not track:
+            logging.debug(f"[TRACK GENRES] Track not found: {track_id}")
             return jsonify({"error": "Track not found"}), 404
         
         # Convert to dict if needed
@@ -3847,6 +3853,13 @@ def api_get_track_genres(track_id):
             track = dict(track)
         
         genres_summary = get_track_genres_summary(track)
+        
+        # Log if genres are empty
+        total_genres = sum(len(genres) for genres in genres_summary.values())
+        if total_genres == 0:
+            logging.info(f"[TRACK GENRES] No genres for {track.get('title', 'Unknown')} - run scan to populate")
+        else:
+            logging.debug(f"[TRACK GENRES] Found {total_genres} genres for {track.get('title', 'Unknown')}")
         
         return jsonify({
             "success": True,
@@ -3982,13 +3995,15 @@ def api_get_similar_artists(artist):
         conn.close()
         
         if not row:
+            logging.info(f"[SIMILAR ARTISTS] No artist record for {artist} - run scan to populate")
             return jsonify({
                 "success": True,
                 "artist": artist,
                 "similar_artists": {
                     "lastfm": [],
                     "listenbrainz": []
-                }
+                },
+                "message": "Run 'Scan Artist' to fetch similar artists data"
             })
         
         # Parse JSON arrays

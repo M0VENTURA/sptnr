@@ -1162,7 +1162,7 @@ function displayTrackGenres(data) {
     const container = document.getElementById('genreSourcesContainer');
     
     if (!data.genres || Object.keys(data.genres).length === 0) {
-        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
+        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available yet. Click <strong>"Rescan Track"</strong> to fetch from Spotify, Last.fm, ListenBrainz, and other sources.</div>';
         return;
     }
     
@@ -1267,7 +1267,7 @@ function displaySimilarArtists(data) {
     );
     
     if (minArtists === 0) {
-        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available</div>';
+        container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No similar artists available yet. Click <strong>"Rescan Track"</strong> to fetch similar artists from Last.fm and ListenBrainz.</div>';
         return;
     }
     
