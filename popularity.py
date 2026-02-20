@@ -2721,7 +2721,6 @@ def popularity_scan(
                         else:
                             log_debug(f"Artist '{artist}' not found in MusicBrainz")
                     else:
-                    else:
                         log_debug(f"MusicBrainz client not available - skipping ListenBrainz similar artists lookup")
                 except TimeoutError as e:
                     log_debug(f"ListenBrainz similar artists lookup timed out for {artist}: {e}")
@@ -2780,6 +2779,8 @@ def popularity_scan(
                             log_debug(f"No top tags found for '{artist}' from Last.fm")
                 except Exception as e:
                     log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
+            except Exception as e:
+                log_debug(f"Similar artists and tags lookup failed for {artist}: {e}")
             
             album_num = 0
             for album, album_tracks in albums.items():
