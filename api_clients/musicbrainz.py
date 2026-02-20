@@ -66,6 +66,10 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     IMPORTANT: Preserves title suffixes like "!", "+", "?", and Roman numerals (I, II, III, IV, etc.)
     to ensure different songs are not matched as the same track.
     
+    SPECIAL HANDLING: Year-based versions (e.g., "2016 version") are NOT flagged as alternate 
+    versions because they represent different release years/remasters, not alternate versions 
+    like remixes or live performances. This prevents false negatives in single detection.
+    
     Args:
         title: Track title (e.g., "Song Title (Live)", "Song Title - Acoustic Version")
         
@@ -77,9 +81,11 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     Examples:
         "Untot im Drachenboot (Live in Wacken 2022)" -> ("Untot im Drachenboot", {'live'})
         "Song Title - Acoustic Version" -> ("Song Title", {'acoustic'})
+        "Song Title (2016 version)" -> ("Song Title", set()) - year-based version allowed ✓
         "Regular Song" -> ("Regular Song", set())
         "Lost!" -> ("Lost!", set()) - preserves punctuation suffix
         "Life in Technicolor II" -> ("Life in Technicolor II", set()) - preserves Roman numeral
+        "Die Tomorrow (Swing Tomorrow version)" -> ("Die Tomorrow", {'version'}) - custom version blocked ✗
     """
     title_lower = title.lower()
     found_versions = set()
@@ -87,6 +93,19 @@ def _extract_version_info(title: str) -> tuple[str, set[str]]:
     # Check for version keywords in the title
     for keyword in VERSION_KEYWORDS:
         if re.search(r'\b' + re.escape(keyword) + r'\b', title_lower):
+            # Special handling for 'version' keyword: only flag if NOT a year-based version
+            # e.g., "2016 version" or "2022 version" are NOT alternate versions
+            # but "Swing Tomorrow version" or "Hotel Lounge version" ARE alternate versions
+            if keyword == 'version':
+                # Check if "version" is preceded by a 4-digit year (2000-2999)
+                if re.search(r'\d{4}\s+version', title_lower):
+                    # This is a year-based version (e.g., "2016 version"), skip it
+                    continue
+                # Also check for just year before version without space
+                if re.search(r'\(\d{4}\s*version', title_lower):
+                    # This is a year-based version in parentheses, skip it
+                    continue
+            
             found_versions.add(keyword)
     
     # Save the original title before removing parenthetical content
