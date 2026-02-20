@@ -1071,8 +1071,8 @@ def infer_from_popularity(
         if album_z >= 1.0 and artist_z >= 0.5:
             return 'high', True
         
-        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.4 (must match metadata-based confidence thresholds)
-        if album_z >= 0.5 or artist_z >= 1.4:
+        # MEDIUM: album_z >= 0.5 OR artist_z >= 1.0 (per ARTIST_LEVEL_ZSCORE_IMPLEMENTATION.md)
+        if album_z >= 0.5 or artist_z >= 1.0:
             return 'medium', True
         
         # LOW: Legacy support for album_z >= 0.2 AND >= 3 versions
@@ -1230,8 +1230,8 @@ def determine_final_status(
                 return 'low'
         
         # MEDIUM confidence for artist-level standouts WITHOUT metadata (popular across entire artist)
-        # Must meet the same z-score threshold as metadata-backed tracks: 1.4
-        elif is_artist_level_standout and artist_z >= 1.4:
+        # Per ARTIST_LEVEL_ZSCORE_IMPLEMENTATION.md: artist_z >= 1.0 for medium confidence
+        elif is_artist_level_standout and artist_z >= 1.0:
             log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f})")
             return 'medium'
     
