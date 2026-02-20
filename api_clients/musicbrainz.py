@@ -55,8 +55,9 @@ except ImportError:
     PUNCTUATION_SUFFIX_PATTERN = r'([!+?]+)\s*$'
 
 # Version keywords to detect in track titles (immutable tuple for performance)
+# Includes 'version' to catch custom versions like "Swing Tomorrow version by Rocksin"
 VERSION_KEYWORDS = ('live', 'acoustic', 'unplugged', 'remix', 'edit', 'mix', 
-                    'remaster', 'remastered', 'demo', 'instrumental', 'orchestral')
+                    'remaster', 'remastered', 'demo', 'instrumental', 'orchestral', 'version')
 
 def _extract_version_info(title: str) -> tuple[str, set[str]]:
     """
