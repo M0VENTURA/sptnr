@@ -14,6 +14,35 @@
     <p class="text-muted mb-0">View, manage, and download playlists from your Navidrome library</p>
   </div>
 
+  <!-- Recommended Playlists Section -->
+  <div class="mb-4">
+    <div class="d-flex justify-content-between align-items-center mb-3">
+      <h3 class="h5 mb-0">
+        <i class="bi bi-lightbulb"></i> Recommended Playlists
+      </h3>
+      <button class="btn btn-sm btn-outline-secondary" onclick="loadRecommendedPlaylists()" title="Refresh recommendations">
+        <i class="bi bi-arrow-clockwise"></i>
+      </button>
+    </div>
+
+    <div id="loadingRecommendedPlaylists" class="text-center py-5">
+      <div class="spinner-border text-primary" role="status">
+        <span class="visually-hidden">Loading...</span>
+      </div>
+      <p class="text-muted mt-3">Loading personalized recommendations...</p>
+    </div>
+
+    <div id="recommendedPlaylistsContainer" style="display: none;">
+      <!-- Recommendations will be loaded here -->
+    </div>
+
+    <div id="recommendedPlaylistsError" style="display: none;">
+      <div class="alert alert-warning">
+        <i class="bi bi-exclamation-triangle"></i> Unable to load recommendations. Please check your Last.fm and ListenBrainz configuration.
+      </div>
+    </div>
+  </div>
+
   <!-- Playlist Selection -->
   <div class="row mb-4">
     <div class="col-12">
@@ -323,6 +352,260 @@
       background-color: var(--secondary-bg) !important;
     }
   }
+
+  .recommendation-card {
+    transition: all 0.3s ease;
+    cursor: pointer;
+    border: 1px solid var(--border-color);
+  }
+
+  .recommendation-card:hover {
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+    transform: translateY(-2px);
+  }
+
+  .recommendation-icon {
+    font-size: 2rem;
+    margin-bottom: 1rem;
+  }
+
+  .recommendation-tracks {
+    max-height: 200px;
+    overflow-y: auto;
+  }
+
+  .recommendation-track-item {
+    padding: 0.5rem 0;
+    font-size: 0.875rem;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .recommendation-track-item:last-child {
+    border-bottom: none;
+  }
 </style>
+
+<script>
+  // Load recommended playlists on page load
+  document.addEventListener('DOMContentLoaded', function() {
+    loadRecommendedPlaylists();
+  });
+
+  async function loadRecommendedPlaylists() {
+    const container = document.getElementById('recommendedPlaylistsContainer');
+    const loading = document.getElementById('loadingRecommendedPlaylists');
+    const error = document.getElementById('recommendedPlaylistsError');
+
+    loading.style.display = 'block';
+    container.style.display = 'none';
+    error.style.display = 'none';
+
+    try {
+      const response = await fetch('/api/recommended-playlists');
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error(data.error || 'Failed to load recommendations');
+      }
+
+      const recs = data.recommendations;
+      let html = '<div class="row g-3">';
+
+      // Similar Artists Playlists
+      if (recs.similar_artists && recs.similar_artists.length > 0) {
+        html += buildRecommendationCard(
+          'Similar Artists',
+          '👥',
+          'Playlists featuring artists similar to your favorites',
+          recs.similar_artists,
+          'similar-artists'
+        );
+      }
+
+      // Top Genres Playlists
+      if (recs.top_genres && recs.top_genres.length > 0) {
+        html += buildRecommendationCard(
+          'Top Genres',
+          '🎵',
+          'Playlists organized by your library genres',
+          recs.top_genres,
+          'top-genres'
+        );
+      }
+
+      // Mood Playlists
+      if (recs.mood_playlists && recs.mood_playlists.length > 0) {
+        html += buildRecommendationCard(
+          'Mood Playlists',
+          '✨',
+          'Playlists based on ratings and moods',
+          recs.mood_playlists,
+          'mood'
+        );
+      }
+
+      // Discovery Playlists
+      if (recs.discovery && recs.discovery.length > 0) {
+        html += buildRecommendationCard(
+          'Discovery',
+          '🔍',
+          'Hidden gems and recently added tracks',
+          recs.discovery,
+          'discovery'
+        );
+      }
+
+      html += '</div>';
+
+      loading.style.display = 'none';
+      container.innerHTML = html;
+      container.style.display = 'block';
+
+    } catch (error) {
+      console.error('Error loading recommendations:', error);
+      loading.style.display = 'none';
+      error.style.display = 'block';
+    }
+  }
+
+  function buildRecommendationCard(title, icon, description, playlists, type) {
+    let html = `
+      <div class="col-12 col-md-6 col-lg-3">
+        <div class="card recommendation-card h-100">
+          <div class="card-body">
+            <div class="text-center recommendation-icon">
+              ${icon}
+            </div>
+            <h6 class="card-title text-center">${title}</h6>
+            <p class="text-muted small text-center mb-3">${description}</p>
+            <div class="recommendation-tracks">
+    `;
+
+    if (Array.isArray(playlists) && playlists.length > 0) {
+      playlists.forEach((playlist, index) => {
+        const playlistName = playlist.name || playlist.title || 'Unnamed';
+        const trackCount = playlist.track_count || playlist.tracks || 0;
+        html += `
+          <button class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="createPlaylistFromRecommendation('${type}', ${index}, '${playlistName.replace(/'/g, "\\'")}')">
+            <i class="bi bi-plus-circle"></i> ${playlistName}
+            <span class="badge bg-secondary ms-2">${trackCount}</span>
+          </button>
+        `;
+      });
+    } else {
+      html += '<p class="text-muted small text-center">No recommendations available</p>';
+    }
+
+    html += `
+            </div>
+          </div>
+        </div>
+      </div>
+    `;
+
+    return html;
+  }
+
+  async function createPlaylistFromRecommendation(type, index, playlistName) {
+    try {
+      // Show a loading toast or confirmation
+      showToast('Creating playlist: ' + playlistName, 'info');
+
+      // Fetch the current recommendations to get the data for this specific playlist
+      const response = await fetch('/api/recommended-playlists');
+      const data = await response.json();
+
+      if (!data.success) {
+        throw new Error('Failed to load recommendations');
+      }
+
+      const recs = data.recommendations;
+      let selectedPlaylist = null;
+
+      // Find the selected playlist
+      if (type === 'similar-artists' && recs.similar_artists && recs.similar_artists[index]) {
+        selectedPlaylist = recs.similar_artists[index];
+      } else if (type === 'top-genres' && recs.top_genres && recs.top_genres[index]) {
+        selectedPlaylist = recs.top_genres[index];
+      } else if (type === 'mood' && recs.mood_playlists && recs.mood_playlists[index]) {
+        selectedPlaylist = recs.mood_playlists[index];
+      } else if (type === 'discovery' && recs.discovery && recs.discovery[index]) {
+        selectedPlaylist = recs.discovery[index];
+      }
+
+      if (!selectedPlaylist) {
+        throw new Error('Playlist data not found');
+      }
+
+      // Use the existing create-playlist endpoint with the appropriate data
+      const createResponse = await fetch('/api/navidrome/playlists', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+          name: playlistName,
+          comment: selectedPlaylist.description || `Generated ${type} playlist`,
+          public: true
+        })
+      });
+
+      const createData = await createResponse.json();
+
+      if (!createData.id) {
+        throw new Error('Failed to create playlist in Navidrome');
+      }
+
+      const playlistId = createData.id;
+
+      // Add tracks to the playlist
+      if (selectedPlaylist.track_ids && selectedPlaylist.track_ids.length > 0) {
+        // Batch add tracks to playlist
+        for (const trackId of selectedPlaylist.track_ids) {
+          await fetch(`/api/navidrome/playlist/${playlistId}/tracks`, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json'
+            },
+            body: JSON.stringify({
+              id: trackId
+            })
+          });
+        }
+      }
+
+      showToast(`Playlist "${playlistName}" created successfully with ${selectedPlaylist.track_count || 0} tracks!`, 'success');
+
+      // Refresh the playlist lists
+      setTimeout(() => {
+        location.reload();
+      }, 2000);
+
+    } catch (error) {
+      console.error('Error creating playlist:', error);
+      showToast('Failed to create playlist: ' + error.message, 'danger');
+    }
+  }
+
+  function showToast(message, type = 'info') {
+    // Create a simple toast notification
+    const toast = document.createElement('div');
+    toast.className = `alert alert-${type} alert-dismissible fade show`;
+    toast.style.position = 'fixed';
+    toast.style.top = '20px';
+    toast.style.right = '20px';
+    toast.style.zIndex = '9999';
+    toast.style.maxWidth = '400px';
+    toast.innerHTML = `
+      ${message}
+      <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+    `;
+    document.body.appendChild(toast);
+
+    setTimeout(() => {
+      toast.remove();
+    }, 5000);
+  }
+</script>
 
 {% endblock %}

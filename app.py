@@ -12256,6 +12256,63 @@ def api_lastfm_create_playlist():
         return jsonify({"error": str(e)}), 500
 
 
+@app.route("/api/recommended-playlists", methods=["GET"])
+def api_recommended_playlists():
+    """
+    Generate recommended playlists from Last.fm and ListenBrainz data.
+    Returns four categories of playlists:
+    - similar_artists: Playlists based on similar artists
+    - top_genres: Playlists based on library genres
+    - mood_playlists: Playlists based on track ratings
+    - discovery: Playlists for unrated and recently added tracks
+    """
+    try:
+        from playlist_recommendations import PlaylistRecommender
+        
+        cfg, _ = _read_yaml(CONFIG_PATH)
+        
+        # Get database connection
+        conn = get_db_connection()
+        
+        # Initialize clients if available
+        lastfm_client = None
+        listenbrainz_client = None
+        
+        lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
+        if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+            from api_clients.lastfm import LastFmClient
+            lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+        
+        listenbrainz_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
+        if listenbrainz_config.get("enabled"):
+            from api_clients.audiodb_and_listenbrainz import ListenBrainzClient
+            listenbrainz_client = ListenBrainzClient()
+        
+        # Create recommender instance
+        recommender = PlaylistRecommender(
+            lastfm_client=lastfm_client,
+            listenbrainz_client=listenbrainz_client,
+            db_connection=conn
+        )
+        
+        # Get recommendations
+        recommendations = recommender.get_recommendations()
+        
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "recommendations": recommendations
+        })
+        
+    except Exception as e:
+        logging.error(f"[RECOMMENDED_PLAYLISTS] Error: {e}", exc_info=True)
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/listenbrainz/sync/now", methods=["POST"])
 def api_listenbrainz_sync_now():
     """Manually trigger ListenBrainz recommendations sync"""
