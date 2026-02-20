@@ -1209,6 +1209,163 @@ class LastFmClient:
             logger.error(f"Failed to fetch Last.fm recommended tracks: {e}")
             return []
 
+    def get_artist_info(self, artist: str) -> dict:
+        """
+        Fetch artist bio and info from Last.fm.
+        
+        Args:
+            artist: Artist name
+            
+        Returns:
+            Dict with 'bio' (HTML string), 'bio_text' (plain text), 'image' (URL), 'similar' (list of similar artists)
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping artist info lookup.")
+            return {"bio": "", "bio_text": "", "image": "", "similar": []}
+        
+        params = {
+            "method": "artist.getInfo",
+            "artist": artist,
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json().get("artist", {})
+            
+            # Extract bio (published field contains HTML summary, bio field is full)
+            bio_html = data.get("bio", {}).get("content", "")
+            bio_text = data.get("bio", {}).get("summary", "") or bio_html
+            
+            # Extract image (get largest size)
+            image_url = ""
+            if isinstance(data.get("image"), list):
+                for img in reversed(data["image"]):
+                    if img.get("#text"):
+                        image_url = img.get("#text", "")
+                        break
+            
+            return {
+                "bio": bio_html,
+                "bio_text": bio_text,
+                "image": image_url,
+                "similar": []
+            }
+        except Exception as e:
+            logger.debug(f"Failed to fetch artist info from Last.fm for '{artist}': {e}")
+            return {"bio": "", "bio_text": "", "image": "", "similar": []}
+    
+    def get_artist_top_tags(self, artist: str, limit: int = 10) -> list:
+        """
+        Fetch top tags for an artist from Last.fm.
+        
+        Args:
+            artist: Artist name
+            limit: Maximum number of tags (1-100)
+            
+        Returns:
+            List of dicts with 'name' and 'count' keys
+            Example: [{'name': 'rock', 'count': 1000}, {'name': 'alternative', 'count': 800}]
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping artist tags lookup.")
+            return []
+        
+        limit = max(1, min(100, limit))
+        
+        params = {
+            "method": "artist.getTopTags",
+            "artist": artist,
+            "limit": limit,
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            if "error" in data:
+                logger.debug(f"Last.fm error for '{artist}' tags: {data.get('message', 'unknown')}")
+                return []
+            
+            tag_list = data.get("toptags", {}).get("tag", [])
+            
+            # Normalize response (might be a single dict or list)
+            if isinstance(tag_list, dict):
+                tag_list = [tag_list]
+            
+            result = []
+            for tag_obj in tag_list:
+                if isinstance(tag_obj, dict):
+                    result.append({
+                        "name": tag_obj.get("name", ""),
+                        "count": int(tag_obj.get("count", 0))
+                    })
+            
+            return result
+        except Exception as e:
+            logger.debug(f"Failed to fetch artist top tags from Last.fm for '{artist}': {e}")
+            return []
+    
+    def get_album_top_tags(self, artist: str, album: str, limit: int = 10) -> list:
+        """
+        Fetch top tags for an album from Last.fm.
+        
+        Args:
+            artist: Artist name
+            album: Album name
+            limit: Maximum number of tags (1-100)
+            
+        Returns:
+            List of dicts with 'name' and 'count' keys
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping album tags lookup.")
+            return []
+        
+        limit = max(1, min(100, limit))
+        
+        params = {
+            "method": "album.getTopTags",
+            "artist": artist,
+            "album": album,
+            "limit": limit,
+            "api_key": self.api_key,
+            "format": "json"
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            if "error" in data:
+                logger.debug(f"Last.fm error for '{album}' by '{artist}' tags: {data.get('message', 'unknown')}")
+                return []
+            
+            tag_list = data.get("toptags", {}).get("tag", [])
+            
+            # Normalize response
+            if isinstance(tag_list, dict):
+                tag_list = [tag_list]
+            
+            result = []
+            for tag_obj in tag_list:
+                if isinstance(tag_obj, dict):
+                    result.append({
+                        "name": tag_obj.get("name", ""),
+                        "count": int(tag_obj.get("count", 0))
+                    })
+            
+            return result
+        except Exception as e:
+            logger.debug(f"Failed to fetch album top tags from Last.fm for '{album}' by '{artist}': {e}")
+            return []
+
 
 # Backward-compatible module functions
 _lastfm_client = None

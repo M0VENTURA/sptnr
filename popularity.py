@@ -2510,9 +2510,92 @@ def popularity_scan(
                                             if artist_image:
                                                 log_info(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
                                         else:
-                                            log_debug(f'No bio or image found for artist: {artist}')
+                                            log_debug(f'No bio or image found from AudioDB for artist: {artist}')
+                                            # Fall back to Last.fm for bio and CoverArtArchive for image
+                                            try:
+                                                lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                                    from api_clients.lastfm import LastFmClient
+                                                    from api_clients.coverartarchive import get_artist_image_from_caa
+                                                    
+                                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                                    
+                                                    # Fetch artist info from Last.fm
+                                                    artist_info = _run_with_timeout(
+                                                        lastfm_client.get_artist_info,
+                                                        8,
+                                                        "Last.fm artist info lookup timed out after 8s",
+                                                        artist
+                                                    )
+                                                    
+                                                    lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
+                                                    lastfm_image = artist_info.get("image", "")
+                                                    
+                                                    # If we have MusicBrainz artist MBID, try CoverArtArchive for better quality image
+                                                    caa_image = ""
+                                                    if HAVE_MUSICBRAINZ:
+                                                        try:
+                                                            mb_search = _run_with_timeout(
+                                                                _get_timeout_safe_musicbrainz_client().search_artists,
+                                                                5,
+                                                                "MusicBrainz artist search timed out",
+                                                                artist
+                                                            ) if _get_timeout_safe_musicbrainz_client() else []
+                                                            
+                                                            if mb_search and len(mb_search) > 0:
+                                                                artist_mbid = mb_search[0].get("id", "")
+                                                                if artist_mbid:
+                                                                    caa_image = _run_with_timeout(
+                                                                        get_artist_image_from_caa,
+                                                                        5,
+                                                                        "CoverArtArchive lookup timed out",
+                                                                        artist_mbid
+                                                                    )
+                                                        except Exception as e:
+                                                            log_debug(f"CoverArtArchive lookup failed for {artist}: {e}")
+                                                    
+                                                    # Prefer CoverArtArchive image over Last.fm
+                                                    final_image = caa_image or lastfm_image
+                                                    
+                                                    if lastfm_bio or final_image:
+                                                        cursor.execute("""
+                                                            INSERT INTO artists (id, name, bio, image_url) 
+                                                            VALUES (?, ?, ?, ?)
+                                                            ON CONFLICT(id) DO UPDATE SET 
+                                                                bio = excluded.bio,
+                                                                image_url = excluded.image_url
+                                                        """, (artist, artist, lastfm_bio or "", final_image or ""))
+                                                        conn.commit()
+                                                        
+                                                        if lastfm_bio:
+                                                            log_info(f'Saved artist bio from Last.fm for {artist} ({len(lastfm_bio)} chars)')
+                                                        if final_image:
+                                                            source = "CoverArtArchive" if caa_image else "Last.fm"
+                                                            log_info(f'Saved artist image URL from {source} for {artist}: {final_image[:60]}...')
+                                                    else:
+                                                        log_debug(f'No bio or image found from Last.fm for artist: {artist}')
+                                            except Exception as e:
+                                                log_debug(f"Last.fm/CoverArtArchive fallback failed for {artist}: {e}")
                                     except TimeoutError as e:
                                         log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
+                                        # Still try Last.fm as fallback on timeout
+                                        try:
+                                            lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                                            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                                from api_clients.lastfm import LastFmClient
+                                                lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                                artist_info = lastfm_client.get_artist_info(artist)
+                                                lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
+                                                if lastfm_bio:
+                                                    cursor.execute("""
+                                                        INSERT INTO artists (id, name, bio) 
+                                                        VALUES (?, ?, ?)
+                                                        ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
+                                                    """, (artist, artist, lastfm_bio))
+                                                    conn.commit()
+                                                    log_info(f'Saved artist bio from Last.fm for {artist} (AudioDB timed out)')
+                                        except:
+                                            pass
                                     except Exception as e:
                                         log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
                         except TimeoutError as e:
@@ -2660,11 +2743,57 @@ def popularity_scan(
                         log_debug(f"Stored similar artists for '{artist}' in database")
                     except Exception as e:
                         log_debug(f"Failed to store similar artists for '{artist}': {e}")
+                
+                # Fetch and store artist tags from Last.fm
+                try:
+                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                        from api_clients.lastfm import LastFmClient
+                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        
+                        artist_tags = _run_with_timeout(
+                            lastfm_client.get_artist_top_tags,
+                            8,
+                            "Last.fm artist tags lookup timed out after 8s",
+                            artist,
+                            limit=15
+                        )
+                        
+                        if artist_tags:
+                            log_info(f"Found {len(artist_tags)} top tags for '{artist}' from Last.fm")
+                            log_debug(f"Artist tags: {[t.get('name') for t in artist_tags]}")
+                        else:
+                            log_debug(f"No top tags found for '{artist}' from Last.fm")
+                except Exception as e:
+                    log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
             
             album_num = 0
             for album, album_tracks in albums.items():
                 album_num += 1
                 album_scanned = 0  # Initialize before popularity section (may be skipped in singles_only)
+                
+                # Fetch and store album tags from Last.fm
+                try:
+                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                        from api_clients.lastfm import LastFmClient
+                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        
+                        album_tags = _run_with_timeout(
+                            lastfm_client.get_album_top_tags,
+                            8,
+                            "Last.fm album tags lookup timed out after 8s",
+                            artist, album,
+                            limit=15
+                        )
+                        
+                        if album_tags:
+                            log_info(f"Found {len(album_tags)} top tags for '{album}' by '{artist}' from Last.fm")
+                            log_debug(f"Album tags: {[t.get('name') for t in album_tags]}")
+                        else:
+                            log_debug(f"No top tags found for '{album}' by '{artist}' from Last.fm")
+                except Exception as e:
+                    log_debug(f"Last.fm album tags lookup failed for '{album}' by '{artist}': {e}")
                 
                 # In singles_only mode, skip popularity scanning and go directly to singles detection
                 if singles_only:
