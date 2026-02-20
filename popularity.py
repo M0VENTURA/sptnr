@@ -2643,36 +2643,49 @@ def popularity_scan(
             similar_artists_listenbrainz = []
             similar_artists_json = None
             
-            if not is_compilation_group:
-                try:
-                    # Get Last.fm client for similar artists lookup
-                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
-                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                        from api_clients.lastfm import LastFmClient
-                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+            # Fetch similar artists for all artists (including compilations for recommendation purposes)
+            try:
+                # Get Last.fm client for similar artists lookup
+                lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                    from api_clients.lastfm import LastFmClient
+                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                    
+                    try:
+                        # Check rate limit and wait if needed
+                        rate_limiter = get_rate_limiter()
+                        can_proceed, reason = rate_limiter.check_lastfm_limit()
+                        if not can_proceed:
+                            log_debug(f"Rate limit hit for similar artists lookup: {reason}, waiting...")
+                            if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                can_proceed = True
                         
-                        similar_artists_lastfm = _run_with_timeout(
-                            lastfm_client.get_similar_artists,
-                            8,  # 8 second timeout
-                            f"Last.fm similar artists lookup timed out after 8s",
-                            artist,
-                            limit=10
-                        )
-                        
-                        if similar_artists_lastfm:
-                            log_info(f"Found {len(similar_artists_lastfm)} similar artists for '{artist}' from Last.fm")
-                            log_debug(f"Last.fm similar artists: {[a.get('name') for a in similar_artists_lastfm]}")
+                        if can_proceed:
+                            similar_artists_lastfm = _run_with_timeout(
+                                lastfm_client.get_similar_artists,
+                                8,  # 8 second timeout
+                                f"Last.fm similar artists lookup timed out after 8s",
+                                artist,
+                                limit=10
+                            )
+                            rate_limiter.record_lastfm_request()
+                            
+                            if similar_artists_lastfm:
+                                log_info(f"Found {len(similar_artists_lastfm)} similar artists for '{artist}' from Last.fm")
+                                log_debug(f"Last.fm similar artists: {[a.get('name') for a in similar_artists_lastfm]}")
+                            else:
+                                log_debug(f"No similar artists found for '{artist}' from Last.fm")
                         else:
-                            log_debug(f"No similar artists found for '{artist}' from Last.fm")
-                    else:
-                        log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
-                except TimeoutError as e:
-                    log_debug(f"Last.fm similar artists lookup timed out for {artist}: {e}")
-                except Exception as e:
-                    log_debug(f"Last.fm similar artists lookup failed for {artist}: {e}")
+                            log_debug(f"Rate limit still active for similar artists lookup after wait, skipping for {artist}")
+                    except TimeoutError as e:
+                        log_debug(f"Last.fm similar artists lookup timed out for {artist}: {e}")
+                    except Exception as e:
+                        log_debug(f"Last.fm similar artists lookup failed for {artist}: {e}")
+                else:
+                    log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
                 
+                # Try ListenBrainz for similar artists (requires MusicBrainz MBID)
                 try:
-                    # Get MusicBrainz artist MBID first
                     mb_client = _get_timeout_safe_musicbrainz_client()
                     if mb_client and HAVE_MUSICBRAINZ:
                         # Search for artist MBID
@@ -2707,6 +2720,7 @@ def popularity_scan(
                                     log_debug(f"No similar artists found for '{artist}' from ListenBrainz")
                         else:
                             log_debug(f"Artist '{artist}' not found in MusicBrainz")
+                    else:
                     else:
                         log_debug(f"MusicBrainz client not available - skipping ListenBrainz similar artists lookup")
                 except TimeoutError as e:
@@ -3059,7 +3073,15 @@ def popularity_scan(
                             if lastfm_client:
                                 try:
                                     rate_limiter = get_rate_limiter()
-                                    can_proceed = rate_limiter.check_lastfm_limit()[0]
+                                    can_proceed, reason = rate_limiter.check_lastfm_limit()
+                                    if not can_proceed:
+                                        # Rate limit hit - wait before proceeding
+                                        log_debug(f'Rate limit hit for Last.fm tags ({title}): {reason}, waiting...')
+                                        if rate_limiter.wait_if_needed_lastfm(max_wait_seconds=2.0):
+                                            can_proceed = True
+                                        else:
+                                            log_debug(f'Rate limit still active for Last.fm tags ({title}) after wait, skipping')
+                                    
                                     if can_proceed:
                                         lastfm_tags = _run_with_timeout(
                                             lastfm_client.get_track_tags,

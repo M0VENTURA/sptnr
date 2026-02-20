@@ -731,6 +731,31 @@
           </div>
         </div>
 
+        <!-- ListenBrainz -->
+        <div class="col-12 border-bottom pb-3">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="flex-grow-1">
+              <h6 class="mb-1"><i class="bi bi-headphones"></i> ListenBrainz (Optional)</h6>
+              <small class="text-muted d-block mb-2">Open music listening history and recommendations. Used for ListenBrainz-based playlists and genre detection.</small>
+              <small class="form-text text-muted"><strong>Setup:</strong> Get API key from <a href="https://listenbrainz.org/profile/api" target="_blank">ListenBrainz API</a></small>
+            </div>
+            <div class="form-check form-switch">
+              <input class="form-check-input" type="checkbox" id="listenbrainz_enabled" {% if config.get('api_integrations', {}).get('listenbrainz', {}).get('enabled') %}checked{% endif %}>
+            </div>
+          </div>
+          <div class="row g-2 mt-2">
+            <div class="col-12">
+              <label class="form-label form-label-sm">API Key</label>
+              <input type="text" class="form-control form-control-sm" id="listenbrainz_api_key" placeholder="your_listenbrainz_api_key" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('api_key', '') }}">
+            </div>
+            <div class="col-12">
+              <label class="form-label form-label-sm">Username (Optional)</label>
+              <input type="text" class="form-control form-control-sm" id="listenbrainz_username" placeholder="your_listenbrainz_username" value="{{ config.get('api_integrations', {}).get('listenbrainz', {}).get('username', '') }}">
+              <small class="text-muted">Your ListenBrainz username for personalized data</small>
+            </div>
+          </div>
+        </div>
+
         <!-- Discogs -->
         <div class="col-12 border-bottom pb-3">
           <div class="d-flex justify-content-between align-items-start">
