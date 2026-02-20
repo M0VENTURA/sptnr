@@ -5236,17 +5236,24 @@ def _run_artist_scan_pipeline(artist_name: str):
 
 def _auto_detect_album_type(artist_name: str, album_name: str):
     """
-    Auto-detect and update album type based on detected singles and track count.
+    Auto-detect and update album type based on Discogs format data (primary) or metadata heuristics (fallback).
     
-    Logic:
-    - If == 1 track → Single
-    - If >= 70% singles with < 5 total tracks → Single
-    - If >= 50% singles with 3-6 total tracks → EP  
-    - If >= 40% singles with 6-10 tracks → EP
-    - Otherwise → Album (or keep existing type if already set)
+    Priority order:
+    1. Discogs format data (most reliable source)
+       - If discogs_formats contains "EP" → "ep"
+       - If discogs_formats contains "Single" → "single"
+       - If discogs_is_single = 1 → "single"
+    2. Metadata & track count heuristics (fallback if Discogs unavailable)
+       - If == 1 track → Single
+       - If >= 70% singles with < 5 total tracks → Single
+       - If >= 50% singles with 3-6 total tracks → EP  
+       - If >= 40% singles with 6-10 tracks → EP
+       - If 3-6 tracks → EP (even with lower singles percentage)
+       - Otherwise → Album
     
-    IMPORTANT: Always check track count & singles percentage. Even if Spotify 
-    marked it as "album", override to "ep" if evidence suggests otherwise.
+    IMPORTANT: Always prioritize Discogs format data when available. This ensures 
+    albums like "Stark" (marked as "Album" by Spotify) are correctly classified as "EP"
+    when Discogs indicates it's an EP.
     
     Args:
         artist_name: Name of the artist
@@ -5256,12 +5263,14 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         conn = get_db()
         cursor = conn.cursor()
         
-        # Get current album type and track counts
+        # Get current album type, track counts, and Discogs format data
         cursor.execute("""
             SELECT 
                 COUNT(*) as total_tracks,
                 SUM(CASE WHEN is_single = 1 THEN 1 ELSE 0 END) as singles_count,
-                MAX(spotify_album_type) as current_type
+                MAX(spotify_album_type) as current_type,
+                MAX(discogs_formats) as discogs_formats,
+                MAX(discogs_is_single) as discogs_is_single
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
         """, (artist_name, album_name))
@@ -5274,29 +5283,64 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
         total_tracks = result['total_tracks'] or 0
         singles_count = result['singles_count'] or 0
         current_type = result['current_type']
+        discogs_formats_raw = result['discogs_formats']
+        discogs_is_single = result['discogs_is_single']
         
         if total_tracks == 0:
             conn.close()
             return
         
-        # Calculate singles percentage
-        singles_percent = (singles_count / total_tracks * 100) if total_tracks > 0 else 0
-        
-        # Determine new type based on track count and singles percentage
+        # Determine new type using priority order
         new_type = None
-        if total_tracks == 1:
+        classification_reason = ""
+        
+        # ===== PRIORITY 1: Discogs Format Data (Most Reliable) =====
+        if discogs_formats_raw:
+            try:
+                discogs_formats = json.loads(discogs_formats_raw)
+                formats_lower = [str(fmt).lower() for fmt in discogs_formats]
+                
+                # Check for EP in formats
+                if any('ep' in fmt for fmt in formats_lower):
+                    new_type = 'ep'
+                    classification_reason = f"Discogs format contains 'EP'"
+                # Check for Single in formats
+                elif any('single' in fmt for fmt in formats_lower):
+                    new_type = 'single'
+                    classification_reason = f"Discogs format contains 'Single'"
+            except (json.JSONDecodeError, TypeError):
+                # If parsing fails, fall through to heuristics
+                pass
+        
+        # Check discogs_is_single flag if format check didn't yield result
+        if not new_type and discogs_is_single == 1:
             new_type = 'single'
-        elif singles_percent >= 70 and total_tracks < 5:
-            new_type = 'single'
-        elif singles_percent >= 50 and 3 <= total_tracks <= 6:
-            new_type = 'ep'
-        elif singles_percent >= 40 and 6 < total_tracks <= 10:
-            new_type = 'ep'
-        # For albums with 3-6 tracks but lower singles percentage, still classify as EP
-        elif 3 <= total_tracks <= 6:
-            new_type = 'ep'
-        else:
-            new_type = 'album'
+            classification_reason = "Discogs confirmed as single"
+        
+        # ===== PRIORITY 2: Metadata & Track Count Heuristics =====
+        if not new_type:
+            # Calculate singles percentage
+            singles_percent = (singles_count / total_tracks * 100) if total_tracks > 0 else 0
+            
+            # Determine type based on track count and singles percentage
+            if total_tracks == 1:
+                new_type = 'single'
+                classification_reason = "Single track"
+            elif singles_percent >= 70 and total_tracks < 5:
+                new_type = 'single'
+                classification_reason = f"{singles_percent:.0f}% singles, {total_tracks} total tracks"
+            elif singles_percent >= 50 and 3 <= total_tracks <= 6:
+                new_type = 'ep'
+                classification_reason = f"{singles_percent:.0f}% singles, {total_tracks} total tracks"
+            elif singles_percent >= 40 and 6 < total_tracks <= 10:
+                new_type = 'ep'
+                classification_reason = f"{singles_percent:.0f}% singles, {total_tracks} total tracks (6-10 track range)"
+            elif 3 <= total_tracks <= 6:
+                new_type = 'ep'
+                classification_reason = f"{total_tracks} total tracks (EP heuristic)"
+            else:
+                new_type = 'album'
+                classification_reason = f"{total_tracks} total tracks"
         
         # Update album type in database if it's different from current
         if new_type and new_type != current_type:
@@ -5306,10 +5350,11 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
             """, (new_type, artist_name, album_name))
             conn.commit()
-            reason = f"singles: {singles_count}/{total_tracks} ({singles_percent:.0f}%)"
+            
+            change_note = ""
             if current_type:
-                reason += f", changed from '{current_type}'"
-            log_unified(f"✓ Album type set to '{new_type}' ({reason})")
+                change_note = f", changed from '{current_type}'"
+            log_unified(f"✓ Album type set to '{new_type}' ({classification_reason}{change_note})")
         
         conn.close()
     except Exception as e:
