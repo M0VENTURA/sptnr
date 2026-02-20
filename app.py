@@ -5245,6 +5245,9 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
     - If >= 40% singles with 6-10 tracks → EP
     - Otherwise → Album (or keep existing type if already set)
     
+    IMPORTANT: Always check track count & singles percentage. Even if Spotify 
+    marked it as "album", override to "ep" if evidence suggests otherwise.
+    
     Args:
         artist_name: Name of the artist
         album_name: Name of the album
@@ -5276,15 +5279,10 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
             conn.close()
             return
         
-        # Don't override if already explicitly set to something other than empty/unknown
-        if current_type and current_type not in ['', 'unknown']:
-            conn.close()
-            return
-        
         # Calculate singles percentage
         singles_percent = (singles_count / total_tracks * 100) if total_tracks > 0 else 0
         
-        # Determine new type
+        # Determine new type based on track count and singles percentage
         new_type = None
         if total_tracks == 1:
             new_type = 'single'
@@ -5294,18 +5292,24 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
             new_type = 'ep'
         elif singles_percent >= 40 and 6 < total_tracks <= 10:
             new_type = 'ep'
+        # For albums with 3-6 tracks but lower singles percentage, still classify as EP
+        elif 3 <= total_tracks <= 6:
+            new_type = 'ep'
         else:
             new_type = 'album'
         
-        # Update album type in database
-        if new_type:
+        # Update album type in database if it's different from current
+        if new_type and new_type != current_type:
             cursor.execute("""
                 UPDATE tracks 
                 SET spotify_album_type = ?
                 WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
             """, (new_type, artist_name, album_name))
             conn.commit()
-            log_unified(f"✓ Album type set to '{new_type}' (singles: {singles_count}/{total_tracks}, {singles_percent:.0f}%)")
+            reason = f"singles: {singles_count}/{total_tracks} ({singles_percent:.0f}%)"
+            if current_type:
+                reason += f", changed from '{current_type}'"
+            log_unified(f"✓ Album type set to '{new_type}' ({reason})")
         
         conn.close()
     except Exception as e:

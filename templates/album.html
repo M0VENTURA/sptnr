@@ -2565,27 +2565,34 @@
     
     async function loadAlbumGenres(album, artist) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
         
         try {
             const url = `/api/genres/album/${encodeURIComponent(album)}/${encodeURIComponent(artist)}`;
+            console.log('[ALBUM GENRES] Fetching from:', url);
             const response = await fetch(url, {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
             
+            console.log('[ALBUM GENRES] Response status:', response.status);
+            
             if (!response.ok) {
-                showAlbumGenresError('Failed to load genres');
+                const errorText = `Server returned ${response.status}${response.statusText ? ': ' + response.statusText : ''}`;
+                console.error('[ALBUM GENRES] Error response:', errorText);
+                showAlbumGenresError(`Failed to load genres (${errorText})`);
                 return;
             }
             
             const data = await response.json();
+            console.log('[ALBUM GENRES] Received data:', data);
             displayAlbumGenres(data);
         } catch (error) {
             clearTimeout(timeoutId);
+            console.error('[ALBUM GENRES] Exception:', error.name, error.message);
             if (error.name === 'AbortError') {
-                console.warn('Album genres loading timeout (5s)');
-                showAlbumGenresError('Genres loading timed out - server may be busy');
+                console.warn('Album genres loading timeout (15s)');
+                showAlbumGenresError('Genres loading timed out after 15 seconds - API endpoint may be slow or not responding');
             } else {
                 console.error('Error loading album genres:', error);
                 showAlbumGenresError('Error loading genres: ' + error.message);
@@ -2667,27 +2674,34 @@
     // Similar Artists Loading
     async function loadSimilarArtistsForAlbum(artist) {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 15000); // 15 second timeout
         
         try {
             const url = `/api/artist/${encodeURIComponent(artist)}/similar`;
+            console.log('[SIMILAR ARTISTS] Fetching from:', url);
             const response = await fetch(url, {
                 signal: controller.signal
             });
             clearTimeout(timeoutId);
             
+            console.log('[SIMILAR ARTISTS] Response status:', response.status);
+            
             if (!response.ok) {
-                showAlbumSimilarArtistsError('Failed to load similar artists');
+                const errorText = `Server returned ${response.status}${response.statusText ? ': ' + response.statusText : ''}`;
+                console.error('[SIMILAR ARTISTS] Error response:', errorText);
+                showAlbumSimilarArtistsError(`Failed to load similar artists (${errorText})`);
                 return;
             }
             
             const data = await response.json();
+            console.log('[SIMILAR ARTISTS] Received data:', data);
             displayAlbumSimilarArtists(data);
         } catch (error) {
             clearTimeout(timeoutId);
+            console.error('[SIMILAR ARTISTS] Exception:', error.name, error.message);
             if (error.name === 'AbortError') {
-                console.warn('Similar artists loading timeout (5s)');
-                showAlbumSimilarArtistsError('Similar artists loading timed out - server may be busy');
+                console.warn('Similar artists loading timeout (15s)');
+                showAlbumSimilarArtistsError('Similar artists loading timed out after 15 seconds');
             } else {
                 console.error('Error loading similar artists:', error);
                 showAlbumSimilarArtistsError('Error loading similar artists: ' + error.message);
