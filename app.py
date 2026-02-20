@@ -6816,7 +6816,8 @@ def config_save_json():
             'web_api_key': data.get('web_api_key', ''),
             'enable_web_api_key': data.get('enable_web_api_key', True),
             'features': data.get('features', {}),  # Accept features from request
-            'weights': data.get('weights', {})  # Accept weights from request
+            'weights': data.get('weights', {}),  # Accept weights from request
+            'single_detection': data.get('single_detection', {})  # Accept single detection thresholds
         }
         # Always set main navidrome section to first user for compatibility
         if navidrome_users and len(navidrome_users) > 0:
@@ -6829,11 +6830,13 @@ def config_save_json():
         # Read existing config to preserve features and weights if not provided in request
         existing_config, _ = _read_yaml(CONFIG_PATH)
         if existing_config:
-            # Only preserve features/weights if not explicitly provided in the request
+            # Only preserve features/weights/single_detection if not explicitly provided in the request
             if 'features' not in data and 'features' in existing_config:
                 config_dict['features'] = existing_config['features']
             if 'weights' not in data and 'weights' in existing_config:
                 config_dict['weights'] = existing_config['weights']
+            if 'single_detection' not in data and 'single_detection' in existing_config:
+                config_dict['single_detection'] = existing_config['single_detection']
             # Also preserve legacy navidrome config if it exists (for backward compatibility)
             if 'navidrome' in existing_config and not config_dict.get('navidrome_users'):
                 config_dict['navidrome'] = existing_config['navidrome']

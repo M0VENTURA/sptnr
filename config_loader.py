@@ -233,3 +233,18 @@ def save_config(config_data: Dict[str, Any]) -> bool:
         return True
     except Exception:
         return False
+
+
+def get_zscore_thresholds() -> Dict[str, float]:
+    """
+    Get single detection z-score thresholds from config.yaml.
+    
+    Returns:
+        Dict with 'medium' and 'high' z-score thresholds
+    """
+    config = load_config()
+    single_detection = config.get("single_detection", {})
+    return {
+        "medium": float(single_detection.get("zscore_medium_threshold", 0.6)),
+        "high": float(single_detection.get("zscore_high_threshold", 1.0)),
+    }

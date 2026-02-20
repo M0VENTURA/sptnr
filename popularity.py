@@ -128,8 +128,21 @@ STANDOUT_CONFIG = {
 UNDERPERFORMING_THRESHOLD = 0.7
 
 # --- Single Detection Confidence Thresholds ---
-DEFAULT_HIGH_CONF_OFFSET = 1.0        # High confidence: z-score >= 1.0
-DEFAULT_MEDIUM_CONF_THRESHOLD = 0.6   # Medium confidence: z-score >= 0.6
+# These are loaded from config, with fallbacks to defaults
+def get_zscore_thresholds():
+    """Load z-score thresholds from config, or use defaults"""
+    try:
+        from config_loader import get_zscore_thresholds
+        thresholds = get_zscore_thresholds()
+        return {
+            'medium': thresholds.get('medium', 0.6),
+            'high': thresholds.get('high', 1.0)
+        }
+    except Exception:
+        return {'medium': 0.6, 'high': 1.0}
+
+DEFAULT_HIGH_CONF_OFFSET = 1.0        # High confidence: z-score >= 1.0 (loaded from config)
+DEFAULT_MEDIUM_CONF_THRESHOLD = 0.6   # Medium confidence: z-score >= 0.6 (loaded from config)
 DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scores available (0-100 scale)
 
 # --- End Config ---
@@ -4038,18 +4051,19 @@ def popularity_scan(
                         else:
                             mean_top50_zscore = 0
                         
-                        # High confidence threshold: mean + DEFAULT_HIGH_CONF_OFFSET
-                        high_conf_threshold = popularity_mean + DEFAULT_HIGH_CONF_OFFSET
-                        # Medium confidence threshold: mean_top50_zscore + DEFAULT_MEDIUM_CONF_THRESHOLD
-                        medium_conf_zscore_threshold = mean_top50_zscore + DEFAULT_MEDIUM_CONF_THRESHOLD
+                        # Load z-score thresholds from config
+                        zscore_thresholds = get_zscore_thresholds()
+                        high_conf_threshold = popularity_mean + zscore_thresholds['high']
+                        medium_conf_zscore_threshold = mean_top50_zscore + zscore_thresholds['medium']
                         
                         log_info(f"Album stats: mean={popularity_mean:.1f}, stddev={popularity_stddev:.1f}")
                         log_debug(f"Confidence thresholds - high: {high_conf_threshold:.1f}, medium_zscore: {medium_conf_zscore_threshold:.2f}")
                     else:
                         popularity_mean = DEFAULT_POPULARITY_MEAN
                         popularity_stddev = 0
-                        high_conf_threshold = DEFAULT_POPULARITY_MEAN + DEFAULT_HIGH_CONF_OFFSET
-                        medium_conf_zscore_threshold = DEFAULT_MEDIUM_CONF_THRESHOLD
+                        zscore_thresholds = get_zscore_thresholds()
+                        high_conf_threshold = DEFAULT_POPULARITY_MEAN + zscore_thresholds['high']
+                        medium_conf_zscore_threshold = zscore_thresholds['medium']
                         log_debug(f"Using default thresholds - no valid scores found")
                     
                     # Calculate median score for band-based threshold (legacy)
