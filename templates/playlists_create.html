@@ -1,53 +1,224 @@
 {% extends "base.html" %}
 
-{% block title %}Create Playlist · Popularr{% endblock %}
+{% block title %}Create Playlist – Popularr{% endblock %}
 
 {% block content %}
 <div class="container-fluid mt-4">
   <div class="mb-4">
     <h1 class="h2 mb-2">
-      <i class="bi bi-collection-play"></i> Playlists
+      <i class="bi bi-plus-circle"></i> Create Playlist
+      <a href="/help/FEATURES_PLAYLISTS" class="btn btn-sm btn-outline-success ms-2" title="Help for Creating Playlists">
+        <i class="bi bi-question-circle"></i>
+      </a>
     </h1>
-    <p class="text-muted mb-0">Create a new playlist</p>
+    <p class="text-muted mb-0">Create {% if playlist_type == 'smart' %}smart playlists with rules{% else %}custom playlists by selecting songs{% endif %}</p>
   </div>
 
-  <!-- Navigation Bar -->
-  <nav class="navbar navbar-expand-lg navbar-dark bg-dark border-bottom border-secondary mb-4" style="margin: -1rem -1rem 0 -1rem; padding: 0;">
-    <div class="container-fluid" style="padding: 0 1rem;">
-      <button class="navbar-toggler" type="button" data-bs-toggle="collapse" data-bs-target="#playlistNav" aria-controls="playlistNav" aria-expanded="false" aria-label="Toggle navigation">
-        <span class="navbar-toggler-icon"></span>
-      </button>
-      <div class="collapse navbar-collapse" id="playlistNav">
-        <ul class="navbar-nav ms-auto">
-          <li class="nav-item">
-            <a class="nav-link" href="/playlists/browse">
-              <i class="bi bi-collection"></i> Browse
-            </a>
-          </li>
-          <li class="nav-item dropdown">
-            <a class="nav-link dropdown-toggle active" href="#" id="createDropdown" role="button" data-bs-toggle="dropdown" aria-expanded="false">
-              <i class="bi bi-plus-circle"></i> Create
-            </a>
-            <ul class="dropdown-menu" aria-labelledby="createDropdown">
-              <li><a class="dropdown-item active" href="/playlists/create/manual"><i class="bi bi-pencil"></i> Manual Playlist</a></li>
-              <li><a class="dropdown-item" href="/playlists/create/smart"><i class="bi bi-sparkles"></i> Smart Playlist</a></li>
-            </ul>
-          </li>
-          <li class="nav-item">
-            <a class="nav-link" href="/playlists/import">
-              <i class="bi bi-cloud-download"></i> Import
-            </a>
-          </li>
-        </ul>
+  {% if playlist_type == 'manual' %}
+  <!-- Manual Playlist Creator -->
+  <div class="row">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-pencil"></i> Create Manual Playlist
+          </h5>
+        </div>
+        <div class="card-body">
+          <form id="customPlaylistForm" onsubmit="createCustomPlaylist(event)">
+            <div class="row g-3 mb-4">
+              <!-- Playlist Name -->
+              <div class="col-12">
+                <label for="customPlaylistName" class="form-label">Playlist Name *</label>
+                <input type="text" id="customPlaylistName" class="form-control" placeholder="e.g., My Favorite Songs" required>
+              </div>
+
+              <!-- Description -->
+              <div class="col-12">
+                <label for="customPlaylistDesc" class="form-label">Description (optional)</label>
+                <textarea id="customPlaylistDesc" class="form-control" rows="2" placeholder="Add a description for your playlist"></textarea>
+              </div>
+
+              <!-- Navidrome User Selection -->
+              <div class="col-12 col-md-6">
+                <label for="customPlaylistUser" class="form-label">Assign to User *</label>
+                <select id="customPlaylistUser" class="form-select" required>
+                  <option value="">Select a user...</option>
+                  {% if navidrome_users %}
+                    {% for user in navidrome_users %}
+                    <option value="{{ user.user }}">{{ user.user }} ({{ user.base_url }})</option>
+                    {% endfor %}
+                  {% else %}
+                    <option value="admin">admin</option>
+                  {% endif %}
+                </select>
+              </div>
+
+              <!-- Public Toggle -->
+              <div class="col-12 col-md-6 d-flex align-items-end">
+                <div class="form-check form-switch w-100">
+                  <input type="checkbox" id="customPlaylistPublic" class="form-check-input">
+                  <label for="customPlaylistPublic" class="form-check-label">Make playlist public</label>
+                </div>
+              </div>
+            </div>
+
+            <!-- Search and Add Songs -->
+            <div class="mb-4">
+              <h6 class="mb-3">Add Songs</h6>
+              <div class="row g-2 mb-2">
+                <div class="col-md-4">
+                  <input type="text" id="searchTitleInput" class="form-control" placeholder="Song Title">
+                </div>
+                <div class="col-md-4">
+                  <input type="text" id="searchArtistInput" class="form-control" placeholder="Artist">
+                </div>
+                <div class="col-md-4">
+                  <input type="text" id="searchAlbumInput" class="form-control" placeholder="Album">
+                </div>
+              </div>
+              <div class="input-group mb-3">
+                <input type="text" id="songSearchInput" class="form-control" placeholder="General Search (any field)">
+                <button class="btn btn-primary" type="button" onclick="searchSongs()">
+                  <i class="bi bi-search"></i> Search
+                </button>
+              </div>
+              <!-- Search Results -->
+              <div id="songSearchResults" style="display: none; max-height: 300px; overflow-y: auto;" class="border rounded p-3 bg-light mb-3">
+                <!-- Results will appear here -->
+              </div>
+            </div>
+
+            <!-- Selected Songs List -->
+            <div class="mb-4">
+              <h6 class="mb-2">Selected Songs <span id="selectedSongsCount" class="badge bg-secondary">0</span></h6>
+              <div id="selectedSongsList" style="max-height: 300px; overflow-y: auto;">
+                <p class="text-muted text-center py-5">No songs added yet</p>
+              </div>
+            </div>
+
+            <!-- Submit -->
+            <div class="d-flex gap-2 justify-content-end">
+              <button type="reset" class="btn btn-outline-secondary">Clear</button>
+              <button type="submit" class="btn btn-success">
+                <i class="bi bi-plus-circle"></i> Create Playlist
+              </button>
+            </div>
+          </form>
+        </div>
       </div>
     </div>
-  </nav>
-
-  <div class="alert alert-info">
-    <i class="bi bi-info-circle"></i> Create playlist functionality to be implemented
   </div>
+
+  {% elif playlist_type == 'smart' %}
+  <!-- Smart Playlists Section -->
+  <div class="row">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="mb-0">
+            <i class="bi bi-sliders"></i> Smart Playlists
+          </h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted mb-4">
+            Smart playlists automatically update based on rules. Select an existing smart playlist to view or manage it.
+          </p>
+
+          <!-- Smart Playlist Selection -->
+          <div class="row g-3 mb-4">
+            <div class="col-md-6">
+              <label for="smartPlaylistDropdown" class="form-label">Available Smart Playlists</label>
+              <select id="smartPlaylistDropdown" class="form-select">
+                <option value="">Select a smart playlist...</option>
+              </select>
+              <small class="text-muted">Auto-updating playlists from Navidrome</small>
+            </div>
+            <div class="col-md-6 d-flex align-items-end">
+              <button class="btn btn-primary w-100" onclick="loadSmartPlaylistDetail()">
+                <i class="bi bi-folder-open"></i> Load Details
+              </button>
+            </div>
+          </div>
+
+          <!-- Smart Playlist Details -->
+          <div id="smartPlaylistDetails" style="display: none;">
+            <div class="card">
+              <div class="card-header d-flex justify-content-between align-items-center">
+                <h5 class="mb-0">
+                  <i class="bi bi-music-note-beamed"></i> <span id="smartPlaylistName">Smart Playlist</span>
+                </h5>
+                <button class="btn btn-sm btn-outline-secondary" onclick="refreshSmartPlaylistDetail()">
+                  <i class="bi bi-arrow-clockwise"></i> Refresh
+                </button>
+              </div>
+              <div class="card-body">
+                <div id="smartPlaylistMetadata" class="mb-3">
+                  <!-- Metadata will be inserted here -->
+                </div>
+                <div id="smartPlaylistTracks" style="max-height: 400px; overflow-y: auto;">
+                  <!-- Track list will be inserted here -->
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div id="smartPlaylistEmpty" class="alert alert-info">
+            <i class="bi bi-info-circle"></i> Select a smart playlist to view or manage it
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+  {% endif %}
 </div>
 
-<!-- Include existing JavaScript -->
-<script src="{{url_for('static', filename='js/playlist.js')}}"></script>
+<script src="{{ url_for('static', filename='js/playlist.js') }}"></script>
+
+<style>
+  .track-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--border-color);
+  }
+
+  .track-row:last-child {
+    border-bottom: none;
+  }
+
+  .track-info {
+    flex: 1;
+  }
+
+  .track-title {
+    font-weight: 600;
+    margin-bottom: 4px;
+  }
+
+  .track-artist {
+    font-size: 0.875rem;
+    color: var(--text-secondary);
+    margin-bottom: 2px;
+  }
+
+  .track-album {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    opacity: 0.7;
+  }
+
+  :root {
+    --border-color: #495057;
+    --text-secondary: #adb5bd;
+  }
+
+  @media (prefers-color-scheme: dark) {
+    .bg-light {
+      background-color: var(--secondary-bg) !important;
+    }
+  }
+</style>
+
 {% endblock %}
