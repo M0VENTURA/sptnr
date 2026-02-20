@@ -114,10 +114,10 @@ GENRE_WEIGHTS = {
 STANDOUT_CONFIG = {
     'album_zscore_threshold': 1.0,         # Album standout: z >= 1.0
     'album_top_n': 2,                     # Or top 2 in album
-    'artist_zscore_threshold': 1.5,       # Artist standout: z >= 1.5
+    'artist_zscore_threshold': 1.2,       # Artist standout: z >= 1.2 (lowered from 1.5)
     'artist_top_percentile': 0.10,        # Top 10% of artist catalog
     'artist_min_tracks': 10,              # Min tracks for artist-level filter
-    'star_5': {'album_z': 1.0, 'artist_z': 1.5, 'artist_pct': 0.10},
+    'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Lowered from 1.5
     'star_4': {'album_z': 1.0, 'artist_z': 1.0, 'artist_pct': 0.20},
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
@@ -128,8 +128,8 @@ STANDOUT_CONFIG = {
 UNDERPERFORMING_THRESHOLD = 0.7
 
 # --- Single Detection Confidence Thresholds ---
-DEFAULT_HIGH_CONF_OFFSET = 2.0        # High confidence: z-score >= 2.0
-DEFAULT_MEDIUM_CONF_THRESHOLD = 1.5   # Medium confidence: z-score >= 1.5
+DEFAULT_HIGH_CONF_OFFSET = 1.0        # High confidence: z-score >= 1.0
+DEFAULT_MEDIUM_CONF_THRESHOLD = 0.6   # Medium confidence: z-score >= 0.6
 DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scores available (0-100 scale)
 
 # --- End Config ---
@@ -1329,7 +1329,7 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         return None
 
 
-def download_and_save_album_art(artist: str, album: str, art_url: str) -> bool:
+def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None) -> bool:
     """
     Download album art image from CAA URL and save to database.
     
@@ -1337,6 +1337,8 @@ def download_and_save_album_art(artist: str, album: str, art_url: str) -> bool:
         artist: Artist name
         album: Album name
         art_url: Cover Art Archive URL
+        conn: Optional existing database connection (avoids creating new one)
+        cursor: Optional existing database cursor
         
     Returns:
         True if successfully saved, False otherwise
@@ -1359,15 +1361,23 @@ def download_and_save_album_art(artist: str, album: str, art_url: str) -> bool:
             return False
         
         # Save to database
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        own_connection = False
+        if conn is None:
+            conn = get_db_connection()
+            own_connection = True
+        if cursor is None:
+            cursor = conn.cursor()
+        
         cursor.execute("""
             INSERT OR REPLACE INTO album_art 
             (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
         """, (artist, album, image_data, "image/jpeg", "musicbrainz_caa"))
-        conn.commit()
-        conn.close()
+        
+        # Only commit if we created our own connection
+        if own_connection:
+            conn.commit()
+            conn.close()
         
         log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} ({len(image_data)} bytes)")
         return True
@@ -2444,54 +2454,54 @@ def popularity_scan(
                                                  (artist_country, artist))
                                     conn.commit()
                                     log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
-                                    
-                                    # Fetch and save artist bio/image from AudioDB during scan
-                                    if HAVE_AUDIODB:
-                                        try:
-                                            log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
-                                            
-                                            # Fetch artist biography
-                                            artist_bio = _run_with_timeout(
-                                                get_artist_biography,
-                                                8,  # 8 second timeout for bio lookup
-                                                f"Artist bio lookup timed out after 8s",
-                                                artist,
-                                                enabled=True
-                                            )
-                                            
-                                            # Fetch artist image/fanart
-                                            artist_image = _run_with_timeout(
-                                                get_artist_fanart,
-                                                8,  # 8 second timeout for image lookup
-                                                f"Artist image lookup timed out after 8s",
-                                                artist,
-                                                enabled=True
-                                            )
-                                            
-                                            if artist_bio or artist_image:
-                                                # Update artist entry with bio and image
-                                                cursor.execute("""
-                                                    INSERT INTO artists (id, name, country, bio, image_url) 
-                                                    VALUES (?, ?, ?, ?, ?)
-                                                    ON CONFLICT(id) DO UPDATE SET 
-                                                        country = excluded.country,
-                                                        bio = excluded.bio,
-                                                        image_url = excluded.image_url
-                                                """, (artist, artist, artist_country, artist_bio or "", artist_image or ""))
-                                                conn.commit()
-                                                
-                                                if artist_bio:
-                                                    log_debug(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
-                                                if artist_image:
-                                                    log_debug(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
-                                            else:
-                                                log_debug(f'No bio or image found for artist: {artist}')
-                                        except TimeoutError as e:
-                                            log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
-                                        except Exception as e:
-                                            log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
                                 else:
                                     log_debug(f'No country information found for artist: {artist}')
+                                
+                                # Fetch and save artist bio/image from AudioDB during scan
+                                # This runs INDEPENDENTLY of country lookup - both are fetched regardless
+                                if HAVE_AUDIODB:
+                                    try:
+                                        log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
+                                        
+                                        # Fetch artist biography
+                                        artist_bio = _run_with_timeout(
+                                            get_artist_biography,
+                                            8,  # 8 second timeout for bio lookup
+                                            f"Artist bio lookup timed out after 8s",
+                                            artist,
+                                            enabled=True
+                                        )
+                                        
+                                        # Fetch artist image/fanart
+                                        artist_image = _run_with_timeout(
+                                            get_artist_fanart,
+                                            8,  # 8 second timeout for image lookup
+                                            f"Artist image lookup timed out after 8s",
+                                            artist,
+                                            enabled=True
+                                        )
+                                        
+                                        if artist_bio or artist_image:
+                                            # Update artist entry with bio and image
+                                            cursor.execute("""
+                                                INSERT INTO artists (id, name, bio, image_url) 
+                                                VALUES (?, ?, ?, ?)
+                                                ON CONFLICT(id) DO UPDATE SET 
+                                                    bio = excluded.bio,
+                                                    image_url = excluded.image_url
+                                            """, (artist, artist, artist_bio or "", artist_image or ""))
+                                            conn.commit()
+                                            
+                                            if artist_bio:
+                                                log_info(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
+                                            if artist_image:
+                                                log_info(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
+                                        else:
+                                            log_debug(f'No bio or image found for artist: {artist}')
+                                    except TimeoutError as e:
+                                        log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
+                                    except Exception as e:
+                                        log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
                         except TimeoutError as e:
                             log_debug(f"Artist country lookup timed out for {artist}: {e}")
                         except Exception as e:
@@ -2737,8 +2747,8 @@ def popularity_scan(
                     album_art_url = fetch_album_art_url_from_musicbrainz(artist, album)
                     if album_art_url:
                         log_info(f'Fetched album art URL for {artist} - {album}: {album_art_url}')
-                        # Download and save the actual image data
-                        if download_and_save_album_art(artist, album, album_art_url):
+                        # Download and save the actual image data, passing existing connection to avoid locking
+                        if download_and_save_album_art(artist, album, album_art_url, conn, cursor):
                             log_info(f'[ALBUM_ART] Album art image downloaded and saved for {artist} - {album}')
                         else:
                             log_debug(f'[ALBUM_ART] Failed to download album art image for {artist} - {album}')
@@ -3433,12 +3443,37 @@ def popularity_scan(
 
 # Batch update all popularity scores and genre sources for this album in one commit (skipped in singles_only mode)
                 if track_updates and not singles_only:
+                    # Merge tags from album_tags_data into track_updates BEFORE committing
+                    # This ensures Last.fm tags and other genre data are saved
+                    updated_track_updates = []
+                    for update_tuple in track_updates:
+                        # Unpack: (popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id)
+                        popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id = update_tuple
+                        
+                        # Check if we have tags for this track in album_tags_data
+                        if track_id in album_tags_data:
+                            tags_data = album_tags_data[track_id]
+                            # Merge tags - prefer freshly fetched data over existing
+                            if tags_data.get("lastfm_tags"):
+                                lastfm_tags = json.dumps(tags_data["lastfm_tags"])
+                                log_debug(f"Using Last.fm tags for track {track_id}: {len(tags_data['lastfm_tags'])} tags")
+                            if tags_data.get("listenbrainz_genres"):
+                                # Note: listenbrainz_genres maps to the musicbrainz_genres column in database
+                                musicbrainz_genres = json.dumps(tags_data["listenbrainz_genres"])
+                                log_debug(f"Using ListenBrainz genres for track {track_id}: {len(tags_data['listenbrainz_genres'])} genres")
+                            if tags_data.get("discogs_genres"):
+                                discogs_genres = json.dumps(tags_data["discogs_genres"])
+                                log_debug(f"Using Discogs genres for track {track_id}: {len(tags_data['discogs_genres'])} genres")
+                        
+                        # Append merged tuple
+                        updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id))
+                    
                     cursor.executemany(
                         "UPDATE tracks SET popularity_score = ?, spotify_score = ?, lastfm_ratio = ?, spotify_genres = ?, lastfm_tags = ?, discogs_genres = ?, musicbrainz_genres = ?, cover_art_url = ? WHERE id = ?",
-                        track_updates
+                        updated_track_updates
                     )
                     conn.commit()
-                    log_debug(f"Batch committed {len(track_updates)} popularity scores and genre sources for album '{album}'")
+                    log_debug(f"Batch committed {len(updated_track_updates)} popularity scores and genre sources for album '{album}' with merged tag data")
                     if album_art_url:
                         log_info(f"[ALBUM_ART] Album art URL cached for {album}: {album_art_url}")
                     else:

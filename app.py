@@ -11344,6 +11344,39 @@ def api_queue_status():
         return jsonify({"error": str(e)}), 400
 
 
+@app.route("/api/queue/imported", methods=["GET"])
+def api_queue_imported():
+    """Get recently imported tracks from beets organization"""
+    try:
+        limit = int(request.args.get('limit', 50))
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get recently organized/imported tracks from download_queue
+        cursor.execute("""
+            SELECT id, artist, title, album, source, status, 
+                   import_group, import_type, imported_at, file_path, found_filename
+            FROM download_queue 
+            WHERE status = 'completed' AND imported_at IS NOT NULL
+            ORDER BY imported_at DESC
+            LIMIT ?
+        """, (limit,))
+        
+        imported = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        return jsonify({
+            "success": True,
+            "imported": imported,
+            "total": len(imported)
+        })
+        
+    except Exception as e:
+        logging.error(f"Error getting imported tracks: {e}")
+        return jsonify({"error": str(e)}), 400
+
+
 @app.route("/api/queue/<int:queue_id>/update", methods=["POST"])
 def api_queue_update(queue_id):
     """Update queue item status"""
