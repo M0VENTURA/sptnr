@@ -170,6 +170,296 @@
       </div>
     </div>
   </div>
+
+  {% elif playlist_type == 'lastfm' %}
+  <!-- Last.fm Recommendations Playlist Creator -->
+  <div class="row">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-star"></i> Create Playlist from Last.fm Recommendations
+          </h5>
+        </div>
+        <div class="card-body">
+          {% if lastfm_enabled %}
+          <p class="text-muted mb-4">
+            Load recommendations from Last.fm and create a playlist with matched tracks from your library.
+          </p>
+
+          <!-- Recommendation Type Selection -->
+          <div class="row g-3 mb-4">
+            <div class="col-md-6">
+              <label for="lfmRecType" class="form-label">Recommendation Type</label>
+              <select id="lfmRecType" class="form-select" onchange="loadLastfmRecommendations()">
+                <option value="">Select a type...</option>
+                <option value="tracks">Top Tracks</option>
+                <option value="artists">Top Artists</option>
+                <option value="albums">Top Albums</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Empty State -->
+          <div id="lfmRecommendationsEmpty" style="display: block;">
+            <div class="alert alert-secondary text-center py-5">
+              <p><i class="bi bi-inbox"></i></p>
+              <p>Select a recommendation type above to load suggestions</p>
+            </div>
+          </div>
+
+          <!-- Results Section -->
+          <div id="lfmRecommendationsResults" style="display: none;">
+            <!-- Stats -->
+            <div class="row mb-4">
+              <div class="col-md-4">
+                <div class="card text-center bg-primary bg-opacity-10 border-primary">
+                  <div class="card-body">
+                    <h6 class="card-title">Total Recommendations</h6>
+                    <h3 id="lfmTotalCount" class="text-primary">0</h3>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="card text-center bg-success bg-opacity-10 border-success">
+                  <div class="card-body">
+                    <h6 class="card-title">Matched in Library</h6>
+                    <h3 id="lfmMatchedCount" class="text-success">0</h3>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="card text-center bg-warning bg-opacity-10 border-warning">
+                  <div class="card-body">
+                    <h6 class="card-title">Missing</h6>
+                    <h3 id="lfmMissingCount" class="text-warning">0</h3>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Matched Tracks -->
+            <div class="card mb-4">
+              <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-check-circle"></i> Matched Tracks (<span id="lfmMatchedList" class="badge bg-success">0</span>)</h6>
+              </div>
+              <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                <div id="lfmMatchedTracks">
+                  <p class="text-muted text-center">Loading...</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Missing Tracks -->
+            <div class="card mb-4">
+              <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-exclamation-circle"></i> Missing Tracks (<span id="lfmMissingList" class="badge bg-warning">0</span>)</h6>
+              </div>
+              <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                <div id="lfmMissingTracks">
+                  <p class="text-muted text-center">None</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Create Playlist Form -->
+            <form id="lastfmPlaylistForm" onsubmit="createPlaylistFromLastfm(event)" class="card">
+              <div class="card-header">
+                <h6 class="mb-0">Create Playlist from Matched Tracks</h6>
+              </div>
+              <div class="card-body">
+                <div class="row g-3 mb-4">
+                  <div class="col-12">
+                    <label for="lfmPlaylistName" class="form-label">Playlist Name *</label>
+                    <input type="text" id="lfmPlaylistName" class="form-control" placeholder="e.g., Last.fm Discoveries" required>
+                  </div>
+
+                  <div class="col-12">
+                    <label for="lfmPlaylistDesc" class="form-label">Description (optional)</label>
+                    <textarea id="lfmPlaylistDesc" class="form-control" rows="2" placeholder="Auto-created from Last.fm recommendations"></textarea>
+                  </div>
+
+                  <div class="col-12 col-md-6">
+                    <label for="lfmPlaylistUser" class="form-label">Assign to User *</label>
+                    <select id="lfmPlaylistUser" class="form-select" required>
+                      <option value="">Select a user...</option>
+                      {% if navidrome_users %}
+                        {% for user in navidrome_users %}
+                        <option value="{{ user.user }}">{{ user.user }}</option>
+                        {% endfor %}
+                      {% else %}
+                        <option value="admin">admin</option>
+                      {% endif %}
+                    </select>
+                  </div>
+
+                  <div class="col-12 col-md-6 d-flex align-items-end">
+                    <div class="form-check form-switch w-100">
+                      <input type="checkbox" id="lfmPlaylistPublic" class="form-check-input">
+                      <label for="lfmPlaylistPublic" class="form-check-label">Make playlist public</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="card-footer d-flex gap-2 justify-content-end">
+                <button type="button" class="btn btn-outline-secondary" onclick="resetLastfmForm()">Clear</button>
+                <button type="submit" class="btn btn-success">
+                  <i class="bi bi-plus-circle"></i> Create Playlist
+                </button>
+              </div>
+            </form>
+          </div>
+          {% else %}
+          <div class="alert alert-warning">
+            <i class="bi bi-exclamation-triangle"></i> Last.fm integration is not enabled. Please enable it in your configuration to use this feature.
+          </div>
+          {% endif %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  {% elif playlist_type == 'listenbrainz' %}
+  <!-- ListenBrainz Recommendations Playlist Creator -->
+  <div class="row">
+    <div class="col-12">
+      <div class="card">
+        <div class="card-header">
+          <h5 class="card-title mb-0">
+            <i class="bi bi-disc"></i> Create Playlist from ListenBrainz Recommendations
+          </h5>
+        </div>
+        <div class="card-body">
+          <p class="text-muted mb-4">
+            Load recommendations from ListenBrainz and create a playlist with matched tracks from your library.
+          </p>
+
+          <!-- Recommendation Type Selection -->
+          <div class="row g-3 mb-4">
+            <div class="col-md-6">
+              <label for="lbRecType" class="form-label">Recommendation Type</label>
+              <select id="lbRecType" class="form-select" onchange="loadListenBrainzRecommendations()">
+                <option value="">Select a type...</option>
+                <option value="tracks">Top Tracks</option>
+                <option value="artists">Top Artists</option>
+                <option value="albums">Top Albums</option>
+              </select>
+            </div>
+          </div>
+
+          <!-- Empty State -->
+          <div id="lbRecommendationsEmpty" style="display: block;">
+            <div class="alert alert-secondary text-center py-5">
+              <p><i class="bi bi-inbox"></i></p>
+              <p>Select a recommendation type above to load suggestions</p>
+            </div>
+          </div>
+
+          <!-- Results Section -->
+          <div id="lbRecommendationsResults" style="display: none;">
+            <!-- Stats -->
+            <div class="row mb-4">
+              <div class="col-md-4">
+                <div class="card text-center bg-primary bg-opacity-10 border-primary">
+                  <div class="card-body">
+                    <h6 class="card-title">Total Recommendations</h6>
+                    <h3 id="lbTotalCount" class="text-primary">0</h3>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="card text-center bg-success bg-opacity-10 border-success">
+                  <div class="card-body">
+                    <h6 class="card-title">Matched in Library</h6>
+                    <h3 id="lbMatchedCount" class="text-success">0</h3>
+                  </div>
+                </div>
+              </div>
+              <div class="col-md-4">
+                <div class="card text-center bg-warning bg-opacity-10 border-warning">
+                  <div class="card-body">
+                    <h6 class="card-title">Missing</h6>
+                    <h3 id="lbMissingCount" class="text-warning">0</h3>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Matched Tracks -->
+            <div class="card mb-4">
+              <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-check-circle"></i> Matched Tracks (<span id="lbMatchedList" class="badge bg-success">0</span>)</h6>
+              </div>
+              <div class="card-body" style="max-height: 400px; overflow-y: auto;">
+                <div id="lbMatchedTracks">
+                  <p class="text-muted text-center">Loading...</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Missing Tracks -->
+            <div class="card mb-4">
+              <div class="card-header">
+                <h6 class="mb-0"><i class="bi bi-exclamation-circle"></i> Missing Tracks (<span id="lbMissingList" class="badge bg-warning">0</span>)</h6>
+              </div>
+              <div class="card-body" style="max-height: 300px; overflow-y: auto;">
+                <div id="lbMissingTracks">
+                  <p class="text-muted text-center">None</p>
+                </div>
+              </div>
+            </div>
+
+            <!-- Create Playlist Form -->
+            <form id="listenbrainzPlaylistForm" onsubmit="createPlaylistFromListenBrainz(event)" class="card">
+              <div class="card-header">
+                <h6 class="mb-0">Create Playlist from Matched Tracks</h6>
+              </div>
+              <div class="card-body">
+                <div class="row g-3 mb-4">
+                  <div class="col-12">
+                    <label for="lbPlaylistName" class="form-label">Playlist Name *</label>
+                    <input type="text" id="lbPlaylistName" class="form-control" placeholder="e.g., ListenBrainz Discoveries" required>
+                  </div>
+
+                  <div class="col-12">
+                    <label for="lbPlaylistDesc" class="form-label">Description (optional)</label>
+                    <textarea id="lbPlaylistDesc" class="form-control" rows="2" placeholder="Auto-created from ListenBrainz recommendations"></textarea>
+                  </div>
+
+                  <div class="col-12 col-md-6">
+                    <label for="lbPlaylistUser" class="form-label">Assign to User *</label>
+                    <select id="lbPlaylistUser" class="form-select" required>
+                      <option value="">Select a user...</option>
+                      {% if navidrome_users %}
+                        {% for user in navidrome_users %}
+                        <option value="{{ user.user }}">{{ user.user }}</option>
+                        {% endfor %}
+                      {% else %}
+                        <option value="admin">admin</option>
+                      {% endif %}
+                    </select>
+                  </div>
+
+                  <div class="col-12 col-md-6 d-flex align-items-end">
+                    <div class="form-check form-switch w-100">
+                      <input type="checkbox" id="lbPlaylistPublic" class="form-check-input">
+                      <label for="lbPlaylistPublic" class="form-check-label">Make playlist public</label>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="card-footer d-flex gap-2 justify-content-end">
+                <button type="button" class="btn btn-outline-secondary" onclick="resetListenBrainzForm()">Clear</button>
+                <button type="submit" class="btn btn-success">
+                  <i class="bi bi-plus-circle"></i> Create Playlist
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
   {% endif %}
 </div>
 

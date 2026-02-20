@@ -1114,38 +1114,50 @@ async function loadLastfmRecommendations() {
   }
 }
 
-async function createPlaylistFromLastfm() {
+async function createPlaylistFromLastfm(event) {
+  if (event) event.preventDefault();
+  
   if (!lfmRecommendationsData || !lfmRecommendationsData.matched_tracks || lfmRecommendationsData.matched_tracks.length === 0) {
     alert('No matched tracks to create playlist from');
     return;
   }
   
-  const recType = document.getElementById('lfmRecType')?.value || 'tracks';
-  const playlistName = prompt('Enter playlist name:', `Last.fm ${recType === 'tracks' ? 'Top Tracks' : recType === 'artists' ? 'Top Artists' : 'Top Albums'}`);
+  const playlistName = document.getElementById('lfmPlaylistName')?.value?.trim();
+  const playlistDesc = document.getElementById('lfmPlaylistDesc')?.value?.trim() || '';
+  const playlistUser = document.getElementById('lfmPlaylistUser')?.value?.trim();
+  const isPublic = document.getElementById('lfmPlaylistPublic')?.checked || false;
   
-  if (!playlistName) return;
+  if (!playlistName) {
+    alert('Please enter a playlist name');
+    return;
+  }
+  
+  if (!playlistUser) {
+    alert('Please select a user');
+    return;
+  }
   
   try {
-    const currentUser = document.getElementById('customPlaylistUser')?.value || 'admin';
-    
-    const response = await fetch('/api/playlist/create-custom', {
+    const response = await fetch('/api/lastfm/create-playlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: playlistName,
-        description: `Last.fm recommendations: ${recType.replace(/_/g, ' ')}`,
-        user: currentUser,
-        is_public: false,
+        description: playlistDesc || `Last.fm recommendations`,
+        user: playlistUser,
+        is_public: isPublic,
         songs: lfmRecommendationsData.matched_tracks
       })
     });
     
+    const data = await response.json();
+    
     if (!response.ok) {
-      const error = await response.json();
-      throw new Error(error.error || 'Failed to create playlist');
+      throw new Error(data.error || 'Failed to create playlist');
     }
     
     alert('✓ Playlist created successfully!');
+    resetLastfmForm();
   } catch (error) {
     console.error('Error creating playlist:', error);
     alert('✗ Error: ' + error.message);
@@ -1229,41 +1241,72 @@ async function loadListenBrainzRecommendations() {
   }
 }
 
-async function createPlaylistFromListenBrainz() {
+async function createPlaylistFromListenBrainz(event) {
+  if (event) event.preventDefault();
+  
   if (!lbRecommendationsData || !lbRecommendationsData.matched_tracks || lbRecommendationsData.matched_tracks.length === 0) {
     alert('No matched tracks to create playlist from');
     return;
   }
   
-  const recType = document.getElementById('lbRecType')?.value || 'weekly_jams';
-  const playlistName = prompt('Enter playlist name:', `ListenBrainz ${recType.replace(/_/g, ' ')}`);
+  const playlistName = document.getElementById('lbPlaylistName')?.value?.trim();
+  const playlistDesc = document.getElementById('lbPlaylistDesc')?.value?.trim() || '';
+  const playlistUser = document.getElementById('lbPlaylistUser')?.value?.trim();
+  const isPublic = document.getElementById('lbPlaylistPublic')?.checked || false;
   
-  if (!playlistName) return;
+  if (!playlistName) {
+    alert('Please enter a playlist name');
+    return;
+  }
+  
+  if (!playlistUser) {
+    alert('Please select a user');
+    return;
+  }
   
   try {
-    const currentUser = document.getElementById('customPlaylistUser')?.value || 'admin';
-    
-    const response = await fetch('/api/playlist/create-custom', {
+    const response = await fetch('/api/listenbrainz/create-playlist', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name: playlistName,
-        description: `ListenBrainz recommendations: ${recType.replace(/_/g, ' ')}`,
-        user: currentUser,
-        is_public: false,
+        description: playlistDesc || `ListenBrainz recommendations`,
+        user: playlistUser,
+        is_public: isPublic,
         songs: lbRecommendationsData.matched_tracks
       })
     });
     
-    const result = await response.json();
+    const data = await response.json();
     
-    if (result.success) {
-      alert(`Playlist "${playlistName}" created successfully!`);
-    } else {
-      alert('Error creating playlist: ' + (result.error || 'Unknown error'));
+    if (!response.ok) {
+      throw new Error(data.error || 'Failed to create playlist');
     }
+    
+    alert('✓ Playlist created successfully!');
+    resetListenBrainzForm();
   } catch (error) {
     console.error('Error creating playlist:', error);
-    alert('Error: ' + error.message);
+    alert('✗ Error: ' + error.message);
   }
+}
+
+// ===============================
+// FORM RESET FUNCTIONS
+// ===============================
+
+function resetLastfmForm() {
+  document.getElementById('lfmPlaylistForm')?.reset?.();
+  document.getElementById('lfmPlaylistName').value = '';
+  document.getElementById('lfmPlaylistDesc').value = '';
+  document.getElementById('lfmPlaylistUser').value = '';
+  document.getElementById('lfmPlaylistPublic').checked = false;
+}
+
+function resetListenBrainzForm() {
+  document.getElementById('listenbrainzPlaylistForm')?.reset?.();
+  document.getElementById('lbPlaylistName').value = '';
+  document.getElementById('lbPlaylistDesc').value = '';
+  document.getElementById('lbPlaylistUser').value = '';
+  document.getElementById('lbPlaylistPublic').checked = false;
 }
