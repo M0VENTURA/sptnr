@@ -639,6 +639,142 @@
 </div>
 {% endif %}
 
+<!-- Comprehensive Track Edit Modal for Artist Page -->
+<div class="modal fade" id="editTrackFromArtistModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog modal-lg">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h5 class="modal-title">
+                    <i class="bi bi-pencil-square"></i> Edit Track: <span id="editArtistTrackTitle"></span>
+                </h5>
+                <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <form id="editArtistTrackForm">
+                    <input type="hidden" id="editArtistTrackId" name="track_id">
+                    
+                    <!-- Basic Info -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-12">
+                            <label for="editArtistTrackTitleField" class="form-label">Title</label>
+                            <input type="text" class="form-control" id="editArtistTrackTitleField" name="title" required>
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editArtistTrackArtistField" class="form-label">Artist</label>
+                            <input type="text" class="form-control" id="editArtistTrackArtistField" name="artist">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editArtistTrackAlbumField" class="form-label">Album</label>
+                            <input type="text" class="form-control" id="editArtistTrackAlbumField" name="album">
+                        </div>
+                    </div>
+                    
+                    <!-- Metadata -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-3">
+                            <label for="editArtistTrackYearField" class="form-label">Year</label>
+                            <input type="number" class="form-control" id="editArtistTrackYearField" name="year" placeholder="YYYY">
+                        </div>
+                        <div class="col-md-3">
+                            <label for="editArtistTrackStarsField" class="form-label">Rating</label>
+                            <select class="form-select" id="editArtistTrackStarsField" name="stars">
+                                <option value="0">☆☆☆☆☆ (0)</option>
+                                <option value="1">★☆☆☆☆ (1)</option>
+                                <option value="2">★★☆☆☆ (2)</option>
+                                <option value="3">★★★☆☆ (3)</option>
+                                <option value="4">★★★★☆ (4)</option>
+                                <option value="5">★★★★★ (5)</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="editArtistTrackSingleField" class="form-label">Is Single</label>
+                            <select class="form-select" id="editArtistTrackSingleField" name="is_single">
+                                <option value="0">No</option>
+                                <option value="1">Yes</option>
+                            </select>
+                        </div>
+                        <div class="col-md-3">
+                            <label for="editArtistTrackConfidenceField" class="form-label">Confidence</label>
+                            <select class="form-select" id="editArtistTrackConfidenceField" name="single_confidence">
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
+                            </select>
+                        </div>
+                    </div>
+                    
+                    <!-- Recommended Genres Section -->
+                    <div class="mb-4" id="artistRecommendedGenresSection" style="display: none;">
+                        <div class="alert alert-info" style="padding: 0.75rem; margin-bottom: 1rem;">
+                            <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres from Last.fm & Discogs</h6>
+                            <div id="artistRecommendedGenresDisplay" class="d-flex flex-wrap gap-2">
+                                <span class="text-muted small">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- Genres -->
+                    <div class="mb-4">
+                        <label for="editArtistTrackGenresField" class="form-label">Genres</label>
+                        <div id="editArtistTrackGenresDisplay" class="mb-2">
+                            <!-- Genres badges will be inserted here -->
+                        </div>
+                        <div class="input-group mb-2">
+                            <input type="text" class="form-control" id="editArtistTrackGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="editArtistGenreDatalist">
+                            <button class="btn btn-outline-success" type="button" onclick="addEditArtistTrackGenre()">
+                                <i class="bi bi-plus-circle"></i> Add
+                            </button>
+                        </div>
+                        <datalist id="editArtistGenreDatalist">
+                            <option value="Rock"><option value="Pop"><option value="Jazz"><option value="Classical">
+                            <option value="Hip-Hop"><option value="Electronic"><option value="Blues"><option value="Country">
+                            <option value="R&B"><option value="Soul"><option value="Funk"><option value="Metal">
+                            <option value="Punk"><option value="Alternative"><option value="Indie">
+                        </datalist>
+                        <input type="hidden" id="editArtistTrackGenresField" name="genres">
+                    </div>
+                    
+                    <!-- Additional Fields -->
+                    <div class="row g-3 mb-4">
+                        <div class="col-md-6">
+                            <label for="editArtistTrackAlbumArtistField" class="form-label">Album Artist</label>
+                            <input type="text" class="form-control" id="editArtistTrackAlbumArtistField" name="album_artist">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editArtistTrackComposerField" class="form-label">Composer</label>
+                            <input type="text" class="form-control" id="editArtistTrackComposerField" name="composer">
+                        </div>
+                        <div class="col-md-3">
+                            <label for="editArtistTrackTrackNumberField" class="form-label">Track Number</label>
+                            <input type="text" class="form-control" id="editArtistTrackTrackNumberField" name="track_number" placeholder="e.g., 1 or 1/12">
+                        </div>
+                        <div class="col-md-3">
+                            <label for="editArtistTrackDiscNumberField" class="form-label">Disc Number</label>
+                            <input type="number" class="form-control" id="editArtistTrackDiscNumberField" name="disc_number">
+                        </div>
+                        <div class="col-md-6">
+                            <label for="editArtistTrackMBIDField" class="form-label">MusicBrainz ID</label>
+                            <input type="text" class="form-control" id="editArtistTrackMBIDField" name="mbid" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                        </div>
+                    </div>
+                    
+                    <!-- Comment -->
+                    <div class="mb-3">
+                        <label for="editArtistTrackCommentField" class="form-label">Comment</label>
+                        <textarea class="form-control" id="editArtistTrackCommentField" name="comment" rows="2" placeholder="Add notes or comments"></textarea>
+                    </div>
+                </form>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                <button type="button" class="btn btn-primary" onclick="saveArtistEditedTrack()">
+                    <i class="bi bi-check-circle"></i> Save Changes
+                </button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <script>
 // Constants for slskd search polling
 const SLSKD_MAX_POLL_ATTEMPTS = 20;
@@ -2218,11 +2354,16 @@ function loadTracklist(artist, album, button, mbid) {
       // Build search query for download (artist + title)
       const searchQuery = `${artist} ${track.title}`;
       
-      // Add edit button for tracks in library
-      const editButton = isMatched ? `
-        <button class="btn btn-sm btn-outline-primary" onclick="editTrackTitle('${escapeJsString(track.track_id || '')}', '${escapeJsString(track.title)}')" title="Edit track" style="flex-shrink: 0;">
-          <i class="bi bi-pencil"></i>
-        </button>
+      // Add action buttons for tracks in library
+      const actionButtons = isMatched ? `
+        <div class="d-flex gap-2" style="flex-shrink: 0;">
+          <button class="btn btn-sm btn-outline-primary" onclick="openEditTrackFromArtistModal('${escapeJsString(track.track_id || '')}', '${escapeJsString(track.title)}')" title="Edit track" style="flex-shrink: 0;">
+            <i class="bi bi-pencil"></i>
+          </button>
+          <a href="/track/${escapeJsString(track.track_id || '')}" class="btn btn-sm btn-outline-info" title="View track page" style="flex-shrink: 0;">
+            <i class="bi bi-arrow-right"></i>
+          </a>
+        </div>
       ` : '';
       
       html += `
@@ -2237,7 +2378,7 @@ function loadTracklist(artist, album, button, mbid) {
             </div>
             <div class="d-flex align-items-center gap-2">
               <small class="text-muted me-2" style="max-width: 120px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">${escapeHtml(track.artist || '')}</small>
-              ${editButton}
+              ${actionButtons}
               <button class="btn btn-sm btn-outline-success" onclick="downloadTrack('${escapeJsString(searchQuery)}', '${escapeJsString(artist)}', '${escapeJsString(track.title)}')" title="Download this track" style="flex-shrink: 0;">
                 <i class="bi bi-download"></i>
               </button>
@@ -2896,6 +3037,227 @@ document.addEventListener('DOMContentLoaded', initializeMissingToggle);
   function showArtistSimilarArtistsError(message) {
     const container = document.getElementById('artistSimilarArtistsContainer');
     container.innerHTML = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
+  }
+
+  // ===== Track Edit Modal Functions for Artist Page =====
+  let editArtistTrackCurrentGenres = [];
+  let editArtistTrackModalInstance = null;
+
+  function openEditTrackFromArtistModal(trackId, trackTitle) {
+    fetch(`/api/track/${trackId}`)
+      .then(r => {
+        if (!r.ok) throw new Error('Track not found');
+        return r.json();
+      })
+      .then(trackData => {
+        openComprehensiveEditArtistTrackModal(trackId, trackData);
+      })
+      .catch(err => {
+        alert('❌ Error loading track: ' + err.message);
+      });
+  }
+
+  function openComprehensiveEditArtistTrackModal(trackId, trackData) {
+    // Set track ID
+    document.getElementById('editArtistTrackId').value = trackId;
+    
+    // Populate form with track data
+    document.getElementById('editArtistTrackTitle').textContent = trackData.title || 'Unknown';
+    document.getElementById('editArtistTrackTitleField').value = trackData.title || '';
+    document.getElementById('editArtistTrackArtistField').value = trackData.artist || '';
+    document.getElementById('editArtistTrackAlbumField').value = trackData.album || '';
+    document.getElementById('editArtistTrackYearField').value = trackData.year || '';
+    document.getElementById('editArtistTrackStarsField').value = trackData.stars || 0;
+    document.getElementById('editArtistTrackSingleField').value = trackData.is_single || 0;
+    document.getElementById('editArtistTrackConfidenceField').value = trackData.single_confidence || 'low';
+    document.getElementById('editArtistTrackAlbumArtistField').value = trackData.album_artist || '';
+    document.getElementById('editArtistTrackComposerField').value = trackData.composer || '';
+    document.getElementById('editArtistTrackTrackNumberField').value = trackData.track_number || '';
+    document.getElementById('editArtistTrackDiscNumberField').value = trackData.disc_number || '';
+    document.getElementById('editArtistTrackMBIDField').value = trackData.mbid || '';
+    document.getElementById('editArtistTrackCommentField').value = trackData.comment || '';
+    
+    // Handle genres
+    editArtistTrackCurrentGenres = [];
+    if (trackData.genres) {
+      editArtistTrackCurrentGenres = trackData.genres.split(/[;,\\\/]/).map(g => g.trim()).filter(g => g);
+    }
+    updateEditArtistTrackGenresDisplay();
+    
+    // Load and display recommended genres
+    loadRecommendedGenresForTrack(trackData.artist, trackId);
+    
+    // Show modal
+    if (!editArtistTrackModalInstance) {
+      editArtistTrackModalInstance = new bootstrap.Modal(document.getElementById('editTrackFromArtistModal'));
+    }
+    editArtistTrackModalInstance.show();
+  }
+
+  function loadRecommendedGenresForTrack(artist, trackId) {
+    const section = document.getElementById('artistRecommendedGenresSection');
+    const display = document.getElementById('artistRecommendedGenresDisplay');
+    
+    if (!section || !display) return;
+    
+    // Fetch genres from all sources for this track
+    fetch(`/api/genres/track/${trackId}`)
+      .then(r => r.json())
+      .then(data => {
+        if (!data.genres) return;
+        
+        // Collect all unique genres from Last.fm and Discogs sources
+        const recommendedGenres = new Map();
+        
+        // Collect from Last.fm tags
+        if (data.genres.lastfm_tags) {
+          data.genres.lastfm_tags.forEach(genre => {
+            const name = typeof genre === 'object' ? genre.name : genre;
+            recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+          });
+        }
+        
+        // Collect from Discogs genres
+        if (data.genres.discogs_genres) {
+          data.genres.discogs_genres.forEach(genre => {
+            const name = typeof genre === 'object' ? genre.name : genre;
+            recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+          });
+        }
+        
+        // Collect from Spotify
+        if (data.genres.spotify_genres) {
+          data.genres.spotify_genres.forEach(genre => {
+            const name = typeof genre === 'object' ? genre.name : genre;
+            recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+          });
+        }
+        
+        if (recommendedGenres.size > 0) {
+          section.style.display = 'block';
+          
+          let genresHtml = '';
+          recommendedGenres.forEach((count, genre) => {
+            genresHtml += `<button type="button" class="btn btn-sm btn-outline-info" onclick="addEditArtistGenreFromRecommended('${escapeJsString(genre)}')" title="Add to track genres">
+              ${escapeHtml(genre)}
+              <small class="text-muted ms-1">(${count})</small>
+            </button>`;
+          });
+          
+          display.innerHTML = genresHtml;
+        } else {
+          section.style.display = 'none';
+        }
+      })
+      .catch(err => {
+        section.style.display = 'none';
+        console.warn('Could not load recommended genres:', err);
+      });
+  }
+
+  function addEditArtistGenreFromRecommended(genre) {
+    if (!editArtistTrackCurrentGenres.includes(genre)) {
+      editArtistTrackCurrentGenres.push(genre);
+      updateEditArtistTrackGenresDisplay();
+    }
+  }
+
+  function updateEditArtistTrackGenresDisplay() {
+    const container = document.getElementById('editArtistTrackGenresDisplay');
+    container.innerHTML = '';
+    
+    if (editArtistTrackCurrentGenres.length === 0) {
+      container.innerHTML = '<span class="text-muted small">No genres set</span>';
+    } else {
+      editArtistTrackCurrentGenres.forEach(genre => {
+        const badge = document.createElement('span');
+        badge.className = 'badge bg-primary me-1 mb-1';
+        badge.style.fontSize = '0.9rem';
+        badge.innerHTML = `${genre} <button type="button" class="btn-close btn-close-white ms-1" style="font-size: 0.6rem;" onclick="removeEditArtistTrackGenre('${escapeJsString(genre)}')" aria-label="Remove"></button>`;
+        container.appendChild(badge);
+      });
+    }
+    document.getElementById('editArtistTrackGenresField').value = editArtistTrackCurrentGenres.join('\\');
+  }
+
+  function addEditArtistTrackGenre() {
+    const input = document.getElementById('editArtistTrackGenreInput');
+    const genre = input.value.trim();
+    
+    if (!genre) return;
+    
+    if (!editArtistTrackCurrentGenres.includes(genre)) {
+      editArtistTrackCurrentGenres.push(genre);
+      updateEditArtistTrackGenresDisplay();
+    }
+    
+    input.value = '';
+    input.focus();
+  }
+
+  function removeEditArtistTrackGenre(genre) {
+    editArtistTrackCurrentGenres = editArtistTrackCurrentGenres.filter(g => g !== genre);
+    updateEditArtistTrackGenresDisplay();
+  }
+
+  function saveArtistEditedTrack() {
+    const trackId = document.getElementById('editArtistTrackId').value;
+    
+    if (!trackId) {
+      alert('❌ Error: No track ID');
+      return;
+    }
+    
+    // Build payload from form
+    const payload = {
+      track_id: trackId,
+      title: document.getElementById('editArtistTrackTitleField').value.trim(),
+      artist: document.getElementById('editArtistTrackArtistField').value.trim(),
+      album: document.getElementById('editArtistTrackAlbumField').value.trim(),
+      year: document.getElementById('editArtistTrackYearField').value.trim() || null,
+      stars: parseInt(document.getElementById('editArtistTrackStarsField').value) || 0,
+      is_single: parseInt(document.getElementById('editArtistTrackSingleField').value) || 0,
+      single_confidence: document.getElementById('editArtistTrackConfidenceField').value,
+      genres: editArtistTrackCurrentGenres.join('\\'),
+      album_artist: document.getElementById('editArtistTrackAlbumArtistField').value.trim() || null,
+      composer: document.getElementById('editArtistTrackComposerField').value.trim() || null,
+      track_number: document.getElementById('editArtistTrackTrackNumberField').value.trim() || null,
+      disc_number: document.getElementById('editArtistTrackDiscNumberField').value.trim() || null,
+      mbid: document.getElementById('editArtistTrackMBIDField').value.trim() || null,
+      comment: document.getElementById('editArtistTrackCommentField').value.trim() || null
+    };
+    
+    // Validate required fields
+    if (!payload.title) {
+      alert('❌ Error: Title is required');
+      return;
+    }
+    
+    // Send to API
+    fetch('/api/track/update-metadata', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify(payload)
+    })
+    .then(r => r.json())
+    .then(data => {
+      if (data.success) {
+        if (editArtistTrackModalInstance) {
+          editArtistTrackModalInstance.hide();
+        }
+        alert('✅ Track metadata updated successfully');
+        
+        // Reload to show updated data
+        setTimeout(() => {
+          location.reload();
+        }, 500);
+      } else {
+        alert('❌ Error: ' + (data.error || 'Failed to update'));
+      }
+    })
+    .catch(err => {
+      alert('❌ Network error: ' + err.message);
+    });
   }
 </script>
 

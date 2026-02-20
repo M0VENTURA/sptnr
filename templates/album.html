@@ -837,6 +837,16 @@
                         </div>
                     </div>
                     
+                    <!-- Recommended Genres Section -->
+                    <div class="mb-4" id="recommendedGenresSection" style="display: none;">
+                        <div class="alert alert-info" style="padding: 0.75rem; margin-bottom: 1rem;">
+                            <h6 class="mb-2"><i class="bi bi-stars"></i> Recommended Genres from Last.fm & Discogs</h6>
+                            <div id="recommendedGenresDisplay" class="d-flex flex-wrap gap-2">
+                                <span class="text-muted small">Loading...</span>
+                            </div>
+                        </div>
+                    </div>
+                    
                     <!-- Genres -->
                     <div class="mb-4">
                         <label for="editTrackGenresField" class="form-label">Genres</label>
@@ -2415,11 +2425,82 @@
         }
         updateEditTrackGenresDisplay();
         
+        // Load and display recommended genres
+        loadRecommendedGenresForAlbumTrack(trackData.artist, trackId);
+        
         // Show modal
         if (!editTrackModalInstance) {
             editTrackModalInstance = new bootstrap.Modal(document.getElementById('editTrackModal'));
         }
         editTrackModalInstance.show();
+    }
+
+    function loadRecommendedGenresForAlbumTrack(artist, trackId) {
+        const section = document.getElementById('recommendedGenresSection');
+        const display = document.getElementById('recommendedGenresDisplay');
+        
+        if (!section || !display) return;
+        
+        // Fetch genres from all sources for this track
+        fetch(`/api/genres/track/${trackId}`)
+          .then(r => r.json())
+          .then(data => {
+            if (!data.genres) return;
+            
+            // Collect all unique genres from Last.fm and Discogs sources
+            const recommendedGenres = new Map();
+            
+            // Collect from Last.fm tags
+            if (data.genres.lastfm_tags) {
+              data.genres.lastfm_tags.forEach(genre => {
+                const name = typeof genre === 'object' ? genre.name : genre;
+                recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+              });
+            }
+            
+            // Collect from Discogs genres
+            if (data.genres.discogs_genres) {
+              data.genres.discogs_genres.forEach(genre => {
+                const name = typeof genre === 'object' ? genre.name : genre;
+                recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+              });
+            }
+            
+            // Collect from Spotify
+            if (data.genres.spotify_genres) {
+              data.genres.spotify_genres.forEach(genre => {
+                const name = typeof genre === 'object' ? genre.name : genre;
+                recommendedGenres.set(name, (recommendedGenres.get(name) || 0) + 1);
+              });
+            }
+            
+            if (recommendedGenres.size > 0) {
+              section.style.display = 'block';
+              
+              let genresHtml = '';
+              recommendedGenres.forEach((count, genre) => {
+                genresHtml += `<button type="button" class="btn btn-sm btn-outline-info" onclick="addGenreFromRecommended('${escapeJsString(genre)}')" title="Add to track genres">
+                  ${escapeHtml(genre)}
+                  <small class="text-muted ms-1">(${count})</small>
+                </button>`;
+              });
+              
+              display.innerHTML = genresHtml;
+            } else {
+              section.style.display = 'none';
+            }
+          })
+          .catch(err => {
+            section.style.display = 'none';
+            console.warn('Could not load recommended genres:', err);
+          });
+    }
+
+    function addGenreFromRecommended(genre) {
+        if (!editTrackCurrentGenres.includes(genre)) {
+          editTrackCurrentGenres.push(genre);
+          updateEditTrackGenresDisplay();
+        }
     }
 
     function updateEditTrackGenresDisplay() {
@@ -2603,6 +2684,9 @@
     function displayAlbumGenres(data) {
         const container = document.getElementById('albumGenreSourcesContainer');
         
+        // Remove spinner class from container
+        container.classList.remove('spinner-border');
+        
         if (!data.genres || Object.keys(data.genres).length === 0) {
             container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
             return;
@@ -2668,6 +2752,8 @@
     
     function showAlbumGenresError(message) {
         const container = document.getElementById('albumGenreSourcesContainer');
+        // Remove spinner class from container
+        container.classList.remove('spinner-border');
         container.innerHTML = `<div class="alert alert-danger mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
     }
 
@@ -2711,6 +2797,9 @@
 
     function displayAlbumSimilarArtists(data) {
         const container = document.getElementById('albumSimilarArtistsContainer');
+        
+        // Remove spinner class from container
+        container.classList.remove('spinner-border');
         
         const totalArtists = data.similar_artists.lastfm.length + data.similar_artists.listenbrainz.length;
         
@@ -2790,6 +2879,8 @@
 
     function showAlbumSimilarArtistsError(message) {
         const container = document.getElementById('albumSimilarArtistsContainer');
+        // Remove spinner class from container
+        container.classList.remove('spinner-border');
         container.innerHTML = `<div class="alert alert-warning mb-0"><i class="bi bi-exclamation-circle"></i> ${escapeHtml(message)}</div>`;
     }
 
