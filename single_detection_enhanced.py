@@ -1123,7 +1123,7 @@ def determine_final_status(
     - Discogs video confirms
     - Last.fm album has 1-3 tracks (single indicator)
     - Radio Edit found in Spotify search results
-    - Z-score >= 0.5 (album) OR >= 1.8 (artist) WITH metadata confirmation (required)
+    - Z-score >= configured medium threshold (album) OR >= configured high threshold (artist) WITH metadata confirmation (required)
     
     LOW-CONFIDENCE:
     - album_z >= 0.2 AND >= 3 versions WITH metadata confirmation (required)
@@ -1153,6 +1153,17 @@ def determine_final_status(
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
     """
+    # Load z-score thresholds from config
+    try:
+        from config_loader import get_zscore_thresholds
+        thresholds = get_zscore_thresholds()
+        zscore_medium_threshold = thresholds.get('medium', 0.6)
+        zscore_high_threshold = thresholds.get('high', 1.0)
+    except Exception:
+        # Fallback to defaults
+        zscore_medium_threshold = 0.6
+        zscore_high_threshold = 1.0
+    
     # Count high-confidence and medium-confidence sources
     high_confidence_count = 0
     medium_confidence_count = 0
@@ -1210,18 +1221,25 @@ def determine_final_status(
     
     # Z-score inference for confidence ONLY
     # Per problem statement: popularity outliers alone cannot be singles
-    # However, artist-level standouts can get medium confidence without metadata
+    # However, artist-level standouts can get medium or high confidence without metadata based on z-scores
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     log_debug(f"[CONFIDENCE] Z-score path: use_zscore_detection={use_zscore_detection} (album_underperforming={album_is_underperforming}, artist_standout={is_artist_level_standout})")
+    log_debug(f"[CONFIDENCE] Z-score thresholds: medium={zscore_medium_threshold}, high={zscore_high_threshold}")
     
     if use_zscore_detection:
         log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
         
-        # HIGH/MEDIUM with metadata: album_z >= 0.5 OR artist_z >= 1.4 (with explicit metadata, must meet medium threshold)
+        # With metadata sources: allow z-score based confidence assignment
         if has_metadata:
-            if album_z >= 0.5 or artist_z >= 1.4:
-                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z >= 0.5 OR artist_z >= 1.4, with metadata)")
+            # HIGH: artist_z >= high threshold with metadata
+            if artist_z >= zscore_high_threshold:
+                log_debug(f"[CONFIDENCE] → RETURNING 'high' (z-score: artist_z={artist_z:.2f} >= high_threshold={zscore_high_threshold}, with metadata)")
+                return 'high'
+            
+            # MEDIUM: album_z >= medium threshold OR artist_z >= medium threshold with metadata
+            if album_z >= zscore_medium_threshold or artist_z >= zscore_medium_threshold:
+                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z={album_z:.2f} >= medium={zscore_medium_threshold} OR artist_z={artist_z:.2f} >= medium={zscore_medium_threshold}, with metadata)")
                 return 'medium'
             
             # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
@@ -1229,10 +1247,15 @@ def determine_final_status(
                 log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
                 return 'low'
         
-        # MEDIUM confidence for artist-level standouts WITHOUT metadata (popular across entire artist)
-        # Per ARTIST_LEVEL_ZSCORE_IMPLEMENTATION.md: artist_z >= 1.0 for medium confidence
-        elif is_artist_level_standout and artist_z >= 1.0:
-            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f})")
+        # Artist-level standouts WITHOUT metadata (popular across entire artist)
+        # HIGH: artist_z >= high threshold without sources
+        elif is_artist_level_standout and artist_z >= zscore_high_threshold:
+            log_debug(f"[CONFIDENCE] → RETURNING 'high' (artist-level standout without metadata, artist_z={artist_z:.2f} >= high_threshold={zscore_high_threshold})")
+            return 'high'
+        
+        # MEDIUM: artist-level standouts between medium and high thresholds
+        elif is_artist_level_standout and artist_z >= zscore_medium_threshold:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f} >= medium_threshold={zscore_medium_threshold})")
             return 'medium'
     
     # No confidence indicators
