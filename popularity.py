@@ -3012,22 +3012,39 @@ def popularity_scan(
                     # This is done batch-style per album to be efficient
                     album_tags_data = {}  # Map of track_id -> {"lastfm_tags": [...], "listenbrainz_genres": [...], "discogs_genres": [...]}
                     
+                    # Initialize clients outside the try block to prevent silent failures
+                    lastfm_client = None
+                    discogs_client = None
+                    
                     try:
                         # Get Last.fm client for tag lookups
                         lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
-                        lastfm_client = None
                         if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                             from api_clients.lastfm import LastFmClient
                             lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                            log_debug(f"Last.fm client initialized for batch tag fetching")
+                        else:
+                            log_debug(f"Last.fm client not configured or disabled")
                         
                         # Get Discogs client for genre lookups
                         discogs_config = config.get("api_integrations", {}).get("discogs", {})
-                        discogs_client = None
                         if discogs_config.get("enabled") and discogs_config.get("token"):
                             from api_clients.discogs import DiscogsClient
                             discogs_client = DiscogsClient(discogs_config.get("token"))
-                        
-                        log_info(f'Fetching tags/genres for {len(album_tracks)} track(s) in album "{album}"')
+                            log_debug(f"Discogs client initialized for batch genre fetching")
+                        else:
+                            log_debug(f"Discogs client not configured or disabled")
+                            
+                    except Exception as e:
+                        log_debug(f"Error initializing API clients for batch fetch: {e}")
+                        log_info(f"Continuing with partial API capabilities for album '{album}'")
+                    
+                    # Always attempt the batch fetch loop, even if clients failed to initialize
+                    try:
+                        if lastfm_client or discogs_client:
+                            log_info(f'Fetching tags/genres for {len(album_tracks)} track(s) in album "{album}"')
+                        else:
+                            log_debug(f'No API clients available for batch tag fetch, will use per-track fallback if needed')
                         
                         for track in album_tracks:
                             track_id = track["id"]
@@ -3105,14 +3122,16 @@ def popularity_scan(
                                 except Exception as e:
                                     log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
                             
-                            # Store all tags for this track
+                            # Store all tags for this track (including empty lists if nothing was fetched)
                             album_tags_data[track_id] = track_tags
                         
-                        log_info(f'Tag/genre fetch complete for album "{album}": {len(album_tags_data)} track(s) processed')
+                        if album_tags_data:
+                            log_info(f'Tag/genre fetch complete for album "{album}": {len(album_tags_data)} track(s) processed')
                         
                     except Exception as e:
-                        log_debug(f'Failed to initialize tag/genre fetch for album "{album}": {e}')
-                        log_info(f'Continuing without tag/genre data for this album')
+                        log_debug(f'Error during tag/genre batch fetch for album "{album}": {e}')
+                        log_info(f'Continuing with per-track fallback for tag/genre data for this album')
+
                 
                 # In singles_only mode, skip all popularity scoring
                 if not singles_only:
@@ -4356,6 +4375,33 @@ def popularity_scan(
                         """UPDATE tracks SET stars = ? WHERE id = ?""",
                         updates
                     )
+                    
+                    # NEW: Tag 5-star songs that are detected as singles (medium+ confidence)
+                    # This ensures that ANY 5-star track detected as a single is properly flagged
+                    five_star_singles_to_tag = []
+                    for stars, track_id in updates:
+                        if stars == 5:  # Only for 5-star tracks
+                            # Fetch the single_confidence for this track
+                            cursor.execute(
+                                "SELECT single_confidence, is_single FROM tracks WHERE id = ?",
+                                (track_id,)
+                            )
+                            single_row = cursor.fetchone()
+                            if single_row:
+                                single_confidence = single_row["single_confidence"] if single_row["single_confidence"] else "low"
+                                is_single = single_row["is_single"] if single_row["is_single"] else 0
+                                # Tag as single if medium+ confidence and not already tagged
+                                if single_confidence in ["medium", "high"] and not is_single:
+                                    five_star_singles_to_tag.append(track_id)
+                    
+                    # Tag all 5-star medium+ confidence singles
+                    if five_star_singles_to_tag:
+                        cursor.executemany(
+                            """UPDATE tracks SET is_single = 1 WHERE id = ?""",
+                            ((track_id,) for track_id in five_star_singles_to_tag)
+                        )
+                        log_info(f"Tagged {len(five_star_singles_to_tag)} 5-star track(s) as singles (medium+ confidence)")
+                        log_debug(f"5-star singles tagged: {five_star_singles_to_tag}")
                     
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
