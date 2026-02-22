@@ -12,6 +12,7 @@ import os
 import logging
 import logging.handlers
 from datetime import datetime
+import time
 
 # Configuration
 LOG_DIR = os.environ.get("LOG_PATH", "/config")
@@ -59,17 +60,50 @@ DEBUG_LOGGER = "debug"
 
 
 class ServicePrefixFormatter(logging.Formatter):
-    """Formatter that adds a service prefix to log messages."""
+    """Formatter that adds a service prefix to log messages and uses proper timezone handling."""
     
     def __init__(self, prefix, fmt=None):
         super().__init__(fmt or '%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
         self.prefix = prefix
+    
+    def formatTime(self, record, datefmt=None):
+        """
+        Override formatTime to use local system time with proper timezone handling.
+        Uses time.localtime to ensure the timestamp reflects the system's local timezone.
+        """
+        ct = time.localtime(record.created)
+        if datefmt:
+            s = time.strftime(datefmt, ct)
+        else:
+            t = time.strftime(self.default_time_format, ct)
+            s = self.default_msec_format % (t, record.msecs)
+        return s
     
     def format(self, record):
         # Only add prefix if message doesn't already have it
         if not record.msg.startswith(self.prefix):
             record.msg = f"{self.prefix}{record.msg}"
         return super().format(record)
+
+
+class UnifiedLogFormatter(logging.Formatter):
+    """Formatter for unified log with proper timezone handling."""
+    
+    def __init__(self):
+        super().__init__('%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    
+    def formatTime(self, record, datefmt=None):
+        """
+        Override formatTime to use local system time with proper timezone handling.
+        Uses time.localtime to ensure the timestamp reflects the system's local timezone.
+        """
+        ct = time.localtime(record.created)
+        if datefmt:
+            s = time.strftime(datefmt, ct)
+        else:
+            t = time.strftime(self.default_time_format, ct)
+            s = self.default_msec_format % (t, record.msecs)
+        return s
 
 
 class UnifiedLogFilter(logging.Filter):
@@ -103,7 +137,7 @@ def setup_logging(service_name="sptnr"):
     prefix = f"{service_name}_"
     
     # Create formatters with millisecond precision for better timing tracking
-    standard_formatter = logging.Formatter('%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s', datefmt='%Y-%m-%d %H:%M:%S')
+    unified_formatter = UnifiedLogFormatter()
     prefix_formatter = ServicePrefixFormatter(prefix, fmt='%(asctime)s.%(msecs)03d [%(levelname)s] %(message)s')
     
     # --- Unified Logger (basic operations only) ---
@@ -119,7 +153,7 @@ def setup_logging(service_name="sptnr"):
             backupCount=BACKUP_COUNT,
             encoding='utf-8'
         )
-        unified_handler.setFormatter(standard_formatter)
+        unified_handler.setFormatter(unified_formatter)
         unified_handler.addFilter(UnifiedLogFilter())
         unified_logger.addHandler(unified_handler)
     
