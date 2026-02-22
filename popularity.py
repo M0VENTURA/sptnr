@@ -3991,23 +3991,32 @@ def popularity_scan(
                     
                     # Queue single detection results for batch update
                     if is_single or single_sources:
+                        # Deduplicate single_sources to prevent duplicate entries in JSON
+                        # Preserves order while removing duplicates
+                        unique_sources = []
+                        seen = set()
+                        for source in single_sources:
+                            if source not in seen:
+                                unique_sources.append(source)
+                                seen.add(source)
+                        
                         # Automatically set stars to 5 for detected singles
                         stars_for_single = 5 if is_single else None
                         singles_updates.append((
                             1 if is_single else 0,
                             single_confidence,
-                            json.dumps(single_sources),
+                            json.dumps(unique_sources),  # Use deduplicated sources
                             stars_for_single,
                             track_id
                         ))
                         if is_single:
                             singles_detected += 1
-                            if single_sources:
-                                source_str = ", ".join(single_sources)
+                            if unique_sources:
+                                source_str = ", ".join(unique_sources)
                                 log_info(f"Single detected: {title} ({single_confidence} confidence, sources: {source_str})")
                             else:
                                 log_info(f"Single detected: {title} (user-set)")
-                            log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {single_sources}")
+                            log_debug(f"Single detection confirmed - track_id: {track_id}, confidence: {single_confidence}, sources: {unique_sources}")
                     
                     # Track progress in singles detection
                     singles_processed += 1
@@ -4354,20 +4363,24 @@ def popularity_scan(
                                     stars = 5
                                     log_info(f"5-star assignment: {title} (high-confidence single)")
                                     log_debug(f"High confidence single detected - track_id: {track_id}")
-                                # Medium confidence with 2+ sources gets 5 stars
+                                # Medium confidence with 2+ sources gets 4 stars (not 5)
                                 elif single_confidence == "medium":
                                     # Count the number of medium-confidence sources
                                     # Each unique source in single_sources represents a medium-confidence method
                                     medium_conf_count = len(single_sources) if single_sources else 0
                                     if medium_conf_count >= 2:
-                                        stars = 5
+                                        stars = 4  # Max 4 stars for medium confidence
                                         # Upgrade is_single flag for medium confidence tracks with 2+ sources
                                         if not is_single:
                                             single_upgrades.append(track_id)
-                                            log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                            log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
                                         else:
-                                            log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
+                                            log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                         log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
+                                    else:
+                                        # Single medium-confidence source only gets 3 stars
+                                        stars = 3
+                                        log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
                                 # Standout tracks (high Last.fm scrobbles) get 5 stars
                                 elif is_standout_track:
                                     stars = 5
