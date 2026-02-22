@@ -12,7 +12,7 @@ load_dotenv()
 sptnr = Flask(__name__)
 
 # Load API key from config.yaml instead of environment variables
-from config_loader import load_config
+from helpers.config_loader import load_config
 
 _config = load_config()
 WEB_API_KEY = _config.get("web_api_key", "")

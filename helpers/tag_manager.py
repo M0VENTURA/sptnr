@@ -30,7 +30,7 @@ try:
 except ImportError:
     _FLAC_AVAILABLE = False
 
-from db_utils import get_db_connection
+from .db_utils import get_db_connection
 
 
 logger = logging.getLogger(__name__)

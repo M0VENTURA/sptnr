@@ -10,7 +10,7 @@ import difflib
 import os
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for single detector service
 setup_logging("single_detector")

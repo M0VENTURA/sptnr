@@ -14,7 +14,7 @@ Free API Key: 195003
 import requests
 import logging
 from typing import Optional, Dict, Any
-from helpers import create_retry_session
+from helpers.helpers import create_retry_session
 
 logger = logging.getLogger(__name__)
 

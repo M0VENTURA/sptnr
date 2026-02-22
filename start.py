@@ -32,7 +32,7 @@ import re
 import difflib
 from statistics import median
 from collections import defaultdict
-from helpers import strip_parentheses
+from helpers.helpers import strip_parentheses
 from popularity import create_or_update_playlist_for_artist, refresh_all_playlists_from_db
 # Dummy/placeholder clients for external APIs (replace with actual imports as needed)
 musicbrainz_client = None

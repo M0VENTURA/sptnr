@@ -19,7 +19,7 @@ from typing import List, Tuple, Optional, Dict
 from pathlib import Path
 
 # Import centralized logging
-from logging_config import log_debug, log_info
+from .logging_config import log_debug, log_info
 
 logger = logging.getLogger(__name__)
 

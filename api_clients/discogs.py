@@ -6,13 +6,13 @@ import json
 import re
 from typing import Optional, Dict, List, Tuple
 from . import session
-from helpers import clean_discogs_biography
+from helpers.helpers import clean_discogs_biography
 from discogs_singles_cache import normalize_track_title, get_discogs_cache
 
 # Import centralized logging for visible operational messages
 # Use try-except to handle cases where logging_config is not available (e.g., in tests)
 try:
-    from logging_config import log_unified, log_info, log_debug
+    from helpers.logging_config import log_unified, log_info, log_debug
     _HAVE_CENTRALIZED_LOGGING = True
 except (ImportError, PermissionError):
     # Fallback to standard logger if centralized logging not available

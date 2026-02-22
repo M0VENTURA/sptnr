@@ -13,7 +13,7 @@ import yaml
 from pathlib import Path
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for beets service
 setup_logging("beets")

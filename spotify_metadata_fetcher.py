@@ -16,7 +16,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from typing import Dict, List, Optional, Any
 from api_clients.spotify import SpotifyClient
-from genre_detector import detect_special_tags, normalize_genres
+from helpers.genre_detector import detect_special_tags, normalize_genres
 
 logger = logging.getLogger(__name__)
 

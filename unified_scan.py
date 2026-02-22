@@ -13,7 +13,7 @@ from datetime import datetime
 from typing import Dict, Optional, Callable
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for unified_scan service
 setup_logging("unified_scan")

@@ -10,13 +10,13 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 from . import session
 
-# Import SSLAdapter from helpers to avoid duplication
+# Import SSLAdapter from helpers
 import sys
 # Add parent directory to path to import helpers
 parent_dir = os.path.dirname(os.path.dirname(__file__))
 if parent_dir not in sys.path:
     sys.path.insert(0, parent_dir)
-from helpers import SSLAdapter
+from helpers.helpers import SSLAdapter
 
 logger = logging.getLogger(__name__)
 

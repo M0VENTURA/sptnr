@@ -25,7 +25,7 @@ import yaml
 
 _scan_history_available = True
 try:
-    from scan_history import log_album_scan as _log_album_scan_impl
+    from helpers.scan_history import log_album_scan as _log_album_scan_impl
 except ImportError as e:
     # Fallback if scan_history module not available
     _scan_history_available = False
@@ -53,7 +53,7 @@ def log_album_scan(*args, **kwargs):
 BEETS_LOG_PATH = os.environ.get("BEETS_LOG_PATH", "/config/beets_import.log")
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for beets service
 setup_logging("beets")

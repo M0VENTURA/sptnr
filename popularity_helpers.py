@@ -541,7 +541,7 @@ def apply_album_deviation_adjustment(
 
 
 # --- Shared DB/API/Helper Functions (moved from start.py) ---
-from db_utils import get_db_connection
+from helpers.db_utils import get_db_connection
 
 # Cache for NavidromeClient instance
 _nav_client_cache = None

@@ -12,7 +12,7 @@ import logging
 import time
 from datetime import datetime, timedelta
 from pathlib import Path
-from metadata_reader import read_mp3_metadata
+from helpers.metadata_reader import read_mp3_metadata
 
 logging.basicConfig(
     level=logging.INFO,

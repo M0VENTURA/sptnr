@@ -8,7 +8,7 @@ import os
 import sqlite3
 import json
 from pathlib import Path
-from metadata_reader import read_mp3_metadata, find_track_file
+from helpers.metadata_reader import read_mp3_metadata, find_track_file
 
 
 def parse_artists_field(artists_raw):

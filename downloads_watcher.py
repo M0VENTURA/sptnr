@@ -12,7 +12,7 @@ import json
 import time
 from datetime import datetime
 from pathlib import Path
-from metadata_reader import read_mp3_metadata
+from helpers.metadata_reader import read_mp3_metadata
 import logging
 
 logging.basicConfig(

@@ -23,11 +23,11 @@ from statistics import median, mean, stdev
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
-from helpers import find_matching_spotify_single
-from matching_utils import normalize_album
+from helpers.helpers import find_matching_spotify_single
+from helpers.matching_utils import normalize_album
 
 # Import centralized logging
-from logging_config import setup_logging, log_unified, log_info, log_debug
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for popularity service
 setup_logging("popularity")

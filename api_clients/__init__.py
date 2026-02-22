@@ -4,7 +4,7 @@ All API client modules use this shared session.
 """
 
 import logging
-from helpers import create_retry_session
+from helpers.helpers import create_retry_session
 
 # ✅ Shared HTTP session with connection pooling & retry strategy
 # Increased backoff from 0.3 to 1.0 to better handle SSL connection resets

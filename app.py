@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
+from helpers.db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -197,9 +197,9 @@ import logging
 import re
 from api_clients.slskd import SlskdClient
 from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
-from metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
+from helpers.metadata_reader import get_track_metadata_from_db, find_track_file, read_mp3_metadata
 import io
-from helpers import create_retry_session, clean_discogs_biography
+from helpers.helpers import create_retry_session, clean_discogs_biography
 import difflib
 import unicodedata
 from playlist_matcher import match_track as enhanced_match_track
@@ -223,7 +223,7 @@ from compilation_manager import (
 )
 
 # Import centralized logging configuration
-from logging_config import (
+from helpers.logging_config import (
     setup_logging, 
     log_unified, 
     log_info, 
