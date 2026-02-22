@@ -8,7 +8,7 @@ Also supports writing tags back to MP3 files for persistence.
 import os
 import sqlite3
 from pathlib import Path
-from metadata_reader import (
+from helpers.metadata_reader import (
     read_musicbrainz_tags_from_mp3, 
     write_musicbrainz_tags_to_mp3,
     find_track_file

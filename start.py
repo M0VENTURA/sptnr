@@ -54,7 +54,7 @@ from popularity_helpers import (
     get_album_track_count_in_db,
 )
 # Import DB connection helper
-from db_utils import get_db_connection
+from helpers.db_utils import get_db_connection
 
 # --- Navidrome user config ---
 import yaml
@@ -85,7 +85,7 @@ def log_unified(msg: str) -> None:
 # --- argparse import ---
 import argparse
 # Import DB connection helper
-from db_utils import get_db_connection
+from helpers.db_utils import get_db_connection
 
 
 def get_current_track_rating(track_id: str) -> int:
@@ -776,7 +776,7 @@ def run_full_scan_pipeline(verbose=False, force=False):
         verbose: Enable verbose output
         force: Force re-scan of all data
     """
-    from navidrome_import import scan_library_to_db
+    from deprecated.navidrome_import import scan_library_to_db
     from popularity import popularity_scan
     from beets_auto_import import BeetsAutoImporter
     
