@@ -29,6 +29,9 @@ logger = logging.getLogger(__name__)
 # Rate limiting for Discogs
 _DISCOGS_LAST_REQUEST_TIME = 0
 _DISCOGS_MIN_INTERVAL = 0.35
+_DISCOGS_CIRCUIT_BREAKER_OPEN = False  # Circuit breaker for when Discogs is down
+_DISCOGS_CIRCUIT_BREAKER_RESET_TIME = 0  # When to reset the circuit breaker
+_DISCOGS_CONSECUTIVE_ERRORS = 0  # Track consecutive errors to trigger circuit breaker
 
 
 def _throttle_discogs():
@@ -38,6 +41,38 @@ def _throttle_discogs():
     if elapsed < _DISCOGS_MIN_INTERVAL:
         time.sleep(_DISCOGS_MIN_INTERVAL - elapsed)
     _DISCOGS_LAST_REQUEST_TIME = time.time()
+
+
+def _check_circuit_breaker():
+    """Check if Discogs circuit breaker is open (temporarily disabled due to errors)."""
+    global _DISCOGS_CIRCUIT_BREAKER_OPEN, _DISCOGS_CIRCUIT_BREAKER_RESET_TIME
+    if _DISCOGS_CIRCUIT_BREAKER_OPEN and time.time() < _DISCOGS_CIRCUIT_BREAKER_RESET_TIME:
+        return False  # Circuit is still open
+    elif _DISCOGS_CIRCUIT_BREAKER_OPEN and time.time() >= _DISCOGS_CIRCUIT_BREAKER_RESET_TIME:
+        # Reset the circuit breaker
+        _DISCOGS_CIRCUIT_BREAKER_OPEN = False
+        logger.warning("Discogs circuit breaker reset - retrying")
+    return True  # Circuit is closed, allow requests
+
+
+def _record_discogs_error(error_type: str):
+    """Record a Discogs error and potentially open circuit breaker."""
+    global _DISCOGS_CIRCUIT_BREAKER_OPEN, _DISCOGS_CIRCUIT_BREAKER_RESET_TIME, _DISCOGS_CONSECUTIVE_ERRORS
+    
+    # Count consecutive errors
+    _DISCOGS_CONSECUTIVE_ERRORS += 1
+    
+    # Open circuit breaker after 5 consecutive server errors (502/503)
+    if _DISCOGS_CONSECUTIVE_ERRORS >= 5 and error_type in ["502", "503"]:
+        _DISCOGS_CIRCUIT_BREAKER_OPEN = True
+        _DISCOGS_CIRCUIT_BREAKER_RESET_TIME = time.time() + 300  # Close in 5 minutes
+        logger.error(f"Discogs circuit breaker OPEN (too many {error_type} errors). Will retry in 5 minutes.")
+
+
+def _clear_discogs_errors():
+    """Clear error counter on successful request."""
+    global _DISCOGS_CONSECUTIVE_ERRORS
+    _DISCOGS_CONSECUTIVE_ERRORS = 0
 
 
 def _retry_on_500(func, max_retries: int = 3, retry_delay: float = 2.0):
@@ -721,6 +756,9 @@ class DiscogsClient:
         """
         Search Discogs database with specific format filter.
         
+        Implements circuit breaker pattern: if Discogs is returning too many 502/503 errors,
+        temporarily disable queries to avoid cascading failures and rate limiting.
+        
         Args:
             artist: Artist name
             title: Track title
@@ -730,6 +768,11 @@ class DiscogsClient:
         Returns:
             List of matching search results
         """
+        # Check circuit breaker first
+        if not _check_circuit_breaker():
+            log_debug(f"[DISCOGS_SINGLE] Circuit breaker OPEN - skipping {format_type} search")
+            return []
+        
         try:
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
@@ -745,22 +788,59 @@ class DiscogsClient:
             }
             
             log_debug(f"[DISCOGS_SINGLE] API request: {format_type} search with artist + track")
-            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
             
-            if res.status_code == 429:
-                # Rate limited - wait and retry
-                retry_after = int(res.headers.get("Retry-After", 60))
-                log_debug(f"[DISCOGS_SINGLE] Rate limited, waiting {retry_after}s")
-                time.sleep(retry_after)
-                _throttle_discogs()
-                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+            # Retry on server errors (502/503) with exponential backoff
+            max_retries = 2
+            retry_delay = 1.0
             
-            res.raise_for_status()
-            data = res.json()
-            results = data.get("results", [])
-            
-            log_debug(f"[DISCOGS_SINGLE] API returned {len(results)} {format_type} results")
-            return results
+            for attempt in range(max_retries + 1):
+                try:
+                    res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    
+                    # Handle rate limiting (429) - this is temporary, not a server error
+                    if res.status_code == 429:
+                        retry_after = int(res.headers.get("Retry-After", 60))
+                        log_debug(f"[DISCOGS_SINGLE] Rate limited, waiting {retry_after}s")
+                        logger.warning(f"Discogs rate limited - waiting {retry_after}s")
+                        time.sleep(retry_after)
+                        _throttle_discogs()
+                        res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    
+                    # Handle server errors (502/503) - temporary issue, retry with backoff
+                    if res.status_code in [502, 503]:
+                        _record_discogs_error(str(res.status_code))
+                        if attempt < max_retries:
+                            log_debug(f"[DISCOGS_SINGLE] Server error {res.status_code}, retrying in {retry_delay}s...")
+                            logger.warning(f"Discogs returned {res.status_code}, retrying in {retry_delay}s...")
+                            time.sleep(retry_delay)
+                            retry_delay *= 2  # Exponential backoff: 1s, 2s, 4s
+                            continue  # Retry
+                        else:
+                            log_debug(f"[DISCOGS_SINGLE] Server error {res.status_code}, max retries exceeded")
+                            return []  # Give up after max retries
+                    
+                    # Success - clear error counter
+                    _clear_discogs_errors()
+                    
+                    res.raise_for_status()
+                    data = res.json()
+                    results = data.get("results", [])
+                    
+                    log_debug(f"[DISCOGS_SINGLE] API returned {len(results)} {format_type} results")
+                    return results
+                    
+                except (TimeoutError, ConnectionError) as e:
+                    # Network error - could be transient
+                    if attempt < max_retries:
+                        log_debug(f"[DISCOGS_SINGLE] Network error: {e}, retrying in {retry_delay}s...")
+                        time.sleep(retry_delay)
+                        retry_delay *= 2
+                        continue
+                    else:
+                        log_debug(f"[DISCOGS_SINGLE] Network error after {max_retries + 1} attempts: {e}")
+                        return []
+                        
+            return []
             
         except Exception as e:
             log_debug(f"[DISCOGS_SINGLE] Search error for {format_type}: {e}")
@@ -820,22 +900,50 @@ class DiscogsClient:
         if not self.enabled or not self.token:
             return False
         
+        # Check circuit breaker first
+        if not _check_circuit_breaker():
+            logger.debug("Discogs video check skipped (circuit breaker open)")
+            return False
+        
         try:
-            # Search for videos with retry on rate limit
+            # Search for videos with retry on rate limit and server errors
             _throttle_discogs()
             search_url = f"{self.base_url}/database/search"
             params = {"q": f"{artist} {title}", "type": "master", "per_page": 10}
             
-            res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            if res.status_code == 429:
-                retry_after = int(res.headers.get("Retry-After", 60))
-                time.sleep(retry_after)
-                # Retry the request after sleeping
-                _throttle_discogs()
-                res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
-            res.raise_for_status()
+            max_retries = 1  # Single retry for video checks
+            retry_delay = 1.0
             
-            results = res.json().get("results", [])
+            for attempt in range(max_retries + 1):
+                try:
+                    res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    
+                    if res.status_code == 429:
+                        retry_after = int(res.headers.get("Retry-After", 60))
+                        logger.warning(f"Discogs rate limited in video check, waiting {retry_after}s")
+                        time.sleep(retry_after)
+                        _throttle_discogs()
+                        res = self.session.get(search_url, headers=self.headers, params=params, timeout=timeout)
+                    
+                    if res.status_code in [502, 503]:
+                        _record_discogs_error(str(res.status_code))
+                        if attempt < max_retries:
+                            time.sleep(retry_delay)
+                            continue
+                        else:
+                            return False
+                    
+                    _clear_discogs_errors()
+                    res.raise_for_status()
+                    results = res.json().get("results", [])
+                    break
+                except (TimeoutError, ConnectionError):
+                    if attempt < max_retries:
+                        time.sleep(retry_delay)
+                        continue
+                    else:
+                        return False
+            
             if not results:
                 return False
             
@@ -856,6 +964,12 @@ class DiscogsClient:
                     # Retry the request after sleeping
                     _throttle_discogs()
                     master_res = self.session.get(master_url, headers=self.headers, timeout=timeout)
+                
+                # Skip on server errors
+                if master_res.status_code in [502, 503]:
+                    _record_discogs_error(str(master_res.status_code))
+                    continue
+                    
                 master_res.raise_for_status()
                 master_data = master_res.json()
                 
