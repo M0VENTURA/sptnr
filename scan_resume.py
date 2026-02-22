@@ -21,7 +21,7 @@ from pathlib import Path
 
 # Import centralized logging with fallback
 try:
-    from logging_config import log_debug, log_info, log_unified
+    from helpers.logging_config import log_debug, log_info, log_unified
 except ImportError:
     # Fallback if logging_config not available
     def log_debug(msg, **kwargs):

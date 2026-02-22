@@ -214,9 +214,9 @@ def sync_navidrome_to_db():
     try:
         # Get list of all artists from Navidrome before import
         sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-        from navidrome_import import scan_artist_to_db
+        from helpers.scan_helpers import scan_artist_to_db
         from popularity import popularity_scan
-        from db_utils import get_db_connection
+        from helpers.db_utils import get_db_connection
         
         # Get all artists from database
         conn = get_db_connection()
