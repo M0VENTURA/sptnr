@@ -210,4 +210,332 @@
 
 <!-- Include existing JavaScript -->
 <script src="{{url_for('static', filename='js/downloads.js')}}"></script>
+
+<script>
+// Queue management functions for downloads monitor
+async function addToQueue(event) {
+  event.preventDefault();
+  
+  const artist = document.getElementById('queueArtist').value.trim();
+  const title = document.getElementById('queueTitle').value.trim();
+  const album = document.getElementById('queueAlbum').value.trim();
+  const source = document.getElementById('queueSource').value;
+  const priority = parseInt(document.getElementById('queuePriority').value);
+  
+  if (!artist || !title) {
+    alert('Please enter artist and song title');
+    return;
+  }
+  
+  try {
+    const response = await fetch('/api/queue/add', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ artist, title, album, source, priority })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert(`✅ Added to queue: ${artist} - ${title}`);
+      document.getElementById('addToQueueForm').reset();
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to add to queue'));
+    }
+  } catch (error) {
+    console.error('Error adding to queue:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function loadQueueStatus() {
+  try {
+    const response = await fetch('/api/downloads/queue?limit=100');
+    const data = await response.json();
+    
+    if (!data || !data.queue) {
+      console.error('Queue status error:', data?.error || 'Invalid response');
+      document.getElementById('queueActiveCount').textContent = '0';
+      document.getElementById('queueCompletedCount').textContent = '0';
+      document.getElementById('queueFailedCount').textContent = '0';
+      return;
+    }
+    
+    const queue = data.queue;
+    
+    // Categorize items
+    const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
+    const completed = queue.filter(item => item.status === 'completed');
+    const failed = queue.filter(item => item.status === 'failed');
+    
+    // Update counts
+    document.getElementById('queueActiveCount').textContent = active.length;
+    document.getElementById('queueCompletedCount').textContent = completed.length;
+    document.getElementById('queueFailedCount').textContent = failed.length;
+    
+    // Render queues
+    renderActiveQueue(active);
+    renderCompletedQueue(completed);
+    renderFailedQueue(failed);
+    
+  } catch (error) {
+    console.error('Error loading queue status:', error);
+  }
+}
+
+function renderActiveQueue(active) {
+  const container = document.getElementById('activeQueueList');
+  const empty = document.getElementById('activeQueueEmpty');
+  const badge = document.getElementById('activeBadge');
+  
+  if (active.length === 0) {
+    container.style.display = 'none';
+    empty.style.display = 'block';
+    badge.style.display = 'none';
+    return;
+  }
+  
+  container.style.display = 'block';
+  empty.style.display = 'none';
+  badge.textContent = active.length;
+  badge.style.display = 'inline-block';
+  
+  let html = '<div class="list-group list-group-flush">';
+  for (const item of active) {
+    const statusLabel = {
+      'queued': '⏳ Queued',
+      'searching': '🔍 Searching',
+      'downloading': '📥 Downloading'
+    }[item.status] || item.status;
+    
+    html += `
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <h6 class="mb-1">${escapeHtml(item.title)}</h6>
+            <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+          </div>
+          <div class="d-flex gap-2 align-items-center">
+            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : 'bg-primary'}">${statusLabel}</span>
+            <span class="badge bg-secondary">${item.source}</span>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
+              <i class="bi bi-x"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderCompletedQueue(completed) {
+  const container = document.getElementById('completedQueueList');
+  const empty = document.getElementById('completedQueueEmpty');
+  const badge = document.getElementById('completedBadge');
+  const selectBtn = document.getElementById('selectAllBtn');
+  const actions = document.getElementById('completedQueueActions');
+  
+  if (completed.length === 0) {
+    container.style.display = 'none';
+    empty.style.display = 'block';
+    badge.style.display = 'none';
+    selectBtn.style.display = 'none';
+    actions.style.display = 'none';
+    return;
+  }
+  
+  container.style.display = 'block';
+  empty.style.display = 'none';
+  badge.textContent = completed.length;
+  badge.style.display = 'inline-block';
+  selectBtn.style.display = 'inline-block';
+  actions.style.display = 'flex';
+  
+  let html = '<div class="list-group list-group-flush">';
+  for (const item of completed) {
+    html += `
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="d-flex gap-2 flex-grow-1">
+            <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
+            <div class="flex-grow-1">
+              <h6 class="mb-1">${escapeHtml(item.title)}</h6>
+              <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+              <small class="text-muted">File: ${escapeHtml(item.file_path || 'unknown')}</small>
+            </div>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
+              <i class="bi bi-folder-check"></i> Organize
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+function renderFailedQueue(failed) {
+  const container = document.getElementById('failedQueueList');
+  const empty = document.getElementById('failedQueueEmpty');
+  const badge = document.getElementById('failedBadge');
+  
+  if (failed.length === 0) {
+    container.style.display = 'none';
+    empty.style.display = 'block';
+    badge.style.display = 'none';
+    return;
+  }
+  
+  container.style.display = 'block';
+  empty.style.display = 'none';
+  badge.textContent = failed.length;
+  badge.style.display = 'inline-block';
+  
+  let html = '<div class="list-group list-group-flush">';
+  for (const item of failed) {
+    html += `
+      <div class="list-group-item">
+        <div class="d-flex justify-content-between align-items-start">
+          <div class="flex-grow-1">
+            <h6 class="mb-1">${escapeHtml(item.title)}</h6>
+            <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+            <small class="text-danger">❌ ${escapeHtml(item.failure_reason || 'Unknown error')}</small>
+            <br>
+            <small class="text-muted">Attempts: ${item.retry_count || 0}/${item.max_retries || 3}</small>
+          </div>
+          <div class="d-flex gap-2">
+            <button class="btn btn-sm btn-outline-warning" onclick="retryQueueItem(${item.id})" title="Retry now">
+              <i class="bi bi-arrow-counterclockwise"></i> Retry
+            </button>
+            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
+              <i class="bi bi-trash"></i>
+            </button>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  html += '</div>';
+  container.innerHTML = html;
+}
+
+async function organizeFile(queueId) {
+  if (!confirm('Move file to /music using beets?')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/queue/${queueId}/organize`, {
+      method: 'POST'
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert('✅ File organized successfully!');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to organize'));
+    }
+  } catch (error) {
+    console.error('Error organizing file:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function retryQueueItem(queueId) {
+  try {
+    const response = await fetch(`/api/queue/${queueId}/update`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: 'queued' })
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert('✅ Retrying download...');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to retry'));
+    }
+  } catch (error) {
+    console.error('Error retrying item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+async function deleteQueueItem(queueId) {
+  if (!confirm('Remove from queue?')) {
+    return;
+  }
+  
+  try {
+    const response = await fetch(`/api/queue/${queueId}/delete`, {
+      method: 'DELETE'
+    });
+    
+    const data = await response.json();
+    
+    if (data.success) {
+      alert('✅ Removed from queue');
+      await loadQueueStatus();
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to delete'));
+    }
+  } catch (error) {
+    console.error('Error deleting item:', error);
+    alert('❌ Network error: ' + error.message);
+  }
+}
+
+function toggleSelectAll() {
+  const checkboxes = document.querySelectorAll('.queue-item-checkbox');
+  const selectBtn = document.getElementById('selectAllBtn');
+  const allChecked = Array.from(checkboxes).every(cb => cb.checked);
+  checkboxes.forEach(cb => cb.checked = !allChecked);
+  updateSelectedCount();
+}
+
+function updateSelectedCount() {
+  const checked = document.querySelectorAll('.queue-item-checkbox:checked').length;
+  const total = document.querySelectorAll('.queue-item-checkbox').length;
+  document.getElementById('selectedCount').textContent = `${checked} selected`;
+  
+  const groupBtn = document.getElementById('groupBtn');
+  const batchGroupBtn = document.getElementById('batchGroupBtn');
+  if (groupBtn) groupBtn.disabled = checked === 0;
+  if (batchGroupBtn) batchGroupBtn.disabled = checked === 0;
+}
+
+function groupSelectedItems() {
+  alert('Group functionality coming soon');
+}
+
+function openBatchGroupModal() {
+  alert('Batch group modal coming soon');
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = String(text || '');
+  return div.innerHTML;
+}
+
+// Load queue status on page load
+document.addEventListener('DOMContentLoaded', function() {
+  setTimeout(loadQueueStatus, 500);
+  // Refresh every 5 seconds
+  setInterval(loadQueueStatus, 5000);
+});
+</script>
 {% endblock %}
