@@ -1530,6 +1530,10 @@ def detect_single_for_track(
                 log_debug(f"Write error: {traceback.format_exc()}")
             
             # Return in expected format
+            # CRITICAL: Deduplicate sources to prevent same source appearing twice
+            # (e.g., lastfm_track_title appearing twice due to multiple code paths)
+            result['single_sources'] = list(dict.fromkeys(result['single_sources']))
+            
             return {
                 "sources": result['single_sources'],
                 "confidence": result['single_confidence'],
@@ -1837,8 +1841,11 @@ def detect_single_for_track(
     # is_single = True only for high confidence singles (5* singles)
     is_single = single_confidence == "high"
     
+    # Deduplicate sources to ensure no duplicates slip through
+    single_sources_dedup = list(dict.fromkeys(single_sources))
+    
     return {
-        "sources": single_sources,
+        "sources": single_sources_dedup,
         "confidence": single_confidence,
         "is_single": is_single
     }
