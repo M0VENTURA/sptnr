@@ -40,7 +40,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from datetime import datetime
 import copy
 from functools import wraps
-from navidrome_import import scan_artist_to_db, _fetch_artist_metadata
+from deprecated.navidrome_import import scan_artist_to_db, _fetch_artist_metadata
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -176,7 +176,7 @@ def log_genre_update(artist_name=None, album_name=None, track_id=None, genres_be
     except Exception as e:
         print(f"[ERROR] Failed to log genre update: {e}")
 
-from check_db import update_schema
+from deprecated.check_db import update_schema
 from popularity_helpers import save_to_db
 
 import sys
@@ -205,7 +205,7 @@ import unicodedata
 from playlist_matcher import match_track as enhanced_match_track
 import requests
 import hashlib
-from musicbrainz_import import (
+from deprecated.musicbrainz_import import (
     get_musicbrainz_tags_for_track,
     get_musicbrainz_tags_for_album,
     import_musicbrainz_tags_for_track,
@@ -3630,7 +3630,7 @@ def api_album_bulk_tag():
 def api_get_track_tags(track_id):
     """Get all editable metadata tags for a track"""
     try:
-        from tag_manager import get_track_tags
+        from helpers.tag_manager import get_track_tags
         
         tags = get_track_tags(track_id)
         if not tags:
@@ -3650,7 +3650,7 @@ def api_get_track_tags(track_id):
 def api_update_track_tags(track_id):
     """Update metadata tags for a single track"""
     try:
-        from tag_manager import update_track_tags, sync_track_tags_to_file
+        from helpers.tag_manager import update_track_tags, sync_track_tags_to_file
         
         data = request.get_json()
         if not data:
@@ -3704,7 +3704,7 @@ def api_get_album_tags(album, artist):
     """Get album-level metadata tags"""
     try:
         from urllib.parse import unquote
-        from tag_manager import get_album_tags, check_field_conflicts
+        from helpers.tag_manager import get_album_tags, check_field_conflicts
         
         album = unquote(album)
         artist = unquote(artist)
@@ -3733,7 +3733,7 @@ def api_update_album_tags(album, artist):
     """Update metadata tags for all tracks in an album"""
     try:
         from urllib.parse import unquote
-        from tag_manager import update_album_tags, sync_track_tags_to_file
+        from helpers.tag_manager import update_album_tags, sync_track_tags_to_file
         
         album = unquote(album)
         artist = unquote(artist)
@@ -3791,7 +3791,7 @@ def api_check_tag_conflicts(album, artist):
     """Check for conflicting metadata values in an album"""
     try:
         from urllib.parse import unquote
-        from tag_manager import check_field_conflicts
+        from helpers.tag_manager import check_field_conflicts
         
         album = unquote(album)
         artist = unquote(artist)
@@ -3814,7 +3814,7 @@ def api_check_tag_conflicts(album, artist):
 def api_sync_track_to_file(track_id):
     """Sync database tags back to the audio file"""
     try:
-        from tag_manager import sync_track_tags_to_file
+        from helpers.tag_manager import sync_track_tags_to_file
         
         success = sync_track_tags_to_file(track_id)
         
@@ -10237,7 +10237,7 @@ def api_album_art(artist, album):
         # 7. Try to extract from MP3 file
         try:
             log_debug(f"Attempting to extract album art from MP3 files for: {artist} - {album}")
-            from metadata_reader import extract_album_art_from_mp3
+            from helpers.metadata_reader import extract_album_art_from_mp3
             
             # Get a track file path from this album (try multiple strategies)
             conn = get_db()
@@ -15027,7 +15027,7 @@ def api_pre_sync_navidrome_artists():
       - artist_id: Optional single artist ID to sync (instead of all artists)
     """
     try:
-        from navidrome_import import pre_import_sync_album_artists
+        from deprecated.navidrome_import import pre_import_sync_album_artists
         
         artist_id = request.args.get('artist_id')
         
@@ -15740,7 +15740,7 @@ def api_cleanup_duplicates():
         dry_run = data.get("dry_run", True)
         
         # Import the cleanup function
-        from fix_duplicate_albums import fix_duplicates
+        from deprecated.fix_duplicate_albums import fix_duplicates
         
         # Run the cleanup
         stats = fix_duplicates(dry_run=dry_run)

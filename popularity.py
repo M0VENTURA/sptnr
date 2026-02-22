@@ -135,7 +135,7 @@ UNDERPERFORMING_THRESHOLD = 0.7
 def get_zscore_thresholds():
     """Load z-score thresholds from config, or use defaults"""
     try:
-        from config_loader import get_zscore_thresholds
+        from helpers.config_loader import get_zscore_thresholds
         thresholds = get_zscore_thresholds()
         return {
             'medium': thresholds.get('medium', 0.6),
@@ -1065,7 +1065,7 @@ from popularity_helpers import (
     LISTENBRAINZ_WEIGHT,
     AGE_WEIGHT,
 )
-from api_rate_limiter import get_rate_limiter
+from helpers.api_rate_limiter import get_rate_limiter
 
 # Import scan history tracker
 try:
@@ -1473,7 +1473,7 @@ def detect_single_for_track(
     if use_advanced_detection and track_id and album:
         conn = None
         try:
-            from single_detection_enhanced import detect_single_enhanced, store_single_detection_result
+            from deprecated.single_detection_enhanced import detect_single_enhanced, store_single_detection_result
             # get_db_connection is already available in this module
             conn = get_db_connection()
             
@@ -1900,7 +1900,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         top_10_percentile_threshold = 0
         try:
             import requests
-            from config_loader import load_config
+            from helpers.config_loader import load_config
             
             config = load_config()
             lastfm_api_key = config.get("api_integrations", {}).get("lastfm", {}).get("api_key") if config else None
