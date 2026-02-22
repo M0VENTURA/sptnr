@@ -3368,6 +3368,9 @@ def popularity_scan(
                             if should_use_cached_score(track, 'lastfm_track_playcount', 'last_spotify_lookup'):
                                 cached_listeners = row_get(track, 'lastfm_track_playcount', 0)
                                 if cached_listeners > 0:
+                                    # Log raw cached Last.fm listener count before calculation
+                                    log_debug(f'Last.fm raw cached data for "{title}": listeners={cached_listeners}')
+                                    
                                     # Use z-score calculation for cached data too
                                     album_listeners_list = [data["listeners"] for data in album_lastfm_data.values() if data["listeners"] > 0]
                                     album_playcounts_list = [data["playcount"] for data in album_lastfm_data.values() if data["playcount"] > 0]
@@ -3420,6 +3423,9 @@ def popularity_scan(
                                     if lastfm_info and lastfm_info.get("listeners"):
                                         listeners = lastfm_info.get("listeners")
                                         playcount = lastfm_info.get("track_play", 0)
+                                        
+                                        # Log raw Last.fm listener count before calculation
+                                        log_debug(f'Last.fm raw data for "{title}": listeners={listeners}, playcount={playcount}')
                                         
                                         # Store in album_lastfm_data for z-score calculation
                                         album_lastfm_data[track_id] = {
