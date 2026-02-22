@@ -16,6 +16,7 @@ import time
 import heapq
 import re
 import difflib
+import requests
 from contextlib import contextmanager
 from datetime import datetime, timedelta
 from statistics import median, mean, stdev
@@ -33,20 +34,22 @@ setup_logging("popularity")
 
 # Import API clients for single detection at module level
 try:
-    from api_clients.musicbrainz import MusicBrainzClient, get_artist_country
+    from api_clients.musicbrainz import MusicBrainzClient, get_artist_country  # type: ignore
     HAVE_MUSICBRAINZ = True
 except ImportError as e:
     log_debug(f"MusicBrainz client unavailable: {e}")
     HAVE_MUSICBRAINZ = False
+    MusicBrainzClient = None  # type: ignore
     
 try:
-    from api_clients.discogs import DiscogsClient
+    from api_clients.discogs import DiscogsClient  # type: ignore
     HAVE_DISCOGS = True
     HAVE_DISCOGS_VIDEO = True
 except ImportError as e:
     log_debug(f"Discogs client unavailable: {e}")
     HAVE_DISCOGS = False
     HAVE_DISCOGS_VIDEO = False
+    DiscogsClient = None  # type: ignore
 
 try:
     from api_clients.audiodb import get_artist_biography, get_artist_fanart
@@ -1066,11 +1069,11 @@ from api_rate_limiter import get_rate_limiter
 
 # Import scan history tracker
 try:
-    from scan_history import log_album_scan, was_album_scanned
+    from scan_history import log_album_scan, was_album_scanned  # type: ignore
 except ImportError:
-    def log_album_scan(*args, **kwargs):
+    def log_album_scan(*args, **kwargs):  # type: ignore
         pass  # Fallback if scan_history not available
-    def was_album_scanned(*args, **kwargs):
+    def was_album_scanned(*args, **kwargs):  # type: ignore
         return False  # Fallback if scan_history not available
 
 
@@ -1131,7 +1134,6 @@ def calculate_artist_stats(conn, artist: str) -> tuple:
 # --- DEBUG: Test log_unified and print log path ---
 if __name__ == "__main__":
     try:
-        print("UNIFIED_LOG_PATH:", UNIFIED_LOG_PATH)
         log_unified("TEST ENTRY: log_unified() at script start")
     except Exception as e:
         print("log_unified() test failed:", e)
@@ -1392,10 +1394,11 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
             conn.commit()
             conn.close()
         
+        
         log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} ({len(image_data)} bytes)")
         return True
         
-    except requests.exceptions.Timeout:
+    except requests.exceptions.Timeout:  # type: ignore
         log_debug(f"[ALBUM_ART] Timeout downloading image from {art_url} for {artist} - {album}")
         return False
     except Exception as e:
