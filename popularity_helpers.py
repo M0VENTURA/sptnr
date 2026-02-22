@@ -416,6 +416,130 @@ def apply_mean_popularity_adjustment(
             conn.close()
 
 
+def apply_album_deviation_adjustment(
+    track_popularity: float,
+    artist_name: str,
+    album_name: str,
+    artist_mean_popularity: float | None = None,
+    conn = None
+) -> float:
+    """
+    Apply album-level z-score deviation adjustment for tracks in lower-popularity albums.
+    
+    This function refines popularity scores by considering the track's position within
+    its album's popularity distribution. It's especially useful for identifying standout
+    tracks in niche or lower-popularity albums.
+    
+    Algorithm:
+    1. Fetch all popularities for tracks in the album
+    2. Calculate album mean and stddev
+    3. Calculate track z-score within album: (track_pop - album_mean) / album_stddev
+    4. Determine weight factor based on album popularity tier
+    5. Blend with original score: (original * (1 - weight)) + (album_zscore_converted * weight)
+    
+    Weight tiers:
+    - Low popularity albums (mean < 40): 40% album weight (identify gems in niche catalogs)
+    - Mid-tier albums (40-60): 30% album weight (balance artist + album context)
+    - High popularity albums (> 60): 15% album weight (artist consistency dominates)
+    
+    Rationale:
+    - Single-track albums: No adjustment (stddev = 0)
+    - Compilations with mixed artists: Skip (requires artist filtering)
+    - Sparse albums (2-3 tracks): Still apply but with caution (limited variance data)
+    
+    Args:
+        track_popularity: Current popularity score (0-100)
+        artist_name: Artist name for context
+        album_name: Album name
+        artist_mean_popularity: Optional artist mean (for efficiency if already calculated)
+        conn: Optional database connection
+        
+    Returns:
+        Adjusted popularity score (0-100)
+    """
+    if track_popularity <= 0:
+        return track_popularity
+    
+    # If no connection provided, create one
+    if conn is None:
+        try:
+            conn = get_db_connection()
+            should_close = True
+        except Exception:
+            return track_popularity
+    else:
+        should_close = False
+    
+    try:
+        cursor = conn.cursor()
+        
+        # Fetch all track popularities in this album
+        cursor.execute("""
+            SELECT popularity
+            FROM tracks
+            WHERE artist = ? AND album = ? AND popularity > 0
+            ORDER BY popularity
+        """, (artist_name, album_name))
+        
+        rows = cursor.fetchall()
+        if not rows or len(rows) < 2:
+            # Skip adjustment if album has fewer than 2 tracks with popularity data
+            return track_popularity
+        
+        album_popularities = [row[0] for row in rows]
+        
+        # Calculate album statistics
+        try:
+            album_mean = mean(album_popularities)
+            if len(album_popularities) < 2:
+                album_stddev = 0.0
+            else:
+                album_stddev = stdev(album_popularities)
+        except (ValueError, ZeroDivisionError):
+            return track_popularity
+        
+        # Skip if no variance in album
+        if album_stddev == 0:
+            return track_popularity
+        
+        # Calculate track z-score within album
+        album_zscore = (track_popularity - album_mean) / album_stddev
+        
+        # Determine weight factor based on album popularity tier
+        if album_mean < 40:
+            # Low popularity album: higher weight on album deviation
+            album_weight = 0.40
+        elif album_mean < 60:
+            # Mid-tier album
+            album_weight = 0.30
+        else:
+            # High popularity album: lower weight on album deviation
+            album_weight = 0.15
+        
+        # Convert album z-score to 0-100 scale
+        album_zscore_pop = 50.0 + (album_zscore * 16.7)
+        album_zscore_pop = min(100.0, max(0.0, album_zscore_pop))
+        
+        # Blend with original score
+        adjusted_score = (track_popularity * (1.0 - album_weight)) + (album_zscore_pop * album_weight)
+        
+        logging.debug(
+            f"Album deviation adjustment for '{artist_name}' - '{album_name}': "
+            f"original={track_popularity:.1f}, album_mean={album_mean:.1f}, album_stddev={album_stddev:.2f}, "
+            f"album_zscore={album_zscore:.2f}, weight={album_weight:.0%}, adjusted={adjusted_score:.1f}"
+        )
+        
+        return adjusted_score
+        
+    except Exception as e:
+        logging.debug(f"Error applying album deviation adjustment for '{artist_name}' - '{album_name}': {e}")
+        return track_popularity
+    
+    finally:
+        if should_close and conn:
+            conn.close()
+
+
 # --- Shared DB/API/Helper Functions (moved from start.py) ---
 from db_utils import get_db_connection
 
@@ -828,6 +952,8 @@ __all__ = [
     "search_spotify_track",
     "get_lastfm_track_info",
     "score_by_age",
+    "apply_mean_popularity_adjustment",
+    "apply_album_deviation_adjustment",
     "SPOTIFY_WEIGHT",
     "LASTFM_WEIGHT",
     "LISTENBRAINZ_WEIGHT",
