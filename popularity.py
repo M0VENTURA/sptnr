@@ -4545,7 +4545,7 @@ def popularity_scan(
                             # Determine categorization first to know what reasons to show
                             is_detected_single = track_is_single and track_stars == 5
                             is_standout = track_is_standout and track_stars == 5 and not track_is_single
-                            is_non_single_standout = not track_is_single and track_stars == 4 and track_zscore > 0
+                            is_non_single_standout = not track_is_single and track_stars == 5 and not track_is_standout
                             is_close_match = track_single_confidence == "medium" or (sources_str and not track_is_single)
                             
                             # Build detailed reason string showing HOW the rating was determined
