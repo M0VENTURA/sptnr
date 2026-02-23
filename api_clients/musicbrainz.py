@@ -740,6 +740,177 @@ class MusicBrainzClient:
         
         return ""
     
+    def has_video_relationship(self, title: str, artist: str) -> bool:
+        """
+        Check if a recording has a relationship to a music video.
+        
+        Music videos are typically made for singles, so this is a medium-confidence
+        signal that the track was released as a single.
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            
+        Returns:
+            True if the recording has a video relationship, False otherwise
+        """
+        if not self.enabled:
+            return False
+        
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Use rate limiter
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
+                
+                # Search for recording with relationships
+                escaped_title = _escape_lucene_special_chars(title)
+                escaped_artist = _escape_lucene_special_chars(artist)
+                query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": 1,
+                    "inc": "url-rels"  # Include URL relationships (videos are typically URL rels)
+                }
+                
+                r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
+                r.raise_for_status()
+                recordings = r.json().get("recordings", [])
+                
+                if not recordings:
+                    return False
+                
+                # Get the top match
+                recording = recordings[0]
+                relations = recording.get("relations", [])
+                
+                # Look for video relationships
+                for rel in relations:
+                    rel_type = rel.get("type", "").lower()
+                    # Common video relationship types in MusicBrainz
+                    if rel_type in ("video", "youtube", "vimeo", "streaming music", "free streaming"):
+                        # Check if it's actually a video URL (not just audio streaming)
+                        url = rel.get("url", {}).get("resource", "").lower()
+                        if any(video_host in url for video_host in ["youtube.com", "youtu.be", "vimeo.com", "video"]):
+                            logger.debug(f"MusicBrainz: Found video relationship for '{title}' by '{artist}': {rel_type}")
+                            return True
+                
+                return False
+                
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz video lookup attempt {attempt + 1} failed for '{title}' by '{artist}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz video lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
+                    return False
+            except Exception as e:
+                logger.debug(f"MusicBrainz video lookup error for '{title}' by '{artist}': {e}")
+                return False
+        
+        return False
+    
+    def appears_on_various_artists(self, title: str, artist: str, min_appearances: int = 2) -> bool:
+        """
+        Check if a recording appears on multiple compilation or Various Artists albums.
+        
+        Songs released as singles often appear on compilation albums, greatest hits,
+        soundtracks, and other Various Artists releases. Multiple appearances on such
+        albums is a medium-confidence signal that the track was a popular single.
+        
+        Args:
+            title: Track title
+            artist: Artist name (the original artist)
+            min_appearances: Minimum number of compilation appearances to confirm (default: 2)
+            
+        Returns:
+            True if the recording appears on multiple compilation/Various Artists albums
+        """
+        if not self.enabled:
+            return False
+        
+        max_retries = 3
+        retry_delay = 1.0
+        
+        for attempt in range(max_retries):
+            try:
+                # Use rate limiter
+                if _rate_limiter:
+                    _rate_limiter.wait_if_needed_musicbrainz(max_wait_seconds=2.0)
+                    _rate_limiter.record_musicbrainz_request()
+                else:
+                    time.sleep(1.0)
+                
+                # Search for recording with releases
+                escaped_title = _escape_lucene_special_chars(title)
+                escaped_artist = _escape_lucene_special_chars(artist)
+                query = f'recording:"{escaped_title}" AND artist:"{escaped_artist}"'
+                params = {
+                    "query": query,
+                    "fmt": "json",
+                    "limit": 1,
+                    "inc": "releases+artist-credits"
+                }
+                
+                r = self.session.get(f"{self.base_url}recording/", params=params, headers=self.headers, timeout=(5, 10))
+                r.raise_for_status()
+                recordings = r.json().get("recordings", [])
+                
+                if not recordings:
+                    return False
+                
+                # Get the top match
+                recording = recordings[0]
+                releases = recording.get("releases", [])
+                
+                # Count appearances on Various Artists or compilation albums
+                various_artists_count = 0
+                artist_lower = artist.lower()
+                
+                for release in releases:
+                    # Check artist credits - if it's Various Artists or different from original artist
+                    artist_credits = release.get("artist-credit", [])
+                    if artist_credits:
+                        # Get the first artist name from credits
+                        release_artist = artist_credits[0].get("name", "").lower() if isinstance(artist_credits[0], dict) else ""
+                        
+                        # Count if it's Various Artists or a different artist
+                        if release_artist in ("various artists", "various", "va", "soundtrack"):
+                            various_artists_count += 1
+                            logger.debug(f"MusicBrainz: Found '{title}' on Various Artists album: {release.get('title', 'Unknown')}")
+                        elif release_artist and release_artist != artist_lower:
+                            # Also count if it appears on another artist's album (compilation indicator)
+                            various_artists_count += 1
+                            logger.debug(f"MusicBrainz: Found '{title}' on {release_artist} album: {release.get('title', 'Unknown')}")
+                
+                if various_artists_count >= min_appearances:
+                    logger.debug(f"MusicBrainz: '{title}' appears on {various_artists_count} Various Artists/compilation albums")
+                    return True
+                
+                return False
+                
+            except (requests.exceptions.Timeout, requests.exceptions.SSLError, requests.exceptions.ConnectionError) as e:
+                if attempt < max_retries - 1:
+                    logger.debug(f"MusicBrainz various artists lookup attempt {attempt + 1} failed for '{title}' by '{artist}': {e}, retrying...")
+                    time.sleep(retry_delay)
+                    retry_delay *= 2
+                else:
+                    logger.debug(f"MusicBrainz various artists lookup failed for '{title}' by '{artist}' after {max_retries} retries: {e}")
+                    return False
+            except Exception as e:
+                logger.debug(f"MusicBrainz various artists lookup error for '{title}' by '{artist}': {e}")
+                return False
+        
+        return False
+    
     def get_composers_for_track(self, title: str, artist: str) -> list[str]:
         """
         Fetch composer(s) for a track from MusicBrainz.

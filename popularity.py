@@ -1747,6 +1747,39 @@ def detect_single_for_track(
                     log_info(f"   âœ“ MusicBrainz confirms single: {title}")
                 else:
                     log_info(f"   â“˜ MusicBrainz does not confirm single: {title}")
+                
+                # Additional MusicBrainz checks (medium confidence)
+                # Check for music video relationship
+                try:
+                    has_video = _run_with_timeout(
+                        mb_client.has_video_relationship,
+                        API_CALL_TIMEOUT,
+                        f"MusicBrainz video check timed out after {API_CALL_TIMEOUT}s",
+                        title, artist
+                    )
+                    if has_video:
+                        single_sources.append("musicbrainz_video")
+                        log_info(f"   ✅ MusicBrainz: Track has music video relationship: {title}")
+                except TimeoutError:
+                    log_debug(f"   ⏱ MusicBrainz video check timed out for {title}")
+                except Exception as e:
+                    log_debug(f"   MusicBrainz video check error for {title}: {e}")
+                
+                # Check for Various Artists appearances
+                try:
+                    on_compilations = _run_with_timeout(
+                        mb_client.appears_on_various_artists,
+                        API_CALL_TIMEOUT,
+                        f"MusicBrainz compilation check timed out after {API_CALL_TIMEOUT}s",
+                        title, artist
+                    )
+                    if on_compilations:
+                        single_sources.append("musicbrainz_compilation")
+                        log_info(f"   ✅ MusicBrainz: Track appears on multiple compilation albums: {title}")
+                except TimeoutError:
+                    log_debug(f"   ⏱ MusicBrainz compilation check timed out for {title}")
+                except Exception as e:
+                    log_debug(f"   MusicBrainz compilation check error for {title}: {e}")
         except TimeoutError as e:
             log_info(f"   â± MusicBrainz single check timed out for {title}: {e}")
         except Exception as e:
