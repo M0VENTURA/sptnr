@@ -56,6 +56,12 @@ from popularity_helpers import (
 # Import DB connection helper
 from helpers.db_utils import get_db_connection
 
+# Import scan helpers
+from helpers.scan_helpers import scan_library_to_db
+
+# Import single detection helper
+from single_detector import get_current_single_detection
+
 # --- Navidrome user config ---
 import yaml
 with open(CONFIG_PATH, 'r') as f:
@@ -100,42 +106,6 @@ def get_current_track_rating(track_id: str) -> int:
     except Exception as e:
         logging.debug(f"Failed to get current rating for track {track_id}: {e}")
         return 0
-
-
-def get_current_single_detection(track_id: str) -> dict:
-    """Query the current single detection values from the database.
-    Returns dict with is_single, single_confidence, single_sources, and stars.
-    This is used to preserve user-edited single detection and star ratings across rescans.
-    """
-    import sqlite3
-    import json
-    import logging
-    DB_PATH = 'database/sptnr.db'  # Or use your config/env
-    try:
-        conn = sqlite3.connect(DB_PATH, timeout=120.0)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.row_factory = sqlite3.Row
-        cursor = conn.cursor()
-        cursor.execute(
-            "SELECT is_single, single_confidence, single_sources, stars FROM tracks WHERE id = ?",
-            (track_id,)
-        )
-        row = cursor.fetchone()
-        conn.close()
-        if row:
-            is_single, confidence, sources_json, stars = row
-            sources = json.loads(sources_json) if sources_json else []
-            return {
-                "is_single": bool(is_single),
-                "single_confidence": confidence or "low",
-                "single_sources": sources,
-                "stars": stars or 0
-            }
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
-    except Exception as e:
-        logging.debug(f"Failed to get current single detection for track {track_id}: {e}")
-        return {"is_single": False, "single_confidence": "low", "single_sources": [], "stars": 0}
-
 
 
 # --- Spotify API Helpers ---
@@ -395,48 +365,10 @@ def set_track_rating_for_all(track_id, stars):
         create_or_update_playlist_for_artist(name, tracks)
         print(f"âœ… Playlist refreshed for '{name}' ({len(tracks)} tracks)")
 
-def build_artist_index(verbose: bool = False) -> dict:
-    """Build artist index from Navidrome (wrapper using NavidromeClient)."""
-    if not nav_client:
-        logging.warning("Navidrome client not initialized")
-        return {}
-    
-    result = nav_client.build_artist_index()  # type: ignore[union-attr]
-    artist_map_from_api: dict = cast(dict, result or {})
-    
-    # Persist to database with retry logic
-    max_retries = 3
-    for attempt in range(max_retries):
-        try:
-            conn = get_db_connection()
-            cursor = conn.cursor()
-            for artist_name, info in artist_map_from_api.items():
-                artist_id = info.get("id")
-                cursor.execute("""
-                    INSERT OR REPLACE INTO artist_stats (artist_id, artist_name, album_count, track_count, last_updated)
-                    VALUES (?, ?, ?, ?, ?)
-                """, (artist_id, artist_name, 0, 0, None))
-                if verbose:
-                    print(f"   📝 Added artist to index: {artist_name} (ID: {artist_id})")
-                    logging.info(f"Added artist to index: {artist_name} (ID: {artist_id})")
-            conn.commit()
-            conn.close()
-            break  # Success, exit retry loop
-        except sqlite3.OperationalError as e:
-            if "locked" in str(e) and attempt < max_retries - 1:
-                logging.debug(f"Database locked during artist index build, retrying ({attempt + 1}/{max_retries})...")
-                time.sleep(1.0 * (attempt + 1))  # Exponential backoff
-                continue
-            else:
-                logging.error(f"Failed to build artist index after {max_retries} attempts: {e}")
-                raise
-    
-    logging.info(f"âœ… Cached {len(artist_map_from_api)} artists in DB")
-    print(f"âœ… Cached {len(artist_map_from_api)} artists in DB")
-    return artist_map_from_api
+# Note: build_artist_index() imported from popularity_helpers (line 60)
+# Note: scan_library_to_db() imported from helpers.scan_helpers (line 779 in run_full_scan_pipeline)
 
-
-def scan_library_to_db(verbose: bool = False, force: bool = False):
+# --- Main Rating Logic ---
     """
     Scan the entire Navidrome library (artists -> albums -> tracks) and persist
     a lightweight representation of each track into the local DB.
@@ -661,11 +593,6 @@ def scan_library_to_db(verbose: bool = False, force: bool = False):
             print(f"   âœ… Completed {album_count} albums for '{name}'")
             
     print(f"âœ… Library scan complete. Tracks written/updated: {total_written}; skipped cached: {total_skipped}")
-    logging.info(f"Library scan complete. Written/updated: {total_written}; skipped cached: {total_skipped}; albums skipped: {total_albums_skipped}")
-
-
-# --- Main Rating Logic ---
-
 def update_artist_stats(artist_id, artist_name):
     album_count = len(fetch_artist_albums(artist_id))
     track_count = sum(len(fetch_album_tracks(a['id']).get("tracks", [])) for a in fetch_artist_albums(artist_id))
@@ -678,15 +605,7 @@ def update_artist_stats(artist_id, artist_name):
     conn.commit()
     conn.close()
 
-
-def load_artist_map():
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT artist_id, artist_name, album_count, track_count, last_updated FROM artist_stats")
-    rows = cursor.fetchall()
-    conn.close()
-    return {row[1]: {"id": row[0], "album_count": row[2], "track_count": row[3], "last_updated": row[4]} for row in rows}
-
+# Note: load_artist_map() imported from popularity_helpers (line 60)
 
 def adjust_genres(genres, artist_is_metal=False):
     """
@@ -776,7 +695,6 @@ def run_full_scan_pipeline(verbose=False, force=False):
         verbose: Enable verbose output
         force: Force re-scan of all data
     """
-    from helpers.scan_helpers import scan_library_to_db
     from popularity import popularity_scan
     from beets_auto_import import BeetsAutoImporter
     
