@@ -28,7 +28,12 @@ from zoneinfo import ZoneInfo
 LOCAL_TZ = os.environ.get("TIMEZONE") or os.environ.get("TZ") or "UTC"
 
 # --- Logging Setup with centralized config ---
-from logging_config import setup_logging, log_unified, log_info, log_debug
+"""
+Note: Most functions in this module have been moved to helpers/scan_helpers.py
+Some utility functions are still used by app.py for backwards compatibility.
+"""
+
+from helpers.logging_config import setup_logging, log_unified, log_info, log_debug
 
 # Set up logging for navidrome_import service
 setup_logging("navidrome_import")

@@ -40,7 +40,7 @@ from flask import Flask, render_template, request, redirect, url_for, flash, jso
 from datetime import datetime
 import copy
 from functools import wraps
-from deprecated.navidrome_import import scan_artist_to_db, _fetch_artist_metadata
+from helpers.scan_helpers import scan_artist_to_db
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
@@ -5226,8 +5226,12 @@ def _run_artist_scan_pipeline(artist_name: str):
             log_unified(f"Artist '{artist_name}' is a track artist (e.g., from Various Artists albums)")
             log_unified(f"Step 1/2: Fetching artist metadata for track artist '{artist_name}'")
             try:
+                # Import from deprecated module only when needed for this edge case
+                from deprecated.navidrome_import import _fetch_artist_metadata
                 _fetch_artist_metadata(artist_name, verbose=True)
                 log_unified(f"Artist metadata fetched successfully")
+            except ImportError as e:
+                log_unified(f"Warning: Artist metadata fetch not available (deprecated module): {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
             log_unified(f"Step 2/2: Running popularity scan for track artist '{artist_name}' (force={force})")
