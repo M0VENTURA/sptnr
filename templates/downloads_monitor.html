@@ -354,31 +354,77 @@ function renderCompletedQueue(completed) {
   selectBtn.style.display = 'inline-block';
   actions.style.display = 'flex';
   
+  // Group items by artist + album
+  const grouped = groupByAlbum(completed);
+  
   let html = '<div class="list-group list-group-flush">';
-  for (const item of completed) {
-    html += `
-      <div class="list-group-item">
-        <div class="d-flex justify-content-between align-items-start">
-          <div class="d-flex gap-2 flex-grow-1">
-            <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
-            <div class="flex-grow-1">
-              <h6 class="mb-1">${escapeHtml(item.title)}</h6>
-              <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
-              <small class="text-muted">File: ${escapeHtml(item.file_path || 'unknown')}</small>
+  
+  for (const group of grouped) {
+    const isGrouped = group.items.length > 1;
+    
+    if (isGrouped) {
+      // Render album group header with collapse functionality
+      const groupId = `group-${group.key.replace(/[^a-zA-Z0-9]/g, '-')}`;
+      html += `
+        <div class="list-group-item bg-light border-start border-primary border-4">
+          <div class="d-flex justify-content-between align-items-center">
+            <div class="d-flex align-items-center gap-2">
+              <button class="btn btn-sm btn-link text-dark p-0" data-bs-toggle="collapse" data-bs-target="#${groupId}" aria-expanded="true">
+                <i class="bi bi-chevron-down"></i>
+              </button>
+              <i class="bi bi-disc-fill text-primary"></i>
+              <div>
+                <strong>${escapeHtml(group.artist)}</strong>
+                ${group.album ? ` - <em>${escapeHtml(group.album)}</em>` : ''}
+                <span class="badge bg-primary rounded-pill ms-2">${group.items.length} tracks</span>
+              </div>
+            </div>
+            <div class="d-flex gap-2">
+              <button class="btn btn-sm btn-success" onclick="organizeGroup([${group.items.map(i => i.id).join(',')}])" title="Organize entire album">
+                <i class="bi bi-folder-check"></i> Organize All
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="deleteGroup([${group.items.map(i => i.id).join(',')}])" title="Remove all from queue">
+                <i class="bi bi-trash"></i>
+              </button>
             </div>
           </div>
-          <div class="d-flex gap-2">
-            <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
-              <i class="bi bi-folder-check"></i> Organize
-            </button>
-            <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
-              <i class="bi bi-trash"></i>
-            </button>
+        </div>
+        <div class="collapse show" id="${groupId}">
+      `;
+    }
+    
+    // Render items in the group
+    for (const item of group.items) {
+      const itemClass = isGrouped ? 'ps-5' : '';
+      html += `
+        <div class="list-group-item ${itemClass}">
+          <div class="d-flex justify-content-between align-items-start">
+            <div class="d-flex gap-2 flex-grow-1">
+              <input type="checkbox" class="form-check-input queue-item-checkbox" value="${item.id}" onchange="updateSelectedCount()">
+              <div class="flex-grow-1">
+                <h6 class="mb-1">${escapeHtml(item.title)}</h6>
+                ${!isGrouped ? `<p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>` : ''}
+                <small class="text-muted">${escapeHtml(item.found_filename || item.file_path || 'unknown')}</small>
+              </div>
+            </div>
+            <div class="d-flex gap-2">
+              <button class="btn btn-sm btn-success" onclick="organizeFile(${item.id})" title="Move to /music">
+                <i class="bi bi-folder-check"></i> Organize
+              </button>
+              <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})">
+                <i class="bi bi-trash"></i>
+              </button>
+            </div>
           </div>
         </div>
-      </div>
-    `;
+      `;
+    }
+    
+    if (isGrouped) {
+      html += '</div>'; // Close collapse div
+    }
   }
+  
   html += '</div>';
   container.innerHTML = html;
 }
@@ -523,6 +569,115 @@ function groupSelectedItems() {
 
 function openBatchGroupModal() {
   alert('Batch group modal coming soon');
+}
+
+function groupByAlbum(items) {
+  // Group items by artist + album combination
+  const groups = new Map();
+  
+  for (const item of items) {
+    const artist = item.artist || 'Unknown Artist';
+    const album = item.album || '';
+    const key = `${artist}|||${album}`; // Use delimiter to avoid collision
+    
+    if (!groups.has(key)) {
+      groups.set(key, {
+        key: key,
+        artist: artist,
+        album: album,
+        items: []
+      });
+    }
+    
+    groups.get(key).items.push(item);
+  }
+  
+  // Convert to array and sort: groups with albums first, then by artist name
+  const result = Array.from(groups.values()).sort((a, b) => {
+    // Albums before singles
+    if (a.album && !b.album) return -1;
+    if (!a.album && b.album) return 1;
+    // Then by artist name
+    if (a.artist !== b.artist) return a.artist.localeCompare(b.artist);
+    // Then by album name
+    return (a.album || '').localeCompare(b.album || '');
+  });
+  
+  return result;
+}
+
+async function organizeGroup(queueIds) {
+  if (!confirm(`Move ${queueIds.length} files to /music using beets?`)) {
+    return;
+  }
+  
+  let successCount = 0;
+  let errorCount = 0;
+  
+  for (const queueId of queueIds) {
+    try {
+      const response = await fetch(`/api/queue/${queueId}/organize`, {
+        method: 'POST'
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        successCount++;
+      } else {
+        errorCount++;
+        console.error(`Failed to organize ${queueId}:`, data.error);
+      }
+    } catch (error) {
+      errorCount++;
+      console.error(`Error organizing ${queueId}:`, error);
+    }
+  }
+  
+  if (errorCount === 0) {
+    alert(`✅ Successfully organized ${successCount} files!`);
+  } else {
+    alert(`⚠️ Organized ${successCount} files, ${errorCount} failed`);
+  }
+  
+  await loadQueueStatus();
+}
+
+async function deleteGroup(queueIds) {
+  if (!confirm(`Remove ${queueIds.length} items from queue?`)) {
+    return;
+  }
+  
+  let successCount = 0;
+  let errorCount = 0;
+  
+  for (const queueId of queueIds) {
+    try {
+      const response = await fetch(`/api/queue/${queueId}/delete`, {
+        method: 'DELETE'
+      });
+      
+      const data = await response.json();
+      
+      if (data.success) {
+        successCount++;
+      } else {
+        errorCount++;
+        console.error(`Failed to delete ${queueId}:`, data.error);
+      }
+    } catch (error) {
+      errorCount++;
+      console.error(`Error deleting ${queueId}:`, error);
+    }
+  }
+  
+  if (errorCount === 0) {
+    alert(`✅ Removed ${successCount} items from queue`);
+  } else {
+    alert(`⚠️ Removed ${successCount} items, ${errorCount} failed`);
+  }
+  
+  await loadQueueStatus();
 }
 
 function escapeHtml(text) {
