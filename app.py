@@ -11480,9 +11480,10 @@ def api_queue_organize(queue_id):
             return jsonify({"error": "File not found"}), 404
         
         try:
-            # Use beets to import/organize the file
+            # Use beets to import/organize the file with update config (writes tags and organizes)
+            config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
             result = subprocess.run(
-                ['beet', 'import', '-s', file_path],
+                ['beet', '-c', config_path, 'import', '-s', '-q', file_path],
                 capture_output=True,
                 text=True,
                 timeout=60
@@ -11497,7 +11498,8 @@ def api_queue_organize(queue_id):
                     "output": result.stdout
                 })
             else:
-                error_msg = result.stderr or "Beets import failed"
+                error_msg = result.stderr or result.stdout or "Beets import failed"
+                logging.error(f"Beets import failed for queue {queue_id}: {error_msg}")
                 update_queue_item(queue_id, status='failed', failure_reason=error_msg)
                 return jsonify({"error": error_msg}), 400
                 
@@ -11576,8 +11578,10 @@ def api_queue_organize_group():
                     track_number='$track'  # Beets template variable
                 )
                 
+                # Use update config for proper organization with tag writing
+                config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
                 result = subprocess.run(
-                    ['beet', 'import', '-s', item['file_path']],
+                    ['beet', '-c', config_path, 'import', '-s', '-q', item['file_path']],
                     capture_output=True,
                     text=True,
                     timeout=60
@@ -11587,7 +11591,8 @@ def api_queue_organize_group():
                     update_queue_item(item['id'], status='imported')
                     updated_count += 1
                 else:
-                    error_msg = result.stderr or "Beets import failed"
+                    error_msg = result.stderr or result.stdout or "Beets import failed"
+                    logging.error(f"Beets import failed for item {item['id']}: {error_msg}")
                     errors.append(f"{item['title']}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                     
