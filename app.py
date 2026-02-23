@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-from helpers.db_utils import get_db_connection, ensure_album_artist_column, verify_album_artist_column
+from helpers.db_utils import ensure_album_artist_column, verify_album_artist_column
 import os
 # --- ENVIRONMENT VARIABLE EDITING SUPPORT ---
 # List of all environment variables used in the project (compiled from codebase)
@@ -661,7 +661,7 @@ def api_spotify_playlist_tracks_with_matching(playlist_id):
         
         if match_collection:
             # Get all tracks from collection
-            conn = get_db_connection()
+            conn = get_db()
             cursor = conn.cursor()
             cursor.execute("SELECT artist, title, album FROM tracks ORDER BY artist, title")
             collection_tracks = cursor.fetchall()
@@ -770,7 +770,7 @@ def api_create_playlist_session():
         
         # Log this session
         try:
-            conn = get_db_connection()
+            conn = get_db()
             cursor = conn.cursor()
             
             # Use the correct table name from schema (playlist_download_sessions)
@@ -10919,7 +10919,7 @@ def api_downloads_manage_queue_item(queue_id):
     """Manage a queue item (mark as failed, successful, or delete)"""
     try:
         from downloads_watcher import mark_download_as_failed, mark_download_as_successful
-        conn = get_db_connection()
+        conn = get_db()
         cursor = conn.cursor()
         
         data = request.get_json()
@@ -12144,7 +12144,7 @@ def api_lastfm_create_playlist():
         # Pass database connection to filter out existing albums
         def get_db_for_lastfm():
             """Helper to get DB connection for Last.fm filtering"""
-            return get_db_connection()
+            return get_db()
         
         recommendations = get_lastfm_recommendations(api_key, username=username, db_connection=get_db_for_lastfm)
         
@@ -12168,7 +12168,7 @@ def api_lastfm_create_playlist():
         missing_tracks = []
         
         # Get database connection
-        conn = get_db_connection()
+        conn = get_db()
         cursor = conn.cursor()
         
         for rec in rec_list:
@@ -12291,7 +12291,7 @@ def api_recommended_playlists():
         cfg = get_config()
         
         # Get database connection
-        conn = get_db_connection()
+        conn = get_db()
         
         # Initialize clients if available
         lastfm_client = None
@@ -15683,7 +15683,8 @@ def api_listenbrainz_create_playlist():
         missing_tracks = []
         
         # Get database connection
-        conn, c = get_db_connection()
+        conn = get_db()
+        c = conn.cursor()
         
         for rec in recommendations:
             # Try to match by MBID first, then by artist/title
