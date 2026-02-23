@@ -266,3 +266,301 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
     except Exception as e:
         logging.error(f"scan_artist_to_db failed for {artist_name}: {e}")
         raise
+
+
+def pre_import_sync_album_artists(artist_id: str = None) -> dict:
+    """
+    Pre-import sync: Batch fetch unique album artists from Navidrome and ensure they exist in database.
+    
+    This is called before the main Navidrome import to quickly identify and insert any new
+    album artists in a single pass, avoiding the need to check one-by-one during track import.
+    
+    Args:
+        artist_id: Single artist ID to sync (optional). If None, syncs all artists.
+        
+    Returns:
+        Dict with results: {
+            'unique_album_artists': int,
+            'new_artists_created': int,
+            'existing_artists': int,
+            'sync_time_ms': float,
+            'new_artists': [list of artist names that were created],
+            'success': bool
+        }
+    """
+    import time
+    from popularity_helpers import _get_nav_client
+    
+    start_time = time.time()
+    
+    try:
+        nav_client = _get_nav_client()
+        if not nav_client:
+            return {'error': 'Navidrome client not available', 'success': False}
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Get current artists in database
+        cursor.execute("SELECT DISTINCT LOWER(name) FROM artists WHERE name IS NOT NULL AND name != ''")
+        existing_artists = set(row[0] for row in cursor.fetchall())
+        logging.debug(f"Found {len(existing_artists)} existing artists in database")
+        
+        # Fetch all artists from Navidrome
+        if artist_id:
+            # Single artist sync
+            artist_info = nav_client.get_artists([artist_id])
+            artists_to_sync = artist_info if isinstance(artist_info, list) else [artist_info]
+        else:
+            # All artists
+            artists_to_sync = nav_client.get_artists()
+        
+        logging.info(f"Pre-import sync: Scanning {len(artists_to_sync)} artist(s) from Navidrome")
+        
+        # Extract unique album artists from all albums of all artists
+        unique_album_artists = {}  # name -> count
+        
+        for artist_data in artists_to_sync:
+            artist_name = artist_data.get('name', '')
+            if not artist_name:
+                continue
+            
+            artist_id_val = artist_data.get('id', '')
+            
+            # Fetch albums for this artist
+            try:
+                albums = nav_client.get_albums(artist_id=artist_id_val)
+                for album in albums:
+                    album_artist = album.get('artist', '').strip()
+                    if album_artist:
+                        key = album_artist.lower()
+                        if key not in unique_album_artists:
+                            unique_album_artists[key] = {'original': album_artist, 'count': 0}
+                        unique_album_artists[key]['count'] += 1
+            except Exception as e:
+                logging.debug(f"Error fetching albums for artist {artist_name}: {e}")
+                continue
+        
+        logging.info(f"Pre-import sync: Found {len(unique_album_artists)} unique album artists across all albums")
+        
+        # Identify new artists
+        new_artists_to_add = []
+        for artist_key, artist_info in unique_album_artists.items():
+            if artist_key not in existing_artists:
+                new_artists_to_add.append(artist_info['original'])
+        
+        logging.info(f"Pre-import sync: {len(new_artists_to_add)} new album artists need to be added to database")
+        
+        # Batch insert new artists in a single transaction
+        if new_artists_to_add:
+            try:
+                for artist_name in new_artists_to_add:
+                    cursor.execute("""
+                        INSERT OR IGNORE INTO artists (id, name)
+                        VALUES (?, ?)
+                    """, (artist_name.lower().replace(' ', '_'), artist_name))
+                    logging.debug(f"Created artist record: {artist_name}")
+                
+                conn.commit()
+                logging.info(f"Pre-import sync: Created {len(new_artists_to_add)} new artist record(s)")
+            except Exception as e:
+                logging.debug(f"Error batch inserting artists: {e}")
+                conn.rollback()
+                conn.close()
+                return {
+                    'error': f'Failed to batch insert artists: {e}',
+                    'unique_album_artists': len(unique_album_artists),
+                    'new_artists_created': 0,
+                    'success': False
+                }
+        
+        sync_time_ms = (time.time() - start_time) * 1000
+        
+        result = {
+            'unique_album_artists': len(unique_album_artists),
+            'new_artists_created': len(new_artists_to_add),
+            'existing_artists': len(unique_album_artists) - len(new_artists_to_add),
+            'sync_time_ms': round(sync_time_ms, 2),
+            'new_artists': new_artists_to_add,
+            'success': True
+        }
+        
+        logging.info(f"Pre-import sync complete: {result['unique_album_artists']} unique album artists, {result['new_artists_created']} new, {result['existing_artists']} existing")
+        
+        conn.close()
+        return result
+        
+    except Exception as e:
+        logging.debug(f"Pre-import artist sync failed: {e}", exc_info=True)
+        return {
+            'error': str(e),
+            'success': False
+        }
+
+
+def fetch_artist_metadata(artist_name: str, verbose: bool = False):
+    """
+    Fetch and store artist biography and images from external APIs.
+    
+    This is called after a successful artist scan to enhance artist metadata.
+    Only fetches if data doesn't exist or if force=true in config.
+    
+    Image sources priority (in order):
+    1. The AudioDB (fanart) - 30 requests/min, good quality
+    2. Apple Music - unlimited, reliable
+    3. MusicBrainz CAA - unlimited, good coverage
+    
+    Args:
+        artist_name: Name of the artist
+        verbose: Enable verbose logging
+    """
+    from api_clients.discogs import get_discogs_artist_biography
+    from api_clients.applemusic import get_artist_artwork
+    from api_clients.audiodb import get_artist_fanart
+    from api_clients.musicbrainz import _USER_AGENT as MUSICBRAINZ_USER_AGENT
+    from helpers import create_retry_session
+    from config_loader import load_config
+    
+    try:
+        config = load_config()
+        logging.debug(f"Fetching artist metadata for: {artist_name}")
+        
+        # Check if force flag is enabled
+        force = config.get("features", {}).get("force", False)
+        logging.debug(f"Force flag: {force}")
+        
+        # Check if artist metadata already exists
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Create artist_metadata table if it doesn't exist
+        cursor.execute("""
+            CREATE TABLE IF NOT EXISTS artist_metadata (
+                artist_name TEXT PRIMARY KEY,
+                biography TEXT,
+                image_url TEXT,
+                updated_at TEXT
+            )
+        """)
+        logging.debug(f"DB: Ensured artist_metadata table exists")
+        
+        # Check for existing metadata
+        cursor.execute("""
+            SELECT biography, image_url 
+            FROM artist_metadata 
+            WHERE artist_name = ?
+        """, (artist_name,))
+        logging.debug(f"DB Query: SELECT biography, image_url FROM artist_metadata WHERE artist_name = '{artist_name}'")
+        existing_row = cursor.fetchone()
+        
+        # Determine what needs to be fetched
+        fetch_bio = force
+        fetch_image = force
+        
+        if existing_row and not force:
+            existing_bio = existing_row[0] or ""
+            existing_image = existing_row[1] or ""
+            
+            # Only fetch if missing
+            fetch_bio = not existing_bio
+            fetch_image = not existing_image
+            
+            if not fetch_bio and not fetch_image:
+                logging.info(f"Artist metadata already exists for {artist_name}, skipping fetch")
+                logging.debug(f"Metadata exists - Bio length: {len(existing_bio)}, Image URL: {bool(existing_image)}")
+                conn.close()
+                return
+        
+        conn.close()
+        
+        # Get API configurations
+        discogs_config = config.get("api_integrations", {}).get("discogs", {})
+        discogs_enabled = discogs_config.get("enabled", False)
+        discogs_token = discogs_config.get("token", "")
+        logging.debug(f"Discogs config - Enabled: {discogs_enabled}, Token present: {bool(discogs_token)}")
+        
+        audiodb_config = config.get("api_integrations", {}).get("audiodb", {})
+        audiodb_enabled = audiodb_config.get("enabled", False)
+        audiodb_api_key = audiodb_config.get("api_key", "195003")
+        logging.debug(f"AudioDB config - Enabled: {audiodb_enabled}, API key present: {bool(audiodb_api_key)}")
+        
+        # Try to fetch biography from Discogs (only if needed)
+        biography = ""
+        if fetch_bio and discogs_enabled and discogs_token:
+            logging.info(f"Fetching biography for {artist_name} from Discogs...")
+            logging.debug(f"API Call: get_discogs_artist_biography(artist_name={artist_name})")
+            bio_data = get_discogs_artist_biography(artist_name, token=discogs_token, enabled=True)
+            logging.debug(f"API Response: {bio_data}")
+            biography = bio_data.get("profile", "")
+            if biography:
+                logging.info(f"Retrieved artist biography from Discogs ({len(biography)} characters)")
+                logging.debug(f"Biography preview: {biography[:100]}...")
+        
+        # Try to fetch artist image with fallback chain (only if needed)
+        artist_image_url = ""
+        if fetch_image:
+            # Priority 1: Try The AudioDB
+            if audiodb_enabled and audiodb_api_key:
+                logging.info(f"Fetching artist image for {artist_name} from The AudioDB...")
+                logging.debug(f"API Call: get_artist_fanart(artist_name={artist_name})")
+                artist_image_url = get_artist_fanart(artist_name, api_key=audiodb_api_key, enabled=True)
+                if artist_image_url:
+                    logging.info(f"Retrieved artist image from The AudioDB")
+                    logging.debug(f"Image URL: {artist_image_url}")
+            
+            # Priority 2: Fall back to Apple Music if AudioDB didn't return anything
+            if not artist_image_url:
+                logging.info(f"Fetching artist image for {artist_name} from Apple Music (AudioDB fallback)...")
+                logging.debug(f"API Call: get_artist_artwork(artist_name={artist_name}, size=500)")
+                artist_image_url = get_artist_artwork(artist_name, size=500, enabled=True)
+                if artist_image_url:
+                    logging.info(f"Retrieved artist image from Apple Music")
+                    logging.debug(f"Image URL: {artist_image_url}")
+            
+            # Priority 3: Fall back to MusicBrainz if still nothing found
+            if not artist_image_url:
+                try:
+                    logging.debug(f"Attempting to fetch artist image from MusicBrainz CAA...")
+                    # Simple MusicBrainz artist lookup to get MBID
+                    mb_search_url = "https://musicbrainz.org/ws/2/artist"
+                    mb_params = {"query": f'"{artist_name}"', "fmt": "json", "limit": 1}
+                    mb_headers = {"User-Agent": MUSICBRAINZ_USER_AGENT}
+                    
+                    session = create_retry_session(user_agent=MUSICBRAINZ_USER_AGENT, retries=3, backoff=1.0)
+                    mb_resp = session.get(mb_search_url, params=mb_params, headers=mb_headers, timeout=5)
+                    mb_resp.raise_for_status()
+                    
+                    mb_data = mb_resp.json()
+                    artists = mb_data.get("artists", [])
+                    
+                    if artists:
+                        mbid = artists[0].get("id")
+                        if mbid:
+                            # Construct CAA URL for artist
+                            artist_image_url = f"https://coverartarchive.org/artist/{mbid}/front-500"
+                            logging.info(f"Retrieved artist image from MusicBrainz CAA")
+                            logging.debug(f"Image URL: {artist_image_url}")
+                except Exception as e:
+                    logging.debug(f"MusicBrainz fallback failed: {e}")
+        
+        # Store in database
+        if biography or artist_image_url:
+            conn = get_db_connection()
+            cursor = conn.cursor()
+            
+            # Insert or update artist metadata
+            cursor.execute("""
+                INSERT OR REPLACE INTO artist_metadata (artist_name, biography, image_url, updated_at)
+                VALUES (?, ?, ?, ?)
+            """, (artist_name, biography, artist_image_url, datetime.now().isoformat()))
+            logging.debug(f"DB: INSERT OR REPLACE artist_metadata for {artist_name}")
+            
+            conn.commit()
+            conn.close()
+            
+            logging.info(f"Stored artist metadata for {artist_name}")
+            logging.debug(f"Metadata saved - Bio: {bool(biography)}, Image: {bool(artist_image_url)}")
+    
+    except Exception as e:
+        logging.info(f"Error fetching artist metadata for {artist_name}: {e}")
+        logging.debug(f"fetch_artist_metadata error for {artist_name}: {e}", exc_info=True)

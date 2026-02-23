@@ -5226,12 +5226,11 @@ def _run_artist_scan_pipeline(artist_name: str):
             log_unified(f"Artist '{artist_name}' is a track artist (e.g., from Various Artists albums)")
             log_unified(f"Step 1/2: Fetching artist metadata for track artist '{artist_name}'")
             try:
-                # Import from deprecated module only when needed for this edge case
-                from deprecated.navidrome_import import _fetch_artist_metadata
-                _fetch_artist_metadata(artist_name, verbose=True)
+                from helpers.scan_helpers import fetch_artist_metadata
+                fetch_artist_metadata(artist_name, verbose=True)
                 log_unified(f"Artist metadata fetched successfully")
             except ImportError as e:
-                log_unified(f"Warning: Artist metadata fetch not available (deprecated module): {e}")
+                log_unified(f"Warning: Artist metadata fetch not available: {e}")
             except Exception as e:
                 log_unified(f"Warning: Failed to fetch artist metadata: {e}")
             log_unified(f"Step 2/2: Running popularity scan for track artist '{artist_name}' (force={force})")
@@ -15031,7 +15030,7 @@ def api_pre_sync_navidrome_artists():
       - artist_id: Optional single artist ID to sync (instead of all artists)
     """
     try:
-        from deprecated.navidrome_import import pre_import_sync_album_artists
+        from helpers.scan_helpers import pre_import_sync_album_artists
         
         artist_id = request.args.get('artist_id')
         
