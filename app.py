@@ -1353,7 +1353,7 @@ def _get_auto_boot_import_setting():
     
     # Read from config file
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         features = cfg.get("features", {})
         return features.get("auto_boot_navidrome_scan", False)
     except (FileNotFoundError, yaml.YAMLError, KeyError, AttributeError) as e:
@@ -1390,7 +1390,7 @@ def _needs_setup(cfg=None):
 
 def _authenticate_navidrome(username, password):
     """Authenticate against Navidrome API"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     
     # Check navidrome_users list first
     nav_users = cfg.get("navidrome_users", [])
@@ -1445,7 +1445,7 @@ def login_required(f):
         if not os.path.exists(CONFIG_PATH):
             return f(*args, **kwargs)
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         
         # If setup is needed, redirect to setup
         if _needs_setup(cfg):
@@ -1463,7 +1463,7 @@ def login_required(f):
 def inject_custom_bookmarks():
     """Inject custom bookmark links into all templates"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         custom_links = cfg.get('bookmarks', {}).get('custom_links', [])
         return {'custom_bookmark_links': custom_links}
     except Exception:
@@ -1484,7 +1484,7 @@ def enforce_setup_wizard():
                     return
 
                 # If config doesn't exist or is incomplete, redirect to setup wizard
-                cfg, _ = _read_yaml(CONFIG_PATH)
+                cfg = get_config()
                 from os.path import exists
                 if not exists(CONFIG_PATH) or _needs_setup(cfg):
                     if request.endpoint != "setup":
@@ -1623,7 +1623,7 @@ def dashboard():
         scan_running = web_ui_running or background_running
 
         # Get Navidrome users from config
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         nav_users_list = cfg.get("navidrome_users", [])
         if not nav_users_list and cfg.get("navidrome"):
             # Single user mode - convert to list format for consistency
@@ -1645,7 +1645,7 @@ def dashboard():
         logging.error(f"Dashboard error: {e}")
         import traceback
         traceback.print_exc()
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         db_path = cfg.get("database", {}).get("path", "/database/sptnr.db")
         dashboard_template = "dashboard_external.html" if db_path != "/database/sptnr.db" else "dashboard.html"
         return render_template(dashboard_template,
@@ -2182,7 +2182,7 @@ def artist_detail(name):
         genres = aggregate_genres_from_tracks(name, DB_PATH)
         
         # Get qBittorrent and slskd configs
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
         slskd_config = cfg.get("slskd", {"enabled": False})
         
@@ -5120,7 +5120,7 @@ def album_detail(artist, album):
         conn.close()
         
         # Get qBittorrent and slskd config
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
         slskd_config = cfg.get("slskd", {"enabled": False})
         
@@ -5140,7 +5140,7 @@ def album_detail(artist, album):
         
         # Get config even for error page
         try:
-            cfg, _ = _read_yaml(CONFIG_PATH)
+            cfg = get_config()
             qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
             slskd_config = cfg.get("slskd", {"enabled": False})
         except:
@@ -5732,7 +5732,7 @@ def track_detail(track_id):
         
         # Load config for template
         try:
-            cfg, _ = _read_yaml(CONFIG_PATH)
+            cfg = get_config()
             qbit_config = cfg.get("qbittorrent", {"enabled": False, "web_url": "http://localhost:8080"})
             slskd_config = cfg.get("slskd", {"enabled": False})
         except Exception as e:
@@ -6483,7 +6483,7 @@ def login():
         if not os.path.exists(CONFIG_PATH):
             return redirect(url_for('setup'))
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         if _needs_setup(cfg):
             return redirect(url_for('setup'))
         
@@ -7370,7 +7370,7 @@ def downloads():
 @app.route("/downloads/monitor")
 def downloads_monitor():
     """Download monitor page - queue status and management"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {"enabled": False})
     slskd_config = cfg.get("slskd", {"enabled": False})
     
@@ -7382,7 +7382,7 @@ def downloads_monitor():
 @app.route("/downloads/search/<source>")
 def downloads_search(source):
     """Search pages for different sources"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {"enabled": False})
     slskd_config = cfg.get("slskd", {"enabled": False})
     
