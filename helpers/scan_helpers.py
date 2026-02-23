@@ -564,3 +564,349 @@ def fetch_artist_metadata(artist_name: str, verbose: bool = False):
     except Exception as e:
         logging.info(f"Error fetching artist metadata for {artist_name}: {e}")
         logging.debug(f"fetch_artist_metadata error for {artist_name}: {e}", exc_info=True)
+
+
+def get_navidrome_library_stats(artist_map: dict) -> dict:
+    """
+    Calculate total albums and tracks available from Navidrome.
+    
+    Args:
+        artist_map: Artist map from build_artist_index()
+        
+    Returns:
+        Dict with 'total_albums' and 'total_tracks' counts from Navidrome
+    """
+    try:
+        total_albums = sum(info.get("album_count", 0) for info in artist_map.values())
+        total_tracks = 0
+        
+        # Count total tracks by fetching each album
+        for artist_name, artist_info in artist_map.items():
+            artist_id = artist_info.get("id")
+            if not artist_id:
+                continue
+            
+            try:
+                albums = fetch_artist_albums(artist_id)
+                for album in albums:
+                    album_id = album.get("id")
+                    if not album_id:
+                        continue
+                    
+                    try:
+                        album_data = fetch_album_tracks(album_id)
+                        tracks = album_data.get("tracks", [])
+                        total_tracks += len(tracks)
+                    except Exception as e:
+                        logging.debug(f"Failed to fetch tracks for album {album.get('name')}: {e}")
+                        continue
+            except Exception as e:
+                logging.debug(f"Failed to fetch albums for artist {artist_name}: {e}")
+                continue
+        
+        logging.debug(f"Navidrome stats: {total_albums} albums, {total_tracks} songs")
+        return {
+            "total_albums": total_albums,
+            "total_tracks": total_tracks
+        }
+    except Exception as e:
+        logging.debug(f"Failed to get Navidrome library stats: {e}", exc_info=True)
+        return {"total_albums": 0, "total_tracks": 0}
+
+
+def get_database_library_stats() -> dict:
+    """
+    Get library statistics from the local database.
+    
+    Note: Uses COUNT(DISTINCT album) which should be fast enough for typical
+    library sizes. If performance becomes an issue, consider adding an index
+    on the album column.
+    
+    Returns:
+        Dict with 'total_albums' and 'total_tracks' counts from the database
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Count distinct albums
+        cursor.execute("SELECT COUNT(DISTINCT album) FROM tracks WHERE album IS NOT NULL AND album != ''")
+        total_albums = cursor.fetchone()[0] or 0
+        
+        # Count total songs/tracks
+        cursor.execute("SELECT COUNT(*) FROM tracks")
+        total_tracks = cursor.fetchone()[0] or 0
+        
+        conn.close()
+        
+        logging.debug(f"Database stats: {total_albums} albums, {total_tracks} songs")
+        return {
+            "total_albums": total_albums,
+            "total_tracks": total_tracks
+        }
+    except Exception as e:
+        logging.debug(f"Failed to get database library stats: {e}", exc_info=True)
+        return {"total_albums": 0, "total_tracks": 0}
+
+
+def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_artists: bool = True):
+    """
+    Scan the entire Navidrome library (artists -> albums -> tracks) and persist
+    a lightweight representation of each track into the local DB.
+
+    Behavior:
+      - Uses NavidromeClient API helpers: build_artist_index(), fetch_artist_albums(), fetch_album_tracks()
+      - For each track, writes a minimal `track_data` record via `save_to_db()`
+      - Uses INSERT OR REPLACE semantics (so re-running is safe and refreshes `last_scanned`)
+      - Supports auto-resume: If an interrupted scan is detected, resumes from last scanned artist
+      - Optional pre-sync of all album artists: If pre_sync_artists=True, batch-creates missing album artists
+        before the main import loop (significantly faster than creating per-item during main loop)
+    
+    Args:
+        verbose (bool): Enable verbose output logging
+        force (bool): Force re-import of all tracks
+        pre_sync_artists (bool): Enable pre-import batch sync of album artists (default: True)
+    """
+    from popularity_helpers import build_artist_index
+    from scan_resume import should_resume_scan, get_artists_to_scan, mark_scan_completed
+    from helpers.logging_config import log_unified, log_info, log_debug
+    
+    # Check for interrupted scan
+    should_resume, resume_from_artist = should_resume_scan("navidrome")
+    
+    # Unified log: Simple start notification
+    if should_resume:
+        log_unified(f"Navidrome Import Scan - Resuming from {resume_from_artist}")
+    else:
+        log_unified("Navidrome Import Scan - Starting Navidrome Import")
+    
+    # Info log: Detailed start information
+    log_info(f"Starting Navidrome library scan")
+    log_info(f"Scan parameters - Verbose: {verbose}, Force: {force}, Resume: {should_resume}")
+    if should_resume:
+        log_info(f"Resuming scan from artist: {resume_from_artist}")
+    log_info(f"Start time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    
+    # Debug log: Technical details
+    log_debug(f"scan_library_to_db called with verbose={verbose}, force={force}, resume={should_resume}")
+    
+    def _safe_int(value):
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return None
+    
+    log_info("Building artist index from Navidrome...")
+    log_debug("API Call: build_artist_index()")
+    artist_map_local = build_artist_index(verbose=verbose) or {}
+    log_debug(f"API Response: build_artist_index returned {len(artist_map_local)} artists")
+    
+    if not artist_map_local:
+        log_unified("Navidrome Import Scan - ERROR: No artists available from Navidrome")
+        log_info("No artists available from Navidrome; aborting library scan")
+        log_debug("build_artist_index returned empty artist map")
+        return
+    
+    # Optimization: Check if library totals match before scanning each album
+    # Skip individual album checks if force=False and totals match
+    # Note: This optimization checks both album and track counts.
+    # If either count differs, the scan will proceed to update.
+    # Use --force to bypass this check and always scan.
+    if not force:
+        log_info("Checking if library is already up-to-date (comparing album and track counts)...")
+        log_debug("Getting library stats from Navidrome and database")
+        
+        # Get Navidrome stats
+        nav_stats = get_navidrome_library_stats(artist_map_local)
+        navidrome_album_count = nav_stats.get("total_albums", 0)
+        navidrome_track_count = nav_stats.get("total_tracks", 0)
+        
+        # Get database stats
+        db_stats = get_database_library_stats()
+        db_album_count = db_stats.get("total_albums", 0)
+        db_track_count = db_stats.get("total_tracks", 0)
+        
+        log_info(f"Navidrome: {navidrome_album_count} albums, {navidrome_track_count} songs")
+        log_info(f"Database: {db_album_count} albums, {db_track_count} songs")
+        log_debug(f"Library comparison - Albums: Nav={navidrome_album_count} vs DB={db_album_count}, Tracks: Nav={navidrome_track_count} vs DB={db_track_count}")
+        
+        # Skip scan only if BOTH album and track counts match
+        if (navidrome_album_count > 0 and navidrome_track_count > 0 and
+            navidrome_album_count == db_album_count and 
+            navidrome_track_count == db_track_count):
+            log_unified("Navidrome Import Scan - Library already up-to-date, skipping scan")
+            log_info(f"Library is already up-to-date ({db_album_count} albums, {db_track_count} songs)")
+            log_info("Use --force to re-import all tracks")
+            log_debug("Early exit: both album and track counts match, skipping detailed scan")
+            return
+        
+        # If counts don't match, log which count(s) differ
+        if navidrome_album_count != db_album_count:
+            log_info(f"Album count mismatch: Navidrome has {navidrome_album_count}, database has {db_album_count}")
+        if navidrome_track_count != db_track_count:
+            log_info(f"Track count mismatch: Navidrome has {navidrome_track_count}, database has {db_track_count}")
+        log_info("Proceeding with full library scan to sync differences")
+
+    # Cache existing track IDs to avoid re-writing cached rows unless force=True
+    existing_track_ids: set[str] = set()
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT id FROM tracks")
+        log_debug("DB Query: SELECT id FROM tracks")
+        existing_track_ids = {row[0] for row in cursor.fetchall()}
+        log_debug(f"Found {len(existing_track_ids)} existing tracks in database")
+        conn.close()
+    except Exception as e:
+        log_debug(f"Prefetch existing track IDs failed: {e}", exc_info=True)
+
+    # Get list of artists already in database and their track counts
+    db_artists: dict[str, int] = {}  # artist_name -> track_count
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
+        log_debug("DB Query: SELECT artist, COUNT(*) as track_count FROM tracks GROUP BY artist")
+        db_artists = {row[0]: row[1] for row in cursor.fetchall() if row[0]}
+        log_debug(f"Found {len(db_artists)} artists in database with track counts")
+        conn.close()
+    except Exception as e:
+        log_debug(f"Failed to fetch existing artists from database: {e}", exc_info=True)
+
+    # Detect missing artists (in Navidrome but not in database)
+    missing_artists = []
+    artists_with_mismatched_counts = []
+    
+    for artist_name in artist_map_local.keys():
+        if artist_name not in db_artists:
+            missing_artists.append(artist_name)
+            log_info(f"🆕 Missing artist detected: {artist_name}")
+            log_debug(f"Artist '{artist_name}' is in Navidrome but not in database")
+        else:
+            # Get track count from Navidrome for this artist
+            try:
+                artist_id = artist_map_local[artist_name].get("id")
+                if artist_id:
+                    albums = fetch_artist_albums(artist_id)
+                    nav_track_count = 0
+                    for album in albums:
+                        album_id = album.get("id")
+                        if album_id:
+                            try:
+                                album_data = fetch_album_tracks(album_id)
+                                tracks = album_data.get("tracks", [])
+                                nav_track_count += len(tracks)
+                            except Exception as e:
+                                log_debug(f"Failed to fetch tracks for album {album.get('name')}: {e}")
+                                continue
+                    
+                    db_track_count = db_artists[artist_name]
+                    if nav_track_count != db_track_count:
+                        artists_with_mismatched_counts.append({
+                            "name": artist_name,
+                            "navidrome_count": nav_track_count,
+                            "database_count": db_track_count
+                        })
+                        log_info(f"⚠️ Track count mismatch for {artist_name}: Navidrome={nav_track_count}, Database={db_track_count}")
+                        log_debug(f"Artist '{artist_name}' has different track counts: Nav={nav_track_count} vs DB={db_track_count}")
+            except Exception as e:
+                log_debug(f"Failed to get track count for existing artist '{artist_name}': {e}")
+    
+    if missing_artists:
+        log_unified(f"Navidrome Import Scan - Found {len(missing_artists)} missing artists to import")
+        log_info(f"Found {len(missing_artists)} missing artists from Navidrome")
+        log_debug(f"Missing artists: {missing_artists}")
+    
+    if artists_with_mismatched_counts:
+        log_unified(f"Navidrome Import Scan - Found {len(artists_with_mismatched_counts)} artists with mismatched track counts")
+        log_info(f"Found {len(artists_with_mismatched_counts)} artists with different track counts in Navidrome vs database")
+        for artist_info in artists_with_mismatched_counts:
+            log_debug(f"Mismatch: {artist_info['name']} (Nav={artist_info['navidrome_count']} vs DB={artist_info['database_count']})")
+
+    total_written = 0
+    total_skipped = 0
+    total_albums_skipped = 0
+    
+    # Get artist list and apply resume logic
+    all_artists = list(artist_map_local.keys())
+    total_artists = len(all_artists)
+    
+    # Get artists to scan (may skip already scanned if resuming)
+    artists_to_scan = get_artists_to_scan(all_artists, resume_from_artist if should_resume else None)
+    artists_to_scan_count = len(artists_to_scan)
+    
+    # Calculate starting index for progress tracking
+    artist_start_index = total_artists - artists_to_scan_count
+    artist_count = artist_start_index
+    
+    if should_resume:
+        log_info(f"Resuming scan: {artists_to_scan_count} artists remaining ({artist_start_index} already scanned)")
+        log_debug(f"Resume: Starting from index {artist_start_index + 1}/{total_artists}")
+    else:
+        log_info(f"Starting scan of {total_artists} artists from Navidrome")
+        log_debug(f"Total artists to scan: {total_artists}")
+    
+    log_info(f"Missing artists found: {len(missing_artists)}, Artists with mismatched counts: {len(artists_with_mismatched_counts)}")
+    
+    # Optional: Pre-import batch sync of all album artists before main loop
+    # This creates all unique album_artist entries in a single transaction,
+    # much faster than creating them one-by-one during the main import loop
+    if pre_sync_artists:
+        log_info("Pre-syncing album artists before main import (batch mode)...")
+        try:
+            sync_result = pre_import_sync_album_artists()
+            if sync_result.get("success"):
+                log_unified(f"Navidrome Import Scan - Pre-sync complete: {sync_result.get('new_artists_created', 0)} new artists, {sync_result.get('sync_time_ms', 0):.0f}ms")
+                log_info(f"Pre-sync results: Created {sync_result.get('new_artists_created', 0)} new artists, "
+                         f"Found {sync_result.get('unique_album_artists', 0)} unique album artists, "
+                         f"Already had {sync_result.get('existing_artists', 0)} artists ({sync_result.get('sync_time_ms', 0):.0f}ms)")
+                log_debug(f"New artists created: {sync_result.get('new_artists', [])}")
+            else:
+                log_info(f"Pre-sync encountered an error: {sync_result.get('error', 'Unknown error')}")
+                log_debug(f"Pre-sync error details: {sync_result}")
+        except Exception as e:
+            log_info(f"Pre-sync of album artists failed: {e}")
+            log_debug(f"Pre-sync exception: {e}", exc_info=True)
+            # Continue with main loop anyway - album artists will be created per-item if needed
+    
+    for name in artists_to_scan:
+        artist_count += 1
+        info = artist_map_local.get(name)
+        if not info:
+            log_debug(f"Artist '{name}' not found in artist map")
+            continue
+            
+        artist_id = info.get("id")
+        if not artist_id:
+            log_info(f"Skipping artist '{name}' - no artist ID available")
+            log_debug(f"Artist '{name}' has no ID in artist map: {info}")
+            continue
+        
+        log_debug(f"Processing artist {artist_count}/{total_artists}: {name} (ID: {artist_id})")
+
+        try:
+            # Use the consolidated scan_artist_to_db function
+            scan_artist_to_db(name, artist_id, verbose=verbose, force=force, processed_artists=artist_count, total_artists=total_artists)
+        except Exception as e:
+            log_info(f"Failed to scan artist '{name}': {e}")
+            log_debug(f"scan_artist_to_db failed for '{name}': {e}", exc_info=True)
+    
+    # Info log: Detailed completion summary
+    log_unified(f"Navidrome Import Scan - Complete: {len(missing_artists)} new artists added")
+    log_info(f"Navidrome library scan complete")
+    log_info(f"End time: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
+    log_info(f"Summary:")
+    log_info(f"  - Total artists scanned: {total_artists}")
+    log_info(f"  - Missing artists imported: {len(missing_artists)}")
+    log_info(f"  - Artists with mismatched track counts: {len(artists_with_mismatched_counts)}")
+    if missing_artists:
+        log_info(f"  - Newly imported: {', '.join(missing_artists[:5])}" + (" and more..." if len(missing_artists) > 5 else ""))
+    if artists_with_mismatched_counts:
+        log_info(f"  - Track mismatches detected in: {', '.join([a['name'] for a in artists_with_mismatched_counts[:5]])}" + (" and more..." if len(artists_with_mismatched_counts) > 5 else ""))
+    
+    # Debug log: Technical summary
+    log_debug(f"Library scan complete - Artists: {total_artists}, Missing: {len(missing_artists)}, Mismatched: {len(artists_with_mismatched_counts)}, Verbose: {verbose}, Force: {force}")
+    
+    # Mark scan as completed and clear resume state
+    mark_scan_completed("navidrome")
+    log_info("Scan completed successfully, progress file cleared")

@@ -776,7 +776,7 @@ def run_full_scan_pipeline(verbose=False, force=False):
         verbose: Enable verbose output
         force: Force re-scan of all data
     """
-    from deprecated.navidrome_import import scan_library_to_db
+    from helpers.scan_helpers import scan_library_to_db
     from popularity import popularity_scan
     from beets_auto_import import BeetsAutoImporter
     
