@@ -113,3 +113,26 @@ def verify_album_artist_column():
             return {"exists": False, "message": "album_artist column does NOT exist - migration failed or not run"}
     except Exception as e:
         return {"exists": False, "message": f"Error verifying column: {e}"}
+
+
+def get_current_track_rating(track_id: str) -> int:
+    """
+    Query the current rating for a track from the database.
+    
+    Args:
+        track_id: Track ID to query
+        
+    Returns:
+        Star rating (0-5), or 0 if not found
+    """
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute("SELECT stars FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        conn.close()
+        return int(row[0]) if row else 0
+    except Exception as e:
+        import logging
+        logging.debug(f"Failed to get current rating for track {track_id}: {e}")
+        return 0

@@ -148,7 +148,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
             
             # Detect if this is a live/unplugged album
-            from helpers import detect_live_album
+            from helpers.helpers import detect_live_album
             album_context = detect_live_album(album_name)
             if album_context.get("is_live") or album_context.get("is_unplugged"):
                 logging.info(f"      🎤 Detected live/unplugged album: {album_name}")

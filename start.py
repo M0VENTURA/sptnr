@@ -54,7 +54,7 @@ from popularity_helpers import (
     get_album_track_count_in_db,
 )
 # Import DB connection helper
-from helpers.db_utils import get_db_connection
+from helpers.db_utils import get_db_connection, get_current_track_rating
 
 # Import scan helpers
 from helpers.scan_helpers import scan_library_to_db
@@ -90,23 +90,8 @@ def log_unified(msg: str) -> None:
 
 # --- argparse import ---
 import argparse
-# Import DB connection helper
-from helpers.db_utils import get_db_connection
 
-
-def get_current_track_rating(track_id: str) -> int:
-    """Query the current rating for a track from the database. Returns 0 if not found."""
-    try:
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute("SELECT stars FROM tracks WHERE id = ?", (track_id,))
-        row = cursor.fetchone()
-        conn.close()
-        return int(row[0]) if row else 0
-    except Exception as e:
-        logging.debug(f"Failed to get current rating for track {track_id}: {e}")
-        return 0
-
+# Note: get_current_track_rating() imported from helpers.db_utils (line 60)
 
 # --- Spotify API Helpers ---
 def _clean_values(values):

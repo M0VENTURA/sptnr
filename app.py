@@ -41,6 +41,7 @@ from datetime import datetime
 import copy
 from functools import wraps
 from helpers.scan_helpers import scan_artist_to_db
+from helpers.config_helpers import get_config, get_navidrome_config, clear_config_cache
 from popularity import popularity_scan, row_get, download_and_save_album_art
 from popularity_helpers import build_artist_index
 from unified_scan import unified_scan_pipeline
