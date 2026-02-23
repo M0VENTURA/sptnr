@@ -1626,6 +1626,7 @@ def detect_single_enhanced(
     radio_edit_found = False
     discogs_video_confirmed = False
     lastfm_single_confirmed = False
+    artist_mbid = None  # Initialize for use in video/compilation checks
     
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
@@ -1731,6 +1732,46 @@ def detect_single_enhanced(
                 log_info(f"   ⓘ MusicBrainz client is disabled")
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
         musicbrainz_confirmed = False
+    
+    # STAGE 3B: MusicBrainz Video Relationship Check (MEDIUM CONFIDENCE)
+    # Check if the track has a video relationship (YouTube/Vimeo) indicating it was promoted as a single
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        if hasattr(musicbrainz_client, 'has_video_relationship'):
+            try:
+                log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
+                log_info(f"   Checking MusicBrainz for video relationship: {title}")
+                
+                has_video = musicbrainz_client.has_video_relationship(title, artist, artist_mbid=artist_mbid)
+                if has_video:
+                    result['single_sources'].append('musicbrainz_video')
+                    result['single_sources_used'].append('musicbrainz_video')
+                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track has video relationship (single indicator)")
+                    log_info(f"   ✓ MusicBrainz video relationship found: {title}")
+                else:
+                    log_debug(f"[MUSICBRAINZ] ✗ No video relationship found")
+            except Exception as e:
+                log_debug(f"[MUSICBRAINZ] ERROR during video relationship check: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz video check failed for {title}: {e}")
+    
+    # STAGE 3C: MusicBrainz Various Artists Compilation Check (MEDIUM CONFIDENCE)
+    # Check if the track appears on multiple Various Artists compilations
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        if hasattr(musicbrainz_client, 'appears_on_various_artists'):
+            try:
+                log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
+                log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
+                
+                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist, artist_mbid=artist_mbid)
+                if appears_on_va:
+                    result['single_sources'].append('musicbrainz_compilation')
+                    result['single_sources_used'].append('musicbrainz_compilation')
+                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track appears on multiple VA compilations (single indicator)")
+                    log_info(f"   ✓ MusicBrainz compilation appearances found: {title}")
+                else:
+                    log_debug(f"[MUSICBRAINZ] ✗ No compilation appearances found")
+            except Exception as e:
+                log_debug(f"[MUSICBRAINZ] ERROR during compilation check: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz compilation check failed for {title}: {e}")
     
     # STAGE 4: Last.fm Single Check (MEDIUM CONFIDENCE - checked before Spotify per new ordering)
     # Check if the track exists as a single/album on Last.fm (by track title)
@@ -1903,6 +1944,7 @@ def detect_single_enhanced(
     
     # STAGE 4: MusicBrainz (Tertiary Source)
     musicbrainz_confirmed = False
+    artist_mbid = None  # Initialize for use in video/compilation checks
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
         # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
         # If we already have medium-confidence from z-score, skip MusicBrainz (saves ~1-2 seconds)
@@ -2007,6 +2049,46 @@ def detect_single_enhanced(
                 log_info(f"   ⓘ MusicBrainz client is disabled")
                 log_debug(f"   MusicBrainz: Client is disabled in configuration")
         musicbrainz_confirmed = False
+    
+    # STAGE 3B: MusicBrainz Video Relationship Check (MEDIUM CONFIDENCE)
+    # Check if the track has a video relationship (YouTube/Vimeo) indicating it was promoted as a single
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        if hasattr(musicbrainz_client, 'has_video_relationship'):
+            try:
+                log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
+                log_info(f"   Checking MusicBrainz for video relationship: {title}")
+                
+                has_video = musicbrainz_client.has_video_relationship(title, artist, artist_mbid=artist_mbid)
+                if has_video:
+                    result['single_sources'].append('musicbrainz_video')
+                    result['single_sources_used'].append('musicbrainz_video')
+                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track has video relationship (single indicator)")
+                    log_info(f"   ✓ MusicBrainz video relationship found: {title}")
+                else:
+                    log_debug(f"[MUSICBRAINZ] ✗ No video relationship found")
+            except Exception as e:
+                log_debug(f"[MUSICBRAINZ] ERROR during video relationship check: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz video check failed for {title}: {e}")
+    
+    # STAGE 3C: MusicBrainz Various Artists Compilation Check (MEDIUM CONFIDENCE)
+    # Check if the track appears on multiple Various Artists compilations
+    if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
+        if hasattr(musicbrainz_client, 'appears_on_various_artists'):
+            try:
+                log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
+                log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
+                
+                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist, artist_mbid=artist_mbid)
+                if appears_on_va:
+                    result['single_sources'].append('musicbrainz_compilation')
+                    result['single_sources_used'].append('musicbrainz_compilation')
+                    log_debug(f"[MUSICBRAINZ] ✓ CONFIRMED - Track appears on multiple VA compilations (single indicator)")
+                    log_info(f"   ✓ MusicBrainz compilation appearances found: {title}")
+                else:
+                    log_debug(f"[MUSICBRAINZ] ✗ No compilation appearances found")
+            except Exception as e:
+                log_debug(f"[MUSICBRAINZ] ERROR during compilation check: {type(e).__name__}: {str(e)}")
+                log_info(f"   ⚠ MusicBrainz compilation check failed for {title}: {e}")
     
     # STAGE 4.5: Discogs Music Video Check (MEDIUM CONFIDENCE)
     discogs_video_confirmed = False
