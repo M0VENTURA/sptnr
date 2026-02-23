@@ -7,9 +7,9 @@ import os
 import time
 from datetime import datetime
 from zoneinfo import ZoneInfo
-from start import get_db_connection, fetch_artist_albums, fetch_album_tracks, save_to_db
-from single_detector import get_current_single_detection
+from .db_utils import get_db_connection
 from colorama import Fore, Style
+from .logging_config import log_debug, log_info, log_unified
 
 try:
     from scan_history import log_album_scan
@@ -20,15 +20,6 @@ except ImportError as e:
     _scan_history_available = False
     def log_album_scan(*args, **kwargs):
         logging.debug(f"log_album_scan called but scan_history not available: {args}")
-
-# --- Single Detection DB Helpers ---
-def get_db_connection():
-    from db_utils import DB_PATH
-    import sqlite3
-    conn = sqlite3.connect(DB_PATH, timeout=120.0)
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.row_factory = sqlite3.Row
-    return conn
 
 
 # Color constants
@@ -82,6 +73,9 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         total_artists: Total number of artists for progress tracking
         album_filter: Only scan this specific album (if provided)
     """
+    # Local import to avoid circular dependency
+    from start import fetch_artist_albums, fetch_album_tracks, save_to_db
+    
     try:
         # Prefetch cached track IDs for this artist and check for missing critical fields
         existing_track_ids: set[str] = set()
@@ -148,7 +142,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             logging.info(f"   💿 [Album {alb_idx}/{total_albums}] {album_name}")
             
             # Detect if this is a live/unplugged album
-            from helpers.helpers import detect_live_album
+            from .helpers import detect_live_album
             album_context = detect_live_album(album_name)
             if album_context.get("is_live") or album_context.get("is_unplugged"):
                 logging.info(f"      🎤 Detected live/unplugged album: {album_name}")
@@ -576,6 +570,9 @@ def get_navidrome_library_stats(artist_map: dict) -> dict:
     Returns:
         Dict with 'total_albums' and 'total_tracks' counts from Navidrome
     """
+    # Local import to avoid circular dependency
+    from start import fetch_artist_albums, fetch_album_tracks
+    
     try:
         total_albums = sum(info.get("album_count", 0) for info in artist_map.values())
         total_tracks = 0
@@ -669,7 +666,6 @@ def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_arti
     """
     from popularity_helpers import build_artist_index
     from scan_resume import should_resume_scan, get_artists_to_scan, mark_scan_completed
-    from helpers.logging_config import log_unified, log_info, log_debug
     
     # Check for interrupted scan
     should_resume, resume_from_artist = should_resume_scan("navidrome")
@@ -773,6 +769,9 @@ def scan_library_to_db(verbose: bool = False, force: bool = False, pre_sync_arti
     except Exception as e:
         log_debug(f"Failed to fetch existing artists from database: {e}", exc_info=True)
 
+    # Local import to avoid circular dependency
+    from start import fetch_artist_albums, fetch_album_tracks
+    
     # Detect missing artists (in Navidrome but not in database)
     missing_artists = []
     artists_with_mismatched_counts = []
