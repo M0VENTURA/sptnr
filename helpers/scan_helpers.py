@@ -68,7 +68,7 @@ def save_navidrome_scan_progress(current_artist, processed_artists, total_artist
     except Exception as e:
         logging.error(f"Failed to save Navidrome scan progress: {e}")
 
-def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, processed_artists: int = 0, total_artists: int = 0):
+def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, force: bool = False, filter_missing: bool = False, processed_artists: int = 0, total_artists: int = 0, album_filter: str = None):
     """
     Scan a single artist from Navidrome and persist tracks to DB.
 
@@ -77,8 +77,10 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         artist_id: Navidrome ID of the artist
         verbose: Enable verbose logging
         force: Force re-import even if cached
+        filter_missing: Only scan artists/albums with missing fields
         processed_artists: Current artist index (1-based) for progress tracking
         total_artists: Total number of artists for progress tracking
+        album_filter: Only scan this specific album (if provided)
     """
     try:
         # Prefetch cached track IDs for this artist and check for missing critical fields
@@ -114,9 +116,15 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
             logging.debug(f"Prefetch existing tracks for artist '{artist_name}' failed: {e}")
 
         albums = fetch_artist_albums(artist_id)
+        
+        # If filter_missing is enabled and this artist has no missing fields, skip it
+        if filter_missing and len(albums_needing_reimport) == 0 and len(existing_track_ids) > 0:
+            logging.debug(f"Skipping artist '{artist_name}' - no albums with missing fields (filter_missing=True)")
+            return
+        
         if verbose:
             print(f"🎤 Scanning artist: {artist_name} ({len(albums)} albums)")
-        logging.info(f"🎤 [Navidrome] Scanning artist: {artist_name} ({len(albums)} albums)")
+        logging.info(f"🎤 [Navidrome] Scanning artist: {artist_name} ({len(albums)} albums, force={force}, filter_missing={filter_missing}, album_filter={album_filter or 'None'})")
         # Save artist-level progress
         if total_artists > 0:
             save_navidrome_scan_progress(artist_name, processed_artists, total_artists)
@@ -124,6 +132,16 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
         total_albums = len(albums)
         for alb_idx, alb in enumerate(albums, 1):
             album_name = alb.get("name") or ""
+            
+            # Skip albums that don't match filter_missing (if enabled)
+            if filter_missing and album_name not in albums_needing_reimport:
+                logging.debug(f"Skipping album '{album_name}' - no missing fields (filter_missing=True)")
+                continue
+            
+            # Skip albums that don't match the filter (if provided)
+            if album_filter and album_name.strip() != album_filter.strip():
+                logging.debug(f"Skipping album '{album_name}' - does not match filter '{album_filter}'")
+                continue
             album_id = alb.get("id")
             if not album_id:
                 continue
