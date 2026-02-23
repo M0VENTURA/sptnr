@@ -5451,7 +5451,10 @@ def _run_album_scan_pipeline(artist_name: str, album_name: str):
             # Step 1: Import metadata from Navidrome for this specific album
             # Force is always True for single album scans to ensure fresh data
             log_unified(f"Step 1/2: Navidrome import for album '{album_display}' (force=True)")
-            scan_artist_to_db(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
+            
+            # Use deprecated version with album_filter support for album-specific scans
+            from deprecated.navidrome_import import scan_artist_to_db as scan_artist_to_db_with_filter
+            scan_artist_to_db_with_filter(artist_name, artist_id, verbose=True, force=True, album_filter=album_name)
 
             # Step 2: Run popularity scan for this specific album (includes singles detection and star rating)
             log_unified(f"Step 2/2: Running popularity scan for album '{album_display}' (force=True)")
