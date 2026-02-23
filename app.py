@@ -7406,7 +7406,7 @@ def downloads_search(source):
 @app.route("/downloads/discover/<category>")
 def downloads_discover(category):
     """Discover pages for recommendations"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     
     # Route to appropriate template
     templates = {
@@ -7425,7 +7425,7 @@ def downloads_discover(category):
 @app.route("/api/slskd/search", methods=["POST"])
 def slskd_search():
     """Proxy endpoint for slskd search API - returns search ID for polling"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7453,7 +7453,7 @@ def slskd_search():
 @app.route("/api/slskd/search/<search_id>", methods=["GET"])
 def slskd_search_results(search_id):
     """Poll for Soulseek search results"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7767,7 +7767,7 @@ def scan_combined():
 @app.route("/api/slskd/download", methods=["POST"])
 def slskd_download():
     """Proxy endpoint to download from slskd"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7835,7 +7835,7 @@ def slskd_download():
 @app.route("/api/slskd/cancel", methods=["POST"])
 def slskd_cancel():
     """Cancel a Soulseek download"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7872,7 +7872,7 @@ def slskd_cancel():
 @app.route("/api/slskd/retry", methods=["POST"])
 def slskd_retry():
     """Retry a failed Soulseek download"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7913,7 +7913,7 @@ def slskd_retry():
 @app.route("/api/slskd/search-again", methods=["POST"])
 def slskd_search_again():
     """Search for a file again to find alternative sources"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -7948,7 +7948,7 @@ def slskd_search_again():
 @app.route("/api/slskd/download-single", methods=["POST"])
 def slskd_download_single():
     """Download a single track from Soulseek search results in playlist importer"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -8160,7 +8160,7 @@ def api_musicbrainz_download():
 def _initiate_slskd_download_bg(tracking_id, query):
     """Background thread worker to initiate a Soulseek search and wait for user selection"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         slskd_config = cfg.get("slskd", {})
         
         if not slskd_config.get("enabled"):
@@ -8332,7 +8332,7 @@ def _initiate_slskd_download_bg(tracking_id, query):
 def _initiate_slskd_download(tracking_id, query, cursor, conn):
     """Helper to initiate a Soulseek download"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         slskd_config = cfg.get("slskd", {})
         
         if not slskd_config.get("enabled"):
@@ -8507,7 +8507,7 @@ def _initiate_slskd_download(tracking_id, query, cursor, conn):
 def _initiate_qbit_download_bg(tracking_id, query):
     """Background thread worker to initiate a qBittorrent download with fresh DB connection"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {})
         
         if not qbit_config.get("enabled"):
@@ -8691,7 +8691,7 @@ def _initiate_qbit_download_bg(tracking_id, query):
 def _initiate_qbit_download(tracking_id, query, cursor, conn):
     """Helper to initiate a qBittorrent download"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         qbit_config = cfg.get("qbittorrent", {})
         
         if not qbit_config.get("enabled"):
@@ -9283,7 +9283,7 @@ def api_slskd_download_file():
         # Initiate the download in a background thread
         def perform_slskd_download():
             try:
-                cfg, _ = _read_yaml(CONFIG_PATH)
+                cfg = get_config()
                 slskd_config = cfg.get("slskd", {})
                 web_url = slskd_config.get("web_url", "http://localhost:5030")
                 api_key = slskd_config.get("api_key", "")
@@ -9389,7 +9389,7 @@ def api_slskd_search_again(download_id):
 @app.route("/api/qbittorrent/search", methods=["POST"])
 def qbit_search():
     """Proxy endpoint for qBittorrent search API"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     
     if not qbit_config.get("enabled"):
@@ -9464,7 +9464,7 @@ def qbit_search():
 @app.route("/api/qbittorrent/add", methods=["POST"])
 def qbit_add_torrent():
     """Proxy endpoint to add torrent to qBittorrent"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     
     if not qbit_config.get("enabled"):
@@ -9502,7 +9502,7 @@ def qbit_add_torrent():
 @app.route("/api/qbittorrent/force-start", methods=["POST"])
 def qbit_force_start():
     """Force-start or resume a stalled qBittorrent torrent"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
 
     if not qbit_config.get("enabled"):
@@ -9545,7 +9545,7 @@ def qbit_force_start():
 @app.route("/api/qbittorrent/stop", methods=["POST"])
 def qbit_stop():
     """Pause/stop a qBittorrent torrent"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
 
     if not qbit_config.get("enabled"):
@@ -10122,7 +10122,7 @@ def api_album_art(artist, album):
         # 3. Try to get from Navidrome (more robust search with artist name)
         try:
             log_debug(f"Attempting Navidrome fetch for: {artist} - {album}")
-            cfg, _ = _read_yaml(CONFIG_PATH)
+            cfg = get_config()
             nav_users = cfg.get("navidrome_users", [])
             if not nav_users:
                 nav = cfg.get("navidrome", {}) or {}
@@ -10623,7 +10623,7 @@ def api_downloads_scan():
         if failed_stats.get("failed_detected"):
             log_info(f"Failed downloads check: {failed_stats}")
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         downloads_config = cfg.get("downloads", {})
         downloads_dir = downloads_config.get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
         incomplete_dir = downloads_config.get("incomplete_folder", "/downloads/Soulseek/Incomplete")
@@ -11062,7 +11062,7 @@ def api_downloads_scheduler_start():
             def retry_scheduler_worker():
                 """Worker function for retry scheduler thread"""
                 try:
-                    cfg, _ = _read_yaml(CONFIG_PATH)
+                    cfg = get_config()
                     navidrome_config = cfg.get("navidrome", {})
                     navidrome_url = navidrome_config.get("url", "http://localhost:4533")
                     navidrome_token = navidrome_config.get("token", "")
@@ -11798,7 +11798,7 @@ def api_lastfm_sync_now():
     from datetime import datetime
     import unicodedata
     
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
     
     if not lastfm_config.get("enabled"):
@@ -12119,7 +12119,7 @@ def api_lastfm_create_playlist():
         data = request.get_json()
         rec_type = data.get("type", "tracks")  # tracks, artists, or albums
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         lastfm_config = cfg.get("api_integrations", {}).get("lastfm", {})
         
         if not lastfm_config.get("enabled"):
@@ -12288,7 +12288,7 @@ def api_recommended_playlists():
     try:
         from playlist_recommendations import PlaylistRecommender
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         
         # Get database connection
         conn = get_db_connection()
@@ -12339,7 +12339,7 @@ def api_listenbrainz_sync_now():
     from datetime import datetime
     import unicodedata
     
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     lb_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
     
     if not lb_config.get("enabled"):
@@ -12524,7 +12524,7 @@ def api_listenbrainz_sync_now():
         logging.error(f"Error syncing ListenBrainz recommendations: {e}", exc_info=True)
         return jsonify({"error": str(e), "success": False}), 500
     
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     lb_config = cfg.get("api_integrations", {}).get("listenbrainz", {})
     
     if not lb_config.get("enabled"):
@@ -12743,7 +12743,7 @@ def api_listenbrainz_recommendations_cached():
 @app.route("/downloads-manager")
 def downloads_manager():
     """Downloads manager UI page"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     
     # Get downloads folder from config, fall back to env var, then default
     downloads_dir = cfg.get("downloads", {}).get("folder", os.environ.get("DOWNLOADS_DIR", "/downloads"))
@@ -12769,7 +12769,7 @@ def downloads_monitor_legacy():
 @app.route("/api/qbittorrent/status", methods=["GET"])
 def qbit_status():
     """Get qBittorrent download status"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     qbit_config = cfg.get("qbittorrent", {})
     
     if not qbit_config.get("enabled"):
@@ -12834,7 +12834,7 @@ def qbit_status():
 @app.route("/api/slskd/status", methods=["GET"])
 def slskd_status():
     """Get slskd download status"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     slskd_config = cfg.get("slskd", {})
     
     if not slskd_config.get("enabled"):
@@ -13557,7 +13557,7 @@ def api_track_discogs_lookup():
             return jsonify({"error": "Missing title or artist"}), 400
         
         # Get Discogs token from config
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         # Check both api_integrations.discogs and root discogs for backwards compatibility
         discogs_config = cfg.get("api_integrations", {}).get("discogs", {}) or cfg.get("discogs", {})
         token = discogs_config.get("token", "")
@@ -14801,7 +14801,7 @@ def api_remove_genres():
         def trigger_scan():
             try:
                 from api_clients.navidrome import NavidromeClient
-                cfg, _ = _read_yaml(CONFIG_PATH)
+                cfg = get_config()
                 navidrome_config = cfg.get("navidrome", {})
                 
                 if navidrome_config.get("base_url"):
@@ -14962,7 +14962,7 @@ def api_start_navidrome_scan():
     """
     try:
         from api_clients.navidrome import NavidromeClient
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         navidrome_config = cfg.get("navidrome", {})
         
         if not navidrome_config.get("base_url"):
@@ -14998,7 +14998,7 @@ def api_get_navidrome_scan_status():
     """
     try:
         from api_clients.navidrome import NavidromeClient
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         navidrome_config = cfg.get("navidrome", {})
         
         if not navidrome_config.get("base_url"):
@@ -15115,7 +15115,7 @@ def playlist_manager():
 @app.route("/playlists/browse")
 def playlists_browse():
     """Browse playlists page"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     navidrome_config = cfg.get("navidrome", {})
     navidrome_users = cfg.get("navidrome_users", [])
     
@@ -15133,7 +15133,7 @@ def playlists_browse():
 @app.route("/playlists/create/<playlist_type>")
 def playlists_create(playlist_type):
     """Create playlist pages"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     navidrome_config = cfg.get("navidrome", {})
     navidrome_users = cfg.get("navidrome_users", [])
     
@@ -15191,7 +15191,7 @@ def playlists_create(playlist_type):
 @app.route("/playlists/import")
 def playlists_import():
     """Import playlists page"""
-    cfg, _ = _read_yaml(CONFIG_PATH)
+    cfg = get_config()
     navidrome_config = cfg.get("navidrome", {})
     navidrome_users = cfg.get("navidrome_users", [])
     
@@ -15216,7 +15216,7 @@ def playlists_import():
 def api_playlist_list():
     """List all playlists in Navidrome, including type and metadata"""
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         current_user = session.get("username")
         navidrome_users = cfg.get("navidrome_users", [])
         nav_cfg = None
@@ -15304,7 +15304,7 @@ def api_playlist_load():
         if not playlist_id:
             return jsonify({"error": "Missing playlist_path"}), 200
 
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         navidrome_config = cfg.get("navidrome", {})
         base_url = navidrome_config.get("base_url", "http://localhost:4533")
         user = navidrome_config.get("user", "admin")
@@ -15372,7 +15372,7 @@ def api_playlist_search_songs():
         if not query or len(query) < 2:
             return jsonify({"error": "Query too short"}), 400
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         nav_users = cfg.get("navidrome_users") or []
         if not nav_users:
             nav = cfg.get("navidrome", {}) or {}
@@ -15507,7 +15507,7 @@ def api_playlist_create_custom():
         if not songs:
             return jsonify({"error": "Add at least one song"}), 400
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         navidrome_config = cfg.get("navidrome", {})
         base_url = navidrome_config.get("base_url", "http://localhost:4533")
         user = navidrome_config.get("user", "admin")
@@ -15580,7 +15580,7 @@ def api_listenbrainz_recommendations(rec_type):
     - last_week_exploration: Previous week's exploration
     """
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         current_user = session.get("username")
         navidrome_users = cfg.get("navidrome_users", [])
         
@@ -15643,7 +15643,7 @@ def api_listenbrainz_create_playlist():
         rec_type = data.get("type", "weekly_jams")
         playlist_name = data.get("name", f"ListenBrainz {rec_type.replace('_', ' ').title()}")
         
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         current_user = session.get("username")
         navidrome_users = cfg.get("navidrome_users", [])
         
@@ -15969,7 +15969,7 @@ def api_search_discogs_release():
             return jsonify({"error": "Artist and album name required"}), 400
         
         # Get Discogs configuration
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         discogs_config = cfg.get("discogs", {})
         discogs_token = discogs_config.get("token", "")
         discogs_enabled = discogs_config.get("enabled", False)
@@ -16099,7 +16099,7 @@ def api_search_upcoming_release():
 if __name__ == "__main__":
     # Check if background scanner should auto-start on app launch
     try:
-        cfg, _ = _read_yaml(CONFIG_PATH)
+        cfg = get_config()
         features = cfg.get('features', {})
         
         # Only show auto-start status if perpetual mode is enabled
@@ -16156,7 +16156,7 @@ if __name__ == "__main__":
             time_module.sleep(5)
             
             try:
-                cfg, _ = _read_yaml(CONFIG_PATH)
+                cfg = get_config()
                 # Get scheduler config
                 scheduler_config = cfg.get("features", {}).get("retry_scheduler", {})
                 interval = scheduler_config.get("interval_seconds", 60)
