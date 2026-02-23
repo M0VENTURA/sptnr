@@ -451,7 +451,7 @@ async function refreshUpcomingReleases() {
             data-bs-parent="#releaseAccordion">
             <div class="accordion-body p-0">
               <div class="table-responsive">
-                <table class="table table-hover table-sm mb-0">
+                <table class="table table-dark table-hover table-sm mb-0">
                   <thead>
                     <tr>
                       <th>Artist</th>
