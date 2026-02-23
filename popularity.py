@@ -154,6 +154,12 @@ DEFAULT_POPULARITY_MEAN = 50          # Default mean popularity if no valid scor
 POPULARITY_METADATA_SOURCE_NAME = "Spotify/Last.fm popularity"  # Display name for tracks with popularity data but no single sources
 
 
+def get_lastfm_config(config: dict) -> dict:
+    """Return Last.fm config, supporting both lastfm and last_fm keys."""
+    api_integrations = config.get("api_integrations", {}) if isinstance(config, dict) else {}
+    return api_integrations.get("lastfm") or api_integrations.get("last_fm") or {}
+
+
 def strip_parentheses(title: str) -> str:
     """
     Remove TRAILING parenthesized content from track title to get base version.
@@ -2523,7 +2529,7 @@ def popularity_scan(
                                             log_debug(f'No bio or image found from AudioDB for artist: {artist}')
                                             # Fall back to Last.fm for bio and CoverArtArchive for image
                                             try:
-                                                lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                                                lastfm_config = get_lastfm_config(config)
                                                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                                                     from api_clients.lastfm import LastFmClient
                                                     from api_clients.coverartarchive import get_artist_image_from_caa
@@ -2590,7 +2596,7 @@ def popularity_scan(
                                         log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
                                         # Still try Last.fm as fallback on timeout
                                         try:
-                                            lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                                            lastfm_config = get_lastfm_config(config)
                                             if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                                                 from api_clients.lastfm import LastFmClient
                                                 lastfm_client = LastFmClient(lastfm_config.get("api_key"))
@@ -2656,7 +2662,7 @@ def popularity_scan(
             # Fetch similar artists for all artists (including compilations for recommendation purposes)
             try:
                 # Get Last.fm client for similar artists lookup
-                lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                lastfm_config = get_lastfm_config(config)
                 if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                     from api_clients.lastfm import LastFmClient
                     lastfm_client = LastFmClient(lastfm_config.get("api_key"))
@@ -2769,7 +2775,7 @@ def popularity_scan(
                 
                 # Fetch and store artist tags from Last.fm
                 try:
-                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                    lastfm_config = get_lastfm_config(config)
                     if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                         from api_clients.lastfm import LastFmClient
                         lastfm_client = LastFmClient(lastfm_config.get("api_key"))
@@ -2799,7 +2805,7 @@ def popularity_scan(
                 
                 # Fetch and store album tags from Last.fm
                 try:
-                    lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                    lastfm_config = get_lastfm_config(config)
                     if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                         from api_clients.lastfm import LastFmClient
                         lastfm_client = LastFmClient(lastfm_config.get("api_key"))
@@ -3043,7 +3049,7 @@ def popularity_scan(
                     
                     try:
                         # Get Last.fm client for tag lookups
-                        lastfm_config = config.get("api_integrations", {}).get("last_fm", {})
+                        lastfm_config = get_lastfm_config(config)
                         if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
                             from api_clients.lastfm import LastFmClient
                             lastfm_client = LastFmClient(lastfm_config.get("api_key"))

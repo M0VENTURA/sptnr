@@ -21,7 +21,7 @@ from datetime import datetime
 # Import centralized logging functions
 # Use centralized logging to ensure API activity appears in unified_scan.log, info.log, and debug.log
 # instead of Python's default logging system which doesn't route to these files
-from logging_config import log_unified, log_info, log_debug
+from helpers.logging_config import log_unified, log_info, log_debug
 
 logger = logging.getLogger(__name__)
 
@@ -46,8 +46,7 @@ def get_cached_artist_stats(conn, artist: str) -> Tuple[float, float, int]:
         Tuple of (mean, stddev, count) from cache
     """
     if artist not in _artist_stats_cache:
-        from single_detection_enhanced import calculate_artist_stats as calc_stats
-        _artist_stats_cache[artist] = calc_stats(conn, artist)
+        _artist_stats_cache[artist] = calculate_artist_stats(conn, artist)
     return _artist_stats_cache[artist]
 
 
