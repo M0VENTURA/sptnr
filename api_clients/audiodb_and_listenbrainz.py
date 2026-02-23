@@ -472,7 +472,7 @@ def get_recording_popularity_batch(recording_mbids: list[str], user_agent: str =
     """
     try:
         # Import here to avoid circular dependency
-        from api_rate_limiter import get_rate_limiter
+        from helpers.api_rate_limiter import get_rate_limiter
         from api_clients.musicbrainz import _USER_AGENT as MB_USER_AGENT
         
         # Use provided user agent or fall back to MusicBrainz user agent

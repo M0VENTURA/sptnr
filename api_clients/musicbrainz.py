@@ -40,7 +40,7 @@ _USER_AGENT = f"sptnr/{_VERSION} ( https://github.com/M0VENTURA/sptnr )"
 
 # Import rate limiter
 try:
-    from api_rate_limiter import get_rate_limiter
+    from helpers.api_rate_limiter import get_rate_limiter
     _rate_limiter = get_rate_limiter()
 except ImportError:
     logger.warning("Rate limiter not available for MusicBrainz")
