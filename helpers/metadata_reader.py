@@ -226,6 +226,8 @@ def read_mp3_metadata(file_path):
                 metadata['date'] = str(audio['TDRC'].text[0]) if audio['TDRC'].text else ''
             if 'TRCK' in audio:  # Track Number
                 metadata['track_number'] = str(audio['TRCK'].text[0]) if audio['TRCK'].text else ''
+            if 'TPOS' in audio:  # Disc Number
+                metadata['disc_number'] = str(audio['TPOS'].text[0]) if audio['TPOS'].text else ''
             if 'TCON' in audio:  # Genre - can have multiple values
                 # Handle both single TCON frame with multiple values and multiple TCON frames
                 genre_list = []

@@ -67,6 +67,72 @@ def get_db():
     return conn
 
 
+def trigger_navidrome_scan():
+    """
+    Trigger Navidrome library scan via Subsonic API.
+    Does not wait for completion - scan runs in background on Navidrome server.
+    
+    Returns:
+        bool: True if scan triggered successfully, False otherwise
+    """
+    try:
+        import yaml
+        import requests
+        import hashlib
+        
+        # Load config to get Navidrome credentials
+        config_path = os.environ.get("CONFIG_PATH", "/config/config.yaml")
+        if not os.path.exists(config_path):
+            logger.warning("Config file not found, cannot trigger Navidrome scan")
+            return False
+        
+        with open(config_path, 'r') as f:
+            config = yaml.safe_load(f) or {}
+        
+        navidrome_config = config.get('navidrome', {})
+        base_url = navidrome_config.get('base_url', '')
+        username = navidrome_config.get('username', '')
+        password = navidrome_config.get('password', '')
+        
+        if not all([base_url, username, password]):
+            logger.warning("Navidrome credentials not configured, skipping scan trigger")
+            return False
+        
+        # Use Subsonic API startScan endpoint
+        # Note: MD5 is required by Subsonic API spec for enc: prefix
+        password_hash = hashlib.md5(password.encode()).hexdigest()
+        
+        url = f"{base_url}/rest/startScan"
+        params = {
+            "u": username,
+            "p": f"enc:{password_hash}",
+            "v": "1.16.1",
+            "c": "sptnr",
+            "f": "json"
+        }
+        
+        response = requests.get(url, params=params, timeout=10)
+        response.raise_for_status()
+        
+        result = response.json()
+        
+        # Check for Subsonic API success response
+        if result.get("subsonic-response", {}).get("status") == "ok":
+            logger.info("✅ Navidrome library scan triggered successfully")
+            return True
+        else:
+            error = result.get("subsonic-response", {}).get("error", {})
+            logger.warning(f"Navidrome scan response error: {error}")
+            return False
+            
+    except ImportError as e:
+        logger.warning(f"Missing required library for Navidrome scan: {e}")
+        return False
+    except Exception as e:
+        logger.warning(f"Could not trigger Navidrome scan: {e}")
+        return False
+
+
 def add_to_queue(artist, title, album=None, source='soulseek', priority=5, import_group=None, import_type='song',
                  track_number=None, album_artist=None, year=None, release_id=None, release_source=None):
     """
@@ -110,6 +176,7 @@ def add_to_queue(artist, title, album=None, source='soulseek', priority=5, impor
             'import_group': "TEXT",
             'import_type': "TEXT DEFAULT 'song'",
             'track_number': "TEXT",
+            'disc_number': "TEXT",
             'album_artist': "TEXT",
             'year': "TEXT",
             'release_id': "TEXT",
@@ -661,6 +728,10 @@ def auto_discover_and_queue_files():
                 artist = metadata.get('artist', 'Unknown Artist')
                 album = metadata.get('album', 'Unknown Album')
                 title = metadata.get('title', os.path.splitext(filename)[0])
+                album_artist = metadata.get('album_artist') or artist
+                track_number = metadata.get('track_number')
+                disc_number = metadata.get('disc_number')
+                year = metadata.get('date') or metadata.get('year')
                 
                 # Check if already in download_queue
                 cursor.execute("""
@@ -691,10 +762,10 @@ def auto_discover_and_queue_files():
                     # Set exists_in_library=1 to indicate it's a duplicate
                     cursor.execute("""
                         INSERT INTO download_queue 
-                        (artist, title, album, filename, file_path, status, exists_in_library, 
-                         source, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, 'discovered', 1, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                    """, (artist, title, album, filename, full_path))
+                        (artist, title, album, album_artist, track_number, disc_number, year, filename, file_path, 
+                         status, exists_in_library, source, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 1, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
                     conn.commit()
                     stats['queued'] += 1
                     continue
@@ -702,10 +773,10 @@ def auto_discover_and_queue_files():
                 # Add to queue with 'discovered' status
                 cursor.execute("""
                     INSERT INTO download_queue 
-                    (artist, title, album, filename, file_path, status, exists_in_library, 
-                     source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, 'discovered', 0, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
-                """, (artist, title, album, filename, full_path))
+                    (artist, title, album, album_artist, track_number, disc_number, year, filename, file_path, 
+                     status, exists_in_library, source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 0, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
                 
                 conn.commit()
                 stats['queued'] += 1
@@ -1165,6 +1236,18 @@ def process_complete_albums():
                         conn = get_db()
                         cursor = conn.cursor()
                         
+                        # Determine consistent album_artist for all tracks
+                        # Use the most common album_artist value, or fallback to artist
+                        album_artists = [t.get('album_artist') or t.get('artist') for t in completion['tracks']]
+                        album_artist_counts = {}
+                        for aa in album_artists:
+                            if aa:
+                                album_artist_counts[aa] = album_artist_counts.get(aa, 0) + 1
+                        
+                        # Get the most common album_artist
+                        consistent_album_artist = max(album_artist_counts.items(), key=lambda x: x[1])[0] if album_artist_counts else artist
+                        logger.info(f"Using consistent album_artist for all tracks: {consistent_album_artist}")
+                        
                         success_count = 0
                         for track in completion['tracks']:
                             try:
@@ -1174,11 +1257,12 @@ def process_complete_albums():
                                     logger.warning(f"File not found: {file_path}")
                                     continue
                                 
-                                # Prepare metadata
+                                # Prepare metadata with consistent album_artist
                                 metadata = {
                                     'track_number': track.get('track_number'),
+                                    'disc_number': track.get('disc_number'),
                                     'artist': track.get('artist'),
-                                    'album_artist': track.get('album_artist') or track.get('artist'),
+                                    'album_artist': consistent_album_artist,
                                     'album': track.get('album'),
                                     'year': track.get('year'),
                                     'title': track.get('title')
@@ -1229,6 +1313,14 @@ def process_complete_albums():
         
         logger.info(f"Album processing complete: {stats['processed']} albums auto-processed, "
                    f"{stats['duplicates_found']} marked as duplicates")
+        
+        # Trigger Navidrome library scan if albums were processed
+        if stats['processed'] > 0:
+            logger.info("Triggering Navidrome library scan for newly added albums...")
+            try:
+                trigger_navidrome_scan()
+            except Exception as scan_error:
+                logger.warning(f"Could not trigger Navidrome scan: {scan_error}")
         
         return stats
         

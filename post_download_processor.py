@@ -62,13 +62,13 @@ def update_file_metadata(file_path, metadata):
     
     Args:
         file_path: Path to audio file
-        metadata: Dict with keys: track_number, artist, album_artist, album, year, title
+        metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
     
     Returns:
         bool: True if successful, False otherwise
     """
     try:
-        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK
+        from mutagen.id3 import ID3, TIT2, TPE1, TPE2, TALB, TDRC, TRCK, TPOS
         from mutagen.mp3 import MP3
         from mutagen.flac import FLAC
         
@@ -98,6 +98,9 @@ def update_file_metadata(file_path, metadata):
             if metadata.get('track_number'):
                 audio.tags['TRCK'] = TRCK(encoding=3, text=[str(metadata['track_number'])])
             
+            if metadata.get('disc_number'):
+                audio.tags['TPOS'] = TPOS(encoding=3, text=[str(metadata['disc_number'])])
+            
             audio.save()
             logger.info(f"Updated MP3 metadata: {file_path}")
             return True
@@ -124,6 +127,9 @@ def update_file_metadata(file_path, metadata):
             if metadata.get('track_number'):
                 audio['tracknumber'] = [str(metadata['track_number'])]
             
+            if metadata.get('disc_number'):
+                audio['discnumber'] = [str(metadata['disc_number'])]
+            
             audio.save()
             logger.info(f"Updated FLAC metadata: {file_path}")
             return True
@@ -144,7 +150,7 @@ def rename_and_move_file(file_path, metadata):
     
     Args:
         file_path: Current path to audio file
-        metadata: Dict with keys: track_number, artist, album_artist, album, year, title
+        metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
     
     Returns:
         dict: {'success': bool, 'target_path': str, 'error': str}
