@@ -5659,57 +5659,7 @@ def track_edit(track_id):
               track_number, disc_number, comment, track_id))
         
         conn.commit()
-        
-        # Now update the MP3 file metadata
-        try:
-            from beets_integration import update_track_metadata
-            
-            # Get the file path for this track
-            cursor.execute("SELECT beets_path, file_path FROM tracks WHERE id = ?", (track_id,))
-            row = cursor.fetchone()
-            file_path = row['beets_path'] if row and row['beets_path'] else (row['file_path'] if row else None)
-            
-            if file_path:
-                # Prepare metadata to update - only include non-None values
-                metadata_updates = {}
-                
-                if title:
-                    metadata_updates['title'] = title
-                if artist:
-                    metadata_updates['artist'] = artist
-                if album:
-                    metadata_updates['album'] = album
-                if genres:
-                    metadata_updates['genre'] = genres
-                if year:
-                    metadata_updates['year'] = year
-                if album_artist:
-                    metadata_updates['albumartist'] = album_artist
-                if composer:
-                    metadata_updates['composer'] = composer
-                if track_number:
-                    metadata_updates['track'] = track_number
-                if disc_number:
-                    metadata_updates['disc'] = disc_number
-                if comment:
-                    metadata_updates['comments'] = comment
-                if mbid:
-                    metadata_updates['mb_trackid'] = mbid
-                
-                # Update metadata if there are updates
-                if metadata_updates:
-                    update_track_metadata(track_id, metadata_updates, DB_PATH)
-                    flash(f"Track '{title or 'Unknown'}' updated successfully (database + MP3 file)", "success")
-                else:
-                    flash(f"Track updated in database (no metadata fields to update for MP3)", "info")
-            else:
-                flash(f"Track '{title}' updated in database (MP3 file not found for sync)", "warning")
-        except ImportError:
-            # Beets integration not available
-            flash(f"Track '{title}' updated in database (beets integration not available)", "warning")
-        except Exception as e:
-            logging.error(f"Error updating MP3 via beets: {e}")
-            flash(f"Track '{title}' updated in database, but MP3 update failed: {str(e)}", "warning")
+        flash(f"Track '{title or 'Unknown'}' updated successfully", "success")
     except Exception as e:
         conn.rollback()
         logging.error(f"Error updating track: {e}")
@@ -14474,12 +14424,9 @@ def api_track_musicbrainz_lookup():
 def api_remove_genres():
     """
     Remove specific genres from artist or album's tracks
-    Updates both database AND file tags (MP3/FLAC)
-    Special case: If removing "live" genre, also cleans "(live)" from track titles
+    Updates database only
     """
     try:
-        from beets_integration import remove_genre_from_track_title, update_track_metadata
-        
         data = request.get_json() or {}
         artist_name = data.get("artist_name", "").strip()
         album_name = data.get("album_name", "").strip()
@@ -14496,20 +14443,18 @@ def api_remove_genres():
         
         # Build WHERE clause
         if album_name:
-            cursor.execute("SELECT id, title, genres, file_path, beets_path FROM tracks WHERE artist = ? AND album = ?", 
+            cursor.execute("SELECT id, title, genres FROM tracks WHERE artist = ? AND album = ?", 
                           (artist_name, album_name))
         else:
-            cursor.execute("SELECT id, title, genres, file_path, beets_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
+            cursor.execute("SELECT id, title, genres FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?", 
                           (artist_name,))
         
         rows = cursor.fetchall()
         affected_count = 0
-        files_updated = 0
-        is_removing_live = any(g.lower() == 'live' for g in genres_to_remove)
         
         # Build list of updates in memory first
         for row in rows:
-            track_id, title, genres_str, file_path, beets_path = row
+            track_id, title, genres_str = row
             if not genres_str:
                 continue
             
@@ -14527,25 +14472,11 @@ def api_remove_genres():
             if len(filtered_genres) != len(genre_list):
                 new_genres_str = '\\'.join(filtered_genres) if filtered_genres else ''
                 
-                # Check if we need to clean "(live)" from title
-                new_title = title
-                if is_removing_live:
-                    new_title = remove_genre_from_track_title(title)
-                
                 # Update database
                 cursor.execute("""
-                    UPDATE tracks SET genres = ?, title = ?
+                    UPDATE tracks SET genres = ?
                     WHERE id = ?
-                """, (new_genres_str, new_title, track_id))
-                
-                # Update file tags
-                actual_path = file_path or beets_path
-                if actual_path and os.path.exists(actual_path):
-                    if update_track_metadata(track_id, {
-                        'genre': new_genres_str,
-                        'title': new_title
-                    }, DB_PATH):
-                        files_updated += 1
+                """, (new_genres_str, track_id))
                 
                 affected_count += 1
         
@@ -14562,7 +14493,7 @@ def api_remove_genres():
                 genres_after='',
                 action_type='remove_from_album' if album_name else 'remove_from_artist',
                 affected_count=affected_count,
-                change_summary=f"Removed genres from {affected_count} tracks and updated {files_updated} file(s): {', '.join(genres_to_remove)}"
+                change_summary=f"Removed genres from {affected_count} tracks: {', '.join(genres_to_remove)}"
             )
         
         # Trigger Navidrome scan in background
@@ -14589,11 +14520,8 @@ def api_remove_genres():
         return jsonify({
             "success": True,
             "affected_tracks": affected_count,
-            "files_updated": files_updated,
-            "message": f"Removed genres from {affected_count} track(s), updated {files_updated} file(s)",
-            "titles_cleaned": affected_count if is_removing_live else 0,
-            "scan_triggered": True,
-            "next_step": "Navidrome is now scanning your collection for the updated genres"
+            "message": f"Removed genres from {affected_count} track(s)",
+            "scan_triggered": True
         }), 200
         
     except Exception as e:
@@ -14625,8 +14553,6 @@ def api_track_update_metadata():
     }
     """
     try:
-        from beets_integration import update_track_metadata
-        
         data = request.get_json() or {}
         track_id = data.get("track_id", "").strip()
         
@@ -14702,13 +14628,8 @@ def api_track_update_metadata():
         if 'mbid' in db_updates:
             changes['mbid'] = db_updates['mbid']
         
-        # Update file tags if available
+        # Database update complete
         file_update_result = None
-        if changes:
-            try:
-                file_update_result = update_track_metadata(track_id, changes, DB_PATH)
-            except Exception as e:
-                logging.warning(f"Could not update file tags for track {track_id}: {e}")
         
         conn.close()
         
@@ -15882,18 +15803,11 @@ if __name__ == "__main__":
                 time_module.sleep(2)  # Give Flask time to start
                 try:
                     logger = logging.getLogger('sptnr')
-                    logger.info("Auto-starting beets import and scanner with perpetual mode...")
+                    logger.info("Auto-starting scanner with perpetual mode...")
                     
-                    # First, run beets auto-import to capture file paths and metadata
-                    print("Step 1: Running beets auto-import...")
-                    logger.info("Step 1: Running beets auto-import...")
-                    from beets_auto_import import BeetsAutoImporter
-                    importer = BeetsAutoImporter()
-                    importer.import_and_capture(skip_existing=True)
-                    
-                    # Then run the standard scanner
-                    print("Step 2: Running Navidrome sync and popularity scan...")
-                    logger.info("Step 2: Running Navidrome sync and popularity scan...")
+                    # Run the standard scanner
+                    print("Step 1: Running Navidrome sync and popularity scan...")
+                    logger.info("Step 1: Running Navidrome sync and popularity scan...")
                     from start import run_scan
                     run_scan(scan_type='full')
                 except Exception as e:
