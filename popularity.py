@@ -3076,6 +3076,7 @@ def popularity_scan(
                 spotify_results_cache = {}
                 
                 # Fetch and cache album art using fallback strategy for this album
+                album_art_url = None
                 if not singles_only:
                     # Get Discogs token for fallback source
                     discogs_token = config.get('discogs', {}).get('token') if config else None
