@@ -878,6 +878,35 @@ _DISCOGS_LAST_REQUEST_TIME = 0
 _DISCOGS_MIN_INTERVAL = 0.35
 
 
+def detect_cover_and_normalize_title(title: str) -> tuple[bool, str]:
+    """
+    Detect if a track is a cover song based on title patterns and return normalized title.
+    
+    Detects patterns like:
+    - "Song Title (Artist Cover)"
+    - "Song Title [Artist Cover]"
+    - "Song Title (Cover)"
+    - "Song Title [Cover]"
+    
+    Args:
+        title: Original track title
+        
+    Returns:
+        Tuple of (is_cover: bool, normalized_title: str)
+        - is_cover: True if title indicates cover version
+        - normalized_title: Title with cover notation stripped for API lookups
+    """
+    # Check for cover patterns in parentheses or brackets
+    cover_pattern = r'\s*[\(\[](?:.*?\s)?[Cc]over[\)\]]'
+    
+    is_cover = bool(re.search(cover_pattern, title))
+    
+    # Normalize title by removing cover notation for API lookups
+    normalized_title = re.sub(cover_pattern, '', title).strip()
+    
+    return is_cover, normalized_title
+
+
 def _throttle_discogs():
     """Respect Discogs rate limit (1 request per 0.35 seconds per token)."""
     global _DISCOGS_LAST_REQUEST_TIME
@@ -3255,6 +3284,10 @@ def popularity_scan(
                             track_mbid = row_get(track, 'mbid')
                             discogs_release_id = row_get(track, 'discogs_release_id')
                             
+                            # Detect cover songs and normalize title for API lookups
+                            is_cover_song_tags, normalized_title_tags = detect_cover_and_normalize_title(title)
+                            api_lookup_title_tags = normalized_title_tags
+                            
                             track_tags = {"lastfm_tags": [], "listenbrainz_genres": [], "discogs_genres": []}
                             
                             # Fetch Last.fm tags
@@ -3275,7 +3308,7 @@ def popularity_scan(
                                             lastfm_client.get_track_tags,
                                             5,
                                             f"Last.fm tags lookup timed out",
-                                            track_artist, title, limit=10
+                                            track_artist, api_lookup_title_tags, limit=10
                                         )
                                         if lastfm_tags:
                                             track_tags["lastfm_tags"] = lastfm_tags
@@ -3367,6 +3400,14 @@ def popularity_scan(
                         track_id = track["id"]
                         title = track["title"]
                         track_artist = track["artist"]
+                        
+                        # Detect cover songs and normalize title for API lookups
+                        is_cover_song, normalized_title = detect_cover_and_normalize_title(title)
+                        if is_cover_song:
+                            log_debug(f'Cover song detected: "{title}" -> normalized to "{normalized_title}" for API lookups')
+                        
+                        # Use normalized title for API searches to improve match accuracy
+                        api_lookup_title = normalized_title
 
                         log_info(f'Processing track: "{title}" (Track ID: {track_id})')
                         log_debug(f'Track details - id: {track_id}, title: {title}, album: {album}, artist: {track_artist}')
@@ -3449,14 +3490,14 @@ def popularity_scan(
                                     # Normalize album name to remove version suffixes for better matching
                                     # This helps match albums like "Helix (2021 version)" with "Helix"
                                     normalized_album = normalize_album(album) if album else None
-                                    log_debug(f'Spotify search params - title: {title}, artist: {artist}, album: {album} (normalized: {normalized_album})')
+                                    log_debug(f'Spotify search params - title: {api_lookup_title}, artist: {artist}, album: {album} (normalized: {normalized_album})')
                                     # For popularity scoring, we pass album for better matching accuracy
                                     # For live/unplugged albums, this is especially important to avoid matching studio versions
                                     spotify_search_results = _run_with_timeout(
                                         search_spotify_track,
                                         API_CALL_TIMEOUT,
                                         f"Spotify track search timed out after {API_CALL_TIMEOUT}s",
-                                        title, artist, normalized_album
+                                        api_lookup_title, artist, normalized_album
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_spotify_request()
@@ -3841,6 +3882,19 @@ def popularity_scan(
                             if tags_data.get("discogs_genres"):
                                 discogs_genres = json.dumps(tags_data["discogs_genres"])
                                 log_debug(f"Using Discogs genres for track {track_id}: {len(tags_data['discogs_genres'])} genres")
+                        
+                        # Add "Cover" genre if this is a cover song
+                        if is_cover_song:
+                            # Add Cover to musicbrainz_genres (most appropriate field for special tags)
+                            try:
+                                mb_genres_list = json.loads(musicbrainz_genres) if musicbrainz_genres and musicbrainz_genres != 'null' else []
+                                if "Cover" not in mb_genres_list:
+                                    mb_genres_list.insert(0, "Cover")  # Add at beginning for visibility
+                                    musicbrainz_genres = json.dumps(mb_genres_list)
+                                    log_debug(f'Added "Cover" genre to track: {title}')
+                            except (json.JSONDecodeError, TypeError):
+                                musicbrainz_genres = json.dumps(["Cover"])
+                                log_debug(f'Initialized genres with "Cover" for track: {title}')
                         
                         # Append merged tuple
                         updated_track_updates.append((popularity_score, spotify_score, lastfm_ratio, spotify_genres, lastfm_tags, discogs_genres, musicbrainz_genres, album_art_url, track_id))
