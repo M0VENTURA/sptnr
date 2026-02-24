@@ -2618,167 +2618,6 @@ def popularity_scan(
                         except Exception as e:
                             log_debug(f"Discogs artist lookup initialization failed for {artist}: {e}")
                         
-                        # Fetch and update artist country from MusicBrainz during popularity scan
-                        try:
-                            if HAVE_MUSICBRAINZ:
-                                log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
-                                artist_country = _run_with_timeout(
-                                    get_artist_country,
-                                    12,  # 12 second timeout for country lookup
-                                    f"Artist country lookup timed out after 12s",
-                                    artist,
-                                    enabled=True
-                                )
-                                
-                                if artist_country:
-                                    log_info(f'Artist country found: {artist} -> {artist_country}')
-                                    # Update or insert artist entry using UPSERT
-                                    cursor.execute("""
-                                        INSERT INTO artists (id, name, country) 
-                                        VALUES (?, ?, ?)
-                                        ON CONFLICT(id) DO UPDATE SET country = excluded.country
-                                    """, (artist, artist, artist_country))
-                                    
-                                    # Update tracks table with artist country
-                                    cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
-                                                 (artist_country, artist))
-                                    conn.commit()
-                                    log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
-                                else:
-                                    log_debug(f'No country information found for artist: {artist}')
-                                
-                                # Fetch and save artist bio/image from AudioDB during scan
-                                # This runs INDEPENDENTLY of country lookup - both are fetched regardless
-                                if HAVE_AUDIODB:
-                                    try:
-                                        log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
-                                        
-                                        # Fetch artist biography
-                                        artist_bio = _run_with_timeout(
-                                            get_artist_biography,
-                                            8,  # 8 second timeout for bio lookup
-                                            f"Artist bio lookup timed out after 8s",
-                                            artist,
-                                            enabled=True
-                                        )
-                                        
-                                        # Fetch artist image/fanart
-                                        artist_image = _run_with_timeout(
-                                            get_artist_fanart,
-                                            8,  # 8 second timeout for image lookup
-                                            f"Artist image lookup timed out after 8s",
-                                            artist,
-                                            enabled=True
-                                        )
-                                        
-                                        if artist_bio or artist_image:
-                                            # Update artist entry with bio and image
-                                            cursor.execute("""
-                                                INSERT INTO artists (id, name, bio, image_url) 
-                                                VALUES (?, ?, ?, ?)
-                                                ON CONFLICT(id) DO UPDATE SET 
-                                                    bio = excluded.bio,
-                                                    image_url = excluded.image_url
-                                            """, (artist, artist, artist_bio or "", artist_image or ""))
-                                            conn.commit()
-                                            
-                                            if artist_bio:
-                                                log_info(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
-                                            if artist_image:
-                                                log_info(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
-                                        else:
-                                            log_debug(f'No bio or image found from AudioDB for artist: {artist}')
-                                            # Fall back to Last.fm for bio and CoverArtArchive for image
-                                            try:
-                                                lastfm_config = get_lastfm_config(config)
-                                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                                                    from api_clients.lastfm import LastFmClient
-                                                    from api_clients.coverartarchive import get_artist_image_from_caa
-                                                    
-                                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                                    
-                                                    # Fetch artist info from Last.fm
-                                                    artist_info = _run_with_timeout(
-                                                        lastfm_client.get_artist_info,
-                                                        8,
-                                                        "Last.fm artist info lookup timed out after 8s",
-                                                        artist
-                                                    )
-                                                    
-                                                    lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
-                                                    lastfm_image = artist_info.get("image", "")
-                                                    
-                                                    # If we have MusicBrainz artist MBID, try CoverArtArchive for better quality image
-                                                    caa_image = ""
-                                                    if HAVE_MUSICBRAINZ:
-                                                        try:
-                                                            mb_search = _run_with_timeout(
-                                                                _get_timeout_safe_musicbrainz_client().search_artists,
-                                                                5,
-                                                                "MusicBrainz artist search timed out",
-                                                                artist
-                                                            ) if _get_timeout_safe_musicbrainz_client() else []
-                                                            
-                                                            if mb_search and len(mb_search) > 0:
-                                                                artist_mbid = mb_search[0].get("id", "")
-                                                                if artist_mbid:
-                                                                    caa_image = _run_with_timeout(
-                                                                        get_artist_image_from_caa,
-                                                                        5,
-                                                                        "CoverArtArchive lookup timed out",
-                                                                        artist_mbid
-                                                                    )
-                                                        except Exception as e:
-                                                            log_debug(f"CoverArtArchive lookup failed for {artist}: {e}")
-                                                    
-                                                    # Prefer CoverArtArchive image over Last.fm
-                                                    final_image = caa_image or lastfm_image
-                                                    
-                                                    if lastfm_bio or final_image:
-                                                        cursor.execute("""
-                                                            INSERT INTO artists (id, name, bio, image_url) 
-                                                            VALUES (?, ?, ?, ?)
-                                                            ON CONFLICT(id) DO UPDATE SET 
-                                                                bio = excluded.bio,
-                                                                image_url = excluded.image_url
-                                                        """, (artist, artist, lastfm_bio or "", final_image or ""))
-                                                        conn.commit()
-                                                        
-                                                        if lastfm_bio:
-                                                            log_info(f'Saved artist bio from Last.fm for {artist} ({len(lastfm_bio)} chars)')
-                                                        if final_image:
-                                                            source = "CoverArtArchive" if caa_image else "Last.fm"
-                                                            log_info(f'Saved artist image URL from {source} for {artist}: {final_image[:60]}...')
-                                                    else:
-                                                        log_debug(f'No bio or image found from Last.fm for artist: {artist}')
-                                            except Exception as e:
-                                                log_debug(f"Last.fm/CoverArtArchive fallback failed for {artist}: {e}")
-                                    except TimeoutError as e:
-                                        log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
-                                        # Still try Last.fm as fallback on timeout
-                                        try:
-                                            lastfm_config = get_lastfm_config(config)
-                                            if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                                                from api_clients.lastfm import LastFmClient
-                                                lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                                                artist_info = lastfm_client.get_artist_info(artist)
-                                                lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
-                                                if lastfm_bio:
-                                                    cursor.execute("""
-                                                        INSERT INTO artists (id, name, bio) 
-                                                        VALUES (?, ?, ?)
-                                                        ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
-                                                    """, (artist, artist, lastfm_bio))
-                                                    conn.commit()
-                                                    log_info(f'Saved artist bio from Last.fm for {artist} (AudioDB timed out)')
-                                        except:
-                                            pass
-                                    except Exception as e:
-                                        log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
-                        except TimeoutError as e:
-                            log_debug(f"Artist country lookup timed out for {artist}: {e}")
-                        except Exception as e:
-                            log_debug(f"Artist country lookup failed for {artist}: {e}")
                     else:
                         log_info(f'No Spotify artist ID found for: {artist}')
                 except TimeoutError as e:
@@ -2790,6 +2629,167 @@ def popularity_scan(
             else:
                 log_info(f"Skipping Spotify/Discogs/MusicBrainz lookups for compilation album group: {artist}")
             
+            # Fetch and update artist metadata (country, bio, image) for ALL artists
+            # This is independent of Spotify lookup success and applies to all artists
+            try:
+                if HAVE_MUSICBRAINZ:
+                    log_debug(f'Fetching artist country from MusicBrainz for: {artist}')
+                    artist_country = _run_with_timeout(
+                        get_artist_country,
+                        12,  # 12 second timeout for country lookup
+                        f"Artist country lookup timed out after 12s",
+                        artist,
+                        enabled=True
+                    )
+                    
+                    if artist_country:
+                        log_info(f'Artist country found: {artist} -> {artist_country}')
+                        # Update or insert artist entry using UPSERT
+                        cursor.execute("""
+                            INSERT INTO artists (id, name, country) 
+                            VALUES (?, ?, ?)
+                            ON CONFLICT(id) DO UPDATE SET country = excluded.country
+                        """, (artist, artist, artist_country))
+                        
+                        # Update tracks table with artist country
+                        cursor.execute("UPDATE tracks SET artist_country = ? WHERE COALESCE(album_artist, artist) = ?", 
+                                     (artist_country, artist))
+                        conn.commit()
+                        log_debug(f'Updated artist country in database: {artist} -> {artist_country}')
+                    else:
+                        log_debug(f'No country information found for artist: {artist}')
+                    
+                    # Fetch and save artist bio/image from AudioDB during scan
+                    if HAVE_AUDIODB:
+                        try:
+                            log_debug(f'Fetching artist bio and image from AudioDB for: {artist}')
+                            
+                            # Fetch artist biography
+                            artist_bio = _run_with_timeout(
+                                get_artist_biography,
+                                8,  # 8 second timeout for bio lookup
+                                f"Artist bio lookup timed out after 8s",
+                                artist,
+                                enabled=True
+                            )
+                            
+                            # Fetch artist image/fanart
+                            artist_image = _run_with_timeout(
+                                get_artist_fanart,
+                                8,  # 8 second timeout for image lookup
+                                f"Artist image lookup timed out after 8s",
+                                artist,
+                                enabled=True
+                            )
+                            
+                            if artist_bio or artist_image:
+                                # Update artist entry with bio and image
+                                cursor.execute("""
+                                    INSERT INTO artists (id, name, bio, image_url) 
+                                    VALUES (?, ?, ?, ?)
+                                    ON CONFLICT(id) DO UPDATE SET 
+                                        bio = excluded.bio,
+                                        image_url = excluded.image_url
+                                """, (artist, artist, artist_bio or "", artist_image or ""))
+                                conn.commit()
+                                
+                                if artist_bio:
+                                    log_info(f'Saved artist bio for {artist} ({len(artist_bio)} chars)')
+                                if artist_image:
+                                    log_info(f'Saved artist image URL for {artist}: {artist_image[:60]}...')
+                            else:
+                                log_debug(f'No bio or image found from AudioDB for artist: {artist}')
+                                # Fall back to Last.fm for bio and CoverArtArchive for image
+                                try:
+                                    lastfm_config = get_lastfm_config(config)
+                                    if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                        from api_clients.lastfm import LastFmClient
+                                        from api_clients.coverartarchive import get_artist_image_from_caa
+                                        
+                                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                        
+                                        # Fetch artist info from Last.fm
+                                        artist_info = _run_with_timeout(
+                                            lastfm_client.get_artist_info,
+                                            8,
+                                            "Last.fm artist info lookup timed out after 8s",
+                                            artist
+                                        )
+                                        
+                                        lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
+                                        lastfm_image = artist_info.get("image", "")
+                                        
+                                        # If we have MusicBrainz artist MBID, try CoverArtArchive for better quality image
+                                        caa_image = ""
+                                        if HAVE_MUSICBRAINZ:
+                                            try:
+                                                mb_search = _run_with_timeout(
+                                                    _get_timeout_safe_musicbrainz_client().search_artists,
+                                                    5,
+                                                    "MusicBrainz artist search timed out",
+                                                    artist
+                                                ) if _get_timeout_safe_musicbrainz_client() else []
+                                                
+                                                if mb_search and len(mb_search) > 0:
+                                                    artist_mbid = mb_search[0].get("id", "")
+                                                    if artist_mbid:
+                                                        caa_image = _run_with_timeout(
+                                                            get_artist_image_from_caa,
+                                                            5,
+                                                            "CoverArtArchive lookup timed out",
+                                                            artist_mbid
+                                                        )
+                                            except Exception as e:
+                                                log_debug(f"CoverArtArchive lookup failed for {artist}: {e}")
+                                        
+                                        # Prefer CoverArtArchive image over Last.fm
+                                        final_image = caa_image or lastfm_image
+                                        
+                                        if lastfm_bio or final_image:
+                                            cursor.execute("""
+                                                INSERT INTO artists (id, name, bio, image_url) 
+                                                VALUES (?, ?, ?, ?)
+                                                ON CONFLICT(id) DO UPDATE SET 
+                                                    bio = excluded.bio,
+                                                    image_url = excluded.image_url
+                                            """, (artist, artist, lastfm_bio or "", final_image or ""))
+                                            conn.commit()
+                                            
+                                            if lastfm_bio:
+                                                log_info(f'Saved artist bio from Last.fm for {artist} ({len(lastfm_bio)} chars)')
+                                            if final_image:
+                                                source = "CoverArtArchive" if caa_image else "Last.fm"
+                                                log_info(f'Saved artist image URL from {source} for {artist}: {final_image[:60]}...')
+                                        else:
+                                            log_debug(f'No bio or image found from Last.fm for artist: {artist}')
+                                except Exception as e:
+                                    log_debug(f"Last.fm/CoverArtArchive fallback failed for {artist}: {e}")
+                        except TimeoutError as e:
+                            log_debug(f"Artist bio/image lookup timed out for {artist}: {e}")
+                            # Still try Last.fm as fallback on timeout
+                            try:
+                                lastfm_config = get_lastfm_config(config)
+                                if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
+                                    from api_clients.lastfm import LastFmClient
+                                    lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                                    artist_info = lastfm_client.get_artist_info(artist)
+                                    lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
+                                    if lastfm_bio:
+                                        cursor.execute("""
+                                            INSERT INTO artists (id, name, bio) 
+                                            VALUES (?, ?, ?)
+                                            ON CONFLICT(id) DO UPDATE SET bio = excluded.bio
+                                        """, (artist, artist, lastfm_bio))
+                                        conn.commit()
+                                        log_info(f'Saved artist bio from Last.fm for {artist} (AudioDB timed out)')
+                            except:
+                                pass
+                        except Exception as e:
+                            log_debug(f"Artist bio/image lookup failed for {artist}: {e}")
+            except TimeoutError as e:
+                log_debug(f"Artist country lookup timed out for {artist}: {e}")
+            except Exception as e:
+                log_debug(f"Artist country lookup failed for {artist}: {e}")
             
             # Load Discogs token ONCE before album loop (needed for both popularity scan and singles detection)
             discogs_token = os.environ.get("DISCOGS_TOKEN", "")
