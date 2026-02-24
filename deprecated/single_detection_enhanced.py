@@ -1790,10 +1790,10 @@ def detect_single_enhanced(
                 track_is_single = lastfm_client.check_track_as_single(artist, title)
                 
                 if track_is_single:
-                    result['single_sources'].append('lastfm_track_title')
-                    result['single_sources_used'].append('lastfm_track_title')
+                    result['single_sources'].append('lastfm')
+                    result['single_sources_used'].append('lastfm')
                     lastfm_single_confirmed = True
-                    log_debug(f"[LASTFM] ✓ CONFIRMED - Track '{title}' exists as single/album on Last.fm")
+                    log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Single) - Track '{title}' exists as single/album on Last.fm")
                     
                     # Check if HIGH confidence reached after this confirmation
                     if check_high_confidence_dynamic(
@@ -1830,15 +1830,15 @@ def detect_single_enhanced(
                     # Singles on Last.fm typically have 1-3 tracks
                     # Or up to 6 tracks if the song name matches the release name (singles released as EPs)
                     if 1 <= album_track_count_lastfm <= 3:
-                        result['single_sources'].append('lastfm_album_type')
-                        result['single_sources_used'].append('lastfm_album_type')
+                        result['single_sources'].append('lastfm')
+                        result['single_sources_used'].append('lastfm')
                         lastfm_single_confirmed = True
-                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) (single indicator)")
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Album Type) - Album has {album_track_count_lastfm} track(s) (single indicator)")
                     elif 4 <= album_track_count_lastfm <= 6 and has_title_track:
-                        result['single_sources'].append('lastfm_album_type')
-                        result['single_sources_used'].append('lastfm_album_type')
+                        result['single_sources'].append('lastfm')
+                        result['single_sources_used'].append('lastfm')
                         lastfm_single_confirmed = True
-                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) with title track (single EP indicator)")
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Album Type) - Album has {album_track_count_lastfm} track(s) with title track (single EP indicator)")
                     else:
                         log_debug(f"[LASTFM] Track count: {album_track_count_lastfm} (not in single range)")
                         lastfm_single_confirmed = False
@@ -2179,10 +2179,10 @@ def detect_single_enhanced(
                 track_is_single = lastfm_client.check_track_as_single(artist, title)
                 
                 if track_is_single:
-                    result['single_sources'].append('lastfm_track_title')
-                    result['single_sources_used'].append('lastfm_track_title')
+                    result['single_sources'].append('lastfm')
+                    result['single_sources_used'].append('lastfm')
                     lastfm_single_confirmed = True
-                    log_debug(f"[LASTFM] ✓ CONFIRMED - Track '{title}' exists as single/album on Last.fm")
+                    log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Single) - Track '{title}' exists as single/album on Last.fm")
                     
                     # Check if HIGH confidence reached after this confirmation
                     if check_high_confidence_dynamic(
@@ -2219,15 +2219,15 @@ def detect_single_enhanced(
                     # Singles on Last.fm typically have 1-3 tracks
                     # Or up to 6 tracks if the song name matches the release name (singles released as EPs)
                     if 1 <= album_track_count_lastfm <= 3:
-                        result['single_sources'].append('lastfm_album_type')
-                        result['single_sources_used'].append('lastfm_album_type')
+                        result['single_sources'].append('lastfm')
+                        result['single_sources_used'].append('lastfm')
                         lastfm_single_confirmed = True
-                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) (single indicator)")
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Album Type) - Album has {album_track_count_lastfm} track(s) (single indicator)")
                     elif 4 <= album_track_count_lastfm <= 6 and has_title_track:
-                        result['single_sources'].append('lastfm_album_type')
-                        result['single_sources_used'].append('lastfm_album_type')
+                        result['single_sources'].append('lastfm')
+                        result['single_sources_used'].append('lastfm')
                         lastfm_single_confirmed = True
-                        log_debug(f"[LASTFM] ✓ CONFIRMED - Album has {album_track_count_lastfm} track(s) with title track (single EP indicator)")
+                        log_debug(f"[LASTFM] ✓ CONFIRMED - Last.FM (Album Type) - Album has {album_track_count_lastfm} track(s) with title track (single EP indicator)")
                     else:
                         log_debug(f"[LASTFM] Track count: {album_track_count_lastfm} (not in single range)")
                         lastfm_single_confirmed = False

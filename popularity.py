@@ -1665,7 +1665,7 @@ def detect_single_for_track(
             
             # Return in expected format
             # CRITICAL: Deduplicate sources to prevent same source appearing twice
-            # (e.g., lastfm_track_title appearing twice due to multiple code paths)
+            # (e.g., lastfm appearing twice due to multiple code paths)
             result['single_sources'] = list(dict.fromkeys(result['single_sources']))
             
             return {
