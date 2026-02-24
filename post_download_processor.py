@@ -2,9 +2,14 @@
 """
 Post-Download Processor
 Automatically processes completed downloads from MusicBrainz/Discogs:
-- Updates file metadata (track number, artist, album artist, year)
+- Converts FLAC files to 320kbps MP3 (via ffmpeg)
+- Updates file metadata (track number, artist, album artist, year, disc number)
 - Renames file to proper format: [track_number]. [artist] - [title].[ext]
 - Moves file to proper folder: [album_artist]/[year] - [album]/
+- Handles duplicates by moving to Duplicates/ subfolder
+
+Requirements:
+- ffmpeg: Required for FLAC to MP3 conversion (optional if only processing MP3 files)
 """
 
 import os
@@ -58,10 +63,13 @@ def sanitize_filename(filename):
 
 def update_file_metadata(file_path, metadata):
     """
-    Update file metadata tags using mutagen
+    Update file metadata tags using mutagen.
+    
+    For FLAC files: metadata is updated then file is converted to MP3 320kbps in rename_and_move_file()
+    For MP3 files: metadata is updated and file is moved to destination
     
     Args:
-        file_path: Path to audio file
+        file_path: Path to audio file (MP3 or FLAC)
         metadata: Dict with keys: track_number, artist, album_artist, album, year, title, disc_number
     
     Returns:
@@ -146,6 +154,7 @@ def update_file_metadata(file_path, metadata):
 def rename_and_move_file(file_path, metadata):
     """
     Rename file and move to proper folder structure
+    FLAC files are automatically converted to 320kbps MP3
     Uses manual file operations without external dependencies
     
     Args:
@@ -158,6 +167,23 @@ def rename_and_move_file(file_path, metadata):
     try:
         music_dir = get_music_dir()
         
+        # Get file extension
+        ext = os.path.splitext(file_path)[1].lower()
+        
+        # Convert FLAC to MP3 320kbps if needed
+        if ext == '.flac':
+            logger.info(f"Converting FLAC to 320kbps MP3: {file_path}")
+            converted_path = convert_flac_to_mp3(file_path)
+            if not converted_path:
+                return {
+                    'success': False,
+                    'target_path': None,
+                    'error': 'FLAC to MP3 conversion failed'
+                }
+            file_path = converted_path
+            ext = '.mp3'
+            logger.info(f"Conversion complete: {file_path}")
+        
         # Extract metadata with fallbacks - ensure proper string conversions
         track_number = str(metadata.get('track_number') or '00').zfill(2)
         artist = metadata.get('artist', 'Unknown Artist').strip()
@@ -165,9 +191,6 @@ def rename_and_move_file(file_path, metadata):
         album = metadata.get('album', 'Unknown Album').strip()
         title = metadata.get('title', Path(file_path).stem).strip()
         year = str(metadata.get('year') or 'Unknown').strip()
-        
-        # Get file extension
-        ext = os.path.splitext(file_path)[1]
         
         # Build directory structure: [album_artist]/[year] - [album]/
         artist_dir = os.path.join(music_dir, sanitize_filename(album_artist))
@@ -217,6 +240,86 @@ def rename_and_move_file(file_path, metadata):
             'target_path': None,
             'error': str(e)
         }
+
+
+def convert_flac_to_mp3(flac_path, bitrate='320k'):
+    """
+    Convert FLAC file to MP3 using ffmpeg
+    
+    Args:
+        flac_path: Path to FLAC file
+        bitrate: Target bitrate (default: 320k for 320kbps)
+    
+    Returns:
+        str: Path to converted MP3 file, or None if conversion failed
+    """
+    try:
+        import subprocess
+        
+        if not os.path.exists(flac_path):
+            logger.error(f"FLAC file not found: {flac_path}")
+            return None
+        
+        # Create output path (same directory, .mp3 extension)
+        mp3_path = os.path.splitext(flac_path)[0] + '.mp3'
+        
+        # Check if ffmpeg is available
+        try:
+            subprocess.run(['ffmpeg', '-version'], capture_output=True, timeout=5, check=True)
+        except (FileNotFoundError, subprocess.CalledProcessError, subprocess.TimeoutExpired):
+            logger.error("ffmpeg not found or not working - cannot convert FLAC to MP3")
+            return None
+        
+        # Use ffmpeg to convert: FLAC -> MP3 at 320kbps
+        # -i: input file
+        # -b:a: audio bitrate
+        # -q:a: quality (0 is best when using explicit bitrate)
+        # -y: overwrite output file without asking
+        cmd = [
+            'ffmpeg',
+            '-i', flac_path,
+            '-b:a', bitrate,
+            '-q:a', '0',
+            '-v', 'error',  # Only show errors
+            '-y',  # Overwrite without asking
+            mp3_path
+        ]
+        
+        logger.info(f"Running ffmpeg conversion: FLAC -> MP3 (bitrate: {bitrate})")
+        result = subprocess.run(cmd, capture_output=True, timeout=300, text=True)
+        
+        if result.returncode != 0:
+            logger.error(f"ffmpeg conversion failed: {result.stderr}")
+            return None
+        
+        if not os.path.exists(mp3_path):
+            logger.error(f"Conversion succeeded but output file not found: {mp3_path}")
+            return None
+        
+        # Verify output file has reasonable size (at least 100KB)
+        file_size = os.path.getsize(mp3_path)
+        if file_size < 102400:  # 100KB
+            logger.warning(f"Converted MP3 seems too small ({file_size} bytes), possible conversion issue")
+        
+        logger.info(f"✓ FLAC converted to MP3: {mp3_path} ({file_size / 1024 / 1024:.1f} MB)")
+        
+        # Delete original FLAC file
+        try:
+            os.remove(flac_path)
+            logger.info(f"✓ Deleted original FLAC: {flac_path}")
+        except Exception as e:
+            logger.warning(f"Could not delete original FLAC file: {e}")
+        
+        return mp3_path
+        
+    except subprocess.TimeoutExpired:
+        logger.error(f"FLAC to MP3 conversion timed out (>300s): {flac_path}")
+        return None
+    except Exception as e:
+        logger.error(f"Error converting FLAC to MP3: {e}")
+        import traceback
+        logger.error(traceback.format_exc())
+        return None
 
 
 def process_completed_queue_item(queue_item):

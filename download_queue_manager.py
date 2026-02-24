@@ -717,6 +717,7 @@ def auto_discover_and_queue_files():
             try:
                 full_path = file_info['full_path']
                 filename = file_info['filename']
+                file_ext = os.path.splitext(filename)[1].lower()
                 
                 # Extract metadata from file
                 try:
@@ -780,7 +781,12 @@ def auto_discover_and_queue_files():
                 
                 conn.commit()
                 stats['queued'] += 1
-                logger.info(f"Discovered and queued: {artist} - {title} ({filename})")
+                
+                # Log discovery with format info
+                if file_ext == '.flac':
+                    logger.info(f"Discovered and queued (FLAC→MP3): {artist} - {title} ({filename})")
+                else:
+                    logger.info(f"Discovered and queued: {artist} - {title} ({filename})")
                 
             except Exception as e:
                 error_msg = f"Error processing {file_info['filename']}: {str(e)}"
