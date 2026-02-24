@@ -506,13 +506,9 @@ async function refreshUpcomingReleases() {
   }
 }
 
-// Placeholder for MusicBrainz search function (implement as needed)
-function searchMusicBrainzRelease(event, artist, album) {
-  event.preventDefault();
-  console.log(`Searching MusicBrainz for: ${artist} - ${album}`);
-  // Implement MusicBrainz search integration here
-  alert(`Search functionality for ${album} by ${artist} - to be implemented`);
-}
+// MusicBrainz release search helper - delegates to inline implementation in downloads.html
+// The actual searchMusicBrainzRelease function is defined inline in the HTML template
+// This prevents duplicate function definitions and allows the HTML version to be used
 
 // Initialize page on load
 document.addEventListener('DOMContentLoaded', function() {
