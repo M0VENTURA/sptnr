@@ -2338,6 +2338,13 @@ def detect_single_enhanced(
     # NOTE: Z-score inference is used for confidence calculation only, NOT added to sources
     # Per problem statement: z-score should not appear as a high-confidence source
     if popularity_inferred:
+        # Record the popularity inference method(s) used
+        if is_artist_level_standout and album_z >= 0.6:
+            result['single_sources'].append('popularity_artist_standout')
+        elif album_z >= 1.0:
+            result['single_sources'].append('popularity_album_standout')
+        else:
+            result['single_sources'].append('popularity_inference')
         if verbose:
             log_debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
     elif version_count_standout:
