@@ -4551,9 +4551,10 @@ def popularity_scan(
                                             log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
                                         log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
                                     else:
-                                        # Single medium-confidence source only gets 3 stars
-                                        stars = 3
-                                        log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
+                                        # Single medium-confidence source: don't downgrade popularity-based rating,
+                                        # but ensure a minimum of 3 stars for possible singles
+                                        stars = max(stars, 3)
+                                        log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, stars={stars} (popularity-based, min 3)")
                                 # Standout tracks (high Last.fm scrobbles) get 5 stars
                                 elif is_standout_track:
                                     stars = 5
