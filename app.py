@@ -5551,7 +5551,7 @@ def album_edit(artist, album):
             
             # Now update MP3 files via beets
             try:
-                from beets_integration import update_track_metadata_with_beets
+                from beets_integration import update_track_metadata
                 
                 # Get all track IDs for this album
                 cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?", 
@@ -5581,8 +5581,8 @@ def album_edit(artist, album):
                         if album_mbid:
                             metadata_updates['mb_albumid'] = album_mbid
                         
-                        # Update via beets
-                        if update_track_metadata_with_beets(track_id, metadata_updates, DB_PATH):
+                        # Update via mutagen
+                        if update_track_metadata(track_id, metadata_updates, DB_PATH):
                             success_count += 1
                 
                 if success_count > 0:
@@ -5757,10 +5757,10 @@ def track_edit(track_id):
     conn = get_db()
     cursor = conn.cursor()
     
-    # Get form data
-    title = request.form.get("title")
-    artist = request.form.get("artist")
-    album = request.form.get("album")
+    # Get form data - ensure all string fields have defaults to avoid None when calling .strip()
+    title = request.form.get("title", "").strip() or None
+    artist = request.form.get("artist", "").strip() or None
+    album = request.form.get("album", "").strip() or None
     stars = request.form.get("stars", type=int)
     is_single = 1 if request.form.get("is_single") == "on" else 0
     single_confidence = request.form.get("single_confidence", "low")
@@ -5769,7 +5769,7 @@ def track_edit(track_id):
     suggested_mbid_confidence = request.form.get("suggested_mbid_confidence", type=float)
     
     # New MP3 metadata fields
-    genres = request.form.get("genres", "").strip()
+    genres = request.form.get("genres", "").strip() or None
     year = request.form.get("year", "").strip() or None
     album_artist = request.form.get("album_artist", "").strip() or None
     composer = request.form.get("composer", "").strip() or None
@@ -5792,9 +5792,9 @@ def track_edit(track_id):
         
         conn.commit()
         
-        # Now update the MP3 file via beets
+        # Now update the MP3 file metadata
         try:
-            from beets_integration import update_track_metadata_with_beets
+            from beets_integration import update_track_metadata
             
             # Get the file path for this track
             cursor.execute("SELECT beets_path, file_path FROM tracks WHERE id = ?", (track_id,))
@@ -5802,13 +5802,15 @@ def track_edit(track_id):
             file_path = row['beets_path'] if row and row['beets_path'] else (row['file_path'] if row else None)
             
             if file_path:
-                # Prepare metadata to update
-                metadata_updates = {
-                    'title': title,
-                    'artist': artist,
-                    'album': album,
-                }
+                # Prepare metadata to update - only include non-None values
+                metadata_updates = {}
                 
+                if title:
+                    metadata_updates['title'] = title
+                if artist:
+                    metadata_updates['artist'] = artist
+                if album:
+                    metadata_updates['album'] = album
                 if genres:
                     metadata_updates['genre'] = genres
                 if year:
@@ -5826,9 +5828,12 @@ def track_edit(track_id):
                 if mbid:
                     metadata_updates['mb_trackid'] = mbid
                 
-                # Update via beets
-                update_track_metadata_with_beets(track_id, metadata_updates, DB_PATH)
-                flash(f"Track '{title}' updated successfully (database + MP3 file)", "success")
+                # Update metadata if there are updates
+                if metadata_updates:
+                    update_track_metadata(track_id, metadata_updates, DB_PATH)
+                    flash(f"Track '{title or 'Unknown'}' updated successfully (database + MP3 file)", "success")
+                else:
+                    flash(f"Track updated in database (no metadata fields to update for MP3)", "info")
             else:
                 flash(f"Track '{title}' updated in database (MP3 file not found for sync)", "warning")
         except ImportError:
@@ -10715,6 +10720,37 @@ def api_downloads_scan():
         return jsonify({"error": str(e), "files": []}), 400
 
 
+@app.route("/api/downloads/discover", methods=["POST"])
+def api_downloads_discover():
+    """
+    Auto-discover audio files in /downloads folder and add them to download_queue.
+    Makes manually added files appear in Download Monitor UI for user review.
+    
+    Returns:
+        JSON with statistics: scanned, queued, already_in_queue, already_in_library, errors
+    """
+    try:
+        from download_queue_manager import auto_discover_and_queue_files
+        
+        stats = auto_discover_and_queue_files()
+        
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "message": f"Discovered {stats['queued']} new files, "
+                      f"{stats['already_in_queue']} already queued, "
+                      f"{stats['already_in_library']} in library"
+        })
+    except Exception as e:
+        print(f"[ERROR] Error discovering files: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/downloads/process", methods=["POST"])
 def api_downloads_process():
     """Process downloads folder - organize and move files to /Music"""
@@ -14862,7 +14898,7 @@ def api_remove_genres():
     Special case: If removing "live" genre, also cleans "(live)" from track titles
     """
     try:
-        from track_tag_editor import update_track_file_tags, remove_genre_from_track_title
+        from beets_integration import remove_genre_from_track_title, update_track_metadata
         
         data = request.get_json() or {}
         artist_name = data.get("artist_name", "").strip()
@@ -14925,11 +14961,10 @@ def api_remove_genres():
                 # Update file tags
                 actual_path = file_path or beets_path
                 if actual_path and os.path.exists(actual_path):
-                    result = update_track_file_tags(track_id, DB_PATH, {
-                        'genres': new_genres_str,
+                    if update_track_metadata(track_id, {
+                        'genre': new_genres_str,
                         'title': new_title
-                    })
-                    if result['success']:
+                    }, DB_PATH):
                         files_updated += 1
                 
                 affected_count += 1
@@ -15010,7 +15045,7 @@ def api_track_update_metadata():
     }
     """
     try:
-        from track_tag_editor import update_track_file_tags
+        from beets_integration import update_track_metadata
         
         data = request.get_json() or {}
         track_id = data.get("track_id", "").strip()
@@ -15023,33 +15058,33 @@ def api_track_update_metadata():
         
         # Build database update with provided fields
         db_updates = {}
-        if 'title' in data:
+        if 'title' in data and data['title'] is not None:
             db_updates['title'] = data['title'].strip()
-        if 'artist' in data:
+        if 'artist' in data and data['artist'] is not None:
             db_updates['artist'] = data['artist'].strip()
-        if 'album' in data:
+        if 'album' in data and data['album'] is not None:
             db_updates['album'] = data['album'].strip()
-        if 'genres' in data:
+        if 'genres' in data and data['genres'] is not None:
             db_updates['genres'] = data['genres'].strip()
         if 'stars' in data:
             db_updates['stars'] = int(data['stars']) if data['stars'] else 0
         if 'is_single' in data:
             db_updates['is_single'] = 1 if data['is_single'] else 0
-        if 'single_confidence' in data:
+        if 'single_confidence' in data and data['single_confidence'] is not None:
             db_updates['single_confidence'] = data['single_confidence'].strip()
-        if 'year' in data:
+        if 'year' in data and data['year'] is not None:
             db_updates['year'] = data['year'].strip() or None
-        if 'album_artist' in data:
+        if 'album_artist' in data and data['album_artist'] is not None:
             db_updates['album_artist'] = data['album_artist'].strip() or None
-        if 'composer' in data:
+        if 'composer' in data and data['composer'] is not None:
             db_updates['composer'] = data['composer'].strip() or None
-        if 'track_number' in data:
+        if 'track_number' in data and data['track_number'] is not None:
             db_updates['track_number'] = data['track_number'].strip() or None
         if 'disc_number' in data:
             db_updates['disc_number'] = int(data['disc_number']) if data['disc_number'] else None
-        if 'comment' in data:
+        if 'comment' in data and data['comment'] is not None:
             db_updates['comment'] = data['comment'].strip() or None
-        if 'mbid' in data:
+        if 'mbid' in data and data['mbid'] is not None:
             db_updates['mbid'] = data['mbid'].strip() or None
         
         if not db_updates:
@@ -15091,7 +15126,7 @@ def api_track_update_metadata():
         file_update_result = None
         if changes:
             try:
-                file_update_result = update_track_file_tags(track_id, DB_PATH, changes)
+                file_update_result = update_track_metadata(track_id, changes, DB_PATH)
             except Exception as e:
                 logging.warning(f"Could not update file tags for track {track_id}: {e}")
         

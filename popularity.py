@@ -1360,7 +1360,7 @@ def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = N
             if os.path.exists(config_path):
                 with open(config_path, 'r') as f:
                     config = yaml.safe_load(f) or {}
-                    discogs_token = config.get("discogs", {}).get("token")
+                    discogs_token = config.get("api_integrations", {}).get("discogs", {}).get("token")
         
         if not discogs_token:
             log_debug(f"[ALBUM_ART_FALLBACK] No Discogs token available, skipping Discogs lookup")
@@ -2047,14 +2047,107 @@ def detect_single_for_track(
     }
 
 
-def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dict:
+def get_artist_listenbrainz_context(artist_mbid: str) -> dict:
+    """
+    Fetch ListenBrainz top recordings for an artist to determine top 10% threshold.
+    
+    Uses ListenBrainz popularity API to get top recordings sorted by listen count.
+    This provides a community-based popularity ranking independent of Last.fm.
+    
+    Args:
+        artist_mbid: MusicBrainz ID of the artist
+        
+    Returns:
+        Dict with keys:
+        - top_10_percentile_threshold: Listen count for top 10% position
+        - total_recordings: Total recordings found
+        - source: 'listenbrainz' if successful, 'error' if failed
+        - listen_counts: List of listen counts for debugging
+    """
+    try:
+        import requests
+        
+        url = f"https://api.listenbrainz.org/1/popularity/top-recordings-for-artist/{artist_mbid}"
+        
+        response = requests.get(url, timeout=10)
+        if response.status_code == 200:
+            recordings = response.json()
+            
+            if not recordings:
+                return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
+            
+            listen_counts = [r.get('total_listen_count', 0) for r in recordings if r.get('total_listen_count')]
+            
+            if not listen_counts:
+                return {'top_10_percentile_threshold': 0, 'total_recordings': len(recordings), 'source': 'error', 'listen_counts': []}
+            
+            total_recordings = len(recordings)
+            top_10_count = max(1, total_recordings // 10)
+            top_10_threshold = listen_counts[min(top_10_count - 1, len(listen_counts) - 1)]
+            
+            log_debug(f"ListenBrainz: {total_recordings} total recordings, top 10% = {top_10_count} recordings, threshold: {top_10_threshold} listens")
+            
+            return {
+                'top_10_percentile_threshold': top_10_threshold,
+                'total_recordings': total_recordings,
+                'source': 'listenbrainz',
+                'listen_counts': listen_counts
+            }
+        else:
+            log_debug(f"ListenBrainz API error: {response.status_code} for artist {artist_mbid}")
+            return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
+    except Exception as e:
+        log_debug(f"Failed to fetch ListenBrainz context for artist {artist_mbid}: {e}")
+        return {'top_10_percentile_threshold': 0, 'total_recordings': 0, 'source': 'error', 'listen_counts': []}
+
+
+def blend_top_10_thresholds(lastfm_threshold: int, lastfm_total: int, listenbrainz_threshold: int, listenbrainz_total: int) -> tuple:
+    """
+    Blend thresholds from Last.fm and ListenBrainz for more robust top 10% detection.
+    
+    Applies weighted averaging based on data availability:
+    - Both sources available: 60% Last.fm + 40% ListenBrainz
+    - Last.fm only: Use Last.fm
+    - ListenBrainz only: Use ListenBrainz  
+    - Neither: Return 0
+    
+    Args:
+        lastfm_threshold: Top 10% threshold from Last.fm (listener count)
+        lastfm_total: Total tracks from Last.fm
+        listenbrainz_threshold: Top 10% threshold from ListenBrainz (listen count)
+        listenbrainz_total: Total recordings from ListenBrainz
+        
+    Returns:
+        Tuple of (blended_threshold, source_info)
+        - blended_threshold: Final threshold to use
+        - source_info: String describing which sources were used
+    """
+    has_lastfm = lastfm_threshold > 0 and lastfm_total > 0
+    has_listenbrainz = listenbrainz_threshold > 0 and listenbrainz_total > 0
+    
+    if has_lastfm and has_listenbrainz:
+        # Blend both sources: Last.fm weighted slightly higher as it's more mature
+        blended = int((lastfm_threshold * 0.6) + (listenbrainz_threshold * 0.4))
+        source_info = f"Blended (Last.fm {lastfm_threshold} + ListenBrainz {listenbrainz_threshold} → {blended})"
+        return blended, source_info
+    elif has_lastfm:
+        source_info = f"Last.fm only ({lastfm_threshold})"
+        return lastfm_threshold, source_info
+    elif has_listenbrainz:
+        source_info = f"ListenBrainz only ({listenbrainz_threshold})"
+        return listenbrainz_threshold, source_info
+    else:
+        return 0, "No data available"
+
+
+def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection, artist_mbid: str = None) -> dict:
     """
     Pre-fetch Last.fm listener data for all tracks by an artist to enable dynamic weight adjustment.
     
     Uses artist-level statistics to identify tracks that are outliers in the artist's catalogue,
     allowing intelligent weight redistribution during popularity scoring.
     
-    Falls back to Last.fm's top tracks API if database has limited catalogue coverage.
+    Falls back to Last.fm's top tracks API, then to ListenBrainz if Last.fm has no data.
     Also fetches artist info to determine top 10% threshold.
     
     Example:
@@ -2065,6 +2158,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
     Args:
         artist_name: Name of the artist
         conn: Database connection
+        artist_mbid: MusicBrainz ID for ListenBrainz fallback (optional)
         
     Returns:
         Dict with keys:
@@ -2074,9 +2168,10 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         - max: Maximum listener count
         - track_count: Number of tracks analyzed (for stats)
         - total_tracks: Total artist tracks on Last.fm (from API)
-        - top_10_percentile_threshold: Listener count for top 10% of artist tracks
+        - top_10_percentile_threshold: Listener count for top 10% of artist tracks (blended if both sources available)
         - track_zscores: Dict mapping track_id → z-score for database tracks
-        - source: 'database' or 'lastfm_api' indicating stats data source
+        - source: 'database_plus_api', 'listenbrainz_fallback', or 'error' indicating stats data source
+        - threshold_source: Detail on which sources were used for top 10% threshold
     """
     try:
         cursor = conn.cursor()
@@ -2101,6 +2196,7 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
         # Fetch artist info to get total track count and top 10% threshold
         total_tracks = 0
         top_10_percentile_threshold = 0
+        threshold_source = "none"
         try:
             import requests
             from helpers.config_loader import load_config
@@ -2143,11 +2239,41 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                             top_10_percentile_threshold = sorted_listeners[min(top_10_count - 1, len(sorted_listeners) - 1)]
                         
                         log_debug(f"Artist info: {artist_name} has {total_tracks} total tracks, top 10% = ~{top_10_count} tracks, threshold: {top_10_percentile_threshold} listeners")
+                        threshold_source = "last.fm"
                     
                     if listeners_list:
                         log_debug(f"Added {len(api_listeners_list)} top tracks from Last.fm API for {artist_name}")
         except Exception as e:
             log_debug(f"Failed to fetch Last.fm artist info for {artist_name}: {e}")
+        
+        # If Last.fm returned no threshold data, try ListenBrainz as fallback
+        listenbrainz_threshold = 0
+        listenbrainz_total = 0
+        if (top_10_percentile_threshold == 0 or total_tracks == 0) and artist_mbid:
+            try:
+                listenbrainz_data = get_artist_listenbrainz_context(artist_mbid)
+                if listenbrainz_data['source'] == 'listenbrainz':
+                    listenbrainz_threshold = listenbrainz_data['top_10_percentile_threshold']
+                    listenbrainz_total = listenbrainz_data['total_recordings']
+                    
+                    # Use ListenBrainz if Last.fm failed
+                    if top_10_percentile_threshold == 0:
+                        top_10_percentile_threshold = listenbrainz_threshold
+                        total_tracks = listenbrainz_total
+                        threshold_source = "listenbrainz"
+                        log_debug(f"Using ListenBrainz as fallback for {artist_name}: threshold={listenbrainz_threshold}, total={listenbrainz_total}")
+            except Exception as e:
+                log_debug(f"ListenBrainz fallback failed for {artist_name}: {e}")
+        
+        # Blend thresholds if both sources have data
+        if top_10_percentile_threshold > 0 and listenbrainz_threshold > 0:
+            blended_threshold, blend_source = blend_top_10_thresholds(
+                top_10_percentile_threshold, total_tracks,
+                listenbrainz_threshold, listenbrainz_total
+            )
+            top_10_percentile_threshold = blended_threshold
+            threshold_source = blend_source
+            log_debug(f"Threshold blend for {artist_name}: {blend_source}")
         
         if not listeners_list or len(listeners_list) < 2:
             return {
@@ -2159,7 +2285,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
                 'total_tracks': total_tracks,
                 'top_10_percentile_threshold': top_10_percentile_threshold,
                 'track_zscores': {},
-                'source': 'error'
+                'source': 'error',
+                'threshold_source': threshold_source
             }
         
         # Calculate artist-level statistics (using mean-centered z-scores)
@@ -2192,7 +2319,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'total_tracks': total_tracks,
             'top_10_percentile_threshold': top_10_percentile_threshold,
             'track_zscores': track_zscores,
-            'source': 'database_plus_api' if listeners_list else 'error'
+            'source': 'database_plus_api' if listeners_list else 'error',
+            'threshold_source': threshold_source
         }
         
     except Exception as e:
@@ -2206,7 +2334,8 @@ def get_artist_lastfm_context(artist_name: str, conn: sqlite3.Connection) -> dic
             'total_tracks': 0,
             'top_10_percentile_threshold': 0,
             'track_zscores': {},
-            'source': 'error'
+            'source': 'error',
+            'threshold_source': 'none'
         }
 
 
@@ -2555,9 +2684,25 @@ def popularity_scan(
             log_unified(f"Popularity Scan - Scanning Artist {artist} ({len(albums)} album(s))")
             log_debug(f"Processing artist/album group: {artist} with {len(albums)} albums")
             
+            # Get artist MBID from database cache for Last.fm context enrichment
+            artist_mbid = None
+            try:
+                cursor.execute("""
+                    SELECT musicbrainz_artist_id 
+                    FROM tracks 
+                    WHERE artist = ? AND musicbrainz_artist_id IS NOT NULL 
+                    LIMIT 1
+                """, (artist,))
+                row = cursor.fetchone()
+                if row and row[0]:
+                    artist_mbid = row[0]
+                    log_debug(f"Using cached MusicBrainz artist ID for {artist}: {artist_mbid}")
+            except Exception as e:
+                log_debug(f"Failed to get cached MusicBrainz artist ID for {artist}: {e}")
+            
             # Pre-fetch artist's Last.fm context for dynamic weight adjustment
             # This allows us to boost Last.fm weight for tracks that are outliers in the artist's catalogue
-            artist_lastfm_context = get_artist_lastfm_context(artist, conn)
+            artist_lastfm_context = get_artist_lastfm_context(artist, conn, artist_mbid)
             if artist_lastfm_context['track_count'] > 0:
                 log_info(f"Artist Last.fm context: {artist_lastfm_context['track_count']} tracks, mean={artist_lastfm_context['mean']:.0f} listeners, stdev={artist_lastfm_context['stdev']:.0f}")
                 log_debug(f"Artist catalogue range: {artist_lastfm_context['min']:.0f} - {artist_lastfm_context['max']:.0f} listeners")
@@ -3313,9 +3458,13 @@ def popularity_scan(
                                         if lastfm_tags:
                                             track_tags["lastfm_tags"] = lastfm_tags
                                             log_debug(f'Fetched {len(lastfm_tags)} Last.fm tags for "{title}"')
+                                        else:
+                                            log_debug(f'[TAGS] No Last.fm tags returned for "{title}" by "{track_artist}"')
                                         rate_limiter.record_lastfm_request()
                                 except Exception as e:
                                     log_debug(f'Failed to fetch Last.fm tags for "{title}": {e}')
+                            else:
+                                log_debug(f'[TAGS] Last.fm client not available for "{title}"')
                             
                             # Fetch ListenBrainz genres (if MBID available)
                             if track_mbid:

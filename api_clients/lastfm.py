@@ -804,6 +804,8 @@ class LastFmClient:
             track_info = self.get_track_info(artist, title)
             toptags = track_info.get("toptags", {})
             
+            logger.debug(f"[LASTFM_TAGS] Raw toptags response for '{title}' by '{artist}': {toptags}")
+            
             if isinstance(toptags, dict):
                 tag_list = toptags.get("tag", [])
             else:
@@ -812,6 +814,8 @@ class LastFmClient:
             # Normalize response (might be a single dict or list)
             if isinstance(tag_list, dict):
                 tag_list = [tag_list]
+            
+            logger.debug(f"[LASTFM_TAGS] Normalized tag_list for '{title}' by '{artist}': {len(tag_list) if isinstance(tag_list, list) else '?'} items")
             
             # Extract name and count, applying limit
             result = []
@@ -822,11 +826,16 @@ class LastFmClient:
                     if name:
                         result.append({"name": name, "count": count})
             
-            logger.debug(f"Fetched {len(result)} tags for '{title}' by '{artist}' from Last.fm")
+            if result:
+                logger.debug(f"Fetched {len(result)} tags for '{title}' by '{artist}' from Last.fm: {[t['name'] for t in result[:3]]}")
+            else:
+                logger.debug(f"No tags found for '{title}' by '{artist}' from Last.fm (toptags={bool(toptags)})")
             return result
             
         except Exception as e:
             logger.debug(f"Failed to fetch Last.fm tags for '{title}' by '{artist}': {e}")
+            import traceback
+            logger.debug(f"Traceback: {traceback.format_exc()}")
             return []
     
     def get_recommendations(self) -> dict:

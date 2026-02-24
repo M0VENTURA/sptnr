@@ -463,13 +463,12 @@ def get_beets_stats(config_path: str = "/config", enabled: bool = True) -> dict:
     return client.get_library_stats()
 
 
-def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str = None) -> bool:
+def update_track_metadata(track_id: str, metadata: dict, db_path: str = None) -> bool:
     """
     Update track metadata in MP3/FLAC file using direct mutagen-based updates.
     
-    This function replaces the previous beets-based approach that required files to be 
-    imported into beets' database. Instead, it directly updates the audio file tags using
-    mutagen, which is more reliable and doesn't have the dependency on beets import.
+    This is the unified method for all metadata updates. Uses mutagen directly
+    for maximum compatibility and reliability across all audio formats.
     
     Args:
         track_id: Track ID in the database
@@ -477,14 +476,14 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
                  - title: Track title
                  - artist: Track artist
                  - album: Album name
-                 - albumartist: Album artist
-                 - genre: Genre (can be string or list)
+                 - album_artist (or albumartist): Album artist
+                 - genre (or genres): Genre (can be string or list)
                  - year: Release year
                  - composer: Composer name
-                 - track: Track number
-                 - disc: Disc number
-                 - comments: Comments field
-                 - mb_trackid: MusicBrainz track ID
+                 - track (or track_number): Track number
+                 - disc (or disc_number): Disc number
+                 - comment (or comments): Comments field
+                 - mbid (or mb_trackid): MusicBrainz track ID
                  - mb_albumid: MusicBrainz album ID
         db_path: Path to the database
         
@@ -492,6 +491,27 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
         bool: True if successful, False otherwise
     """
     try:
+        # Normalize field names to canonical format
+        normalized_metadata = {}
+        field_mapping = {
+            'album_artist': 'albumartist',
+            'genres': 'genre',
+            'track_number': 'track',
+            'disc_number': 'disc',
+            'comment': 'comments',
+            'mbid': 'mb_trackid',
+        }
+        
+        for key, value in metadata.items():
+            # Map legacy field names to canonical names
+            canonical_key = field_mapping.get(key, key)
+            if value:  # Only include non-empty values
+                normalized_metadata[canonical_key] = value
+        
+        if not normalized_metadata:
+            logger.warning(f"No metadata provided for track {track_id}")
+            return False
+        
         # Get the track file path from the database
         if not db_path:
             db_path = os.environ.get("DB_PATH", "/config/sptnr.db")
@@ -548,9 +568,9 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
         
         # Update metadata using mutagen based on file type
         if file_ext == '.mp3':
-            success = _update_mp3_metadata(full_file_path, metadata)
+            success = _update_mp3_metadata(full_file_path, normalized_metadata)
         elif file_ext in ['.flac', '.fla']:
-            success = _update_flac_metadata(full_file_path, metadata)
+            success = _update_flac_metadata(full_file_path, normalized_metadata)
         else:
             logger.warning(f"Unsupported file format for metadata update: {file_ext}")
             return False
@@ -565,6 +585,12 @@ def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str
     except Exception as e:
         logger.error(f"Error updating track metadata: {e}")
         return False
+
+
+# Backward compatibility alias
+def update_track_metadata_with_beets(track_id: str, metadata: dict, db_path: str = None) -> bool:
+    """Deprecated: Use update_track_metadata() instead."""
+    return update_track_metadata(track_id, metadata, db_path)
 
 
 def _update_mp3_metadata(file_path: str, metadata: dict) -> bool:
@@ -769,3 +795,15 @@ def _update_flac_metadata(file_path: str, metadata: dict) -> bool:
     except Exception as e:
         logger.error(f"Failed to update FLAC metadata for {file_path}: {e}")
         return False
+
+
+def remove_genre_from_track_title(title: str) -> str:
+    """Remove (live) suffix from track title if genre 'live' is being removed"""
+    import re
+    
+    if not title:
+        return title
+    
+    # Remove patterns like " (live)" or " [live]" from end of title
+    cleaned = re.sub(r'\s*[\(\[]live[\)\]]\s*$', '', title, flags=re.IGNORECASE)
+    return cleaned.strip()

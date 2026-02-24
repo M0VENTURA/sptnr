@@ -589,6 +589,150 @@ def is_match(filename, queue_item):
         return False
 
 
+def auto_discover_and_queue_files():
+    """
+    Scan /downloads folder for audio files and add them to download_queue with status 'discovered'.
+    This makes manually added/downloaded files appear in the Download Monitor UI for user review.
+    
+    Only adds files that:
+    - Are valid audio files (.mp3, .flac, .m4a, .ogg, .wav)
+    - Are not already in the download_queue table
+    - Are not already in the tracks table (existing library)
+    
+    Returns:
+        Dict with statistics:
+        - scanned: Total audio files found
+        - queued: Files added to queue
+        - already_in_queue: Files that were already queued
+        - already_in_library: Files that exist in library
+        - errors: List of error messages
+    """
+    stats = {
+        'scanned': 0,
+        'queued': 0,
+        'already_in_queue': 0,
+        'already_in_library': 0,
+        'errors': []
+    }
+    
+    try:
+        if not os.path.isdir(DOWNLOADS_DIR):
+            logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
+            return stats
+        
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Ensure discovered status column exists
+        cursor.execute("PRAGMA table_info(download_queue);")
+        columns = [row[1] for row in cursor.fetchall()]
+        
+        # Get all audio files from downloads folder and subdirectories
+        audio_extensions = {'.mp3', '.flac', '.m4a', '.ogg', '.wav'}
+        discovered_files = []
+        
+        for root, dirs, files in os.walk(DOWNLOADS_DIR):
+            for filename in files:
+                file_ext = os.path.splitext(filename)[1].lower()
+                if file_ext in audio_extensions:
+                    full_path = os.path.join(root, filename)
+                    rel_path = os.path.relpath(full_path, DOWNLOADS_DIR)
+                    discovered_files.append({
+                        'filename': filename,
+                        'full_path': full_path,
+                        'rel_path': rel_path
+                    })
+        
+        stats['scanned'] = len(discovered_files)
+        logger.info(f"Scanning {len(discovered_files)} audio files in {DOWNLOADS_DIR}")
+        
+        for file_info in discovered_files:
+            try:
+                full_path = file_info['full_path']
+                filename = file_info['filename']
+                
+                # Extract metadata from file
+                try:
+                    metadata = read_mp3_metadata(full_path)
+                except Exception as e:
+                    logger.warning(f"Could not read metadata from {filename}: {e}")
+                    metadata = {}
+                
+                artist = metadata.get('artist', 'Unknown Artist')
+                album = metadata.get('album', 'Unknown Album')
+                title = metadata.get('title', os.path.splitext(filename)[0])
+                
+                # Check if already in download_queue
+                cursor.execute("""
+                    SELECT id, status FROM download_queue 
+                    WHERE (file_path = ? OR filename = ?)
+                """, (full_path, filename))
+                
+                existing = cursor.fetchone()
+                if existing:
+                    stats['already_in_queue'] += 1
+                    logger.debug(f"File already in queue (ID {existing['id']}, status {existing['status']}): {filename}")
+                    continue
+                
+                # Check if track exists in library (case-insensitive)
+                cursor.execute("""
+                    SELECT id FROM tracks 
+                    WHERE LOWER(artist) = LOWER(?) 
+                    AND LOWER(album) = LOWER(?) 
+                    AND LOWER(title) = LOWER(?)
+                """, (artist, album, title))
+                
+                in_library = cursor.fetchone()
+                if in_library:
+                    stats['already_in_library'] += 1
+                    logger.debug(f"Track already in library: {artist} - {title}")
+                    
+                    # Still add to queue with status 'discovered' so user can see it
+                    # Set exists_in_library=1 to indicate it's a duplicate
+                    cursor.execute("""
+                        INSERT INTO download_queue 
+                        (artist, title, album, filename, file_path, status, exists_in_library, 
+                         source, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, 'discovered', 1, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    """, (artist, title, album, filename, full_path))
+                    conn.commit()
+                    stats['queued'] += 1
+                    continue
+                
+                # Add to queue with 'discovered' status
+                cursor.execute("""
+                    INSERT INTO download_queue 
+                    (artist, title, album, filename, file_path, status, exists_in_library, 
+                     source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, 'discovered', 0, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                """, (artist, title, album, filename, full_path))
+                
+                conn.commit()
+                stats['queued'] += 1
+                logger.info(f"Discovered and queued: {artist} - {title} ({filename})")
+                
+            except Exception as e:
+                error_msg = f"Error processing {file_info['filename']}: {str(e)}"
+                logger.error(error_msg)
+                stats['errors'].append(error_msg)
+        
+        conn.close()
+        
+        logger.info(f"Auto-discovery complete: {stats['queued']} files added to queue, "
+                   f"{stats['already_in_queue']} already queued, "
+                   f"{stats['already_in_library']} in library")
+        
+        return stats
+        
+    except Exception as e:
+        error_msg = f"Error during auto-discovery: {str(e)}"
+        logger.error(error_msg)
+        import traceback
+        logger.error(traceback.format_exc())
+        stats['errors'].append(error_msg)
+        return stats
+
+
 def get_retry_queue(limit=50):
     """
     Get items ready for retry
