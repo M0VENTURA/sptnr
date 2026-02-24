@@ -125,8 +125,11 @@
           </p>
         </div>
         <div class="col-md-4 d-flex align-items-center justify-content-end">
-          <button type="button" class="btn btn-success" onclick="discoverFiles()">
+          <button type="button" class="btn btn-success me-2" onclick="discoverFiles()">
             <i class="bi bi-search"></i> Discover Files
+          </button>
+          <button type="button" class="btn btn-primary" onclick="processAlbums()">
+            <i class="bi bi-collection"></i> Process Albums
           </button>
         </div>
       </div>
@@ -302,10 +305,16 @@ async function discoverFiles() {
     
     if (data.success) {
       const stats = data.stats;
-      const message = `Scanned ${stats.scanned} files. ` +
+      let message = `Scanned ${stats.scanned} files. ` +
                      `Added ${stats.queued} to queue. ` +
                      `(${stats.already_in_queue} already queued, ` +
                      `${stats.already_in_library} in library)`;
+      
+      // Add album processing info if available
+      if (stats.albums_processed || stats.albums_duplicates) {
+        message += ` | Albums: ${stats.albums_processed || 0} auto-processed, ` +
+                   `${stats.albums_duplicates || 0} duplicates found`;
+      }
       
       document.getElementById('discoveryMessage').textContent = message;
       document.getElementById('discoveryResults').style.display = 'block';
@@ -331,6 +340,58 @@ async function discoverFiles() {
   }
 }
 
+async function processAlbums() {
+  try {
+    const button = event.target;
+    button.disabled = true;
+    button.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
+    
+    const response = await fetch('/api/downloads/process-albums', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' }
+    });
+    
+    const data = await response.json();
+    
+    button.disabled = false;
+    button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
+    
+    if (data.success) {
+      const stats = data.stats;
+      const message = `Checked ${stats.checked} albums. ` +
+                     `${stats.processed} auto-processed to /music. ` +
+                     `${stats.duplicates_found} marked as duplicates (manual review required).`;
+      
+      document.getElementById('discoveryMessage').textContent = message;
+      document.getElementById('discoveryResults').style.display = 'block';
+      
+      // Refresh queue display
+      await loadQueueStatus();
+      
+      // Hide message after 10 seconds
+      setTimeout(() => {
+        document.getElementById('discoveryResults').style.display = 'none';
+      }, 10000);
+      
+      if (stats.processed > 0 || stats.duplicates_found > 0) {
+        alert(`✅ Album processing complete!\n\n${stats.processed} albums auto-processed.\n${stats.duplicates_found} duplicates found (check queue for manual review).`);
+      } else {
+        alert('ℹ️ No complete albums found to process.');
+      }
+    } else {
+      alert('❌ Error: ' + (data.error || 'Failed to process albums'));
+    }
+  } catch (error) {
+    console.error('Error processing albums:', error);
+    alert('❌ Network error: ' + error.message);
+    
+    // Re-enable button on error
+    const button = event.target;
+    button.disabled = false;
+    button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
+  }
+}
+
 async function loadQueueStatus() {
   try {
     const response = await fetch('/api/downloads/queue?limit=100');
@@ -347,7 +408,7 @@ async function loadQueueStatus() {
     const queue = data.queue;
     
     // Categorize items
-    const active = queue.filter(item => ['queued', 'searching', 'downloading', 'discovered'].includes(item.status));
+    const active = queue.filter(item => ['queued', 'searching', 'downloading', 'discovered', 'possible_duplicate'].includes(item.status));
     const completed = queue.filter(item => item.status === 'completed');
     const failed = queue.filter(item => item.status === 'failed');
     
@@ -389,23 +450,27 @@ function renderActiveQueue(active) {
       'queued': '⏳ Queued',
       'searching': '🔍 Searching',
       'downloading': '📥 Downloading',
-      'discovered': '📁 Discovered'
+      'discovered': '📁 Discovered',
+      'possible_duplicate': '⚠️ Possible Duplicate'
     }[item.status] || item.status;
     
     const existsInLibrary = item.exists_in_library === 1;
+    const isPossibleDuplicate = item.status === 'possible_duplicate';
     
     html += `
-      <div class="list-group-item ${existsInLibrary ? 'bg-light' : ''}">
+      <div class="list-group-item ${existsInLibrary || isPossibleDuplicate ? 'bg-light' : ''}">
         <div class="d-flex justify-content-between align-items-start">
           <div class="flex-grow-1">
             <h6 class="mb-1">
               ${escapeHtml(item.title)}
               ${existsInLibrary ? '<small class="text-muted"><i class="bi bi-check-circle-fill ms-2" title="Already in library"></i></small>' : ''}
+              ${isPossibleDuplicate ? '<small class="text-warning"><i class="bi bi-exclamation-triangle-fill ms-2" title="Duplicate album detected"></i></small>' : ''}
             </h6>
             <p class="text-muted small mb-2">${escapeHtml(item.artist)}${item.album ? ' · ' + escapeHtml(item.album) : ''}</p>
+            ${isPossibleDuplicate ? '<p class="text-warning small mb-0"><i class="bi bi-info-circle"></i> This album already exists in your library. Manual review required.</p>' : ''}
           </div>
           <div class="d-flex gap-2 align-items-center">
-            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : 'bg-primary'}">${statusLabel}</span>
+            <span class="badge ${item.status === 'downloading' ? 'bg-warning' : item.status === 'discovered' ? 'bg-info' : isPossibleDuplicate ? 'bg-warning' : 'bg-primary'}">${statusLabel}</span>
             <span class="badge bg-secondary">${item.source || 'unknown'}</span>
             <button class="btn btn-sm btn-outline-danger" onclick="deleteQueueItem(${item.id})" title="Remove from queue">
               <i class="bi bi-x"></i>

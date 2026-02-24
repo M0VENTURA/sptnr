@@ -722,6 +722,17 @@ def auto_discover_and_queue_files():
                    f"{stats['already_in_queue']} already queued, "
                    f"{stats['already_in_library']} in library")
         
+        # Check for complete albums and auto-process them
+        if stats['queued'] > 0:
+            logger.info("Checking for complete albums to auto-process...")
+            album_stats = process_complete_albums()
+            stats['albums_processed'] = album_stats.get('processed', 0)
+            stats['albums_duplicates'] = album_stats.get('duplicates_found', 0)
+            
+            if album_stats.get('processed') or album_stats.get('duplicates_found'):
+                logger.info(f"Album processing: {album_stats['processed']} auto-processed, "
+                           f"{album_stats['duplicates_found']} marked as duplicates")
+        
         return stats
         
     except Exception as e:
@@ -959,3 +970,272 @@ def cleanup_imported(days=7):
     except Exception as e:
         logger.error(f"Error cleaning up queue: {e}")
         return 0
+
+
+def check_album_exists_in_library(album, artist):
+    """
+    Check if an album already exists in the tracks database
+    
+    Args:
+        album: Album name
+        artist: Artist or album artist name
+    
+    Returns:
+        bool: True if album exists in library, False otherwise
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Check if any tracks from this album/artist combo exist
+        cursor.execute("""
+            SELECT COUNT(*) as count FROM tracks 
+            WHERE LOWER(album) = LOWER(?) 
+            AND (LOWER(artist) = LOWER(?) OR LOWER(album_artist) = LOWER(?))
+        """, (album, artist, artist))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return result['count'] > 0 if result else False
+        
+    except Exception as e:
+        logger.error(f"Error checking if album exists: {e}")
+        return False
+
+
+def check_album_complete(album, artist):
+    """
+    Check if all tracks for an album are discovered and have metadata.
+    An album is considered complete when:
+    1. At least one track has been discovered for this album
+    2. All discovered tracks have file_path set (file found)
+    3. All discovered tracks have metadata extracted
+    
+    Args:
+        album: Album name
+        artist: Artist name
+    
+    Returns:
+        dict: {
+            'is_complete': bool,
+            'total_tracks': int,
+            'discovered_tracks': int,
+            'tracks': list of queue items
+        }
+    """
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all queue items for this album
+        cursor.execute("""
+            SELECT * FROM download_queue 
+            WHERE LOWER(album) = LOWER(?) 
+            AND LOWER(artist) = LOWER(?)
+            AND status IN ('discovered', 'completed')
+            AND file_path IS NOT NULL
+            ORDER BY track_number ASC, title ASC
+        """, (album, artist))
+        
+        tracks = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        if not tracks:
+            return {
+                'is_complete': False,
+                'total_tracks': 0,
+                'discovered_tracks': 0,
+                'tracks': []
+            }
+        
+        # Check if we have at least 3 tracks (minimum for an album)
+        # and all tracks have necessary metadata
+        has_metadata = all(
+            track.get('artist') and 
+            track.get('album') and 
+            track.get('title') and 
+            track.get('file_path')
+            for track in tracks
+        )
+        
+        is_complete = len(tracks) >= 3 and has_metadata
+        
+        return {
+            'is_complete': is_complete,
+            'total_tracks': len(tracks),
+            'discovered_tracks': len(tracks),
+            'tracks': tracks
+        }
+        
+    except Exception as e:
+        logger.error(f"Error checking album completeness: {e}")
+        return {
+            'is_complete': False,
+            'total_tracks': 0,
+            'discovered_tracks': 0,
+            'tracks': [],
+            'error': str(e)
+        }
+
+
+def process_complete_albums():
+    """
+    Check for complete discovered albums and either:
+    1. Auto-process them to /music if they don't exist in library
+    2. Mark as 'possible_duplicate' if they already exist
+    
+    This function should be called after auto_discover_and_queue_files()
+    or periodically to check for complete albums.
+    
+    Returns:
+        dict: Statistics about processed albums
+    """
+    stats = {
+        'checked': 0,
+        'processed': 0,
+        'duplicates_found': 0,
+        'errors': []
+    }
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all unique album/artist combinations from discovered tracks
+        cursor.execute("""
+            SELECT DISTINCT album, artist 
+            FROM download_queue 
+            WHERE status = 'discovered' 
+            AND album IS NOT NULL 
+            AND artist IS NOT NULL
+            AND file_path IS NOT NULL
+        """)
+        
+        albums = [dict(row) for row in cursor.fetchall()]
+        conn.close()
+        
+        logger.info(f"Checking {len(albums)} discovered albums for completeness")
+        
+        for album_info in albums:
+            try:
+                album = album_info['album']
+                artist = album_info['artist']
+                
+                stats['checked'] += 1
+                
+                # Check if album is complete
+                completion = check_album_complete(album, artist)
+                
+                if not completion['is_complete']:
+                    logger.debug(f"Album not complete: {artist} - {album} ({completion['discovered_tracks']} tracks)")
+                    continue
+                
+                logger.info(f"Complete album found: {artist} - {album} ({completion['total_tracks']} tracks)")
+                
+                # Check if album already exists in library
+                exists_in_library = check_album_exists_in_library(album, artist)
+                
+                if exists_in_library:
+                    # Mark all tracks as possible_duplicate
+                    conn = get_db()
+                    cursor = conn.cursor()
+                    
+                    for track in completion['tracks']:
+                        cursor.execute("""
+                            UPDATE download_queue 
+                            SET status = 'possible_duplicate',
+                                updated_at = CURRENT_TIMESTAMP
+                            WHERE id = ?
+                        """, (track['id'],))
+                    
+                    conn.commit()
+                    conn.close()
+                    
+                    stats['duplicates_found'] += 1
+                    logger.warning(f"Album already exists in library (marked as possible_duplicate): {artist} - {album}")
+                    
+                else:
+                    # Auto-process tracks to /music
+                    logger.info(f"Auto-processing album to /music: {artist} - {album}")
+                    
+                    try:
+                        from post_download_processor import update_file_metadata, rename_and_move_file
+                        
+                        conn = get_db()
+                        cursor = conn.cursor()
+                        
+                        success_count = 0
+                        for track in completion['tracks']:
+                            try:
+                                file_path = track['file_path']
+                                
+                                if not os.path.exists(file_path):
+                                    logger.warning(f"File not found: {file_path}")
+                                    continue
+                                
+                                # Prepare metadata
+                                metadata = {
+                                    'track_number': track.get('track_number'),
+                                    'artist': track.get('artist'),
+                                    'album_artist': track.get('album_artist') or track.get('artist'),
+                                    'album': track.get('album'),
+                                    'year': track.get('year'),
+                                    'title': track.get('title')
+                                }
+                                
+                                # Update file metadata tags
+                                update_file_metadata(file_path, metadata)
+                                
+                                # Rename and move file
+                                result = rename_and_move_file(file_path, metadata)
+                                
+                                if result.get('success'):
+                                    # Mark as completed
+                                    cursor.execute("""
+                                        UPDATE download_queue 
+                                        SET status = 'imported',
+                                            imported_at = CURRENT_TIMESTAMP,
+                                            updated_at = CURRENT_TIMESTAMP
+                                        WHERE id = ?
+                                    """, (track['id'],))
+                                    
+                                    success_count += 1
+                                    logger.info(f"✓ Processed: {track['artist']} - {track['title']}")
+                                else:
+                                    logger.error(f"Failed to process {track['title']}: {result.get('error')}")
+                                
+                            except Exception as track_error:
+                                logger.error(f"Error processing track {track['title']}: {track_error}")
+                        
+                        conn.commit()
+                        conn.close()
+                        
+                        if success_count == len(completion['tracks']):
+                            stats['processed'] += 1
+                            logger.info(f"✓ Successfully processed complete album: {artist} - {album} ({success_count} tracks)")
+                        else:
+                            logger.warning(f"Partially processed album: {artist} - {album} ({success_count}/{len(completion['tracks'])} tracks)")
+                        
+                    except Exception as process_error:
+                        error_msg = f"Error auto-processing album {artist} - {album}: {str(process_error)}"
+                        logger.error(error_msg)
+                        stats['errors'].append(error_msg)
+                
+            except Exception as album_error:
+                error_msg = f"Error checking album {album_info.get('artist')} - {album_info.get('album')}: {str(album_error)}"
+                logger.error(error_msg)
+                stats['errors'].append(error_msg)
+        
+        logger.info(f"Album processing complete: {stats['processed']} albums auto-processed, "
+                   f"{stats['duplicates_found']} marked as duplicates")
+        
+        return stats
+        
+    except Exception as e:
+        error_msg = f"Error in process_complete_albums: {str(e)}"
+        logger.error(error_msg)
+        import traceback
+        logger.error(traceback.format_exc())
+        stats['errors'].append(error_msg)
+        return stats

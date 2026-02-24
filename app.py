@@ -10751,6 +10751,38 @@ def api_downloads_discover():
         }), 500
 
 
+@app.route("/api/downloads/process-albums", methods=["POST"])
+def api_downloads_process_albums():
+    """
+    Check discovered albums and auto-process complete ones.
+    Complete albums that don't exist in library are moved to /music.
+    Duplicate albums are marked as 'possible_duplicate' for manual review.
+    
+    Returns:
+        JSON with statistics: checked, processed, duplicates_found, errors
+    """
+    try:
+        from download_queue_manager import process_complete_albums
+        
+        stats = process_complete_albums()
+        
+        return jsonify({
+            "success": True,
+            "stats": stats,
+            "message": f"Checked {stats['checked']} albums. "
+                      f"{stats['processed']} auto-processed, "
+                      f"{stats['duplicates_found']} duplicates found"
+        })
+    except Exception as e:
+        print(f"[ERROR] Error processing albums: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "success": False,
+            "error": str(e)
+        }), 500
+
+
 @app.route("/api/downloads/process", methods=["POST"])
 def api_downloads_process():
     """Process downloads folder - organize and move files to /Music"""
