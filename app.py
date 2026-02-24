@@ -11622,27 +11622,37 @@ def api_queue_organize_group():
         updated_count = 0
         errors = []
         
-        logging.info(f"[ORGANIZE_GROUP] Starting group organization for group {group_id} with {len(items)} items")
+        logging.info(f"[ORGANIZE_GROUP] ========================================")
+        logging.info(f"[ORGANIZE_GROUP] Group organization started - group_id={group_id}")
+        logging.info(f"[ORGANIZE_GROUP] Album Artist: {album_artist}, Album: {album_name}, Year: {year}")
+        logging.info(f"[ORGANIZE_GROUP] Folder Format: {folder_format}")
+        logging.info(f"[ORGANIZE_GROUP] Total items to process: {len(items)}")
+        logging.info(f"[ORGANIZE_GROUP] =========================================")
         
         for item in items:
             try:
                 file_path = item['file_path']
                 
                 if not os.path.exists(file_path):
-                    errors.append(f"{item['title']}: File not found")
-                    logging.warning(f"[ORGANIZE_GROUP] File not found: {file_path}")
+                    error_msg = f"File not found at {file_path}"
+                    errors.append(f"{item['title']}: {error_msg}")
+                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     continue
                 
-                logging.info(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path}")
+                logging.debug(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path} (title: {item['title']})")
                 
                 # Update track metadata in database
-                update_queue_item(
-                    item['id'],
-                    artist=item['artist'],  # Keep original artist
-                    album=album_name,
-                    album_artist=album_artist if album_artist else item['artist'],
-                    year=year
-                )
+                try:
+                    update_queue_item(
+                        item['id'],
+                        artist=item['artist'],  # Keep original artist
+                        album=album_name,
+                        album_artist=album_artist if album_artist else item['artist'],
+                        year=year
+                    )
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item['artist']}, album={album_name}, album_artist={album_artist}, year={year}")
+                except Exception as meta_error:
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
                 
                 # Try Method 1: Beets import
                 beets_success = False
@@ -11652,7 +11662,7 @@ def api_queue_organize_group():
                     if not os.path.exists(config_path):
                         config_path = "/config/update_config.yaml"
                     
-                    logging.info(f"[ORGANIZE_GROUP] Attempting beets for item {item['id']}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Attempting beets import with config {config_path}")
                     
                     result = subprocess.run(
                         ['beet', '-c', config_path, 'import', '-s', file_path],
@@ -11662,14 +11672,20 @@ def api_queue_organize_group():
                     )
                     
                     if result.returncode == 0 and not os.path.exists(file_path):
-                        logging.info(f"[ORGANIZE_GROUP] ✅ Beets success for item {item['id']}")
+                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Beets import successful")
                         update_queue_item(item['id'], status='imported')
                         updated_count += 1
                         beets_success = True
                     else:
-                        logging.warning(f"[ORGANIZE_GROUP] Beets failed for item {item['id']}: returncode={result.returncode}, stderr={result.stderr}")
-                except Exception as e:
-                    logging.warning(f"[ORGANIZE_GROUP] Beets error for item {item['id']}: {e}")
+                        beets_error = result.stderr.strip() if result.stderr else result.stdout.strip()
+                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets import failed - returncode={result.returncode}, file_exists_after={os.path.exists(file_path)}")
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Beets stderr: {beets_error}")
+                except subprocess.TimeoutExpired:
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets import timed out (60s timeout)")
+                except FileNotFoundError:
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets not found in PATH - falling back to manual move")
+                except Exception as beets_error:
+                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets error - {type(beets_error).__name__}: {beets_error}")
                 
                 # If beets failed, try manual move
                 if not beets_success:
@@ -11681,6 +11697,10 @@ def api_queue_organize_group():
                         filename = os.path.basename(file_path)
                         target_path = os.path.join(target_dir, filename)
                         
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - source={file_path}")
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - target={target_path}")
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - target_dir created={os.path.isdir(target_dir)}")
+                        
                         # Handle duplicates
                         if os.path.exists(target_path):
                             base, ext = os.path.splitext(filename)
@@ -11688,31 +11708,45 @@ def api_queue_organize_group():
                             while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
                                 counter += 1
                             target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                            logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Target exists, using counter={counter}: {target_path}")
                         
-                        logging.info(f"[ORGANIZE_GROUP] Attempting manual move from {file_path} to {target_path}")
+                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Attempting manual move")
                         shutil.move(file_path, target_path)
                         
-                        if os.path.exists(target_path) and not os.path.exists(file_path):
-                            logging.info(f"[ORGANIZE_GROUP] ✅ Manual move success for item {item['id']}")
+                        # Verify the move
+                        source_exists = os.path.exists(file_path)
+                        target_exists = os.path.exists(target_path)
+                        
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move verification - source_exists={source_exists}, target_exists={target_exists}")
+                        
+                        if target_exists and not source_exists:
+                            logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Manual move successful")
                             update_queue_item(item['id'], status='imported', file_path=target_path)
                             updated_count += 1
                         else:
-                            error_msg = f"File move verification failed"
+                            error_msg = f"Move verification failed (source_exists={source_exists}, target_exists={target_exists})"
                             errors.append(f"{item['title']}: {error_msg}")
                             update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                            logging.error(f"[ORGANIZE_GROUP] {error_msg} for item {item['id']}")
+                            logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     except Exception as manual_error:
                         error_msg = str(manual_error)
                         errors.append(f"{item['title']}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                        logging.error(f"[ORGANIZE_GROUP] Manual move failed for item {item['id']}: {manual_error}")
+                        logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move failed - {type(manual_error).__name__}: {manual_error}")
                     
             except Exception as e:
                 errors.append(f"{item.get('title', 'Unknown')}: {str(e)}")
                 logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
                 continue
         
-        logging.info(f"[ORGANIZE_GROUP] Group organization complete: {updated_count}/{len(items)} successful")
+        logging.info(f"[ORGANIZE_GROUP] ========================================")
+        logging.info(f"[ORGANIZE_GROUP] Organization complete!")
+        logging.info(f"[ORGANIZE_GROUP] Results: {updated_count}/{len(items)} successful")
+        if errors:
+            logging.info(f"[ORGANIZE_GROUP] Failed items ({len(errors)}):")
+            for error in errors:
+                logging.info(f"[ORGANIZE_GROUP]   - {error}")
+        logging.info(f"[ORGANIZE_GROUP] =========================================")
         
         return jsonify({
             "success": True,
@@ -11723,9 +11757,9 @@ def api_queue_organize_group():
         })
         
     except Exception as e:
-        logging.error(f"Error organizing group: {e}")
+        logging.error(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
         import traceback
-        logging.error(traceback.format_exc())
+        logging.error(f"[ORGANIZE_GROUP] Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 400
 
 
