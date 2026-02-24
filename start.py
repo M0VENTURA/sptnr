@@ -669,10 +669,9 @@ def run_full_scan_pipeline(verbose=False, force=False):
     """
     Execute the full scan pipeline when full_scan is enabled in config.yaml.
     
-    This runs three scans in sequence:
+    This runs two scans in sequence:
     1. Navidrome import - imports metadata from Navidrome
     2. Popularity detection - detects popularity and singles
-    3. Beets import - imports file paths and metadata from beets
     
     All progress is logged to unified_scan.log and progress bars are updated.
     
@@ -681,7 +680,6 @@ def run_full_scan_pipeline(verbose=False, force=False):
         force: Force re-scan of all data
     """
     from popularity import popularity_scan
-    from beets_auto_import import BeetsAutoImporter
     
     log_unified("=" * 80)
     log_unified("🔄 FULL SCAN PIPELINE STARTED")
@@ -705,15 +703,6 @@ def run_full_scan_pipeline(verbose=False, force=False):
         log_unified("Detecting track popularity and singles...")
         popularity_scan(verbose=verbose, force=force, skip_header=True)
         log_unified("✅ Popularity detection complete")
-        log_unified("")
-        
-        # Step 3: Beets Import
-        log_unified("🎵 STEP 3/3: Beets Import")
-        log_unified("-" * 80)
-        log_unified("Importing file paths and metadata from beets...")
-        importer = BeetsAutoImporter()
-        importer.import_and_capture(skip_existing=not force)
-        log_unified("✅ Beets import complete")
         log_unified("")
         
         # Pipeline complete
@@ -1159,8 +1148,8 @@ if __name__ == "__main__":
     
     # ✅ Execute the appropriate scan
     if use_full_pipeline:
-        # Run the full scan pipeline (Navidrome → Popularity → Beets)
-        print("🔄 Starting full scan pipeline (Navidrome → Popularity → Beets)...")
+        # Run the full scan pipeline (Navidrome → Popularity)
+        print("🔄 Starting full scan pipeline (Navidrome → Popularity)...")
         run_full_scan_pipeline(
             verbose=args.verbose or config["features"].get("verbose", False),
             force=args.force or config["features"].get("force", False)

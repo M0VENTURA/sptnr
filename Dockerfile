@@ -3,7 +3,7 @@ FROM python:3.11-slim
 ENV DEBIAN_FRONTEND=noninteractive
 ENV TZ=Australia/Melbourne
 
-# System deps + tzdata + vim + gunicorn
+# System deps + tzdata + vim + gunicorn + ffmpeg
 RUN apt-get update && apt-get install -y --no-install-recommends \
     tzdata \
     build-essential \
@@ -13,6 +13,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libpq-dev \
     gcc \
     vim \
+    ffmpeg \
     && ln -snf /usr/share/zoneinfo/$TZ /etc/localtime && echo $TZ > /etc/timezone \
     && rm -rf /var/lib/apt/lists/*
 
@@ -24,7 +25,7 @@ COPY requirements.txt /app/
 # Install Python deps including gunicorn, beets for music tagging, and pyyaml for config
 RUN pip install --no-cache-dir --upgrade pip && \
     pip install --no-cache-dir -r requirements.txt && \
-    pip install --no-cache-dir flask beautifulsoup4 beets gunicorn pyyaml
+    pip install --no-cache-dir flask beautifulsoup4 gunicorn pyyaml
 
 # App files - COPY ALL FILES INCLUDING STATIC FOLDER
 COPY . /app

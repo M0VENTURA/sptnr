@@ -189,7 +189,6 @@ if spec and spec.origin:
     print(f"[DIAGNOSTIC] start.py will be imported from: {spec.origin}")
 else:
     print("[DIAGNOSTIC] start.py module not found in import path!")
-from beets_integration import _get_beets_client
 import secrets
 import subprocess
 import threading
@@ -988,11 +987,11 @@ _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "popularity.log"))
 # Note: singledetection.py has been integrated into popularity.py
 # Singles detection logs go to popularity.log
 _ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "downloads.log"))
-_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "beets_import.log"))
+# Log beet imports separately
+_ensure_log_file(os.path.join(os.path.dirname(CONFIG_PATH), "music_import.log"))
 
 # Global scan process tracker
 scan_process = None  # Main scan process (full scan, force, artist-specific)
-scan_process_mp3 = None  # MP3 scanner process
 scan_process_navidrome = None  # Navidrome sync process
 scan_process_popularity = None  # Popularity scan process
 scan_process_singles = None  # Singles detection process
@@ -4839,93 +4838,6 @@ def api_add_artist():
         return jsonify({"error": str(e)}), 500
 
 
-@app.route("/api/beets/update-album", methods=["POST"])
-def api_beets_update_album():
-    """
-    Update an album with beets (write tags and organize files).
-    
-    Expects JSON:
-    {
-        "artist": "Artist Name",
-        "album": "Album Name"
-    }
-    or
-    {
-        "folder": "/music/Artist Name/Album Name"
-    }
-    """
-    try:
-        from beets_update import update_album_with_beets, get_album_folder_for_artist_album
-        
-        data = request.json or {}
-        album_folder = data.get("folder")
-        
-        # If no folder provided, try to construct from artist/album
-        if not album_folder:
-            artist = data.get("artist", "").strip()
-            album = data.get("album", "").strip()
-            
-            if not artist or not album:
-                return jsonify({"error": "Either 'folder' or both 'artist' and 'album' required"}), 400
-            
-            # Look up the album folder from the database
-            album_folder = get_album_folder_for_artist_album(artist, album)
-            
-            if not album_folder:
-                return jsonify({"error": f"Album folder not found for {artist} - {album}"}), 404
-        
-        logging.info(f"Starting beets update for album: {album_folder}")
-        result = update_album_with_beets(album_folder)
-        
-        if result['success']:
-            # Trigger Navidrome rescan after successful beets update
-            try:
-                # This will trigger a background task to rescan Navidrome
-                # We'll implement this in the next step
-                logging.info(f"Beets update successful for {album_folder}, triggering Navidrome rescan")
-            except Exception as e:
-                logging.warning(f"Could not trigger Navidrome rescan: {e}")
-            
-            return jsonify({
-                "success": True,
-                "message": result['message'],
-                "folder": album_folder,
-                "output": result.get('output', '')
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "error": result['error'],
-                "folder": album_folder
-            }), 500
-    
-    except Exception as e:
-        logging.error(f"Error updating album with beets: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/album-folders/<path:artist>", methods=["GET"])
-def api_beets_album_folders(artist):
-    """Get all album folders for an artist."""
-    try:
-        from urllib.parse import unquote
-        from beets_update import get_all_album_folders_for_artist
-        
-        artist = unquote(artist)
-        folders = get_all_album_folders_for_artist(artist)
-        
-        return jsonify({
-            "success": True,
-            "artist": artist,
-            "album_folders": folders,
-            "count": len(folders)
-        })
-    
-    except Exception as e:
-        logging.error(f"Error getting album folders for {artist}: {e}")
-        return jsonify({"error": str(e)}), 500
-
-
 @app.route("/album/<path:artist>/<path:album>")
 def album_detail(artist, album):
     """View album details and tracks"""
@@ -5549,51 +5461,7 @@ def album_edit(artist, album):
             rows_updated = cursor.rowcount
             conn.commit()
             
-            # Now update MP3 files via beets
-            try:
-                from beets_integration import update_track_metadata
-                
-                # Get all track IDs for this album
-                cursor.execute("SELECT id, beets_path, file_path FROM tracks WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?", 
-                             (album_artist, album_title))
-                tracks = cursor.fetchall()
-                
-                success_count = 0
-                for track in tracks:
-                    track_id = track['id']
-                    file_path = track['beets_path'] if track['beets_path'] else track['file_path']
-                    
-                    if file_path and os.path.exists(file_path):
-                        # Prepare metadata to update
-                        metadata_updates = {
-                            'album': album_title,
-                            'albumartist': album_artist,
-                        }
-                        
-                        # Add track artist if provided - update individual track artist tag
-                        if track_artist:
-                            metadata_updates['artist'] = track_artist
-                        
-                        if release_year:
-                            metadata_updates['year'] = release_year
-                        if album_genres:
-                            metadata_updates['genre'] = album_genres
-                        if album_mbid:
-                            metadata_updates['mb_albumid'] = album_mbid
-                        
-                        # Update via mutagen
-                        if update_track_metadata(track_id, metadata_updates, DB_PATH):
-                            success_count += 1
-                
-                if success_count > 0:
-                    flash(f"Updated {rows_updated} tracks in database and {success_count} MP3 files", "success")
-                else:
-                    flash(f"Updated {rows_updated} tracks in database (MP3 files not found)", "warning")
-            except ImportError:
-                flash(f"Updated {rows_updated} tracks in database (beets integration not available)", "warning")
-            except Exception as e:
-                logging.error(f"Error updating MP3 files: {e}")
-                flash(f"Updated {rows_updated} tracks in database, but MP3 update failed: {str(e)}", "warning")
+            flash(f"Updated {rows_updated} tracks in database", "success")
         else:
             flash("No changes to save", "info")
         
@@ -5967,72 +5835,6 @@ def scan_unified():
             flash("✅ Unified scan started (popularity → singles → ratings)", "success")
         except Exception as e:
             flash(f"❌ Error starting unified scan: {str(e)}", "danger")
-    
-    return redirect(url_for("dashboard"))
-
-
-@app.route("/scan/mp3", methods=["POST"])
-def scan_mp3():
-    """Run beets auto-import to scan music folder and capture metadata"""
-    global scan_process_mp3
-    
-    # Get scan mode from query parameters (default: "all")
-    mode = request.args.get('mode', 'all')  # all, force, missing
-    
-    with scan_lock:
-        # Clean up stale progress file and dead process reference if they exist
-        db_dir = os.path.dirname(DB_PATH)
-        mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
-        validated = _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
-        
-        # If validation detected a dead process, clean up the reference
-        if validated and not validated.get("is_running", True) and scan_process_mp3 is not None:
-            if not _is_process_alive(scan_process_mp3):
-                scan_process_mp3 = None
-        
-        # Check if scan is actually running
-        if scan_process_mp3 is not None and _is_process_alive(scan_process_mp3):
-            flash("Beets auto-import is already running. Please wait for it to complete.", "warning")
-            logging.warning("Attempted to start beets import while one is already running")
-            return redirect(url_for("dashboard"))
-        
-        try:
-            _write_progress_file(mp3_progress_file, "mp3_scan", True, {"status": "starting"})
-            
-            # Determine force and filter logic based on mode
-            force_rescan = (mode == 'force')
-            
-            # Run beets import in background thread instead of subprocess
-            def run_beets_scan_bg():
-                global scan_process_mp3
-                try:
-                    from beets_auto_import import BeetsAutoImporter
-                    logging.info(f"Starting Beets auto-import scan in background (mode={mode})")
-                    importer = BeetsAutoImporter()
-                    importer.import_and_capture(skip_existing=not force_rescan)
-                    _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "complete", "exit_code": 0})
-                    logging.info("Beets scan completed successfully")
-                except Exception as e:
-                    logging.error(f"Error in Beets scan: {e}", exc_info=True)
-                    _write_progress_file(mp3_progress_file, "mp3_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
-                finally:
-                    # Clean up thread reference when done
-                    with scan_lock:
-                        scan_process_mp3 = None
-                    logging.info("Beets scan thread cleanup complete")
-            
-            scan_thread = threading.Thread(target=run_beets_scan_bg, daemon=False)
-            scan_thread.start()
-            
-            # Store thread reference for tracking
-            scan_process_mp3 = {'thread': scan_thread, 'type': 'mp3'}
-            
-            mode_desc = {'all': 'Full', 'force': 'Full (Forced)', 'missing': 'Missing Only'}.get(mode, 'Full')
-            flash(f"✅ Beets auto-import started ({mode_desc} scan, capturing file paths & MusicBrainz metadata)", "success")
-            logging.info("Beets scan thread started successfully")
-        except Exception as e:
-            logging.error(f"Error starting beets import: {e}", exc_info=True)
-            flash(f"❌ Error starting beets import: {str(e)}", "danger")
     
     return redirect(url_for("dashboard"))
 
@@ -11523,9 +11325,8 @@ def api_queue_delete(queue_id):
 
 @app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
 def api_queue_organize(queue_id):
-    """Move file from /downloads to /music using beets with fallback to manual move"""
+    """Move file from /downloads to /music"""
     try:
-        import subprocess
         import shutil
         from download_queue_manager import update_queue_item
         
@@ -11545,7 +11346,6 @@ def api_queue_organize(queue_id):
         file_path = item['file_path']
         artist = item.get('artist', 'Unknown Artist')
         album = item.get('album', 'Unknown Album')
-        title = item.get('title', 'Unknown Title')
         
         if not os.path.exists(file_path):
             update_queue_item(queue_id, status='failed', failure_reason='File no longer exists')
@@ -11553,99 +11353,44 @@ def api_queue_organize(queue_id):
         
         logging.info(f"[ORGANIZE] Starting organization for queue {queue_id}: {file_path}")
         
-        # Try Path 1: Beets import (primary method)
-        try:
-            config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
-            
-            # Check if config exists
-            if not os.path.exists(config_path):
-                logging.warning(f"[ORGANIZE] Beets config not found at {config_path}, trying default")
-                config_path = "/config/update_config.yaml"
-            
-            logging.info(f"[ORGANIZE] Attempting beets import with config: {config_path}")
-            
-            result = subprocess.run(
-                ['beet', '-c', config_path, 'import', '-s', file_path],
-                capture_output=True,
-                text=True,
-                timeout=60
-            )
-            
-            logging.debug(f"[ORGANIZE] Beets stdout: {result.stdout}")
-            logging.debug(f"[ORGANIZE] Beets stderr: {result.stderr}")
-            logging.debug(f"[ORGANIZE] Beets return code: {result.returncode}")
-            
-            if result.returncode == 0:
-                # Verify file was actually moved by checking it no longer exists in original location
-                if not os.path.exists(file_path):
-                    logging.info(f"[ORGANIZE] ✅ Beets import successful, file moved from {file_path}")
-                    update_queue_item(queue_id, status='imported')
-                    return jsonify({
-                        "success": True,
-                        "message": "File organized successfully using beets",
-                        "method": "beets"
-                    })
-                else:
-                    logging.warning(f"[ORGANIZE] Beets returncode 0 but file still exists: {file_path}, trying fallback")
-            else:
-                logging.warning(f"[ORGANIZE] Beets import failed with return code {result.returncode}: {result.stderr or result.stdout}")
-        except subprocess.TimeoutExpired:
-            logging.warning(f"[ORGANIZE] Beets import timed out, trying fallback")
-        except FileNotFoundError:
-            logging.warning(f"[ORGANIZE] Beets not found, trying fallback")
-        except Exception as e:
-            logging.warning(f"[ORGANIZE] Beets error: {e}, trying fallback")
+        # Get paths and create directory structure
+        music_root = os.environ.get("MUSIC_ROOT", "/music")
+        target_dir = os.path.join(music_root, artist, album)
+        os.makedirs(target_dir, exist_ok=True)
         
-        # Try Path 2: Manual fallback using shutil.move
-        try:
-            logging.info(f"[ORGANIZE] Attempting manual fallback organization")
-            
-            # Get paths
-            music_root = os.environ.get("MUSIC_ROOT", "/music")
-            
-            # Create directory structure: {music_root}/{artist}/{year-album}/
-            target_dir = os.path.join(music_root, artist, album)
-            os.makedirs(target_dir, exist_ok=True)
-            
-            # Get filename and handle duplicates
-            filename = os.path.basename(file_path)
-            target_path = os.path.join(target_dir, filename)
-            
-            # If target exists, add suffix
-            if os.path.exists(target_path):
-                base, ext = os.path.splitext(filename)
-                counter = 1
-                while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
-                    counter += 1
-                target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
-                logging.info(f"[ORGANIZE] Target file exists, using: {target_path}")
-            
-            # Move file
-            logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
-            shutil.move(file_path, target_path)
-            
-            # Verify it moved
-            if os.path.exists(target_path) and not os.path.exists(file_path):
-                logging.info(f"[ORGANIZE] ✅ Manual move successful: {target_path}")
-                update_queue_item(queue_id, status='imported', file_path=target_path)
-                return jsonify({
-                    "success": True,
-                    "message": "File organized successfully using manual move",
-                    "method": "manual_fallback",
-                    "target_path": target_path
-                })
-            else:
-                logging.error(f"[ORGANIZE] Manual move verification failed: target_exists={os.path.exists(target_path)}, original_exists={os.path.exists(file_path)}")
-                update_queue_item(queue_id, status='failed', failure_reason='File move verification failed')
-                return jsonify({"error": "File move verification failed"}), 400
-                
-        except Exception as fallback_error:
-            logging.error(f"[ORGANIZE] Manual fallback failed: {fallback_error}")
-            update_queue_item(queue_id, status='failed', failure_reason=f"Both beets and manual move failed: {str(fallback_error)}")
-            return jsonify({"error": str(fallback_error)}), 400
+        # Get filename and handle duplicates
+        filename = os.path.basename(file_path)
+        target_path = os.path.join(target_dir, filename)
+        
+        # If target exists, add suffix
+        if os.path.exists(target_path):
+            base, ext = os.path.splitext(filename)
+            counter = 1
+            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+                counter += 1
+            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+            logging.info(f"[ORGANIZE] Target file exists, using: {target_path}")
+        
+        # Move file
+        logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
+        shutil.move(file_path, target_path)
+        
+        # Verify it moved
+        if os.path.exists(target_path) and not os.path.exists(file_path):
+            logging.info(f"[ORGANIZE] ✅ File moved successfully: {target_path}")
+            update_queue_item(queue_id, status='imported', file_path=target_path)
+            return jsonify({
+                "success": True,
+                "message": "File organized successfully",
+                "target_path": target_path
+            })
+        else:
+            logging.error(f"[ORGANIZE] Move verification failed: target_exists={os.path.exists(target_path)}, original_exists={os.path.exists(file_path)}")
+            update_queue_item(queue_id, status='failed', failure_reason='File move verification failed')
+            return jsonify({"error": "File move verification failed"}), 400
             
     except Exception as e:
-        logging.error(f"[ORGANIZE] Unexpected error organizing file: {e}")
+        logging.error(f"[ORGANIZE] Error organizing file: {e}")
         import traceback
         logging.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 400
@@ -11653,16 +11398,14 @@ def api_queue_organize(queue_id):
 
 @app.route("/api/queue/organize-group", methods=["POST"])
 def api_queue_organize_group():
-    """Organize a group of downloads with metadata confirmation and fallback to manual move"""
+    """Organize a group of downloads with metadata confirmation"""
     try:
-        import subprocess
         import shutil
-        from download_queue_manager import update_queue_item, get_queue
+        from download_queue_manager import update_queue_item
         
         data = request.get_json()
         group_id = data.get('group_id')
         metadata = data.get('metadata', {})
-        folder_format = data.get('folder_format', '{album_artist}/{year} - {album}')
         
         if not group_id:
             return jsonify({"error": "group_id required"}), 400
@@ -11693,7 +11436,6 @@ def api_queue_organize_group():
         logging.info(f"[ORGANIZE_GROUP] ========================================")
         logging.info(f"[ORGANIZE_GROUP] Group organization started - group_id={group_id}")
         logging.info(f"[ORGANIZE_GROUP] Album Artist: {album_artist}, Album: {album_name}, Year: {year}")
-        logging.info(f"[ORGANIZE_GROUP] Folder Format: {folder_format}")
         logging.info(f"[ORGANIZE_GROUP] Total items to process: {len(items)}")
         logging.info(f"[ORGANIZE_GROUP] =========================================")
         
@@ -11722,85 +11464,46 @@ def api_queue_organize_group():
                 except Exception as meta_error:
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
                 
-                # Try Method 1: Beets import
-                beets_success = False
+                # Move file to music directory
                 try:
-                    config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
+                    music_root = os.environ.get("MUSIC_ROOT", "/music")
+                    target_dir = os.path.join(music_root, album_artist or item['artist'], album_name)
+                    os.makedirs(target_dir, exist_ok=True)
                     
-                    if not os.path.exists(config_path):
-                        config_path = "/config/update_config.yaml"
+                    filename = os.path.basename(file_path)
+                    target_path = os.path.join(target_dir, filename)
                     
-                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Attempting beets import with config {config_path}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - source={file_path}")
+                    logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move - target={target_path}")
                     
-                    result = subprocess.run(
-                        ['beet', '-c', config_path, 'import', '-s', file_path],
-                        capture_output=True,
-                        text=True,
-                        timeout=60
-                    )
+                    # Handle duplicates
+                    if os.path.exists(target_path):
+                        base, ext = os.path.splitext(filename)
+                        counter = 1
+                        while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+                            counter += 1
+                        target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Target exists, using counter={counter}: {target_path}")
                     
-                    if result.returncode == 0 and not os.path.exists(file_path):
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Beets import successful")
-                        update_queue_item(item['id'], status='imported')
+                    logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Moving file")
+                    shutil.move(file_path, target_path)
+                    
+                    # Verify the move
+                    if os.path.exists(target_path) and not os.path.exists(file_path):
+                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Move successful")
+                        update_queue_item(item['id'], status='imported', file_path=target_path)
                         updated_count += 1
-                        beets_success = True
                     else:
-                        beets_error = result.stderr.strip() if result.stderr else result.stdout.strip()
-                        logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets import failed - returncode={result.returncode}, file_exists_after={os.path.exists(file_path)}")
-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Beets stderr: {beets_error}")
-                except subprocess.TimeoutExpired:
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets import timed out (60s timeout)")
-                except FileNotFoundError:
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets not found in PATH - falling back to manual move")
-                except Exception as beets_error:
-                    logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Beets error - {type(beets_error).__name__}: {beets_error}")
-                
-                # If beets failed, try manual move
-                if not beets_success:
-                    try:
-                        music_root = os.environ.get("MUSIC_ROOT", "/music")
-                        target_dir = os.path.join(music_root, album_artist or item['artist'], album_name)
-                        os.makedirs(target_dir, exist_ok=True)
-                        
-                        filename = os.path.basename(file_path)
-                        target_path = os.path.join(target_dir, filename)
-                        
-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - source={file_path}")
-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - target={target_path}")
-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move - target_dir created={os.path.isdir(target_dir)}")
-                        
-                        # Handle duplicates
-                        if os.path.exists(target_path):
-                            base, ext = os.path.splitext(filename)
-                            counter = 1
-                            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
-                                counter += 1
-                            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
-                            logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Target exists, using counter={counter}: {target_path}")
-                        
-                        logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: Attempting manual move")
-                        shutil.move(file_path, target_path)
-                        
-                        # Verify the move
-                        source_exists = os.path.exists(file_path)
-                        target_exists = os.path.exists(target_path)
-                        
-                        logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move verification - source_exists={source_exists}, target_exists={target_exists}")
-                        
-                        if target_exists and not source_exists:
-                            logging.info(f"[ORGANIZE_GROUP] Item {item['id']}: ✅ Manual move successful")
-                            update_queue_item(item['id'], status='imported', file_path=target_path)
-                            updated_count += 1
-                        else:
-                            error_msg = f"Move verification failed (source_exists={source_exists}, target_exists={target_exists})"
-                            errors.append(f"{item['title']}: {error_msg}")
-                            update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                            logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
-                    except Exception as manual_error:
-                        error_msg = str(manual_error)
+                        error_msg = f"Move verification failed"
                         errors.append(f"{item['title']}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
-                        logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Manual move failed - {type(manual_error).__name__}: {manual_error}")
+                        logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                        
+                except Exception as move_error:
+                    error_msg = str(move_error)
+                    errors.append(f"{item['title']}: {error_msg}")
+                    update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                    logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
                     
             except Exception as e:
                 errors.append(f"{item.get('title', 'Unknown')}: {str(e)}")
@@ -11821,8 +11524,9 @@ def api_queue_organize_group():
             "organized": updated_count,
             "total": len(items),
             "errors": errors,
-            "message": f"Organized {updated_count}/{len(items)} files with metadata: {album_artist} - {album_name} ({year})"
+            "message": f"Organized {updated_count}/{len(items)} files"
         })
+
         
     except Exception as e:
         logging.error(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
@@ -13215,12 +12919,6 @@ def api_create_smart_playlist():
 # BEETS MUSIC TAGGING ROUTES
 # ============================================================================
 
-@app.route("/beets", methods=["GET"])
-def beets_page():
-    """Redirect to config page - Beets features now integrated there"""
-    return redirect(url_for("config_editor") + "#beets")
-
-
 @app.route("/metadata-compare", methods=["GET"])
 def metadata_compare():
     """Metadata comparison page - compare Navidrome vs Beets album data"""
@@ -13390,156 +13088,6 @@ def apply_musicbrainz_data():
         })
     except Exception as e:
         logging.error(f"Error applying MusicBrainz data: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-
-def beets_status():
-    """Get beets status and library info"""
-    try:
-        beets_client = _get_beets_client()
-        status = beets_client.get_status()
-        stats = beets_client.get_library_stats() if status.get("installed") else {}
-        
-        return jsonify({
-            "status": status,
-            "stats": stats
-        })
-    except Exception as e:
-        logging.error(f"Error getting beets status: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/import", methods=["POST"])
-def beets_import_route():
-    """Start a beets import operation"""
-    try:
-        data = request.json or {}
-        source_path = data.get("source_path", "")
-        move = data.get("move", True)
-        
-        if not source_path:
-            return jsonify({"error": "source_path is required"}), 400
-        
-        if not os.path.exists(source_path):
-            return jsonify({"error": f"Source path does not exist: {source_path}"}), 400
-        
-        beets_client = _get_beets_client()
-        
-        if not beets_client.enabled or not beets_client.is_installed():
-            return jsonify({"error": "Beets is not installed or enabled"}), 400
-        
-        # Run import in background
-        def run_import():
-            logging.info(f"Starting beets import from {source_path}")
-            result = beets_client.import_music(source_path, move=move)
-            logging.info(f"Beets import result: {result}")
-        
-        import_thread = threading.Thread(target=run_import, daemon=True)
-        import_thread.start()
-        
-        return jsonify({
-            "success": True,
-            "message": "Beets import started in background",
-            "source_path": source_path
-        }), 202
-        
-    except Exception as e:
-        logging.error(f"Error starting beets import: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/configure", methods=["POST"])
-def beets_configure():
-    """Configure beets settings"""
-    try:
-        beets_client = _get_beets_client()
-        
-        # Create default config if it doesn't exist
-        success = beets_client.create_default_config()
-        
-        if success:
-            return jsonify({
-                "success": True,
-                "message": "Beets configuration created"
-            })
-        else:
-            return jsonify({
-                "success": False,
-                "error": "Failed to create beets configuration"
-            }), 500
-            
-    except Exception as e:
-        logging.error(f"Error configuring beets: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/auto-import", methods=["POST"])
-def beets_auto_import():
-    """
-    Run beets auto-import on entire library with metadata capture.
-    Uses 'beet import -A' to auto-tag and stores MusicBrainz recommendations.
-    """
-    try:
-        data = request.json or {}
-        artist_path = data.get("artist_path")  # Optional: import specific artist only
-        
-        beets_client = _get_beets_client()
-        
-        if not beets_client.is_installed():
-            return jsonify({"error": "Beets is not installed"}), 400
-        
-        # Run auto-import in background thread
-        def run_auto_import():
-            logging.info(f"Starting beets auto-import{' for ' + artist_path if artist_path else ' (full library)'}")
-            skip_existing = data.get("skip_existing", False)
-            result = beets_client.auto_import_library(artist_path=artist_path, skip_existing=skip_existing)
-            logging.info(f"Beets auto-import result: {result}")
-        
-        import_thread = threading.Thread(target=run_auto_import, daemon=True)
-        import_thread.start()
-        
-        return jsonify({
-            "success": True,
-            "message": "Beets auto-import started in background",
-            "artist_path": artist_path or "Full library"
-        }), 202
-        
-    except Exception as e:
-        logging.error(f"Error starting beets auto-import: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/sync-metadata", methods=["POST"])
-def beets_sync_metadata():
-    """Sync metadata from beets database to sptnr database."""
-    try:
-        beets_client = _get_beets_client()
-        
-        result = beets_client.sync_beets_metadata()
-        
-        if result.get("success"):
-            return jsonify(result)
-        else:
-            return jsonify(result), 500
-            
-    except Exception as e:
-        logging.error(f"Error syncing beets metadata: {str(e)}")
-        return jsonify({"error": str(e)}), 500
-
-
-@app.route("/api/beets/track/<track_id>/recommendations", methods=["GET"])
-def beets_track_recommendations(track_id):
-    """Get beets/MusicBrainz recommendations for a specific track."""
-    try:
-        beets_client = _get_beets_client()
-        
-        result = beets_client.get_beets_recommendations(track_id=track_id)
-        
-        return jsonify(result)
-        
-    except Exception as e:
-        logging.error(f"Error getting beets recommendations: {str(e)}")
         return jsonify({"error": str(e)}), 500
 
 

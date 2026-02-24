@@ -628,7 +628,7 @@ function renderFailedQueue(failed) {
 }
 
 async function organizeFile(queueId) {
-  if (!confirm('Move file to /music using beets?')) {
+  if (!confirm('Move file to /music?')) {
     return;
   }
   
@@ -760,7 +760,7 @@ function groupByAlbum(items) {
 }
 
 async function organizeGroup(queueIds) {
-  if (!confirm(`Move ${queueIds.length} files to /music using beets?`)) {
+  if (!confirm(`Move ${queueIds.length} files to /music?`)) {
     return;
   }
   
