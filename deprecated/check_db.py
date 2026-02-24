@@ -229,6 +229,7 @@ required_artist_columns = {
     "beets_genre": "TEXT",                  # Genre from beets metadata
     "navidrome_genre": "TEXT",              # Genre from Navidrome
     "listenbrainz_genre_tags": "TEXT",      # JSON array of genre tags from ListenBrainz
+    "lastfm_artist_tags": "TEXT",           # JSON array of Last.fm artist tags
     "genre_display": "TEXT",                # Primary display genre (aggregated)
     "country": "TEXT",                      # Artist country/origin from MusicBrainz
     "musicbrainz_area_id": "TEXT",          # MusicBrainz area ID for geographical data

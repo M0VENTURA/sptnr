@@ -2952,6 +2952,17 @@ def popularity_scan(
                         if artist_tags:
                             log_info(f"Found {len(artist_tags)} top tags for '{artist}' from Last.fm")
                             log_debug(f"Artist tags: {[t.get('name') for t in artist_tags]}")
+                            
+                            # Store Last.fm tags in database
+                            try:
+                                tags_json = json.dumps([t.get('name') for t in artist_tags])
+                                cursor.execute(
+                                    "UPDATE artists SET lastfm_artist_tags = ? WHERE name = ?",
+                                    (tags_json, artist)
+                                )
+                                log_debug(f"Stored {len(artist_tags)} Last.fm tags for '{artist}'")
+                            except Exception as e:
+                                log_debug(f"Failed to store Last.fm tags for '{artist}': {e}")
                         else:
                             log_debug(f"No top tags found for '{artist}' from Last.fm")
                 except Exception as e:
