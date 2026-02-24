@@ -11455,9 +11455,10 @@ def api_queue_delete(queue_id):
 
 @app.route("/api/queue/<int:queue_id>/organize", methods=["POST"])
 def api_queue_organize(queue_id):
-    """Move file from /downloads to /music using beets"""
+    """Move file from /downloads to /music using beets with fallback to manual move"""
     try:
         import subprocess
+        import shutil
         from download_queue_manager import update_queue_item
         
         conn = get_db()
@@ -11474,52 +11475,120 @@ def api_queue_organize(queue_id):
             return jsonify({"error": "Queue item not found or file path missing"}), 404
         
         file_path = item['file_path']
+        artist = item.get('artist', 'Unknown Artist')
+        album = item.get('album', 'Unknown Album')
+        title = item.get('title', 'Unknown Title')
         
         if not os.path.exists(file_path):
             update_queue_item(queue_id, status='failed', failure_reason='File no longer exists')
             return jsonify({"error": "File not found"}), 404
         
+        logging.info(f"[ORGANIZE] Starting organization for queue {queue_id}: {file_path}")
+        
+        # Try Path 1: Beets import (primary method)
         try:
-            # Use beets to import/organize the file with update config (writes tags and organizes)
             config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
+            
+            # Check if config exists
+            if not os.path.exists(config_path):
+                logging.warning(f"[ORGANIZE] Beets config not found at {config_path}, trying default")
+                config_path = "/config/update_config.yaml"
+            
+            logging.info(f"[ORGANIZE] Attempting beets import with config: {config_path}")
+            
             result = subprocess.run(
-                ['beet', '-c', config_path, 'import', '-s', '-q', file_path],
+                ['beet', '-c', config_path, 'import', '-s', file_path],
                 capture_output=True,
                 text=True,
                 timeout=60
             )
             
+            logging.debug(f"[ORGANIZE] Beets stdout: {result.stdout}")
+            logging.debug(f"[ORGANIZE] Beets stderr: {result.stderr}")
+            logging.debug(f"[ORGANIZE] Beets return code: {result.returncode}")
+            
             if result.returncode == 0:
-                # Successful import
-                update_queue_item(queue_id, status='imported')
+                # Verify file was actually moved by checking it no longer exists in original location
+                if not os.path.exists(file_path):
+                    logging.info(f"[ORGANIZE] ✅ Beets import successful, file moved from {file_path}")
+                    update_queue_item(queue_id, status='imported')
+                    return jsonify({
+                        "success": True,
+                        "message": "File organized successfully using beets",
+                        "method": "beets"
+                    })
+                else:
+                    logging.warning(f"[ORGANIZE] Beets returncode 0 but file still exists: {file_path}, trying fallback")
+            else:
+                logging.warning(f"[ORGANIZE] Beets import failed with return code {result.returncode}: {result.stderr or result.stdout}")
+        except subprocess.TimeoutExpired:
+            logging.warning(f"[ORGANIZE] Beets import timed out, trying fallback")
+        except FileNotFoundError:
+            logging.warning(f"[ORGANIZE] Beets not found, trying fallback")
+        except Exception as e:
+            logging.warning(f"[ORGANIZE] Beets error: {e}, trying fallback")
+        
+        # Try Path 2: Manual fallback using shutil.move
+        try:
+            logging.info(f"[ORGANIZE] Attempting manual fallback organization")
+            
+            # Get paths
+            music_root = os.environ.get("MUSIC_ROOT", "/music")
+            
+            # Create directory structure: {music_root}/{artist}/{year-album}/
+            target_dir = os.path.join(music_root, artist, album)
+            os.makedirs(target_dir, exist_ok=True)
+            
+            # Get filename and handle duplicates
+            filename = os.path.basename(file_path)
+            target_path = os.path.join(target_dir, filename)
+            
+            # If target exists, add suffix
+            if os.path.exists(target_path):
+                base, ext = os.path.splitext(filename)
+                counter = 1
+                while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+                    counter += 1
+                target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                logging.info(f"[ORGANIZE] Target file exists, using: {target_path}")
+            
+            # Move file
+            logging.info(f"[ORGANIZE] Moving file from {file_path} to {target_path}")
+            shutil.move(file_path, target_path)
+            
+            # Verify it moved
+            if os.path.exists(target_path) and not os.path.exists(file_path):
+                logging.info(f"[ORGANIZE] ✅ Manual move successful: {target_path}")
+                update_queue_item(queue_id, status='imported', file_path=target_path)
                 return jsonify({
                     "success": True,
-                    "message": "File organized successfully using beets",
-                    "output": result.stdout
+                    "message": "File organized successfully using manual move",
+                    "method": "manual_fallback",
+                    "target_path": target_path
                 })
             else:
-                error_msg = result.stderr or result.stdout or "Beets import failed"
-                logging.error(f"Beets import failed for queue {queue_id}: {error_msg}")
-                update_queue_item(queue_id, status='failed', failure_reason=error_msg)
-                return jsonify({"error": error_msg}), 400
+                logging.error(f"[ORGANIZE] Manual move verification failed: target_exists={os.path.exists(target_path)}, original_exists={os.path.exists(file_path)}")
+                update_queue_item(queue_id, status='failed', failure_reason='File move verification failed')
+                return jsonify({"error": "File move verification failed"}), 400
                 
-        except subprocess.TimeoutExpired:
-            update_queue_item(queue_id, status='failed', failure_reason='Beets timeout')
-            return jsonify({"error": "Beets import timed out"}), 400
-        except Exception as e:
-            update_queue_item(queue_id, status='failed', failure_reason=str(e))
-            return jsonify({"error": str(e)}), 400
+        except Exception as fallback_error:
+            logging.error(f"[ORGANIZE] Manual fallback failed: {fallback_error}")
+            update_queue_item(queue_id, status='failed', failure_reason=f"Both beets and manual move failed: {str(fallback_error)}")
+            return jsonify({"error": str(fallback_error)}), 400
             
     except Exception as e:
-        logging.error(f"Error organizing file: {e}")
+        logging.error(f"[ORGANIZE] Unexpected error organizing file: {e}")
+        import traceback
+        logging.error(traceback.format_exc())
         return jsonify({"error": str(e)}), 400
 
 
 @app.route("/api/queue/organize-group", methods=["POST"])
 def api_queue_organize_group():
-    """Organize a group of downloads with metadata confirmation and custom folder structure"""
+    """Organize a group of downloads with metadata confirmation and fallback to manual move"""
     try:
         import subprocess
+        import shutil
         from download_queue_manager import update_queue_item, get_queue
         
         data = request.get_json()
@@ -11553,11 +11622,18 @@ def api_queue_organize_group():
         updated_count = 0
         errors = []
         
+        logging.info(f"[ORGANIZE_GROUP] Starting group organization for group {group_id} with {len(items)} items")
+        
         for item in items:
             try:
-                if not os.path.exists(item['file_path']):
+                file_path = item['file_path']
+                
+                if not os.path.exists(file_path):
                     errors.append(f"{item['title']}: File not found")
+                    logging.warning(f"[ORGANIZE_GROUP] File not found: {file_path}")
                     continue
+                
+                logging.info(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path}")
                 
                 # Update track metadata in database
                 update_queue_item(
@@ -11568,37 +11644,75 @@ def api_queue_organize_group():
                     year=year
                 )
                 
-                # Organize file with beets using the folder format
-                # Build beets config-based destination
-                beets_dest = folder_format.format(
-                    album_artist=album_artist or item['artist'],
-                    artist=item['artist'],
-                    album=album_name,
-                    year=year,
-                    track_number='$track'  # Beets template variable
-                )
+                # Try Method 1: Beets import
+                beets_success = False
+                try:
+                    config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
+                    
+                    if not os.path.exists(config_path):
+                        config_path = "/config/update_config.yaml"
+                    
+                    logging.info(f"[ORGANIZE_GROUP] Attempting beets for item {item['id']}")
+                    
+                    result = subprocess.run(
+                        ['beet', '-c', config_path, 'import', '-s', file_path],
+                        capture_output=True,
+                        text=True,
+                        timeout=60
+                    )
+                    
+                    if result.returncode == 0 and not os.path.exists(file_path):
+                        logging.info(f"[ORGANIZE_GROUP] ✅ Beets success for item {item['id']}")
+                        update_queue_item(item['id'], status='imported')
+                        updated_count += 1
+                        beets_success = True
+                    else:
+                        logging.warning(f"[ORGANIZE_GROUP] Beets failed for item {item['id']}: returncode={result.returncode}, stderr={result.stderr}")
+                except Exception as e:
+                    logging.warning(f"[ORGANIZE_GROUP] Beets error for item {item['id']}: {e}")
                 
-                # Use update config for proper organization with tag writing
-                config_path = os.environ.get("BEETS_UPDATE_CONFIG", "/config/update_config.yaml")
-                result = subprocess.run(
-                    ['beet', '-c', config_path, 'import', '-s', '-q', item['file_path']],
-                    capture_output=True,
-                    text=True,
-                    timeout=60
-                )
-                
-                if result.returncode == 0:
-                    update_queue_item(item['id'], status='imported')
-                    updated_count += 1
-                else:
-                    error_msg = result.stderr or result.stdout or "Beets import failed"
-                    logging.error(f"Beets import failed for item {item['id']}: {error_msg}")
-                    errors.append(f"{item['title']}: {error_msg}")
-                    update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                # If beets failed, try manual move
+                if not beets_success:
+                    try:
+                        music_root = os.environ.get("MUSIC_ROOT", "/music")
+                        target_dir = os.path.join(music_root, album_artist or item['artist'], album_name)
+                        os.makedirs(target_dir, exist_ok=True)
+                        
+                        filename = os.path.basename(file_path)
+                        target_path = os.path.join(target_dir, filename)
+                        
+                        # Handle duplicates
+                        if os.path.exists(target_path):
+                            base, ext = os.path.splitext(filename)
+                            counter = 1
+                            while os.path.exists(os.path.join(target_dir, f"{base}_{counter}{ext}")):
+                                counter += 1
+                            target_path = os.path.join(target_dir, f"{base}_{counter}{ext}")
+                        
+                        logging.info(f"[ORGANIZE_GROUP] Attempting manual move from {file_path} to {target_path}")
+                        shutil.move(file_path, target_path)
+                        
+                        if os.path.exists(target_path) and not os.path.exists(file_path):
+                            logging.info(f"[ORGANIZE_GROUP] ✅ Manual move success for item {item['id']}")
+                            update_queue_item(item['id'], status='imported', file_path=target_path)
+                            updated_count += 1
+                        else:
+                            error_msg = f"File move verification failed"
+                            errors.append(f"{item['title']}: {error_msg}")
+                            update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                            logging.error(f"[ORGANIZE_GROUP] {error_msg} for item {item['id']}")
+                    except Exception as manual_error:
+                        error_msg = str(manual_error)
+                        errors.append(f"{item['title']}: {error_msg}")
+                        update_queue_item(item['id'], status='failed', failure_reason=error_msg)
+                        logging.error(f"[ORGANIZE_GROUP] Manual move failed for item {item['id']}: {manual_error}")
                     
             except Exception as e:
-                errors.append(f"{item['title']}: {str(e)}")
-                update_queue_item(item['id'], status='failed', failure_reason=str(e))
+                errors.append(f"{item.get('title', 'Unknown')}: {str(e)}")
+                logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
+                continue
+        
+        logging.info(f"[ORGANIZE_GROUP] Group organization complete: {updated_count}/{len(items)} successful")
         
         return jsonify({
             "success": True,

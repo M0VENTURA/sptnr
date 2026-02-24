@@ -1288,6 +1288,92 @@ def get_resume_artist_from_db():
         return None
 
 
+def fetch_album_art_from_audiodb(artist: str, album: str) -> str | None:
+    """
+    Fetch album art URL from AudioDB as fallback source.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        
+    Returns:
+        Album art URL if found, None otherwise
+    """
+    try:
+        from api_clients.audiodb import get_album_artwork
+        art_url = get_album_artwork(artist, album, enabled=True)
+        if art_url:
+            log_debug(f"[ALBUM_ART_FALLBACK] Found album art via AudioDB for {artist} - {album}")
+        return art_url
+    except Exception as e:
+        log_debug(f"[ALBUM_ART_FALLBACK] AudioDB lookup failed for {artist} - {album}: {e}")
+        return None
+
+
+def fetch_album_art_from_discogs(artist: str, album: str, discogs_token: str = None) -> str | None:
+    """
+    Fetch album art URL from Discogs as fallback source.
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        discogs_token: Optional Discogs API token
+        
+    Returns:
+        Album art URL if found, None otherwise
+    """
+    try:
+        from api_clients.discogs import DiscogsClient
+        
+        if not discogs_token:
+            # Try to load from config
+            config_path = os.path.join(os.path.dirname(__file__), "config", "config.yaml")
+            if os.path.exists(config_path):
+                with open(config_path, 'r') as f:
+                    config = yaml.safe_load(f) or {}
+                    discogs_token = config.get("discogs", {}).get("token")
+        
+        if not discogs_token:
+            log_debug(f"[ALBUM_ART_FALLBACK] No Discogs token available, skipping Discogs lookup")
+            return None
+        
+        client = DiscogsClient(token=discogs_token)
+        
+        # Search for the album on Discogs
+        search_url = "https://api.discogs.com/database/search"
+        params = {
+            "q": f"{album}",
+            "artist": artist,
+            "type": "release",
+            "token": discogs_token
+        }
+        headers = {"User-Agent": "sptnr/1.0 (https://github.com/discogs)"}
+        
+        resp = requests.get(search_url, params=params, headers=headers, timeout=5)
+        resp.raise_for_status()
+        data = resp.json()
+        results = data.get("results", [])
+        
+        if not results:
+            log_debug(f"[ALBUM_ART_FALLBACK] No Discogs release found for {artist} - {album}")
+            return None
+        
+        # Get the first result
+        release = results[0]
+        thumb_url = release.get("thumb")
+        
+        if thumb_url and thumb_url != "":
+            log_debug(f"[ALBUM_ART_FALLBACK] Found album art via Discogs for {artist} - {album}")
+            return thumb_url
+        
+        log_debug(f"[ALBUM_ART_FALLBACK] Discogs found release but no thumbnail for {artist} - {album}")
+        return None
+        
+    except Exception as e:
+        log_debug(f"[ALBUM_ART_FALLBACK] Discogs lookup failed for {artist} - {album}: {e}")
+        return None
+
+
 def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
     """
     Fetch album art URL from MusicBrainz Cover Art Archive.
@@ -1350,16 +1436,17 @@ def fetch_album_art_url_from_musicbrainz(artist: str, album: str) -> str | None:
         return None
 
 
-def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None) -> bool:
+def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None, cursor=None, source: str = "unknown") -> bool:
     """
-    Download album art image from CAA URL and save to database.
+    Download album art image from URL and save to database.
     
     Args:
         artist: Artist name
         album: Album name
-        art_url: Cover Art Archive URL
+        art_url: URL to album art image
         conn: Optional existing database connection (avoids creating new one)
         cursor: Optional existing database cursor
+        source: Source of the art URL (musicbrainz, audiodb, discogs, etc.)
         
     Returns:
         True if successfully saved, False otherwise
@@ -1370,10 +1457,10 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
         if not art_url:
             return False
         
-        # Download image from CAA
+        # Download image from URL
         resp = requests.get(art_url, timeout=5)
         if resp.status_code != 200:
-            log_debug(f"[ALBUM_ART] Failed to download image from {art_url}: HTTP {resp.status_code}")
+            log_debug(f"[ALBUM_ART] Failed to download image from {source} for {artist} - {album}: HTTP {resp.status_code}")
             return False
         
         image_data = resp.content
@@ -1393,7 +1480,7 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
             INSERT OR REPLACE INTO album_art 
             (artist_name, album_name, image_data, image_mime_type, source, downloaded_at)
             VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
-        """, (artist, album, image_data, "image/jpeg", "musicbrainz_caa"))
+        """, (artist, album, image_data, "image/jpeg", source))
         
         # Only commit if we created our own connection
         if own_connection:
@@ -1401,15 +1488,56 @@ def download_and_save_album_art(artist: str, album: str, art_url: str, conn=None
             conn.close()
         
         
-        log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} ({len(image_data)} bytes)")
+        log_info(f"[ALBUM_ART] Successfully downloaded and saved album art for {artist} - {album} from {source} ({len(image_data)} bytes)")
         return True
         
     except requests.exceptions.Timeout:  # type: ignore
-        log_debug(f"[ALBUM_ART] Timeout downloading image from {art_url} for {artist} - {album}")
+        log_debug(f"[ALBUM_ART] Timeout downloading image from {source} for {artist} - {album}")
         return False
     except Exception as e:
         log_debug(f"[ALBUM_ART] Failed to download/save album art for {artist} - {album}: {e}")
         return False
+
+
+def fetch_and_save_album_art_with_fallback(artist: str, album: str, conn=None, cursor=None, discogs_token: str = None) -> bool:
+    """
+    Fetch album art with intelligent fallback strategy.
+    
+    Tries sources in this order:
+    1. MusicBrainz Cover Art Archive (preferred)
+    2. AudioDB
+    3. Discogs (if token available)
+    
+    Args:
+        artist: Artist name
+        album: Album name
+        conn: Optional existing database connection
+        cursor: Optional existing database cursor
+        discogs_token: Optional Discogs API token
+        
+    Returns:
+        True if album art was successfully downloaded, False otherwise
+    """
+    sources = [
+        ("musicbrainz", lambda: fetch_album_art_url_from_musicbrainz(artist, album)),
+        ("audiodb", lambda: fetch_album_art_from_audiodb(artist, album)),
+        ("discogs", lambda: fetch_album_art_from_discogs(artist, album, discogs_token)),
+    ]
+    
+    for source_name, fetch_func in sources:
+        try:
+            art_url = fetch_func()
+            if art_url:
+                log_debug(f"[ALBUM_ART] Attempting download from {source_name}: {artist} - {album}")
+                if download_and_save_album_art(artist, album, art_url, conn, cursor, source=source_name):
+                    return True
+                else:
+                    log_debug(f"[ALBUM_ART] Download from {source_name} failed, trying next source...")
+        except Exception as e:
+            log_debug(f"[ALBUM_ART] {source_name} source error for {artist} - {album}: {e}")
+    
+    log_debug(f"[ALBUM_ART] All fallback sources exhausted for {artist} - {album}")
+    return False
 
 
 def detect_single_for_track(
@@ -2947,19 +3075,17 @@ def popularity_scan(
                 # Initialize unconditionally for both singles_only and normal mode
                 spotify_results_cache = {}
                 
-                # Fetch and cache album art URL from MusicBrainz for this album
-                album_art_url = None
+                # Fetch and cache album art using fallback strategy for this album
                 if not singles_only:
-                    album_art_url = fetch_album_art_url_from_musicbrainz(artist, album)
-                    if album_art_url:
-                        log_info(f'Fetched album art URL for {artist} - {album}: {album_art_url}')
-                        # Download and save the actual image data, passing existing connection to avoid locking
-                        if download_and_save_album_art(artist, album, album_art_url, conn, cursor):
-                            log_info(f'[ALBUM_ART] Album art image downloaded and saved for {artist} - {album}')
-                        else:
-                            log_debug(f'[ALBUM_ART] Failed to download album art image for {artist} - {album}')
+                    # Get Discogs token for fallback source
+                    discogs_token = config.get('discogs', {}).get('token') if config else None
+                    
+                    # Try to fetch and save album art using fallback chain
+                    # (MusicBrainz -> AudioDB -> Discogs)
+                    if fetch_and_save_album_art_with_fallback(artist, album, conn, cursor, discogs_token):
+                        log_info(f'[ALBUM_ART] Album art successfully downloaded and saved for {artist} - {album}')
                     else:
-                        log_debug(f'No album art URL found for {artist} - {album}')
+                        log_debug(f'[ALBUM_ART] Failed to obtain album art from any source for {artist} - {album}')
                 
                 # Batch-fetch ListenBrainz popularity data for all tracks with MBIDs
                 # This is more efficient than per-track calls and respects rate limits

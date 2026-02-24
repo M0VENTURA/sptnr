@@ -1741,7 +1741,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for video relationship: {title}")
                 
-                has_video = musicbrainz_client.has_video_relationship(title, artist, artist_mbid=artist_mbid)
+                has_video = musicbrainz_client.has_video_relationship(title, artist)
                 if has_video:
                     result['single_sources'].append('musicbrainz_video')
                     result['single_sources_used'].append('musicbrainz_video')
@@ -1761,7 +1761,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
                 
-                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist, artist_mbid=artist_mbid)
+                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist)
                 if appears_on_va:
                     result['single_sources'].append('musicbrainz_compilation')
                     result['single_sources_used'].append('musicbrainz_compilation')
@@ -2058,7 +2058,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for video relationships: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for video relationship: {title}")
                 
-                has_video = musicbrainz_client.has_video_relationship(title, artist, artist_mbid=artist_mbid)
+                has_video = musicbrainz_client.has_video_relationship(title, artist)
                 if has_video:
                     result['single_sources'].append('musicbrainz_video')
                     result['single_sources_used'].append('musicbrainz_video')
@@ -2078,7 +2078,7 @@ def detect_single_enhanced(
                 log_debug(f"[MUSICBRAINZ] Checking for Various Artists appearances: {title} by {artist}")
                 log_info(f"   Checking MusicBrainz for compilation appearances: {title}")
                 
-                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist, artist_mbid=artist_mbid)
+                appears_on_va = musicbrainz_client.appears_on_various_artists(title, artist)
                 if appears_on_va:
                     result['single_sources'].append('musicbrainz_compilation')
                     result['single_sources_used'].append('musicbrainz_compilation')
