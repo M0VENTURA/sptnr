@@ -4507,10 +4507,13 @@ def popularity_scan(
                         if not is_excluded_track:
                             # Apply new 5-star rule
                             # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
+                            # Intent: Find outliers on underperforming albums (e.g., The Jester Race by In Flames)
+                            # This is an UPGRADE condition - only promotes base rating to 5 stars
                             artist_top_15_threshold = artist_stats.get('top_15_percentile', 0) or 0
                             is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
                             
                             if is_top_15_artist:
+                                # TOP 15% ARTIST: Upgrade to 5 stars (outlier on underperforming album)
                                 stars = 5
                                 log_info(f"5-star assignment: {title} (top 15% of artist catalog, pop={popularity_score:.1f} >= artist_top_15={artist_top_15_threshold:.1f})")
                                 log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}")
