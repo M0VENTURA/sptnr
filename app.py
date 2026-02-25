@@ -11299,8 +11299,10 @@ def api_queue_organize(queue_id):
             
     except Exception as e:
         logging.error(f"[ORGANIZE] Error organizing file: {e}")
+        log_debug(f"[ORGANIZE] Error organizing file: {e}")
         import traceback
         logging.error(traceback.format_exc())
+        log_debug(traceback.format_exc())
         return jsonify({"error": str(e)}), 400
 
 
@@ -11355,6 +11357,7 @@ def api_queue_organize_group():
                     error_msg = f"File not found at {file_path}"
                     errors.append(f"{item['title']}: {error_msg}")
                     logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                     continue
                 
                 logging.debug(f"[ORGANIZE_GROUP] Processing item {item['id']}: {file_path} (title: {item['title']})")
@@ -11371,6 +11374,7 @@ def api_queue_organize_group():
                     logging.debug(f"[ORGANIZE_GROUP] Item {item['id']}: Updated metadata - artist={item['artist']}, album={album_name}, album_artist={album_artist}, year={year}")
                 except Exception as meta_error:
                     logging.warning(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Failed to update metadata: {meta_error}")
                 
                 # Move file to music directory
                 try:
@@ -11406,16 +11410,19 @@ def api_queue_organize_group():
                         errors.append(f"{item['title']}: {error_msg}")
                         update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                         logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
+                        log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: {error_msg}")
                         
                 except Exception as move_error:
                     error_msg = str(move_error)
                     errors.append(f"{item['title']}: {error_msg}")
                     update_queue_item(item['id'], status='failed', failure_reason=error_msg)
                     logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
+                    log_debug(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
                     
             except Exception as e:
                 errors.append(f"{item['title'] or 'Unknown'}: {str(e)}")
                 logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
+                log_debug(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
                 continue
         
         logging.info(f"[ORGANIZE_GROUP] ========================================")
@@ -11438,8 +11445,10 @@ def api_queue_organize_group():
         
     except Exception as e:
         logging.error(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
+        log_debug(f"[ORGANIZE_GROUP] Unhandled error during organization: {type(e).__name__}: {e}")
         import traceback
         logging.error(f"[ORGANIZE_GROUP] Traceback: {traceback.format_exc()}")
+        log_debug(f"[ORGANIZE_GROUP] Traceback: {traceback.format_exc()}")
         return jsonify({"error": str(e)}), 400
 
 
