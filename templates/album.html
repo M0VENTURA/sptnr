@@ -747,6 +747,37 @@
     </div>
 </div>
 
+<!-- Bulk Delete Confirmation Modal -->
+<div class="modal fade" id="bulkDeleteModal" tabindex="-1" aria-hidden="true">
+    <div class="modal-dialog">
+        <div class="modal-content">
+            <div class="modal-header bg-danger text-white">
+                <h5 class="modal-title"><i class="bi bi-exclamation-triangle"></i> Delete Selected Tracks</h5>
+                <button type="button" class="btn-close btn-close-white" data-bs-dismiss="modal" aria-label="Close"></button>
+            </div>
+            <div class="modal-body">
+                <p>You are about to delete <strong id="deleteTrackCount">0</strong> track(s).</p>
+                <p class="mb-3">Choose how you want to delete:</p>
+                
+                <div class="d-grid gap-2">
+                    <button type="button" class="btn btn-outline-warning" onclick="deleteDatabaseOnly()">
+                        <i class="bi bi-database-dash"></i> Database Only
+                        <div class="small text-muted">Remove from library but keep MP3 files on disk</div>
+                    </button>
+                    
+                    <button type="button" class="btn btn-danger" onclick="deleteWithFiles()">
+                        <i class="bi bi-trash-fill"></i> Delete MP3 Files & Database
+                        <div class="small">⚠️ Permanently deletes MP3 files from disk</div>
+                    </button>
+                </div>
+            </div>
+            <div class="modal-footer">
+                <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+            </div>
+        </div>
+    </div>
+</div>
+
 <!-- Simple Track Edit Modal -->
 <div class="modal fade" id="simpleEditTrackModal" tabindex="-1" aria-hidden="true">
     <div class="modal-dialog">
@@ -2031,30 +2062,48 @@
             return;
         }
         
-        const message = `Delete ${trackIds.length} track(s)?\n\nThis will:\n- Delete the MP3 file(s) from disk\n- Remove from database\n\nThis action cannot be undone.`;
+        // Show modal with track count
+        document.getElementById('deleteTrackCount').textContent = trackIds.length;
+        const modal = new bootstrap.Modal(document.getElementById('bulkDeleteModal'));
+        modal.show();
+    }
+    
+    function deleteDatabaseOnly() {
+        const trackIds = getSelectedTracks();
+        const modal = bootstrap.Modal.getInstance(document.getElementById('bulkDeleteModal'));
+        modal.hide();
         
-        if (!confirm(message)) return;
+        performBulkDelete(trackIds, false, 'database');
+    }
+    
+    function deleteWithFiles() {
+        const trackIds = getSelectedTracks();
+        const modal = bootstrap.Modal.getInstance(document.getElementById('bulkDeleteModal'));
+        modal.hide();
         
-        if (!confirm('⚠️ Are you absolutely sure? This will permanently delete the MP3 files.')) return;
+        // Additional confirmation for file deletion
+        if (!confirm(`⚠️ Are you absolutely sure?\n\nThis will PERMANENTLY delete ${trackIds.length} MP3 file(s) from disk.\n\nThis action cannot be undone.`)) {
+            return;
+        }
         
-        const btn = event.target.closest('button');
-        const originalText = btn.innerHTML;
-        btn.disabled = true;
-        btn.innerHTML = '<span class="spinner-border spinner-border-sm"></span> Deleting...';
-        
+        performBulkDelete(trackIds, true, 'files and database');
+    }
+    
+    function performBulkDelete(trackIds, deleteFiles, deleteType) {
         fetch('/api/album/bulk-delete', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({
                 track_ids: trackIds,
                 artist: '{{ artist_name }}',
-                album: '{{ album_name }}'
+                album: '{{ album_name }}',
+                delete_files: deleteFiles
             })
         })
         .then(r => r.json())
         .then(data => {
             if (data.success) {
-                alert(`✅ Deleted ${data.deleted_count} track(s) and removed from database`);
+                alert(`✅ Deleted ${data.deleted_count} track(s) from ${deleteType}`);
                 // Reload page to show updated tracks
                 location.reload();
             } else {
@@ -2063,10 +2112,6 @@
         })
         .catch(err => {
             alert('❌ Network error: ' + err.message);
-        })
-        .finally(() => {
-            btn.disabled = false;
-            btn.innerHTML = originalText;
         });
     }
 

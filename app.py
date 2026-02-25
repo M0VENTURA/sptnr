@@ -3454,12 +3454,13 @@ def api_album_update_ids():
 
 @app.route("/api/album/bulk-delete", methods=["POST"])
 def api_album_bulk_delete():
-    """Delete multiple tracks and their MP3 files"""
+    """Delete multiple tracks from database and optionally delete MP3 files"""
     try:
         data = request.get_json()
         track_ids = data.get("track_ids", [])
         artist = data.get("artist", "")
         album = data.get("album", "")
+        delete_files = data.get("delete_files", True)  # Default to true for backward compatibility
         
         if not track_ids:
             return jsonify({"error": "No tracks selected"}), 400
@@ -3478,21 +3479,23 @@ def api_album_bulk_delete():
                 result = cursor.fetchone()
                 
                 if result:
-                    # Try beets_path first, then file_path
-                    file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
-                    
-                    # Delete MP3 file if it exists
-                    if file_path and os.path.exists(file_path):
-                        try:
-                            os.remove(file_path)
-                            logging.info(f"[DELETE] Deleted MP3 file: {file_path}")
-                        except Exception as e:
-                            logging.warning(f"[DELETE] Failed to delete MP3: {file_path} - {e}")
+                    # Delete MP3 file if requested and it exists
+                    if delete_files:
+                        # Try beets_path first, then file_path
+                        file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                        
+                        if file_path and os.path.exists(file_path):
+                            try:
+                                os.remove(file_path)
+                                logging.info(f"[DELETE] Deleted MP3 file: {file_path}")
+                            except Exception as e:
+                                logging.warning(f"[DELETE] Failed to delete MP3: {file_path} - {e}")
                     
                     # Delete from database
                     cursor.execute("DELETE FROM tracks WHERE id = ?", (track_id,))
                     deleted_count += 1
-                    logging.info(f"[DELETE] Deleted track {track_id} from database")
+                    action = "and file(s)" if delete_files else "from database"
+                    logging.info(f"[DELETE] Deleted track {track_id} {action}")
             except Exception as e:
                 logging.error(f"[DELETE] Error deleting track {track_id}: {e}")
                 continue
