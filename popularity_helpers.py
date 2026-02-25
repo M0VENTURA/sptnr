@@ -1118,13 +1118,18 @@ def get_top_standout_tracks_with_gap(
         for track_id, title, score in album_data:
             current_z = (score - album_mean) / album_stdev
             if prev_z is None:
-                if current_z >= 0:
+                # First track must have z-score >= 1.0 (top ~16% statistically)
+                if current_z >= 1.0:
                     top_standouts.add(track_id)
                     prev_z = current_z
                 else:
                     break
             else:
+                # Stop if we drop below z-score of 0.5 (above average but not exceptional)
+                if current_z < 0.5:
+                    break
                 gap = prev_z - current_z
+                # Gap must be small (< threshold) to be in the same "cluster"
                 if gap < gap_threshold:
                     top_standouts.add(track_id)
                     prev_z = current_z
