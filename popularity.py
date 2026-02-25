@@ -369,6 +369,82 @@ def detect_compilation_album(artist: str, album: str, tracks: list, album_artist
     return False
 
 
+def detect_greatest_hits_album(album: str, artist: str, conn: sqlite3.Connection, album_tracks: list = None) -> bool:
+    """
+    Detect if an album is a greatest hits compilation.
+    
+    Checks:
+    1. Album name contains greatest hits patterns
+    2. Album's average popularity is significantly higher than artist's median (if tracks provided)
+    
+    Args:
+        album: Album name
+        artist: Artist name
+        conn: Database connection for artist stats lookup
+        album_tracks: Optional list of tracks with popularity_score for verification
+        
+    Returns:
+        True if album appears to be a greatest hits compilation, False otherwise
+    """
+    album_lower = album.lower()
+    
+    # Check for greatest hits patterns in album name
+    greatest_hits_patterns = [
+        'greatest hits',
+        'best of',
+        'the best',
+        'collection',
+        'anthology',
+        'essentials',
+        'hits',
+        'singles',
+        'the very best',
+        'gold',
+        'platinum',
+        'ultimate collection',
+        'complete',
+        'definitive'
+    ]
+    
+    for pattern in greatest_hits_patterns:
+        if pattern in album_lower:
+            log_debug(f'Greatest hits pattern detected in album name: "{album}" contains "{pattern}"')
+            
+            # If we have tracks, verify with popularity check
+            if album_tracks:
+                try:
+                    # Get artist's median popularity for comparison
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        SELECT AVG(popularity_score) as avg_pop, COUNT(*) as track_count
+                        FROM tracks
+                        WHERE artist = ? AND popularity_score > 0
+                    """, (artist,))
+                    row = cursor.fetchone()
+                    
+                    if row and row[0] and row[1] > 10:  # Need at least 10 tracks for meaningful comparison
+                        artist_avg_pop = row[0]
+                        
+                        # Calculate this album's average popularity
+                        album_pops = [t.get('popularity_score', 0) for t in album_tracks if t.get('popularity_score')]
+                        if album_pops:
+                            album_avg_pop = sum(album_pops) / len(album_pops)
+                            
+                            # If album average is 30%+ higher than artist average, it's likely greatest hits
+                            if album_avg_pop > (artist_avg_pop * 1.3):
+                                log_info(f'Greatest hits confirmed: "{album}" avg popularity ({album_avg_pop:.1f}) is {(album_avg_pop/artist_avg_pop - 1)*100:.0f}% higher than artist average ({artist_avg_pop:.1f})')
+                                return True
+                            else:
+                                log_debug(f'Greatest hits name pattern but normal popularity: album={album_avg_pop:.1f} vs artist={artist_avg_pop:.1f}')
+                except Exception as e:
+                    log_debug(f'Error verifying greatest hits with popularity check: {e}')
+            
+            # Name pattern alone is strong indicator
+            return True
+    
+    return False
+
+
 def should_skip_spotify_lookup(track_id: str, conn: sqlite3.Connection) -> bool:
     """
     Check if Spotify lookup should be skipped based on 24-hour cache.
@@ -3378,6 +3454,10 @@ def popularity_scan(
                 # This avoids running compilation detection on regular artist popularity scans
                 is_scanning_compilation_artist = artist.lower() in ('various artists', 'various', 'compilation', 'soundtrack', 'various artists -')
                 
+                # Determine album type for optimized scanning strategy
+                album_type = "regular"  # Default: regular artist album
+                is_compilation = False
+                
                 if is_scanning_compilation_artist:
                     # Get album metadata from first track to access album_artist and spotify_album_type
                     sample_track = album_tracks_list[0] if album_tracks_list else {}
@@ -3395,6 +3475,17 @@ def popularity_scan(
                         conn.commit()
                         log_info(f'Marked album as compilation: "{artist} - {album}"')
                         log_debug(f'Compilation detected for album: album_artist="{album_artist}", spotify_type="{spotify_album_type}"')
+                        album_type = "various_artists"
+                
+                # Check if this is a greatest hits album (even for regular artists)
+                if album_type == "regular":
+                    is_greatest_hits = detect_greatest_hits_album(album, artist, conn, album_tracks_list)
+                    if is_greatest_hits:
+                        album_type = "greatest_hits"
+                        log_info(f'Album type: Greatest Hits - "{artist} - {album}"')
+                        log_debug(f'Greatest hits album detected, will run single detection on all tracks')
+                
+                log_debug(f'Album type determined: {album_type} for "{artist} - {album}"')
                 
                 # Cache Spotify search results for singles detection reuse
                 # Initialize unconditionally for both singles_only and normal mode
@@ -4404,6 +4495,68 @@ def popularity_scan(
                 # Get album track count for context-based confidence adjustment
                 album_track_count = len(album_tracks)
                 
+                # Calculate z-scores for all tracks to filter single detection
+                # This enables performance optimization by only scanning tracks likely to be singles
+                track_zscores = {}  # Map of track_id -> z-score
+                top_cluster_tracks = set()  # Track IDs in top z-score cluster (instant 5★)
+                
+                if album_type == "regular" and album_track_count > 1:
+                    # Calculate z-scores for regular albums to filter single detection
+                    album_pops_for_zscore = []
+                    track_ids_for_zscore = []
+                    
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        popularity_score = row_get(track, 'popularity_score', 0)
+                        title = row_get(track, 'title', '')
+                        album_name = row_get(track, 'album', '')
+                        
+                        # Exclude live/remix/alternate from z-score calculation
+                        if popularity_score > 0 and not should_exclude_track_from_stats(title, album_name):
+                            album_pops_for_zscore.append(popularity_score)
+                            track_ids_for_zscore.append(track_id)
+                    
+                    if len(album_pops_for_zscore) > 1:
+                        from statistics import mean, stdev
+                        pop_mean = mean(album_pops_for_zscore)
+                        pop_stddev = stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
+                        
+                        if pop_stddev > 0:
+                            # Calculate z-scores
+                            for i, track_id in enumerate(track_ids_for_zscore):
+                                z_score = (album_pops_for_zscore[i] - pop_mean) / pop_stddev
+                                track_zscores[track_id] = z_score
+                            
+                            # Identify top cluster using iterative z-score approach
+                            # Top cluster = tracks that consistently stand out (z >= 1.0 after removing previous standouts)
+                            try:
+                                from popularity_helpers import detect_via_iterative_zscore
+                                
+                                for track in album_tracks:
+                                    track_id = track["id"]
+                                    popularity_score = row_get(track, 'popularity_score', 0)
+                                    
+                                    if popularity_score > 0:
+                                        # Check if this track is in the top cluster
+                                        is_top_cluster = detect_via_iterative_zscore(
+                                            popularity_score,
+                                            artist,
+                                            album,
+                                            conn,
+                                            verbose=False
+                                        )
+                                        
+                                        if is_top_cluster:
+                                            top_cluster_tracks.add(track_id)
+                                
+                                if top_cluster_tracks:
+                                    log_info(f"Top z-score cluster identified: {len(top_cluster_tracks)} track(s) get instant 5★")
+                                    log_debug(f"Top cluster tracks: {top_cluster_tracks}")
+                            except Exception as e:
+                                log_debug(f"Top cluster detection failed: {e}")
+                
+                log_debug(f"Album type: {album_type}, will filter single detection accordingly")
+                
                 # Track progress within singles detection phase
                 singles_processed = 0
                 # Pre-calculate milestone track counts for efficient checking
@@ -4447,6 +4600,25 @@ def popularity_scan(
                                 continue
                         except Exception as e:
                             log_debug(f"Failed to parse single detection timestamp: {e}")
+                    
+                    # Filter single detection based on album type and z-scores
+                    # This dramatically speeds up scanning by skipping tracks unlikely to be singles
+                    skip_single_detection = False
+                    
+                    if album_type == "regular":
+                        # For regular albums, only run single detection on tracks with positive z-score
+                        # This filters out low-popularity deep cuts that are unlikely to be singles
+                        track_zscore = track_zscores.get(track_id, 0)
+                        
+                        if track_zscore < 0:
+                            # Negative z-score = below album average, skip single detection
+                            skip_single_detection = True
+                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0)")
+                    
+                    # Skip single detection if filtered out
+                    if skip_single_detection:
+                        singles_processed += 1
+                        continue
                     
                     # Get additional fields for advanced detection
                     track_isrc = row_get(track, "isrc", None)
@@ -4881,74 +5053,78 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # Apply new 5-star rule
-                            # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
-                            # Intent: Find outliers on underperforming albums (e.g., The Jester Race by In Flames)
-                            # This is an UPGRADE condition - only promotes base rating to 5 stars
-                            artist_top_15_threshold = artist_stats.get('top_15_percentile', 0) or 0
-                            is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
-                            
-                            if is_top_15_artist:
-                                # TOP 15% ARTIST: Upgrade to 5 stars (outlier on underperforming album)
+                            # **PRIORITY**: Top z-score cluster tracks get instant 5★ (Popularity)
+                            # These are the peak standouts from the album based on iterative z-score detection
+                            if track_id in top_cluster_tracks:
                                 stars = 5
-                                log_info(f"5-star assignment: {title} (top 15% of artist catalog, pop={popularity_score:.1f} >= artist_top_15={artist_top_15_threshold:.1f})")
-                                log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}")
+                                log_info(f"5-star assignment: {title} (top z-score cluster - instant Popularity)")
+                                log_debug(f"Top cluster track - track_id: {track_id}, zscore: {track_zscore:.2f}")
                             else:
-                                # SECOND: Dual artist context check (global + album outlier)
-                                # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
-                                track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
-                                artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
-                                is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
-                                is_album_outlier = track_zscore >= 2.0
+                                # Apply new 5-star rule
+                                # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
+                                # Intent: Find outliers on underperforming albums (e.g., The Jester Race by In Flames)
+                                # This is an UPGRADE condition - only promotes base rating to 5 stars
+                                artist_top_15_threshold = artist_stats.get('top_15_percentile', 0) or 0
+                                is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
                                 
-                                if is_top_10_global and is_album_outlier:
+                                if is_top_15_artist:
+                                    # TOP 15% ARTIST: Upgrade to 5 stars (outlier on underperforming album)
                                     stars = 5
-                                    log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
-                                    log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                                # Top standout tracks with clear gaps (non-singles)
-                                elif not is_single and track_id in top_standout_track_ids:
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (top standout with clear gap - popular track)")
-                                    log_debug(f"Top standout track - track_id: {track_id}")
-                                # User-set singles always get 5 stars
-                                elif single_confidence == "user":
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (user-set single)")
-                                    log_debug(f"User-set single - track_id: {track_id}")
-                                # High confidence always gets 5 stars
-                                elif single_confidence == "high":
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (high-confidence single)")
+                                    log_info(f"5-star assignment: {title} (top 15% of artist catalog, pop={popularity_score:.1f} >= artist_top_15={artist_top_15_threshold:.1f})")
+                                    log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}")
+                                else:
+                                    # SECOND: Dual artist context check (global + album outlier)
+                                    # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
+                                    track_lastfm_listeners = row_get(track_row, "lastfm_track_playcount", 0) or 0
+                                    artist_context_threshold = artist_stats.get('top_10_percentile_threshold', 0) or 0
+                                    is_top_10_global = track_lastfm_listeners >= artist_context_threshold if artist_context_threshold > 0 else False
+                                    is_album_outlier = track_zscore >= 2.0
+                                    
+                                    if is_top_10_global and is_album_outlier:
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
+                                        log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
+                                    # Top standout tracks with clear gaps (non-singles)
+                                    elif not is_single and track_id in top_standout_track_ids:
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (top standout with clear gap - popular track)")
+                                        log_debug(f"Top standout track - track_id: {track_id}")
+                                    # User-set singles always get 5 stars
+                                    elif single_confidence == "user":
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (user-set single)")
+                                        log_debug(f"User-set single - track_id: {track_id}")
+                                    # High confidence always gets 5 stars
+                                    elif single_confidence == "high":
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (high-confidence single)")
                                     log_debug(f"High confidence single detected - track_id: {track_id}")
-                                # Medium confidence with 2+ sources gets 4 stars (not 5)
-                                elif single_confidence == "medium":
-                                    # Count the number of medium-confidence sources
-                                    # Each unique source in single_sources represents a medium-confidence method
-                                    medium_conf_count = len(single_sources) if single_sources else 0
-                                    if medium_conf_count >= 2 and has_iterative_zscore:
-                                        stars = 4  # Max 4 stars for medium confidence
-                                        # Upgrade is_single flag for medium confidence tracks with 2+ sources
-                                        if not is_single:
-                                            single_upgrades.append(track_id)
-                                            log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                    # Medium confidence with 2+ sources gets 4 stars (not 5)
+                                    elif single_confidence == "medium":
+                                        # Count the number of medium-confidence sources
+                                        # Each unique source in single_sources represents a medium-confidence method
+                                        medium_conf_count = len(single_sources) if single_sources else 0
+                                        if medium_conf_count >= 2 and has_iterative_zscore:
+                                            stars = 4  # Max 4 stars for medium confidence
+                                            # Upgrade is_single flag for medium confidence tracks with 2+ sources
+                                            if not is_single:
+                                                single_upgrades.append(track_id)
+                                                log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources) - upgraded to single")
+                                            else:
+                                                log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
+                                            log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
                                         else:
-                                            log_info(f"4-star assignment: {title} (has {medium_conf_count} medium-confidence sources)")
-                                        log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}")
-                                    else:
-                                        # Single medium-confidence source only gets 3 stars
-                                        stars = 3
-                                        if medium_conf_count >= 2 and not has_iterative_zscore:
-                                            log_debug(f"Medium confidence without iterative zscore - track_id: {track_id}, limiting to 3 stars")
-                                        else:
-                                            log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
-                                # Standout tracks (high Last.fm scrobbles) get 5 stars
-                                elif is_standout_track:
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (standout track - high Last.fm scrobbles)")
-                                    log_debug(f"Standout track - track_id: {track_id}")
-                            
-                            # NEW: Artist-level popularity context
-                            # Downgrade singles from underperforming albums (only for medium confidence - high confidence singles are independently verified)
+                                            # Single medium-confidence source only gets 3 stars
+                                            stars = 3
+                                            if medium_conf_count >= 2 and not has_iterative_zscore:
+                                                log_debug(f"Medium confidence without iterative zscore - track_id: {track_id}, limiting to 3 stars")
+                                            else:
+                                                log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
+                                    # Standout tracks (high Last.fm scrobbles) get 5 stars
+                                    elif is_standout_track:
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (standout track - high Last.fm scrobbles)")
+                                        log_debug(f"Standout track - track_id: {track_id}")
                             # High-confidence singles are confirmed by multiple authoritative sources (Spotify, Discogs, MusicBrainz, Last.fm),
                             # so they should always get 5 stars regardless of album performance
                             if album_is_underperforming and single_confidence == "medium":
