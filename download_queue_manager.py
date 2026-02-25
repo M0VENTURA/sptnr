@@ -737,7 +737,7 @@ def auto_discover_and_queue_files():
                 # Check if already in download_queue
                 cursor.execute("""
                     SELECT id, status FROM download_queue 
-                    WHERE (file_path = ? OR filename = ?)
+                    WHERE (file_path = ? OR found_filename = ?)
                 """, (full_path, filename))
                 
                 existing = cursor.fetchone()
@@ -760,12 +760,11 @@ def auto_discover_and_queue_files():
                     logger.debug(f"Track already in library: {artist} - {title}")
                     
                     # Still add to queue with status 'discovered' so user can see it
-                    # Set exists_in_library=1 to indicate it's a duplicate
                     cursor.execute("""
                         INSERT INTO download_queue 
-                        (artist, title, album, album_artist, track_number, disc_number, year, filename, file_path, 
-                         status, exists_in_library, source, created_at, updated_at)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 1, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                        (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
+                         status, source, created_at, updated_at)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                     """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
                     conn.commit()
                     stats['queued'] += 1
@@ -774,9 +773,9 @@ def auto_discover_and_queue_files():
                 # Add to queue with 'discovered' status
                 cursor.execute("""
                     INSERT INTO download_queue 
-                    (artist, title, album, album_artist, track_number, disc_number, year, filename, file_path, 
-                     status, exists_in_library, source, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 0, 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                    (artist, title, album, album_artist, track_number, disc_number, year, found_filename, file_path, 
+                     status, source, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'discovered', 'discovered', CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
                 """, (artist, title, album, album_artist, track_number, disc_number, year, filename, full_path))
                 
                 conn.commit()
