@@ -1754,13 +1754,13 @@ def detect_single_for_track(
                 artist_median_popularity=artist_median_popularity
             )
             
-            # CRITICAL: Close any open cursors from detect_single_enhanced before storing result
-            # detect_single_enhanced() creates multiple cursors throughout the 8-stage detection but doesn't
-            # close most of them. Unclosed cursors hold READ locks on the database connection.
-            # When store_single_detection_result() tries to WRITE, it needs a WRITE lock, which SQLite
-            # cannot grant while READ locks exist, causing "Database is locked" errors.
-            # Solution: Use a FRESH connection for the write to avoid any lock conflicts.
+            # CRITICAL: Close the read connection before storing results.
+            # detect_single_enhanced() creates multiple cursors and may leave read locks open.
+            # Close the read connection, then use a fresh connection for writes.
             try:
+                if conn is not None:
+                    conn.close()
+                    conn = None
                 write_conn = get_db_connection()  # Get fresh connection for write operations
                 store_single_detection_result(write_conn, track_id, result)
                 write_conn.close()
@@ -4527,9 +4527,9 @@ def popularity_scan(
                             track_ids_for_zscore.append(track_id)
                     
                     if len(album_pops_for_zscore) > 1:
-                        from statistics import mean, stdev
-                        pop_mean = mean(album_pops_for_zscore)
-                        pop_stddev = stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
+                        from statistics import mean as stat_mean, stdev as stat_stdev
+                        pop_mean = stat_mean(album_pops_for_zscore)
+                        pop_stddev = stat_stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
                         
                         if pop_stddev > 0:
                             # Calculate z-scores
@@ -4615,15 +4615,18 @@ def popularity_scan(
                     # This dramatically speeds up scanning by skipping tracks unlikely to be singles
                     skip_single_detection = False
                     
-                    if album_type == "regular":
+                    album_type_norm = (album_type or "").strip().lower()
+                    is_regular_album = album_type_norm in ("regular", "album", "lp", "studio")
+
+                    if is_regular_album:
                         # For regular albums, only run single detection on tracks with positive z-score
                         # This filters out low-popularity deep cuts that are unlikely to be singles
                         track_zscore = track_zscores.get(track_id, 0)
                         
-                        if track_zscore < 0:
-                            # Negative z-score = below album average, skip single detection
+                        if track_zscore <= 0:
+                            # Non-positive z-score = below or at album average, skip single detection
                             skip_single_detection = True
-                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0)")
+                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} <= 0)")
                     
                     # Skip single detection if filtered out
                     if skip_single_detection:
