@@ -5963,30 +5963,6 @@ def scan_stop():
     return redirect(url_for("dashboard"))
 
 
-@app.route("/scan/stop-mp3", methods=["POST"])
-def scan_stop_mp3():
-    """Stop the MP3 file scan"""
-    global scan_process_mp3
-    
-    with scan_lock:
-        if scan_process_mp3 is not None:
-            if isinstance(scan_process_mp3, dict):
-                thread = scan_process_mp3.get('thread')
-                if thread and thread.is_alive():
-                    # Threads can't be forcefully stopped in Python, so we just mark it as stopped
-                    # The scan will check for stop signals and exit gracefully
-                    scan_process_mp3 = None
-                    flash("File path scan stop requested (will finish current operation)", "info")
-                else:
-                    flash("No file path scan is currently running", "warning")
-            else:
-                flash("No file path scan is currently running", "warning")
-        else:
-            flash("No file path scan is currently running", "warning")
-    
-    return redirect(url_for("dashboard"))
-
-
 @app.route("/scan/stop-navidrome", methods=["POST"])
 def scan_stop_navidrome():
     """Stop the Navidrome sync scan"""
@@ -6086,7 +6062,7 @@ def scan_stop_combined():
 @app.route("/scan/stop-all", methods=["POST"])
 def scan_stop_all():
     """Stop all running scans"""
-    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     stopped_scans = []
     
@@ -6095,14 +6071,6 @@ def scan_stop_all():
         if scan_process is not None and scan_process.poll() is None:
             scan_process.terminate()
             stopped_scans.append("main")
-        
-        # Stop MP3 scan
-        if scan_process_mp3 is not None:
-            if isinstance(scan_process_mp3, dict):
-                thread = scan_process_mp3.get('thread')
-                if thread and thread.is_alive():
-                    scan_process_mp3 = None
-                    stopped_scans.append("MP3 file")
         
         # Stop Navidrome scan
         if scan_process_navidrome is not None:
@@ -6155,7 +6123,7 @@ def scan_stop_all():
 @app.route("/scan/clear-stuck", methods=["POST"])
 def scan_clear_stuck():
     """Clear all stuck scan progress files"""
-    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     with scan_lock:
         db_dir = os.path.dirname(DB_PATH)
@@ -6163,7 +6131,6 @@ def scan_clear_stuck():
         
         # List of all progress files to check
         progress_files = [
-            ("mp3_scan_progress.json", scan_process_mp3),
             ("navidrome_scan_progress.json", scan_process_navidrome),
             ("popularity_scan_progress.json", scan_process_popularity),
             ("singles_scan_progress.json", scan_process_singles),
@@ -6194,8 +6161,6 @@ def scan_clear_stuck():
                     logging.error(f"Error clearing progress file {filename}: {e}")
         
         # Also clean up global process references if they're dead (explicit assignments for security)
-        if scan_process_mp3 and not _is_process_alive(scan_process_mp3):
-            scan_process_mp3 = None
         if scan_process_navidrome and not _is_process_alive(scan_process_navidrome):
             scan_process_navidrome = None
         if scan_process_popularity and not _is_process_alive(scan_process_popularity):
@@ -6878,7 +6843,7 @@ def api_scan_from_artist():
 @app.route("/api/scan-status")
 def api_scan_status():
     """API endpoint to get status of all scan types"""
-    global scan_process, scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     def is_process_running(proc):
         """Check if a process/thread is running, handling both dict and process objects."""
@@ -6908,10 +6873,6 @@ def api_scan_status():
             "main_scan": {
                 "name": "Main Rating Scan",
                 "running": is_process_running(scan_process)
-            },
-            "mp3_scan": {
-                "name": "File Path Scan",
-                "running": is_process_running(scan_process_mp3)
             },
             "navidrome_scan": {
                 "name": "Navidrome Sync",
@@ -6952,21 +6913,15 @@ def api_recent_scans():
 @app.route("/api/scan-progress")
 def api_scan_progress():
     """API endpoint to get detailed scan progress"""
-    global scan_process_mp3, scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
+    global scan_process_navidrome, scan_process_popularity, scan_process_singles, scan_process_combined, scan_process_missing_releases
     
     try:
         from unified_scan import get_scan_progress
         progress = get_scan_progress()
         
-        # If unified scan is not running, check for MP3, Navidrome, Popularity, Singles, and Combined scans
+        # If unified scan is not running, check for Navidrome, Popularity, Singles, and Combined scans
         if not progress.get("is_running", False):
             db_dir = os.path.dirname(DB_PATH)
-            
-            # Check MP3 scan progress with validation
-            mp3_progress_file = os.path.join(db_dir, "mp3_scan_progress.json")
-            mp3_progress = _validate_and_cleanup_progress_file(mp3_progress_file, scan_process_mp3)
-            if mp3_progress and mp3_progress.get("is_running", False):
-                return jsonify(mp3_progress)
             
             # Check Navidrome scan progress with validation
             nav_progress_file = os.path.join(db_dir, "navidrome_scan_progress.json")

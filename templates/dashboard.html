@@ -544,8 +544,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 actionUrl = '{{ url_for("scan_popularity_route") }}';
             } else if (action === 'combined') {
                 actionUrl = '{{ url_for("scan_combined") }}';
-            } else if (action === 'mp3') {
-                actionUrl = '{{ url_for("scan_mp3") }}';
             }
             // Add query parameters to URL
             var url = new URL(actionUrl, window.location.origin);
@@ -725,10 +723,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 }
                 
                 // Detect which scan is running based on data fields present
-                if (data.processed_files !== undefined && data.total_files !== undefined) {
-                    activeScanType = 'mp3_scan';
-                    scanDisplayName = 'Beets Auto-Import';
-                } else if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
+                if (data.scanned_albums !== undefined && data.total_albums !== undefined) {
                     activeScanType = 'navidrome_scan';
                     scanDisplayName = 'Navidrome Sync';
                 } else if (data.processed_artists !== undefined && data.total_artists !== undefined) {
@@ -749,7 +744,6 @@ document.addEventListener('DOMContentLoaded', function() {
                 } else {
                     // Default based on scan_type if present
                     const scanTypeMapping = {
-                        'mp3_scan': { type: 'mp3_scan', name: 'Beets Auto-Import' },
                         'navidrome_scan': { type: 'navidrome_scan', name: 'Navidrome Sync' },
                         'popularity_scan': { type: 'popularity_scan', name: 'Popularity & Singles' },
                         'singles_scan': { type: 'singles_scan', name: 'Singles Detection' },
@@ -773,16 +767,7 @@ document.addEventListener('DOMContentLoaded', function() {
                 let barColor = 'bg-primary';
                 
                 // Calculate progress based on data fields
-                if (activeScanType === 'mp3_scan' && data.total_files !== undefined) {
-                    const processed = data.processed_files || 0;
-                    const total = data.total_files || 0;
-                    percent = total ? Math.round((processed / total) * 100) : (data.percent_complete || 0);
-                    details = total ? `${processed}/${total} files` : 'Importing files';
-                    if (data.current_item) {
-                        details += ` · ${data.current_item}`;
-                    }
-                    barColor = 'bg-info';
-                } else if (activeScanType === 'navidrome_scan' && (data.scanned_albums !== undefined || data.processed_artists !== undefined)) {
+                if (activeScanType === 'navidrome_scan' && (data.scanned_albums !== undefined || data.processed_artists !== undefined)) {
                     const processedAlbums = data.scanned_albums || data.processed_artists || 0;
                     const totalAlbums = data.total_albums || data.total_artists || 0;
                     percent = totalAlbums ? Math.round((processedAlbums / totalAlbums) * 100) : (data.percent_complete || 0);
