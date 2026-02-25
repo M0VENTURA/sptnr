@@ -1136,6 +1136,15 @@ def get_top_standout_tracks_with_gap(
                 else:
                     break
         
+        # If more than half the album is in the "standout" cluster, then nothing is really standing out
+        # Return empty set to prevent inflating ratings when the whole album is consistently good
+        total_tracks = len(album_data)
+        standout_count = len(top_standouts)
+        if standout_count > total_tracks / 2:
+            if verbose:
+                logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%), returning empty set - no clear standouts")
+            return set()
+        
         return top_standouts
     except Exception as e:
         if verbose:
