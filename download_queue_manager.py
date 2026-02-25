@@ -687,6 +687,12 @@ def auto_discover_and_queue_files():
             logger.warning(f"Downloads folder not found: {DOWNLOADS_DIR}")
             return stats
         
+        # Clean up queue items for files that no longer exist
+        cleanup_stats = cleanup_missing_files()
+        if cleanup_stats['removed'] > 0:
+            logger.info(f"Cleanup: Removed {cleanup_stats['removed']} queue items with missing files")
+        stats['cleanup_removed'] = cleanup_stats['removed']
+        
         conn = get_db()
         cursor = conn.cursor()
         
@@ -894,6 +900,77 @@ def get_completed_queue(limit=50):
     except Exception as e:
         logger.error(f"Error getting completed queue: {e}")
         return []
+
+
+def cleanup_missing_files():
+    """
+    Remove queue items where the file no longer exists in /downloads.
+    
+    This cleanup function:
+    - Checks all queue items with file_path set
+    - Removes items where file no longer exists (file was deleted/moved manually)
+    - Keeps items without file_path (still downloading or queued)
+    
+    Returns:
+        Dict with statistics:
+        - checked: Total items checked
+        - removed: Items removed due to missing files
+        - errors: List of error messages
+    """
+    stats = {
+        'checked': 0,
+        'removed': 0,
+        'errors': []
+    }
+    
+    try:
+        conn = get_db()
+        cursor = conn.cursor()
+        
+        # Get all queue items with file paths
+        cursor.execute("""
+            SELECT id, file_path, artist, title, status 
+            FROM download_queue 
+            WHERE file_path IS NOT NULL AND file_path != ''
+        """)
+        
+        items = cursor.fetchall()
+        stats['checked'] = len(items)
+        
+        if not items:
+            conn.close()
+            return stats
+        
+        removed_ids = []
+        
+        for item in items:
+            queue_id = item['id']
+            file_path = item['file_path']
+            artist = item['artist']
+            title = item['title']
+            status = item['status']
+            
+            # Check if file exists
+            if not os.path.exists(file_path):
+                logger.info(f"Removing queue item {queue_id} (status: {status}): File no longer exists: {file_path}")
+                removed_ids.append(queue_id)
+        
+        # Remove items in batch
+        if removed_ids:
+            placeholders = ','.join('?' * len(removed_ids))
+            cursor.execute(f"DELETE FROM download_queue WHERE id IN ({placeholders})", removed_ids)
+            conn.commit()
+            stats['removed'] = len(removed_ids)
+            logger.info(f"Cleaned up {len(removed_ids)} queue items with missing files")
+        
+        conn.close()
+        return stats
+        
+    except Exception as e:
+        error_msg = f"Error during cleanup: {str(e)}"
+        logger.error(error_msg)
+        stats['errors'].append(error_msg)
+        return stats
 
 
 def check_and_remove_failed_downloads():

@@ -10333,10 +10333,15 @@ def api_downloads_scan():
     """Scan downloads folder and return pending files (both completed and incomplete)"""
     try:
         # Check for failed downloads first and remove them
-        from download_queue_manager import check_and_remove_failed_downloads
+        from download_queue_manager import check_and_remove_failed_downloads, cleanup_missing_files
         failed_stats = check_and_remove_failed_downloads()
         if failed_stats.get("failed_detected"):
             log_info(f"Failed downloads check: {failed_stats}")
+        
+        # Clean up queue items for missing files
+        cleanup_stats = cleanup_missing_files()
+        if cleanup_stats.get("removed"):
+            log_info(f"Queue cleanup: Removed {cleanup_stats['removed']} items with missing files")
         
         cfg = get_config()
         downloads_config = cfg.get("downloads", {})
@@ -11246,18 +11251,31 @@ def api_queue_organize(queue_id):
         """, (queue_id,))
         
         item = cursor.fetchone()
-        conn.close()
         
-        if not item or not item['file_path']:
-            return jsonify({"error": "Queue item not found or file path missing"}), 404
+        if not item:
+            conn.close()
+            return jsonify({"error": "Queue item not found"}), 404
+        
+        if not item['file_path']:
+            # No file path set - delete this orphaned item
+            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+            conn.commit()
+            conn.close()
+            return jsonify({"error": "File path missing - item removed from queue"}), 404
         
         file_path = item['file_path']
         artist = item['artist'] or 'Unknown Artist'
         album = item['album'] or 'Unknown Album'
         
         if not os.path.exists(file_path):
-            update_queue_item(queue_id, status='failed', failure_reason='File no longer exists')
-            return jsonify({"error": "File not found"}), 404
+            # File was deleted - remove from queue
+            cursor.execute("DELETE FROM download_queue WHERE id = ?", (queue_id,))
+            conn.commit()
+            conn.close()
+            logging.info(f"[ORGANIZE] File no longer exists, removed from queue: {file_path}")
+            return jsonify({"error": "File no longer exists - item removed from queue"}), 404
+        
+        conn.close()
         
         logging.info(f"[ORGANIZE] Starting organization for queue {queue_id}: {file_path}")
         
