@@ -3112,8 +3112,11 @@ def popularity_scan(
                 try:
                     lastfm_config = get_lastfm_config(config)
                     if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                        from api_clients.lastfm import LastFmClient
-                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        api_key = lastfm_config.get("api_key")
+                        # Skip if placeholder key
+                        if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                            from api_clients.lastfm import LastFmClient
+                            lastfm_client = LastFmClient(api_key)
                         
                         artist_tags = _run_with_timeout(
                             lastfm_client.get_artist_top_tags,
@@ -3153,8 +3156,11 @@ def popularity_scan(
                 try:
                     lastfm_config = get_lastfm_config(config)
                     if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                        from api_clients.lastfm import LastFmClient
-                        lastfm_client = LastFmClient(lastfm_config.get("api_key"))
+                        api_key = lastfm_config.get("api_key")
+                        # Skip if placeholder key
+                        if api_key not in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                            from api_clients.lastfm import LastFmClient
+                            lastfm_client = LastFmClient(api_key)
                         
                         album_tags = _run_with_timeout(
                             lastfm_client.get_album_top_tags,
@@ -3396,11 +3402,20 @@ def popularity_scan(
                         # Get Last.fm client for tag lookups
                         lastfm_config = get_lastfm_config(config)
                         if lastfm_config.get("enabled") and lastfm_config.get("api_key"):
-                            from api_clients.lastfm import LastFmClient
-                            lastfm_client = LastFmClient(lastfm_config.get("api_key"))
-                            log_debug(f"Last.fm client initialized for batch tag fetching")
+                            api_key = lastfm_config.get("api_key")
+                            # Check if API key is still a placeholder
+                            if api_key in ["your_lastfm_api_key", "YOUR_API_KEY", "<your_api_key>", ""]:
+                                log_info(f"⚠️ Last.fm API key not configured (placeholder value detected)")
+                                log_info(f"   Set a real API key in config.yaml under api_integrations.lastfm.api_key")
+                            else:
+                                from api_clients.lastfm import LastFmClient
+                                lastfm_client = LastFmClient(api_key)
+                                log_info(f"✓ Last.fm client initialized for tag fetching (API key configured)")
                         else:
-                            log_debug(f"Last.fm client not configured or disabled")
+                            if not lastfm_config.get("enabled"):
+                                log_info(f"⚠️ Last.fm is disabled in config.yaml")
+                            else:
+                                log_info(f"⚠️ Last.fm API key missing from config.yaml")
                         
                         # Get Discogs client for genre lookups
                         discogs_config = config.get("api_integrations", {}).get("discogs", {})
