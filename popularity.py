@@ -4315,6 +4315,7 @@ def popularity_scan(
                     # 2★: Not standout, but above album mean
                     # 1★: Below album mean or excluded from stats
                     try:
+                        from statistics import mean as stat_mean, stdev as stat_stdev
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
                         cursor.execute("""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
@@ -4331,8 +4332,8 @@ def popularity_scan(
                         artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
                         if len(artist_scores) < 2:
                             return
-                        artist_mean = mean(artist_scores)
-                        artist_stdev = stdev(artist_scores) if len(artist_scores) > 1 else 1
+                        artist_mean = stat_mean(artist_scores)
+                        artist_stdev = stat_stdev(artist_scores) if len(artist_scores) > 1 else 1
                         sorted_artist_scores = sorted(artist_scores, reverse=True)
                         def artist_percentile(score):
                             return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
@@ -4352,8 +4353,8 @@ def popularity_scan(
                                 SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
                             """, (artist, track_album))
                             track_album_scores = [row[0] for row in cursor.fetchall()]
-                            track_album_mean = mean(track_album_scores) if track_album_scores else 0
-                            track_album_stdev = stdev(track_album_scores) if len(track_album_scores) > 1 else 1
+                            track_album_mean = stat_mean(track_album_scores) if track_album_scores else 0
+                            track_album_stdev = stat_stdev(track_album_scores) if len(track_album_scores) > 1 else 1
                             sorted_track_album_scores = sorted(track_album_scores, reverse=True)
                             album_z = (score - track_album_mean) / track_album_stdev if track_album_stdev > 0 else 0
                             is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] or score in sorted_track_album_scores[:STANDOUT_CONFIG['album_top_n']])
