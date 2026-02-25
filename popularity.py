@@ -5005,6 +5005,7 @@ def popularity_scan(
                             album,
                             conn=conn,
                             gap_threshold=1.0,
+                            is_compilation=is_compilation,
                             verbose=False
                         )
                     except Exception as e:

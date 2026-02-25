@@ -1074,10 +1074,14 @@ def get_top_standout_tracks_with_gap(
     album: str,
     conn=None,
     gap_threshold: float = 0.5,
+    is_compilation: bool = False,
     verbose: bool = False
 ) -> set:
     """
     Identify tracks at the top of an album with a clear gap from lower tracks.
+    
+    For greatest hits and compilations, the 50% rule is skipped since these albums
+    are specifically curated to contain mostly standout tracks.
     """
     should_close = False
     if conn is None:
@@ -1136,14 +1140,28 @@ def get_top_standout_tracks_with_gap(
                 else:
                     break
         
+        # Check if this is a greatest hits album (by name patterns)
+        album_lower = album.lower()
+        greatest_hits_patterns = [
+            'greatest hits', 'best of', 'the best', 'collection', 'anthology',
+            'essentials', ' hits', 'singles', 'the very best', 'gold', 'platinum',
+            'ultimate collection', 'complete', 'definitive'
+        ]
+        is_greatest_hits = any(pattern in album_lower for pattern in greatest_hits_patterns)
+        
         # If more than half the album is in the "standout" cluster, then nothing is really standing out
+        # UNLESS it's a compilation or greatest hits album (which are supposed to have mostly standouts)
         # Return empty set to prevent inflating ratings when the whole album is consistently good
         total_tracks = len(album_data)
         standout_count = len(top_standouts)
-        if standout_count > total_tracks / 2:
+        if standout_count > total_tracks / 2 and not is_compilation and not is_greatest_hits:
             if verbose:
                 logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%), returning empty set - no clear standouts")
             return set()
+        elif standout_count > total_tracks / 2 and (is_compilation or is_greatest_hits):
+            if verbose:
+                album_type = "compilation" if is_compilation else "greatest hits"
+                logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%) but this is a {album_type} album - allowing standouts")
         
         return top_standouts
     except Exception as e:
