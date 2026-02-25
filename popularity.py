@@ -5098,7 +5098,7 @@ def popularity_scan(
                                     elif single_confidence == "high":
                                         stars = 5
                                         log_info(f"5-star assignment: {title} (high-confidence single)")
-                                    log_debug(f"High confidence single detected - track_id: {track_id}")
+                                        log_debug(f"High confidence single detected - track_id: {track_id}")
                                     # Medium confidence with 2+ sources gets 4 stars (not 5)
                                     elif single_confidence == "medium":
                                         # Count the number of medium-confidence sources
