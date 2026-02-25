@@ -163,9 +163,9 @@ def queue_incomplete_download(file_path, metadata):
         
         cursor.execute("""
             INSERT OR REPLACE INTO download_queue (
-                file_path, filename, artist, album, title, duration,
-                status, exists_in_library, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                file_path, found_filename, artist, album, title, duration,
+                status, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, (
             file_path,
             os.path.basename(file_path),
@@ -173,8 +173,7 @@ def queue_incomplete_download(file_path, metadata):
             album,
             title,
             metadata.get('duration', 0),
-            'exists_in_library' if exists_in_library else 'incomplete',
-            exists_in_library,
+            'discovered' if exists_in_library else 'discovered',
             datetime.now().isoformat(),
             datetime.now().isoformat()
         ))
@@ -379,8 +378,7 @@ def mark_download_exists_in_library(file_path):
         
         cursor.execute("""
             UPDATE download_queue 
-            SET status = 'exists_in_library',
-                exists_in_library = 1,
+            SET status = 'discovered',
                 updated_at = ?
             WHERE file_path = ?
         """, (datetime.now().isoformat(), file_path))
