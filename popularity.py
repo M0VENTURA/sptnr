@@ -4940,9 +4940,12 @@ def popularity_scan(
                     # The underperformance flag was already used during single detection to determine
                     # whether to apply z-score based single detection for each track.
                     
+                    # Import with aliases to avoid shadowing issues from local imports elsewhere
+                    from statistics import mean as stat_mean, stdev as stat_stdev
+                    
                     if valid_scores:
-                        popularity_mean = mean(valid_scores)
-                        popularity_stddev = stdev(valid_scores) if len(valid_scores) > 1 else 0
+                        popularity_mean = stat_mean(valid_scores)
+                        popularity_stddev = stat_stdev(valid_scores) if len(valid_scores) > 1 else 0
                         log_debug(f"Star rating statistics - mean: {popularity_mean}, stddev: {popularity_stddev}, valid_scores_count: {len(valid_scores)}")
                         # Calculate z-scores for all tracks
                         zscores = []
@@ -4958,7 +4961,7 @@ def popularity_scan(
                         if zscores:
                             top_50_count = max(1, len(zscores) // 2)
                             top_50_zscores = heapq.nlargest(top_50_count, zscores)
-                            mean_top50_zscore = mean(top_50_zscores)
+                            mean_top50_zscore = stat_mean(top_50_zscores)
                         else:
                             mean_top50_zscore = 0
                         
