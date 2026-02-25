@@ -5,9 +5,10 @@ from contextlib import closing
 from datetime import datetime
 
 DB_FILE = "sptnr.db"
+DB_TIMEOUT = 120.0  # 2-minute timeout for database operations
 
 def init_db():
-    with closing(sqlite3.connect(DB_FILE)) as conn:
+    with closing(sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)) as conn:
         cursor = conn.cursor()
         # Artists table
         cursor.execute("""
@@ -36,7 +37,7 @@ def init_db():
         conn.commit()
 
 def insert_artist(artist_id, name):
-    with closing(sqlite3.connect(DB_FILE)) as conn:
+    with closing(sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)) as conn:
         cursor = conn.cursor()
         cursor.execute("INSERT OR IGNORE INTO artists (id, name) VALUES (?, ?)", (artist_id, name))
         conn.commit()
@@ -46,7 +47,7 @@ def insert_or_update_track(track_id, artist_id, album, title, genres, spotify_sc
                            stars, is_single, single_confidence):
     genres_str = ", ".join(genres) if genres else ""
     timestamp = datetime.now().strftime("%Y-%m-%dT%H:%M:%S")
-    with closing(sqlite3.connect(DB_FILE)) as conn:
+    with closing(sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)) as conn:
         cursor = conn.cursor()
         cursor.execute("""
         INSERT INTO tracks (id, artist_id, album, title, genres, spotify_score, lastfm_score,
@@ -69,13 +70,13 @@ def insert_or_update_track(track_id, artist_id, album, title, genres, spotify_sc
         conn.commit()
 
 def get_tracks_by_artist(artist_id):
-    with closing(sqlite3.connect(DB_FILE)) as conn:
+    with closing(sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT * FROM tracks WHERE artist_id = ?", (artist_id,))
         return cursor.fetchall()
 
 def get_top_tracks(limit=10):
-    with closing(sqlite3.connect(DB_FILE)) as conn:
+    with closing(sqlite3.connect(DB_FILE, timeout=DB_TIMEOUT)) as conn:
         cursor = conn.cursor()
         cursor.execute("SELECT title, final_score, stars FROM tracks ORDER BY final_score DESC LIMIT ?", (limit,))
         return cursor.fetchall()
