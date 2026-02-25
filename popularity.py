@@ -4382,23 +4382,32 @@ def popularity_scan(
                         log_debug(f'Standout/star rating analysis failed for {artist}: {e}')
                     # --- End standout/star rating section ---
 
-                # CRITICAL FIX: Close the read cursor BEFORE single detection to prevent lock contention
+                # CRITICAL FIX: Close the connection BEFORE single detection to prevent lock contention
                 # The original cursor from line ~1949 holds a READ lock on the database.
                 # When detect_single_for_track() creates NEW connections to WRITE, those need to acquire
-                # a WRITE lock, which SQLite cannot grant while a READ lock is held.
+                # a WRITE lock, which SQLite cannot grant while a connection with a READ lock is open.
                 # This causes "Database is locked" errors in store_single_detection_result().
-                # Solution: Release the read lock by closing/resetting the cursor before write attempts.
+                # Solution: Close the entire connection (not just cursor) to fully release all locks.
+                # We'll reopen it after single detection completes.
                 try:
                     if cursor is not None:
                         try:
                             cursor.close()
                         except:
                             pass  # Cursor might already be closed, that's OK
-                    cursor = None  # Don't create a new cursor yet - we'll need it after singles detection
-                    log_debug(f"Closed read cursor before single detection to prevent lock contention")
-                except Exception as e:
-                    log_debug(f"Warning: Failed to close cursor before single detection: {e}")
                     cursor = None
+                    
+                    if conn is not None:
+                        try:
+                            conn.close()
+                        except:
+                            pass  # Connection might have issues, that's OK
+                    conn = None
+                    log_debug(f"Closed connection before single detection to prevent lock contention")
+                except Exception as e:
+                    log_debug(f"Warning: Failed to close connection before single detection: {e}")
+                    cursor = None
+                    conn = None
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
@@ -4743,9 +4752,13 @@ def popularity_scan(
                         log_debug(f"Progress milestone - 75% completed for singles detection in album {album}")
                         singles_milestones_logged.add(75)
                 
-                # NOTE: We already closed the read cursor BEFORE single detection started (see above).
-                # This section is just a safety measure to ensure cursor is fresh for batch updates.
+                # REOPEN CONNECTION: Single detection completed, need to reconnect for batch updates
+                # We closed the connection before single detection to prevent lock contention.
+                # Now we need to reopen it to perform batch updates of the singles detection results.
                 try:
+                    if conn is None:
+                        conn = get_db_connection()
+                        log_debug(f"Reopened connection after singles detection for batch updates")
                     if cursor is not None and not cursor._closed:
                         cursor.close()
                     cursor = conn.cursor()
