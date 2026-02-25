@@ -228,7 +228,7 @@ def get_source_confidence_settings(config_data: Optional[Dict] = None) -> Dict[s
     if not config_data:
         try:
             import os
-            from config_loader import load_config
+            from helpers.config_loader import load_config
             config_data = load_config()
         except Exception as e:
             log_debug(f"Unable to load config for source confidence settings: {e}")
@@ -1154,7 +1154,7 @@ def determine_final_status(
     """
     # Load z-score thresholds from config
     try:
-        from config_loader import get_zscore_thresholds
+        from helpers.config_loader import get_zscore_thresholds
         thresholds = get_zscore_thresholds()
         zscore_medium_threshold = thresholds.get('medium', 0.6)
         zscore_high_threshold = thresholds.get('high', 1.0)
