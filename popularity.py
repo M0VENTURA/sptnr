@@ -16,6 +16,7 @@ import time
 import heapq
 import re
 import difflib
+import unicodedata
 import requests
 from contextlib import contextmanager
 from datetime import datetime, timedelta
@@ -3146,6 +3147,114 @@ def popularity_scan(
                     log_debug(f"Last.fm artist tags lookup failed for {artist}: {e}")
             except Exception as e:
                 log_debug(f"Similar artists and tags lookup failed for {artist}: {e}")
+            
+            # Fetch missing releases from MusicBrainz and update database
+            try:
+                if HAVE_MUSICBRAINZ:
+                    log_debug(f"Checking for missing releases for '{artist}' on MusicBrainz")
+                    
+                    # Get existing albums for this artist
+                    cursor.execute("SELECT DISTINCT album FROM tracks WHERE artist = ?", (artist,))
+                    existing_albums = [row[0] for row in cursor.fetchall()]
+                    existing_norm = set()
+                    for a in existing_albums:
+                        if a:
+                            # Normalize: lowercase, remove special chars, remove bonus/remaster/etc
+                            normalized = unicodedata.normalize("NFKD", a)
+                            normalized = "".join(c for c in normalized if not unicodedata.combining(c))
+                            normalized = normalized.lower()
+                            normalized = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", normalized)
+                            normalized = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", normalized)
+                            normalized = re.sub(r"[^a-z0-9]+", " ", normalized)
+                            normalized = " ".join(normalized.split())
+                            existing_norm.add(normalized)
+                    
+                    # Get artist MBID for more accurate lookup
+                    cursor.execute("SELECT MAX(musicbrainz_artist_id) FROM tracks WHERE artist = ?", (artist,))
+                    result = cursor.fetchone()
+                    artist_mbid = result[0] if result and result[0] else None
+                    
+                    # Fetch MusicBrainz releases using the client
+                    mb_client = _get_timeout_safe_musicbrainz_client()
+                    if not mb_client:
+                        raise Exception("MusicBrainz client not available")
+                    
+                    # Build query
+                    if artist_mbid:
+                        query = f'arid:"{artist_mbid}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+                    else:
+                        query = f'artist:"{artist}" AND (primarytype:album OR primarytype:ep OR primarytype:single)'
+                    
+                    # Search for release groups
+                    import requests
+                    headers = {"User-Agent": "sptnr/1.0"}
+                    url = "https://musicbrainz.org/ws/2/release-group"
+                    params = {"fmt": "json", "limit": 100, "query": query}
+                    
+                    response = requests.get(url, headers=headers, params=params, timeout=10)
+                    response.raise_for_status()
+                    data = response.json()
+                    
+                    release_groups = data.get("release-groups", []) or []
+                    
+                    missing_count = 0
+                    updated_count = 0
+                    
+                    for rg in release_groups:
+                        rg_id = rg.get("id", "")
+                        rg_title = rg.get("title", "")
+                        
+                        # Normalize title
+                        norm_title = unicodedata.normalize("NFKD", rg_title)
+                        norm_title = "".join(c for c in norm_title if not unicodedata.combining(c))
+                        norm_title = norm_title.lower()
+                        norm_title = re.sub(r"\([^)]*\)|\[[^\]]*\]", " ", norm_title)
+                        norm_title = re.sub(r"(?i)\b(remaster(?:ed)?\s*\d{0,4}|remaster|deluxe|live|mono|stereo|edit|mix|version|bonus track)\b", " ", norm_title)
+                        norm_title = re.sub(r"[^a-z0-9]+", " ", norm_title)
+                        norm_title = " ".join(norm_title.split())
+                        
+                        cover_art_url = f"https://coverartarchive.org/release-group/{rg_id}/front-500" if rg_id else ""
+                        
+                        # If album exists in library, skip to next
+                        if norm_title and norm_title in existing_norm:
+                            continue
+                        
+                        if not norm_title:
+                            continue
+                        
+                        # Categorize by type
+                        secondary = [s.lower() for s in rg.get("secondary-types") or []]
+                        primary_type = (rg.get("primary-type") or "").lower()
+                        category = "Album"
+                        if "compilation" in secondary:
+                            category = "Compilation"
+                        elif primary_type == "ep":
+                            category = "EP"
+                        elif primary_type == "single" or "single" in secondary:
+                            category = "Single"
+                        
+                        # Insert missing release
+                        cursor.execute("""
+                            INSERT OR REPLACE INTO missing_releases 
+                            (artist, artist_mbid, release_id, title, primary_type, first_release_date, cover_art_url, category, last_checked)
+                            VALUES (?, ?, ?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP)
+                        """, (artist, artist_mbid, rg_id, rg_title, 
+                              rg.get("primary-type", ""), rg.get("first-release-date", ""), 
+                              cover_art_url, category))
+                        missing_count += 1
+                    
+                    conn.commit()
+                    
+                    if missing_count > 0:
+                        log_info(f"MusicBrainz: Found {missing_count} missing releases for '{artist}'")
+                    else:
+                        log_debug(f"No missing releases found for '{artist}'")
+                    
+                    # Rate limit: wait 1 second after MusicBrainz API call
+                    time.sleep(1.0)
+                        
+            except Exception as e:
+                log_debug(f"Missing releases lookup failed for {artist}: {e}")
             
             album_num = 0
             for album, album_tracks in albums.items():
