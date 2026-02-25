@@ -4813,11 +4813,12 @@ def popularity_scan(
                     
                     if zscore_update_tracks:
                         # Calculate album statistics for z-score
+                        from statistics import mean as stat_mean_post, stdev as stat_stdev_post
                         album_pops = [t["popularity_score"] for t in zscore_update_tracks if t["popularity_score"]]
                         
                         if album_pops and len(album_pops) > 1:
-                            album_pop_mean = mean(album_pops)
-                            album_pop_stddev = stdev(album_pops)
+                            album_pop_mean = stat_mean_post(album_pops)
+                            album_pop_stddev = stat_stdev_post(album_pops)
                             
                             zscore_outliers = []
                             for track in zscore_update_tracks:
