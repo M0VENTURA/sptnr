@@ -1380,7 +1380,14 @@ def detect_single_enhanced(
     verbose: bool = False,
     album_type: Optional[str] = None,
     album_is_underperforming: bool = False,
-    artist_median_popularity: float = 0.0
+    artist_median_popularity: float = 0.0,
+    # Pre-computed album stats: when provided, skip the DB query for album stats
+    # so that deviation is calculated once locally (after popularity detection)
+    # rather than once per song during single detection.
+    album_mean: Optional[float] = None,
+    album_stddev: Optional[float] = None,
+    album_median: Optional[float] = None,
+    album_popularities: Optional[List[float]] = None
 ) -> Dict:
     """
     Enhanced single detection implementing the exact algorithm from problem statement.
@@ -1411,6 +1418,10 @@ def detect_single_enhanced(
         album_type: Spotify album type (for compilation detection)
         album_is_underperforming: Whether the album is underperforming vs artist median
         artist_median_popularity: Artist median popularity (for standout detection)
+        album_mean: Pre-computed album mean popularity (avoids per-song DB query)
+        album_stddev: Pre-computed album std dev (avoids per-song DB query)
+        album_median: Pre-computed album median popularity (avoids per-song DB query)
+        album_popularities: Pre-computed list of album popularity scores (avoids per-song DB query)
         
     Returns:
         Dict with single detection results for database storage
@@ -1457,8 +1468,14 @@ def detect_single_enhanced(
         artist_mean, artist_stddev, artist_track_count = 0.0, 0.0, 0
     
     # Get album statistics for album-level filtering (two-stage approach)
-    album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
-    log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
+    # Use pre-computed stats if provided (avoids redundant DB query per song;
+    # deviation should be computed once locally after all popularity scores are known).
+    if album_mean is not None and album_stddev is not None and album_median is not None:
+        album_track_count = len(album_popularities) if album_popularities else 0
+        log_debug(f"[ALBUM_STATS] Using pre-computed stats — Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
+    else:
+        album_mean, album_stddev, album_median, album_track_count = calculate_album_stats(conn, artist, album)
+        log_debug(f"[ALBUM_STATS] Mean: {album_mean:.1f}, Median: {album_median:.1f}, StdDev: {album_stddev:.1f}, Tracks: {album_track_count}")
     
     # VALIDATION: Check album stats integrity
     is_valid, validation_error = validate_artist_stats(album, album_mean, album_stddev, album_track_count)
@@ -1471,14 +1488,18 @@ def detect_single_enhanced(
     cursor = conn.cursor()
     
     # Get album popularities list for pre-filter
-    cursor.execute("""
-        SELECT popularity_score
-        FROM tracks
-        WHERE artist = ? AND album = ? AND popularity_score > 0
-        ORDER BY popularity_score DESC
-    """, (artist, album))
-    album_pops_rows = cursor.fetchall()
-    album_popularities = [row[0] for row in album_pops_rows] if album_pops_rows else []
+    # Use pre-computed list if available to avoid redundant DB query
+    if album_popularities is not None:
+        log_debug(f"[ALBUM_POPS] Using pre-computed album popularities ({len(album_popularities)} tracks)")
+    else:
+        cursor.execute("""
+            SELECT popularity_score
+            FROM tracks
+            WHERE artist = ? AND album = ? AND popularity_score > 0
+            ORDER BY popularity_score DESC
+        """, (artist, album))
+        album_pops_rows = cursor.fetchall()
+        album_popularities = [row[0] for row in album_pops_rows] if album_pops_rows else []
 
     # Get all artist popularities for context
     cursor = conn.cursor()

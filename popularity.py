@@ -1664,7 +1664,12 @@ def detect_single_for_track(
     zscore_threshold: float = 1.0,
     # New parameters for conditional z-score detection
     album_is_underperforming: bool = False,
-    artist_median_popularity: float = 0.0
+    artist_median_popularity: float = 0.0,
+    # Pre-computed album stats (pass to avoid per-song DB queries in detect_single_enhanced)
+    album_mean: float = None,
+    album_stddev: float = None,
+    album_median: float = None,
+    album_popularities: list = None
 ) -> dict:
     """
     Detect if a track is a single using multiple data sources.
@@ -1751,7 +1756,12 @@ def detect_single_for_track(
                 verbose=verbose,
                 album_type=album_type,
                 album_is_underperforming=album_is_underperforming,
-                artist_median_popularity=artist_median_popularity
+                artist_median_popularity=artist_median_popularity,
+                # Pass locally pre-computed album stats to avoid redundant per-song DB queries
+                album_mean=album_mean,
+                album_stddev=album_stddev,
+                album_median=album_median,
+                album_popularities=album_popularities
             )
             
             # CRITICAL: Close any open cursors from detect_single_enhanced before storing result
@@ -4510,6 +4520,12 @@ def popularity_scan(
                 track_zscores = {}  # Map of track_id -> z-score
                 top_cluster_tracks = set()  # Track IDs in top z-score cluster (instant 5★)
                 
+                # Pre-computed album stats to pass into single detection (avoids per-song DB queries)
+                precomputed_album_mean = None
+                precomputed_album_stddev = None
+                precomputed_album_median = None
+                precomputed_album_pops = []
+                
                 if album_type == "regular" and album_track_count > 1:
                     # Calculate z-scores for regular albums to filter single detection
                     album_pops_for_zscore = []
@@ -4527,9 +4543,17 @@ def popularity_scan(
                             track_ids_for_zscore.append(track_id)
                     
                     if len(album_pops_for_zscore) > 1:
-                        from statistics import mean, stdev
+                        from statistics import mean, stdev, median as stat_median
                         pop_mean = mean(album_pops_for_zscore)
                         pop_stddev = stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
+                        pop_median = stat_median(album_pops_for_zscore)
+                        
+                        # Store pre-computed album stats so single detection can use them
+                        # instead of re-querying the database for every track
+                        precomputed_album_mean = pop_mean
+                        precomputed_album_stddev = pop_stddev
+                        precomputed_album_median = pop_median
+                        precomputed_album_pops = list(album_pops_for_zscore)
                         
                         if pop_stddev > 0:
                             # Calculate z-scores
@@ -4616,14 +4640,15 @@ def popularity_scan(
                     skip_single_detection = False
                     
                     if album_type == "regular":
-                        # For regular albums, only run single detection on tracks with positive z-score
-                        # This filters out low-popularity deep cuts that are unlikely to be singles
-                        track_zscore = track_zscores.get(track_id, 0)
-                        
-                        if track_zscore < 0:
-                            # Negative z-score = below album average, skip single detection
-                            skip_single_detection = True
-                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0)")
+                        # For regular albums, only run single detection on tracks above mean + stddev
+                        # Deviation is computed once locally from all popularity scores (pre-calculated above).
+                        # Tracks with z-score < 1.0 are below mean + 1 standard deviation and are
+                        # unlikely to be singles; tracks without popularity data are still checked.
+                        if track_id in track_zscores:
+                            track_zscore = track_zscores[track_id]
+                            if track_zscore < 1.0:
+                                skip_single_detection = True
+                                log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 1.0)")
                     
                     # Skip single detection if filtered out
                     if skip_single_detection:
@@ -4674,7 +4699,13 @@ def popularity_scan(
                         zscore_threshold=0.20,
                         # Conditional z-score detection parameters
                         album_is_underperforming=album_is_underperforming,
-                        artist_median_popularity=artist_median
+                        artist_median_popularity=artist_median,
+                        # Pre-computed album stats: pass locally calculated values to avoid
+                        # per-song DB queries inside detect_single_enhanced
+                        album_mean=precomputed_album_mean,
+                        album_stddev=precomputed_album_stddev,
+                        album_median=precomputed_album_median,
+                        album_popularities=precomputed_album_pops if precomputed_album_pops else None
                     )
                     
                     single_sources = detection_result["sources"]
