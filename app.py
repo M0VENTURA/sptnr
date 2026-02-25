@@ -11249,8 +11249,8 @@ def api_queue_organize(queue_id):
             return jsonify({"error": "Queue item not found or file path missing"}), 404
         
         file_path = item['file_path']
-        artist = item.get('artist', 'Unknown Artist')
-        album = item.get('album', 'Unknown Album')
+        artist = item['artist'] or 'Unknown Artist'
+        album = item['album'] or 'Unknown Album'
         
         if not os.path.exists(file_path):
             update_queue_item(queue_id, status='failed', failure_reason='File no longer exists')
@@ -11411,7 +11411,7 @@ def api_queue_organize_group():
                     logging.error(f"[ORGANIZE_GROUP] Item {item['id']}: Move failed - {type(move_error).__name__}: {move_error}")
                     
             except Exception as e:
-                errors.append(f"{item.get('title', 'Unknown')}: {str(e)}")
+                errors.append(f"{item['title'] or 'Unknown'}: {str(e)}")
                 logging.error(f"[ORGANIZE_GROUP] Error processing item {item['id']}: {e}")
                 continue
         
