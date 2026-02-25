@@ -690,9 +690,26 @@ def auto_discover_and_queue_files():
         conn = get_db()
         cursor = conn.cursor()
         
-        # Ensure discovered status column exists
+        # Ensure required columns exist for auto-discovery inserts
         cursor.execute("PRAGMA table_info(download_queue);")
         columns = [row[1] for row in cursor.fetchall()]
+        
+        required_cols = {
+            'track_number': "TEXT",
+            'disc_number': "TEXT",
+            'album_artist': "TEXT",
+            'year': "TEXT",
+            'found_filename': "TEXT"
+        }
+        
+        for col, col_type in required_cols.items():
+            if col not in columns:
+                logger.info(f"Adding missing column '{col}' to download_queue")
+                try:
+                    cursor.execute(f"ALTER TABLE download_queue ADD COLUMN {col} {col_type};")
+                    conn.commit()
+                except Exception as e:
+                    logger.warning(f"Could not add {col} column: {e}")
         
         # Get all audio files from downloads folder and subdirectories
         audio_extensions = {'.mp3', '.flac', '.m4a', '.ogg', '.wav'}
