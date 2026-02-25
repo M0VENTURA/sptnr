@@ -310,7 +310,16 @@
         document.getElementById('errorState').style.display = 'none';
 
         fetch('/api/downloads/scan')
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('Server returned non-JSON response (got HTML or plain text)');
+                }
+                return response.json();
+            })
             .then(data => {
                 document.getElementById('loadingState').style.display = 'none';
 
@@ -392,7 +401,16 @@
         document.getElementById('retryErrorState').style.display = 'none';
 
         fetch('/api/downloads/retry-queue')
-            .then(response => response.json())
+            .then(response => {
+                if (!response.ok) {
+                    throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+                }
+                const contentType = response.headers.get('content-type');
+                if (!contentType || !contentType.includes('application/json')) {
+                    throw new Error('Server returned non-JSON response (got HTML or plain text)');
+                }
+                return response.json();
+            })
             .then(data => {
                 document.getElementById('retryLoadingState').style.display = 'none';
 
