@@ -2013,27 +2013,52 @@ def detect_single_for_track(
             log_info(f"   â“˜ Discogs token not configured for video detection")
             log_debug(f"   Discogs: Token not configured for video detection")
     
-    # Calculate confidence based on sources per problem statement
-    # High confidence: Discogs single format OR (discogs_video + any other source)
-    # Medium confidence: Spotify, MusicBrainz, Last.fm single, or discogs_video alone
-    # Low confidence: No sources
+    # Iterative z-score detection (required method)
+    iterative_zscore_passed = False
+    if album and popularity and popularity > 0 and track_id:
+        try:
+            from popularity_helpers import detect_via_iterative_zscore
+            db_conn = get_db_connection()
+            iterative_zscore_passed = detect_via_iterative_zscore(
+                current_track_score=popularity,
+                artist=artist,
+                album=album,
+                conn=db_conn,
+                verbose=verbose
+            )
+            db_conn.close()
+            if iterative_zscore_passed:
+                single_sources.append("iterative_zscore")
+                log_info(f"   Iterative z-score method: {title} passed album standout test")
+            else:
+                log_debug(f"   Iterative z-score: {title} did not meet threshold")
+        except Exception as e:
+            log_debug(f"   Iterative z-score detection error for {title}: {e}")
+    
+    # Calculate confidence based on sources with iterative z-score as required baseline
+    # High confidence: iterative_zscore + at least one other method
+    # Medium confidence: iterative_zscore only
+    # Low confidence: no iterative_zscore
+    has_iterative_zscore = "iterative_zscore" in single_sources
     has_discogs_single = "discogs" in single_sources
     has_discogs_video = "discogs_video" in single_sources
     has_other_sources = any(s in single_sources for s in ["spotify", "musicbrainz", "lastfm"])
     
-    # Video detection requires a second method to approve it (Spotify, Discogs single, or MusicBrainz)
-    if has_discogs_single or (has_discogs_video and has_other_sources):
+    if has_iterative_zscore and (has_discogs_single or has_discogs_video or has_other_sources):
         single_confidence = "high"
-    elif has_other_sources or has_discogs_video:
+    elif has_iterative_zscore:
+        single_confidence = "medium"
+    elif has_other_sources or has_discogs_video or has_discogs_single:
         single_confidence = "medium"
     else:
         single_confidence = "low"
     
-    # Album context rule: downgrade medium â†’ low if album has >3 tracks
-    if single_confidence == "medium" and album_track_count > 3:
+    # Album context rule: downgrade medium -> low if album has >3 tracks
+    # Skip downgrade when iterative z-score is present (required method)
+    if single_confidence == "medium" and album_track_count > 3 and not has_iterative_zscore:
         single_confidence = "low"
         if verbose:
-            log_verbose(f"   â“˜ Downgraded {title} confidence to low (album has {album_track_count} tracks)")
+            log_verbose(f"   Downgraded {title} confidence to low (album has {album_track_count} tracks)")
     
     # is_single = True only for high confidence singles (5* singles)
     is_single = single_confidence == "high"
@@ -4779,6 +4804,18 @@ def popularity_scan(
                     updates = []
                     # Track which medium-confidence tracks should be upgraded to is_single=1
                     single_upgrades = []
+                    top_standout_track_ids = set()
+                    try:
+                        from popularity_helpers import get_top_standout_tracks_with_gap
+                        top_standout_track_ids = get_top_standout_tracks_with_gap(
+                            artist,
+                            album,
+                            conn=conn,
+                            gap_threshold=0.5,
+                            verbose=False
+                        )
+                    except Exception as e:
+                        log_debug(f"Top standout detection failed for album {album}: {e}")
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
@@ -4798,6 +4835,7 @@ def popularity_scan(
                         except json.JSONDecodeError:
                             single_sources = []
                             log_debug(f"Failed to parse single_sources JSON for track {track_id}")
+                        has_iterative_zscore = "iterative_zscore" in single_sources
                         
                         # Check if this track was excluded from statistics
                         # Excluded tracks should not participate in confidence-based star rating upgrades
@@ -4867,6 +4905,11 @@ def popularity_scan(
                                     stars = 5
                                     log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                     log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
+                                # Top standout tracks with clear gaps (non-singles)
+                                elif not is_single and track_id in top_standout_track_ids:
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (top standout with clear gap - popular track)")
+                                    log_debug(f"Top standout track - track_id: {track_id}")
                                 # User-set singles always get 5 stars
                                 elif single_confidence == "user":
                                     stars = 5
@@ -4882,7 +4925,7 @@ def popularity_scan(
                                     # Count the number of medium-confidence sources
                                     # Each unique source in single_sources represents a medium-confidence method
                                     medium_conf_count = len(single_sources) if single_sources else 0
-                                    if medium_conf_count >= 2:
+                                    if medium_conf_count >= 2 and has_iterative_zscore:
                                         stars = 4  # Max 4 stars for medium confidence
                                         # Upgrade is_single flag for medium confidence tracks with 2+ sources
                                         if not is_single:
@@ -4894,7 +4937,10 @@ def popularity_scan(
                                     else:
                                         # Single medium-confidence source only gets 3 stars
                                         stars = 3
-                                        log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
+                                        if medium_conf_count >= 2 and not has_iterative_zscore:
+                                            log_debug(f"Medium confidence without iterative zscore - track_id: {track_id}, limiting to 3 stars")
+                                        else:
+                                            log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
                                 # Standout tracks (high Last.fm scrobbles) get 5 stars
                                 elif is_standout_track:
                                     stars = 5

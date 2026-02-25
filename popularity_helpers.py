@@ -945,6 +945,202 @@ def get_lastfm_client() -> LastFmClient | None:
     return _lastfm_client
 
 
+def detect_via_iterative_zscore(
+    current_track_score: float,
+    artist: str,
+    album: str,
+    conn=None,
+    verbose: bool = False
+) -> bool:
+    """
+    Detect if a track is a standout using iterative z-score method.
+    
+    Returns True if the track is identified as a standout via:
+    - album z-score >= 1.0 after iterative removal
+    - artist z-score >= 0.5 (if artist stats exist)
+    """
+    if not current_track_score or current_track_score <= 0:
+        return False
+    
+    should_close = False
+    if conn is None:
+        try:
+            from database.database import get_db_connection
+            conn = get_db_connection()
+            should_close = True
+        except Exception as e:
+            if verbose:
+                logging.debug(f"Iterative zscore: Could not get DB connection: {e}")
+            return False
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, popularity_score
+            FROM tracks
+            WHERE artist = ? AND album = ? AND popularity_score > 0
+            ORDER BY popularity_score DESC
+        """, (artist, album))
+        
+        album_tracks = cursor.fetchall()
+        if not album_tracks or len(album_tracks) < 2:
+            return False
+        
+        album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+        identified_standouts = set()
+        
+        iteration = 0
+        max_iterations = 5
+        
+        while iteration < max_iterations:
+            iteration += 1
+            remaining_scores = [score for _, _, score in album_data if score > 0]
+            if not remaining_scores or len(remaining_scores) < 2:
+                break
+            
+            try:
+                album_mean = mean(remaining_scores)
+                album_stdev = stdev(remaining_scores) if len(remaining_scores) > 1 else 0
+            except (ValueError, ZeroDivisionError):
+                break
+            
+            if album_stdev == 0:
+                break
+            
+            top_score = max(remaining_scores)
+            top_z = (top_score - album_mean) / album_stdev
+            if top_z < 1.0:
+                break
+            
+            found_standout = False
+            for track_id, title, score in album_data:
+                if score == top_score and track_id not in identified_standouts:
+                    artist_z = _check_artist_zscore(cursor, artist, track_id)
+                    if artist_z >= 0.5 or artist_z == -999:
+                        identified_standouts.add(track_id)
+                        found_standout = True
+                        if score == current_track_score:
+                            return True
+                        album_data = [(tid, tit, ts) for tid, tit, ts in album_data if tid != track_id]
+                    break
+            
+            if not found_standout:
+                break
+        
+        return False
+    except Exception as e:
+        if verbose:
+            logging.debug(f"Iterative zscore error: {e}")
+        return False
+    finally:
+        if should_close:
+            conn.close()
+
+
+def _check_artist_zscore(cursor, artist: str, track_id: int) -> float:
+    """Get z-score for a track within its artist catalog. Returns -999 on failure."""
+    try:
+        cursor.execute("SELECT popularity_score FROM tracks WHERE id = ?", (track_id,))
+        row = cursor.fetchone()
+        if not row:
+            return -999
+        
+        track_score = row[0]
+        if not track_score:
+            return -999
+        
+        cursor.execute("""
+            SELECT mean_popularity, popularity_stddev
+            FROM artist_stats
+            WHERE artist = ?
+        """, (artist,))
+        stats_row = cursor.fetchone()
+        if not stats_row or not stats_row[0]:
+            return -999
+        
+        artist_mean = stats_row[0]
+        artist_stdev = stats_row[1] if stats_row[1] else 1
+        if artist_stdev == 0:
+            return -999
+        
+        return (track_score - artist_mean) / artist_stdev
+    except Exception as e:
+        logging.debug(f"Artist zscore error: {e}")
+        return -999
+
+
+def get_top_standout_tracks_with_gap(
+    artist: str,
+    album: str,
+    conn=None,
+    gap_threshold: float = 0.5,
+    verbose: bool = False
+) -> set:
+    """
+    Identify tracks at the top of an album with a clear gap from lower tracks.
+    """
+    should_close = False
+    if conn is None:
+        try:
+            from database.database import get_db_connection
+            conn = get_db_connection()
+            should_close = True
+        except Exception as e:
+            if verbose:
+                logging.debug(f"Top standouts: Could not get DB connection: {e}")
+            return set()
+    
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT id, title, popularity_score
+            FROM tracks
+            WHERE artist = ? AND album = ? AND popularity_score > 0
+            ORDER BY popularity_score DESC
+        """, (artist, album))
+        
+        album_tracks = cursor.fetchall()
+        if not album_tracks or len(album_tracks) < 2:
+            return set()
+        
+        album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+        scores = [score for _, _, score in album_data]
+        try:
+            album_mean = mean(scores)
+            album_stdev = stdev(scores) if len(scores) > 1 else 0
+        except (ValueError, ZeroDivisionError):
+            return set()
+        if album_stdev == 0:
+            return set()
+        
+        top_standouts = set()
+        prev_z = None
+        for track_id, title, score in album_data:
+            current_z = (score - album_mean) / album_stdev
+            if prev_z is None:
+                if current_z >= 0:
+                    top_standouts.add(track_id)
+                    prev_z = current_z
+                else:
+                    break
+            else:
+                gap = prev_z - current_z
+                if gap < gap_threshold:
+                    top_standouts.add(track_id)
+                    prev_z = current_z
+                else:
+                    break
+        
+        return top_standouts
+    except Exception as e:
+        if verbose:
+            logging.debug(f"Top standouts detection error: {e}")
+        return set()
+    finally:
+        if should_close:
+            conn.close()
+
+
 __all__ = [
     "configure_popularity_helpers",
     "get_spotify_artist_id",
@@ -969,4 +1165,6 @@ __all__ = [
     "fetch_comprehensive_metadata",
     "get_spotify_client",
     "get_lastfm_client",
+    "detect_via_iterative_zscore",
+    "get_top_standout_tracks_with_gap",
 ]
