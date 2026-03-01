@@ -1056,7 +1056,7 @@ def detect_via_iterative_zscore(
     should_close = False
     if conn is None:
         try:
-            from database.database import get_db_connection
+            from helpers.db_utils import get_db_connection
             conn = get_db_connection()
             should_close = True
         except Exception as e:
@@ -1177,7 +1177,7 @@ def get_top_standout_tracks_with_gap(
     should_close = False
     if conn is None:
         try:
-            from database.database import get_db_connection
+            from helpers.db_utils import get_db_connection
             conn = get_db_connection()
             should_close = True
         except Exception as e:

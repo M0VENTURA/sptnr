@@ -273,7 +273,7 @@ class SpotifyClient:
             logger.error(f"❌ Failed to fetch playlist {playlist_id}: {e}")
             raise
     
-    def search_track(self, title: str, artist: str, album: str = None) -> list:
+    def search_track(self, title: str, artist: str, album: str | None = None) -> list:
         """
         Search for a track on Spotify with fallback queries.
         
