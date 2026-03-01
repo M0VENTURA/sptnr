@@ -15,7 +15,7 @@
     </nav>
     
     <!-- Album Art Section -->
-    <div class="mb-4">
+    <div class="mb-4 track-panel" id="track-details-section" data-track-panel="details">
         <div class="card">
             <div class="card-body">
                 <div class="row g-4">
@@ -59,7 +59,7 @@
         </div>
     </div>
     
-    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2 track-panel" data-track-panel="details">
         <div class="flex-grow-1">
             <h1 class="h2 mb-1">
                 <i class="bi bi-music-note-list"></i> {{ track.title }}
@@ -90,12 +90,25 @@
                 </button>
             </form>
         </div>
-    </div>    
+    </div>
+
+    <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
+        <div class="card-body py-2 px-3">
+            <ul class="nav nav-pills gap-2 small">
+                <li class="nav-item"><button type="button" class="nav-link active" data-track-tab="details">Details</button></li>
+                <li class="nav-item"><button type="button" class="nav-link" data-track-tab="edit">Edit</button></li>
+                <li class="nav-item"><button type="button" class="nav-link" data-track-tab="scoring">Scoring</button></li>
+                <li class="nav-item"><button type="button" class="nav-link" data-track-tab="genres">Genres</button></li>
+                <li class="nav-item"><button type="button" class="nav-link" data-track-tab="similar">Similar</button></li>
+            </ul>
+        </div>
+    </div>
+
     <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
         <div class="row g-2 g-md-3">
             <!-- Left Column: Track Info -->
             <div class="col-12 col-lg-6">
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" id="track-edit-section" data-track-panel="edit">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-pencil-square"></i> Track Information
@@ -247,7 +260,7 @@
             <!-- Right Column: Metadata & Info -->
             <div class="col-12 col-lg-6">
                 <!-- Scoring Metadata -->
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" id="track-scoring-section" data-track-panel="scoring">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-graph-up"></i> Scoring Metadata
@@ -298,7 +311,7 @@
                 </div>
 
                 <!-- Genres Information (Dynamic) -->
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" id="track-genres-section" data-track-panel="genres">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-tags-fill"></i> Genre & Tag Sources
@@ -312,7 +325,7 @@
                 </div>
 
                 <!-- Similar Artists Section -->
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" id="track-similar-section" data-track-panel="similar">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-person-heart"></i> Similar Artists
@@ -327,7 +340,7 @@
 
                 <!-- Beets Metadata (MusicBrainz Recommendations) -->
                 {% if track.beets_mbid or track.beets_similarity or track.beets_album_artist %}
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" data-track-panel="scoring">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-database-check"></i> Beets Auto-Import Data
@@ -413,7 +426,7 @@
                 </div>
                 {% endif %}
                 <!-- Audio Metadata -->
-                <div class="card mb-4">
+                <div class="card mb-4 track-panel" data-track-panel="scoring">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-disc-fill"></i> Audio Information
@@ -460,7 +473,7 @@
                 </div>
 
                 <!-- Source & Audit Info -->
-                <div class="card">
+                <div class="card track-panel" data-track-panel="scoring">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-info-circle"></i> Sources & Audit
@@ -524,7 +537,7 @@
 
                 <!-- Recommended Genres -->
                 {% if recommended_genres %}
-                <div class="card">
+                <div class="card track-panel" data-track-panel="edit">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-tags"></i> Recommended Genres
@@ -544,7 +557,7 @@
                 {% endif %}
 
                 <!-- External Metadata Lookups -->
-                <div class="card">
+                <div class="card track-panel" data-track-panel="edit">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-database"></i> External Metadata Lookups
@@ -566,7 +579,7 @@
             </div>
         </div>
         
-        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4">
+        <div class="d-flex flex-column flex-md-row gap-2 gap-md-3 mt-4 track-panel" data-track-panel="edit">
             <button type="submit" class="btn btn-primary">
                 <i class="bi bi-check-circle"></i> Save Changes
             </button>
@@ -1113,6 +1126,7 @@ let genresLoaded = false;
 document.addEventListener('DOMContentLoaded', function() {
     const trackId = '{{ track.id }}'.trim();
     const artist = '{{ track.artist }}'.trim();
+    initTrackTabs();
     
     if (trackId && trackId.length > 0) {
         if (!genresLoaded) {
@@ -1169,10 +1183,10 @@ function displayTrackGenres(data) {
     
     const sources = [
         { key: 'spotify_genres', label: 'Spotify', color: 'success' },
-        { key: 'lastfm_tags', label: 'Last.fm', color: 'danger' },
+        { key: 'lastfm_tags', label: 'Last.fm', color: 'primary' },
         { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
         { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
-        { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'primary' }
+        { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'secondary' }
     ];
     
     let html = '<ul class="nav nav-tabs" role="tablist">';
@@ -1301,7 +1315,22 @@ function displaySimilarArtists(data) {
         lastfmArtists.forEach(artist => {
             const match = artist.match ? ` <small class="text-muted">(${(artist.match * 100).toFixed(0)}%)</small>` : '';
             const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-            artistsHtml += `<span class="badge bg-danger"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a>${match}</span>`;
+            const artistId = `similarArtist_${artist.name.replace(/\s+/g, '_')}`;
+            artistsHtml += `
+                <div class="btn-group" role="group">
+                    <a href="${artistUrl}" class="badge bg-primary text-white text-decoration-none" style="padding: 0.5rem 0.75rem;">
+                        <i class="bi bi-person-heart"></i> ${escapeHtml(artist.name)}${match}
+                    </a>
+                    <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More options for ${escapeHtml(artist.name)}">
+                        <i class="bi bi-three-dots-vertical"></i>
+                    </button>
+                    <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
+                        <li><a class="dropdown-item" href="${artistUrl}"><i class="bi bi-eye"></i> View Library Profile</a></li>
+                        <li><a class="dropdown-item" href="/downloads/search?q=${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-download"></i> Download</a></li>
+                        <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
+                    </ul>
+                </div>
+            `;
         });
         artistsHtml += '</div>';
         
@@ -1346,6 +1375,38 @@ function displaySimilarArtists(data) {
     tabContent += '</div>';
     
     container.innerHTML = html + tabContent;
+}
+
+function initTrackTabs() {
+    const tabButtons = document.querySelectorAll('[data-track-tab]');
+    if (!tabButtons.length) {
+        return;
+    }
+
+    tabButtons.forEach(button => {
+        button.addEventListener('click', function() {
+            const panelName = this.getAttribute('data-track-tab');
+            if (panelName) {
+                showTrackPanel(panelName);
+            }
+        });
+    });
+
+    showTrackPanel('details');
+}
+
+function showTrackPanel(panelName) {
+    const panels = document.querySelectorAll('.track-panel[data-track-panel]');
+    panels.forEach(panel => {
+        const isVisible = panel.getAttribute('data-track-panel') === panelName;
+        panel.style.display = isVisible ? '' : 'none';
+    });
+
+    const tabButtons = document.querySelectorAll('[data-track-tab]');
+    tabButtons.forEach(button => {
+        const isActive = button.getAttribute('data-track-tab') === panelName;
+        button.classList.toggle('active', isActive);
+    });
 }
 
 function showSimilarArtistsError(message) {

@@ -13,13 +13,14 @@
   </nav>
 
   {% if qbit_config.enabled %}
+  <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
     <div class="flex-grow-1">
       <h1 class="h2 mb-2" data-artist-name="{{ artist_name|e }}">
         <i class="bi bi-person-music"></i> {{ artist_name }}
       </h1>
       <p class="text-muted mb-0">Artist overview</p>
     </div>
-    <div class="d-flex flex-column flex-sm-row gap-2 w-100 w-md-auto">
+    <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
       <button class="btn btn-outline-warning" onclick='updateArtistAlbumsWithBeets({{ artist_name|tojson }})' title="Update all albums with beets (write tags and organize files)">
         <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update All Albums</span>
       </button>
@@ -31,7 +32,7 @@
       <a class="btn btn-outline-secondary" href="{{ url_for('artists') }}">
         <i class="bi bi-arrow-left"></i> <span class="d-none d-sm-inline">Back</span>
       </a>
-      <form class="flex-grow-1" action="{{ url_for('scan_start') }}" method="post">
+      <form action="{{ url_for('scan_start') }}" method="post">
         <input type="hidden" name="scan_type" value="artist">
         <input type="hidden" name="artist" value="{{ artist_name }}">
         <button type="submit" class="btn btn-warning w-100" title="Full scan: Navidrome + Popularity + Singles">
@@ -42,8 +43,21 @@
   </div>
   {% endif %}
 
+  <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
+    <div class="card-body py-2 px-3">
+      <ul class="nav nav-pills gap-2 small">
+        <li class="nav-item"><a class="nav-link" href="#artist-overview-section">Overview</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-genres-section">Genres</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-stats-section">Stats</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-similar-section">Similar</a></li>
+        <li class="nav-item"><a class="nav-link" href="#artist-ids-section">IDs</a></li>
+        <li class="nav-item"><a class="nav-link" href="#albums-section">Albums</a></li>
+      </ul>
+    </div>
+  </div>
+
   <!-- Artist Image Section -->
-  <div class="mb-4">
+  <div class="mb-4" id="artist-overview-section">
     <div class="card">
       <div class="card-body">
         <div class="row g-4">
@@ -98,7 +112,7 @@
   </div>
 
   <!-- Genre Display and Management -->
-  <div class="mb-4">
+  <div class="mb-4" id="artist-genres-section">
     <div class="card">
       <div class="card-header d-flex justify-content-between align-items-center">
         <h5 class="card-title mb-0">
@@ -156,7 +170,7 @@
   </div>
 
   <!-- Statistics Cards -->
-  <div class="row g-2 g-md-3 mb-4">
+  <div class="row g-2 g-md-3 mb-4" id="artist-stats-section">
     <div class="col-6 col-md-3">
       <div class="card h-100">
         <div class="card-body text-center">
@@ -200,7 +214,7 @@
   </div>
 
   <!-- Similar Artists Section -->
-  <div class="card mb-4">
+  <div class="card mb-4" id="artist-similar-section">
     <div class="card-header">
       <h5 class="card-title mb-0">
         <i class="bi bi-person-heart"></i> Similar Artists
@@ -216,7 +230,7 @@
   </div>
 
   <!-- Artist IDs Section -->
-  <div class="card mb-4">
+  <div class="card mb-4" id="artist-ids-section">
     <div class="card-header d-flex justify-content-between align-items-center">
       <h5 class="card-title mb-0">
         <i class="bi bi-link-45deg"></i> Artist IDs

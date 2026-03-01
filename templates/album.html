@@ -72,10 +72,23 @@
             </a>
         </div>
     </div>
+
+    <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
+        <div class="card-body py-2 px-3">
+            <ul class="nav nav-pills gap-2 small">
+                <li class="nav-item"><a class="nav-link" href="#album-overview-section">Overview</a></li>
+                <li class="nav-item"><a class="nav-link" href="#album-genres-section">Genres</a></li>
+                <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
+                <li class="nav-item"><a class="nav-link" href="#album-ids-section">IDs</a></li>
+                <li class="nav-item"><a class="nav-link" href="#album-edit-section">Edit</a></li>
+                <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
+            </ul>
+        </div>
+    </div>
     
     <!-- Album Metadata Cards -->
     {% if album_data %}
-    <div class="row g-2 g-md-3 mb-4">
+    <div class="row g-2 g-md-3 mb-4" id="album-overview-section">
         {% if album_data.spotify_release_date %}
         <div class="col-6 col-md-3">
             <div class="card h-100">
@@ -204,7 +217,7 @@
     {% endif %}
     
     <!-- Album Genres Section (Dynamic) -->
-    <div class="card mb-4">
+    <div class="card mb-4" id="album-genres-section">
         <div class="card-header">
             <h6 class="card-title mb-0"><i class="bi bi-tags-fill"></i> Album Genre & Tag Sources</h6>
         </div>
@@ -216,7 +229,7 @@
     </div>
 
     <!-- Similar Artists Section -->
-    <div class="card mb-4">
+    <div class="card mb-4" id="album-similar-section">
         <div class="card-header">
             <h6 class="card-title mb-0"><i class="bi bi-person-heart"></i> Similar Artists to {{ artist_name }}</h6>
         </div>
@@ -229,7 +242,7 @@
     
     <!-- Album Release IDs Section -->
     {% if album_data %}
-    <div class="card mb-4">
+    <div class="card mb-4" id="album-ids-section">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
                 <i class="bi bi-link-45deg"></i> Album/Release IDs
@@ -274,7 +287,7 @@
     
     <!-- Editable Album Metadata Form -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
-        <div class="card mb-4">
+        <div class="card mb-4" id="album-edit-section">
             <div class="card-header d-flex justify-content-between align-items-center">
                 <h5 class="card-title mb-0">
                     <i class="bi bi-pencil-square"></i> Album Metadata
@@ -371,7 +384,7 @@
     <!-- Genre Information section removed - moved to Album Metadata section -->
     
     
-    <div class="card">
+    <div class="card" id="album-tracks-section">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks
@@ -2739,10 +2752,10 @@
         
         const sources = [
             { key: 'spotify_genres', label: 'Spotify', color: 'success' },
-            { key: 'lastfm_tags', label: 'Last.fm', color: 'danger' },
+            { key: 'lastfm_tags', label: 'Last.fm', color: 'primary' },
             { key: 'listenbrainz_genres', label: 'ListenBrainz', color: 'info' },
             { key: 'discogs_genres', label: 'Discogs', color: 'warning' },
-            { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'primary' }
+            { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'secondary' }
         ];
         
         let html = '<ul class="nav nav-tabs" role="tablist">';
@@ -2875,7 +2888,21 @@
             data.similar_artists.lastfm.forEach(artist => {
                 const match = artist.match ? ` <small class="text-muted">(${(artist.match * 100).toFixed(0)}%)</small>` : '';
                 const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-                artistsHtml += `<span class="badge bg-danger"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a>${match}</span>`;
+                artistsHtml += `
+                    <div class="btn-group" role="group">
+                        <a href="${artistUrl}" class="badge bg-primary text-white text-decoration-none" style="padding: 0.5rem 0.75rem;">
+                            <i class="bi bi-person-heart"></i> ${escapeHtml(artist.name)}${match}
+                        </a>
+                        <button class="btn btn-outline-primary btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More options for ${escapeHtml(artist.name)}">
+                            <i class="bi bi-three-dots-vertical"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
+                            <li><a class="dropdown-item" href="${artistUrl}"><i class="bi bi-eye"></i> View Library Profile</a></li>
+                            <li><a class="dropdown-item" href="/downloads/search?q=${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-download"></i> Download</a></li>
+                            <li><a class="dropdown-item" href="https://www.last.fm/music/${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> Last.fm</a></li>
+                        </ul>
+                    </div>
+                `;
             });
             artistsHtml += '</div>';
             
@@ -2905,7 +2932,21 @@
             let artistsHtml = '<div class="d-flex flex-wrap gap-2">';
             data.similar_artists.listenbrainz.forEach(artist => {
                 const artistUrl = `/artist/${encodeURIComponent(artist.name)}`;
-                artistsHtml += `<span class="badge bg-info"><a href="${artistUrl}" class="text-white text-decoration-none">${escapeHtml(artist.name)}</a></span>`;
+                artistsHtml += `
+                    <div class="btn-group" role="group">
+                        <a href="${artistUrl}" class="badge bg-info text-white text-decoration-none" style="padding: 0.5rem 0.75rem;">
+                            <i class="bi bi-person-heart"></i> ${escapeHtml(artist.name)}
+                        </a>
+                        <button class="btn btn-outline-info btn-sm" type="button" data-bs-toggle="dropdown" aria-expanded="false" title="More options for ${escapeHtml(artist.name)}">
+                            <i class="bi bi-three-dots-vertical"></i>
+                        </button>
+                        <ul class="dropdown-menu dropdown-menu-end" style="min-width: auto;">
+                            <li><a class="dropdown-item" href="${artistUrl}"><i class="bi bi-eye"></i> View Library Profile</a></li>
+                            <li><a class="dropdown-item" href="/downloads/search?q=${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-download"></i> Download</a></li>
+                            <li><a class="dropdown-item" href="https://musicbrainz.org/artist/${encodeURIComponent(artist.name)}" target="_blank"><i class="bi bi-box-arrow-up-right"></i> MusicBrainz</a></li>
+                        </ul>
+                    </div>
+                `;
             });
             artistsHtml += '</div>';
             

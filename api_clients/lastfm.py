@@ -784,7 +784,7 @@ class LastFmClient:
     
     def get_track_tags(self, artist: str, title: str, limit: int = 10) -> list:
         """
-        Extract and format track tags from Last.fm.
+        Extract and format track tags from Last.fm using track.getTopTags API.
         
         Args:
             artist: Artist name
@@ -800,16 +800,25 @@ class LastFmClient:
             return []
         
         try:
-            # Use get_track_info which already fetches toptags
-            track_info = self.get_track_info(artist, title)
-            toptags = track_info.get("toptags", {})
+            # Use track.getTopTags API method (not track.getInfo)
+            # track.getInfo doesn't return toptags - need dedicated method
+            params = {
+                "method": "track.getTopTags",
+                "artist": artist,
+                "track": title,
+                "api_key": self.api_key,
+                "format": "json"
+            }
             
-            logger.debug(f"[LASTFM_TAGS] Raw toptags response for '{title}' by '{artist}': {toptags}")
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
             
-            if isinstance(toptags, dict):
-                tag_list = toptags.get("tag", [])
-            else:
-                tag_list = toptags
+            logger.debug(f"[LASTFM_TAGS] Raw API response for '{title}' by '{artist}': {data}")
+            
+            # Parse the toptags response
+            toptags_data = data.get("toptags", {})
+            tag_list = toptags_data.get("tag", [])
             
             # Normalize response (might be a single dict or list)
             if isinstance(tag_list, dict):
@@ -822,20 +831,24 @@ class LastFmClient:
             for tag_obj in tag_list[:limit]:
                 if isinstance(tag_obj, dict):
                     name = tag_obj.get("name", "")
-                    count = int(tag_obj.get("count", 0))
+                    count = tag_obj.get("count", 0)  # May be a string, will convert to int as needed
                     if name:
+                        try:
+                            count = int(count) if count else 0
+                        except (ValueError, TypeError):
+                            count = 0
                         result.append({"name": name, "count": count})
             
             if result:
-                logger.debug(f"Fetched {len(result)} tags for '{title}' by '{artist}' from Last.fm: {[t['name'] for t in result[:3]]}")
+                logger.debug(f"[LASTFM_TAGS] Fetched {len(result)} tags for '{title}' by '{artist}': {[t['name'] for t in result[:3]]}")
             else:
-                logger.debug(f"No tags found for '{title}' by '{artist}' from Last.fm (toptags={bool(toptags)})")
+                logger.debug(f"[LASTFM_TAGS] No tags found for '{title}' by '{artist}' (tag_list empty or error)")
             return result
             
         except Exception as e:
-            logger.debug(f"Failed to fetch Last.fm tags for '{title}' by '{artist}': {e}")
+            logger.debug(f"[LASTFM_TAGS] Failed to fetch tags for '{title}' by '{artist}': {e}")
             import traceback
-            logger.debug(f"Traceback: {traceback.format_exc()}")
+            logger.debug(f"[LASTFM_TAGS] Traceback: {traceback.format_exc()}")
             return []
     
     def get_recommendations(self) -> dict:
