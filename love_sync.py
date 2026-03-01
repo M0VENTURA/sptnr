@@ -291,7 +291,7 @@ class LoveSyncManager:
             
             # Get track MBID
             cursor.execute("""
-                SELECT mbid, beets_mbid FROM tracks WHERE id = ?
+                SELECT mbid FROM tracks WHERE id = ?
             """, (track_id,))
             track_row = cursor.fetchone()
             
@@ -299,7 +299,7 @@ class LoveSyncManager:
                 logger.warning(f"Track {track_id} not found")
                 return False
             
-            mbid = track_row['mbid'] or track_row['beets_mbid']
+            mbid = track_row['mbid']
             
             if not mbid:
                 logger.warning(f"Track {track_id} has no MBID, cannot sync to ListenBrainz")

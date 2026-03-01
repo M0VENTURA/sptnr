@@ -167,18 +167,108 @@ def get_spotify_artist_single_track_ids(artist_id: str) -> set[str]:
     return _spotify_client.get_artist_singles(artist_id) or set()
 
 
+def normalize_title_for_lastfm(title: str) -> str:
+    """
+    Normalize titles for Last.fm API searches by standardizing special characters.
+    
+    Removes or converts:
+    - All apostrophe variants (curly, straight, backtick) → removed
+    - Smart/curly double quotes → removed
+    - Angle quotes (guillemets) → removed
+    - Dashes and hyphens → normalized to regular hyphen
+    - Prime marks → converted then removed
+    - Ellipsis → converted to three dots
+    - Multiple spaces → single space
+    
+    This ensures "Still Swingin'" matches Last.fm's "Still Swingin" database entry.
+    Many music databases have inconsistent punctuation handling.
+    
+    Examples:
+    - "Where Did the Angels Go?" → "Where Did the Angels Go"
+    - '"Love" Song' → "Love Song"
+    - "Word—dash" → "Word-dash"
+    - "Fade…away" → "Fade...away"
+    
+    Args:
+        title: Track title to normalize
+        
+    Returns:
+        Normalized title string
+    """
+    if not title:
+        return title
+    
+    import re
+    
+    # === APOSTROPHE VARIANTS (remove) ===
+    # ' (U+2019 right single quotation mark)
+    # ' (U+2018 left single quotation mark)  
+    # ` (U+0060 grave accent/backtick)
+    # ' (U+0027 straight apostrophe)
+    title = title.replace(''', '')  # curly right
+    title = title.replace(''', '')  # curly left
+    title = title.replace("`", '')  # backtick
+    title = title.replace("'", '')  # straight apostrophe
+    
+    # === SMART/CURLY QUOTE VARIANTS (remove) ===
+    # " (U+201D right double quotation mark)
+    # " (U+201C left double quotation mark)
+    # « (U+00AB left-pointing double angle quotation mark)
+    # » (U+00BB right-pointing double angle quotation mark)
+    title = title.replace('"', '')  # curly right double
+    title = title.replace('"', '')  # curly left double
+    title = title.replace('«', '')  # left angle quote
+    title = title.replace('»', '')  # right angle quote
+    
+    # === DASH/HYPHEN NORMALIZATION (convert to regular hyphen) ===
+    # – (U+2013 en dash)
+    # — (U+2014 em dash)
+    # − (U+2212 minus sign)
+    title = title.replace('–', '-')  # en dash
+    title = title.replace('—', '-')  # em dash
+    title = title.replace('−', '-')  # minus sign
+    
+    # === PRIME MARKS (convert then remove) ===
+    # ′ (U+2032 prime)
+    # ″ (U+2033 double prime)
+    title = title.replace('′', "'")  # prime to single quote
+    title = title.replace('″', '"')  # double prime to double quote
+    # Now remove the converted quotes
+    title = title.replace("'", '')  # remove converted single quotes
+    title = title.replace('"', '')  # remove converted double quotes
+    
+    # === ELLIPSIS (convert to three dots) ===
+    # … (U+2026 horizontal ellipsis)
+    title = title.replace('…', '...')
+    
+    # === QUESTION MARKS (convert smart variants to regular, then remove trailing) ===
+    title = title.replace('¿', '?')  # ¿ (U+00BF inverted question - Spanish)
+    title = title.rstrip('?')  # Remove trailing question marks
+    
+    # === EXCLAMATION MARKS (convert smart variants to regular, then remove trailing) ===
+    title = title.replace('¡', '!')  # ¡ (U+00A1 inverted exclamation - Spanish)
+    title = title.rstrip('!')  # Remove trailing exclamation marks
+    
+    # === MULTIPLE SPACES (collapse to single space) ===
+    title = re.sub(r'\s+', ' ', title).strip()
+    
+    return title
+
+
 def search_spotify_track(title: str, artist: str, album: str | None = None):
     _ensure_clients_from_config()
     if not _spotify_enabled or _spotify_client is None:
         return []
-    return _spotify_client.search_track(strip_cover_attribution(title), artist, album)
+    normalized_title = normalize_title_for_lastfm(strip_cover_attribution(title))
+    return _spotify_client.search_track(normalized_title, artist, album)
 
 
 def get_lastfm_track_info(artist: str, title: str) -> dict:
     _ensure_clients_from_config()
     if _lastfm_client is None:
         return {"track_play": 0}
-    return _lastfm_client.get_track_info(artist, strip_cover_attribution(title))
+    normalized_title = normalize_title_for_lastfm(strip_cover_attribution(title))
+    return _lastfm_client.get_track_info(artist, normalized_title)
 
 
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:

@@ -3423,7 +3423,7 @@ def api_album_update_ids():
             params.append(spotify_album_id)
         
         if musicbrainz_release_id:
-            updates.append("beets_album_mbid = ?")
+            updates.append("musicbrainz_album_mbid = ?")
             params.append(musicbrainz_release_id)
         
         if discogs_release_id:
@@ -3474,7 +3474,7 @@ def api_album_bulk_delete():
             try:
                 # Get file path
                 cursor.execute("""
-                    SELECT beets_path, file_path FROM tracks WHERE id = ?
+                    SELECT file_path FROM tracks WHERE id = ?
                 """, (track_id,))
                 result = cursor.fetchone()
                 
@@ -3482,7 +3482,7 @@ def api_album_bulk_delete():
                     # Delete MP3 file if requested and it exists
                     if delete_files:
                         # Try beets_path first, then file_path
-                        file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                        file_path = row_get(result, 'file_path')
                         
                         if file_path and os.path.exists(file_path):
                             try:
@@ -5552,14 +5552,6 @@ def track_detail(track_id):
         
         # Convert Row to dict to ensure all columns are accessible
         track = dict(track)
-        
-        # Ensure beets columns exist (for backward compatibility)
-        beets_columns = ['beets_mbid', 'beets_similarity', 'beets_album_mbid', 
-                        'beets_album_artist', 'beets_year',
-                        'beets_import_date', 'beets_path', 'album_folder']
-        for col in beets_columns:
-            if col not in track:
-                track[col] = None
         
         # Parse genre fields - handle both JSON and comma-separated formats
         for genre_field in ['navidrome_genres', 'spotify_genres', 'lastfm_tags', 'discogs_genres', 'musicbrainz_genres']:
@@ -9967,14 +9959,14 @@ def api_album_art(artist, album):
             # Strategy 1: Try matching by album_artist
             try:
                 cursor.execute("""
-                    SELECT beets_path, file_path FROM tracks 
+                    SELECT file_path FROM tracks 
                     WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ? 
-                    AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                    AND file_path IS NOT NULL
                     LIMIT 1
                 """, (artist, album))
                 result = cursor.fetchone()
                 if result:
-                    file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                    file_path = row_get(result, 'file_path')
             except:
                 pass
             
@@ -9982,14 +9974,14 @@ def api_album_art(artist, album):
             if not file_path:
                 try:
                     cursor.execute("""
-                        SELECT beets_path, file_path FROM tracks 
+                        SELECT file_path FROM tracks 
                         WHERE artist = ? AND album = ? 
-                        AND (beets_path IS NOT NULL OR file_path IS NOT NULL)
+                        AND file_path IS NOT NULL
                         LIMIT 1
                     """, (artist, album))
                     result = cursor.fetchone()
                     if result:
-                        file_path = row_get(result, 'beets_path') or row_get(result, 'file_path')
+                        file_path = row_get(result, 'file_path')
                 except:
                     pass
             
@@ -14043,7 +14035,7 @@ def api_album_apply_genres():
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, title, beets_path, file_path
+            SELECT id, title, file_path
             FROM tracks
             WHERE artist = ? AND album = ?
         """, (artist, album))
@@ -14059,7 +14051,7 @@ def api_album_apply_genres():
         
         for track in tracks:
             # Prefer beets_path, fallback to file_path
-            file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
+            file_path = row_get(track, 'file_path')
             
             if not file_path or not os.path.exists(file_path):
                 track_id = row_get(track, 'id', 'unknown')
@@ -14201,7 +14193,7 @@ def api_artist_apply_genres():
         conn = get_db()
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT id, title, album, beets_path, file_path
+            SELECT id, title, album, file_path
             FROM tracks
             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? OR artist = ?
         """, (artist, artist))
@@ -14217,7 +14209,7 @@ def api_artist_apply_genres():
         
         for track in tracks:
             # Prefer beets_path, fallback to file_path
-            file_path = row_get(track, 'beets_path') or row_get(track, 'file_path')
+            file_path = row_get(track, 'file_path')
             
             if not file_path or not os.path.exists(file_path):
                 track_id = row_get(track, 'id', 'unknown')

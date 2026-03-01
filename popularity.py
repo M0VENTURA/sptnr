@@ -5093,6 +5093,66 @@ def popularity_scan(
                     if album_tracks_with_scores:
                         standout_gap_z_by_track[album_tracks_with_scores[-1]["id"]] = 0
                     
+                    # ============================================================================
+                    # CLUSTER DETECTION: Group tracks by z-score gaps to identify standout clusters
+                    # ============================================================================
+                    # Clusters group consecutive tracks with small gaps (< 0.5) together
+                    # Top track in a cluster with z >= 1.0 gets upgraded to 5★
+                    # This recognizes natural groupings like: z=1.03, z=0.82 (gap=0.21) as one cluster
+                    # followed by a clear boundary to lower tracks (gap >= 0.5)
+                    track_clusters = {}  # track_id -> cluster_number
+                    cluster_tops = {}    # cluster_number -> (track_id, z_score)
+                    
+                    if popularity_stddev > 0 and len(album_tracks_with_scores) > 1:
+                        # Identify cluster boundaries where gap >= 0.5
+                        current_cluster = 0
+                        track_idx_to_cluster = {}  # Index -> cluster_id
+                        
+                        for idx in range(len(album_tracks_with_scores)):
+                            # Check if there's a cluster boundary BEFORE this track
+                            if idx > 0:
+                                prev_gap_z = standout_gap_z_by_track.get(album_tracks_with_scores[idx-1]["id"], 0)
+                                if prev_gap_z >= 0.5:  # Significant gap = cluster boundary
+                                    current_cluster += 1
+                            
+                            track_idx_to_cluster[idx] = current_cluster
+                            track_id = album_tracks_with_scores[idx]["id"]
+                            track_clusters[track_id] = current_cluster
+                        
+                        # Find top track in each cluster (highest popularity/z-score)
+                        cluster_track_indices = {}  # cluster_id -> list of indices
+                        for idx, cluster_id in track_idx_to_cluster.items():
+                            if cluster_id not in cluster_track_indices:
+                                cluster_track_indices[cluster_id] = []
+                            cluster_track_indices[cluster_id].append(idx)
+                        
+                        for cluster_id, indices in cluster_track_indices.items():
+                            # Top track = highest popularity in cluster
+                            top_idx = max(indices, key=lambda idx: album_tracks_with_scores[idx].get("popularity_score", 0) or 0)
+                            top_track_id = album_tracks_with_scores[top_idx]["id"]
+                            top_pop = album_tracks_with_scores[top_idx].get("popularity_score", 0) or 0
+                            
+                            # Calculate z-score for top track
+                            if popularity_stddev > 0 and top_pop > 0:
+                                top_track_z = (top_pop - popularity_mean) / popularity_stddev
+                            else:
+                                top_track_z = 0
+                            
+                            cluster_tops[cluster_id] = (top_track_id, top_track_z)
+                        
+                        log_info(f"Cluster detection: {len(track_clusters)} tracks in {len(cluster_tops)} clusters (gap threshold=0.5)")
+                    else:
+                        # Single track or no variance - each track is its own cluster
+                        for i, track_row in enumerate(album_tracks_with_scores):
+                            track_id = track_row["id"]
+                            track_clusters[track_id] = i
+                            pop = track_row.get("popularity_score", 0) or 0
+                            if popularity_stddev > 0 and pop > 0:
+                                z = (pop - popularity_mean) / popularity_stddev
+                            else:
+                                z = 0
+                            cluster_tops[i] = (track_id, z)
+                    
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
                         title = track_row["title"]
@@ -5199,37 +5259,40 @@ def popularity_scan(
                                         stars = 5
                                         log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                         log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                                    # Top standout tracks with clear gaps (non-singles)
-                                    elif not is_single and track_id in top_standout_track_ids:
-                                        # 5★ via standout path requires:
-                                        # 1) top-ranked album track,
-                                        # 2) strong album z-score,
-                                        # 3) clear z-normalized gap vs next track on album.
-                                        standout_gap_z_threshold = STANDOUT_CONFIG['star_5'].get('standout_gap_z', 0.75)
-                                        track_gap_z = standout_gap_z_by_track.get(track_id, 0)
-                                        is_top_album_track = i == 0
-
-                                        if (
-                                            is_top_album_track
-                                            and track_zscore >= STANDOUT_CONFIG['star_5']['album_z']
-                                            and track_gap_z >= standout_gap_z_threshold
-                                        ):
+                                    # CLUSTER-BASED STANDOUT RATING
+                                    # Recognizes natural groupings of similarly-popular tracks
+                                    # Top track in cluster w/ z >= 1.0 gets 5★; others in cluster get 4★
+                                    elif track_clusters and track_id in track_clusters:
+                                        cluster_id = track_clusters.get(track_id)
+                                        top_track_id, top_track_z = cluster_tops.get(cluster_id, (None, 0))
+                                        is_cluster_top = (track_id == top_track_id)
+                                        
+                                        # **TOP TRACK IN CLUSTER with z >= 1.0 → 5★**
+                                        if is_cluster_top and track_zscore >= 1.0:
                                             stars = 5
                                             log_info(
                                                 f"5-star assignment: {title} "
-                                                f"(top standout, strong z-score={track_zscore:.2f}, gap_z={track_gap_z:.2f})"
+                                                f"(top in cluster {cluster_id}, z={track_zscore:.2f})"
                                             )
-                                        else:
+                                            log_debug(f"Cluster top track - track_id: {track_id}, cluster: {cluster_id}, zscore: {track_zscore:.2f}")
+                                        
+                                        # **OTHER TRACKS IN CLUSTER with z >= 0.8 → 4★**
+                                        elif not is_cluster_top and track_zscore >= 0.8:
                                             stars = max(stars, 4)
                                             log_info(
                                                 f"4-star assignment: {title} "
-                                                f"(standout path not eligible for 5★; "
-                                                f"top_track={is_top_album_track}, z={track_zscore:.2f}, gap_z={track_gap_z:.2f})"
+                                                f"(in cluster {cluster_id} with z={track_zscore:.2f})"
                                             )
-                                        log_debug(
-                                            f"Top standout track - track_id: {track_id}, "
-                                            f"top_track={is_top_album_track}, zscore={track_zscore:.2f}, gap_z={track_gap_z:.2f}"
-                                        )
+                                            log_debug(f"Cluster member - track_id: {track_id}, cluster: {cluster_id}, not top, zscore: {track_zscore:.2f}")
+                                        
+                                        # **TOP OF LOWER CLUSTERS (z < 0.8) → 3★**
+                                        elif is_cluster_top and track_zscore >= 0.0:
+                                            stars = max(stars, 3)
+                                            log_info(
+                                                f"3-star assignment: {title} "
+                                                f"(top of lower cluster {cluster_id}, z={track_zscore:.2f})"
+                                            )
+                                            log_debug(f"Lower cluster top - track_id: {track_id}, cluster: {cluster_id}, zscore: {track_zscore:.2f}")
                                     # User-set singles always get 5 stars
                                     elif single_confidence == "user":
                                         stars = 5

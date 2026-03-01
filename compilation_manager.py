@@ -163,7 +163,7 @@ def import_featured_artists_for_album(artist, album, db_path="/database/sptnr.db
         
         # Get all tracks for this album
         cursor.execute("""
-            SELECT id, artist, album, title, file_path, beets_path 
+            SELECT id, artist, album, title, file_path
             FROM tracks 
             WHERE artist = ? AND album = ?
             ORDER BY track_number
@@ -176,7 +176,7 @@ def import_featured_artists_for_album(artist, album, db_path="/database/sptnr.db
         imported = 0
         
         for track in tracks:
-            file_path = track['beets_path'] or track['file_path']
+            file_path = track['file_path']
             result = import_featured_artists_for_track(
                 track['artist'],
                 track['album'],

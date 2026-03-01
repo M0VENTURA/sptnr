@@ -79,59 +79,8 @@ api_integrations:
     enabled: false
     api_key: ""  # SearchAPI.io key for DuckDuckGo searches
 
-# Beets Configuration - Music tagger and organizer
-# Beets can be used for importing from downloads and scanning/organizing the music collection
-beets:
-  enabled: true  # Master switch for beets functionality
-  
-  # Configuration for importing new downloads
-  import_downloads:
-    copy: false  # Don't copy files (they're already in the music directory)
-    write: true  # Write metadata to files
-    autotag: true  # Automatically tag files using MusicBrainz
-    resume: true  # Resume interrupted imports
-    incremental: true  # Skip already-imported albums
-    quiet_fallback: "skip"  # Skip albums that can't be tagged confidently
-    timid: false  # Don't ask for confirmation on good matches
-    detail: true  # Show detailed info during import
-    log: "/config/beets_import.log"  # Log file for imports
-    
-  # Configuration for scanning/organizing the existing music collection  
-  scan_collection:
-    copy: false  # Don't copy files during collection scan
-    write: false  # Don't write metadata to files during scan (read-only)
-    autotag: false  # Don't auto-tag during collection scan
-    resume: false  # Don't resume for collection scans
-    incremental: true  # Skip already-scanned items
-    log: "/config/beets_scan.log"  # Separate log for collection scans
-    
-  # Renaming and organization
-  paths:
-    # Path format for organizing music files
-    # Default: /music/Artist/Album/Track - Title.ext
-    default: "$albumartist/$album%aunique{}/$track - $title"
-    singleton: "Non-Album/$artist - $title"
-    comp: "Compilations/$album%aunique{}/$track - $title"
-    
-  # Metadata options
-  match:
-    strong_rec_thresh: 0.04  # Threshold for strong recommendations (auto-accept)
-    medium_rec_thresh: 0.25  # Threshold for medium recommendations (may prompt)
-    
-  # MusicBrainz integration for beets
-  musicbrainz:
-    enabled: true  # Use MusicBrainz for metadata lookups
-    rate_limit: 1.0  # Enforce 1 request per second (matches our rate limiter)
-    
-  # Plugins to enable
-  plugins:
-    - duplicates  # Find and manage duplicate tracks
-    - info  # Display track/album information
-    - missing  # Find missing tracks in albums
-    
-  # File paths
-  directory: "/music"  # Root music directory
-  library: "/config/beets/musiclibrary.db"  # Beets library database
+
+# Beets configuration has been removed - not currently used
 
 # Web API Configuration
 web_api_key: ""  # API key for web interface authentication

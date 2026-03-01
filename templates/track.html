@@ -293,149 +293,93 @@
                 </div>
             </div>
             
-            <!-- Right Column: Metadata & Info -->
+            <!-- Right Column: Metadata Info & Recommendations -->
             <div class="col-12 col-lg-6">
-                <div class="card mb-4" id="track-merge-assistant">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-magic"></i> Metadata Merge Assistant
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted small mb-3">Apply discovered metadata directly into editable fields, then save once.</p>
-
-                        <div class="mb-3">
-                            <h6 class="mb-2">Apply IDs & Core Fields</h6>
-                            <div class="d-flex flex-wrap gap-2">
-                                {% if track.beets_mbid %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("mbid", {{ track.beets_mbid|tojson }}, "Beets MBID")'>
-                                    <i class="bi bi-check2-circle"></i> Use Beets MBID
-                                </button>
-                                {% endif %}
-                                {% if track.beets_album_artist %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("album_artist", {{ track.beets_album_artist|tojson }}, "Beets Album Artist")'>
-                                    <i class="bi bi-check2-circle"></i> Use Beets Album Artist
-                                </button>
-                                {% endif %}
-                                {% if track.beets_year %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("year", {{ track.beets_year|tojson }}, "Beets Year")'>
-                                    <i class="bi bi-check2-circle"></i> Use Beets Year
-                                </button>
-                                {% endif %}
-                                {% if track.mbid %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='applyFieldValue("mbid", {{ track.mbid|tojson }}, "Current MBID")'>
-                                    <i class="bi bi-arrow-repeat"></i> Re-apply Current MBID
-                                </button>
-                                {% endif %}
-                            </div>
-                        </div>
-
-                        <div>
-                            <h6 class="mb-2">Apply Genres From Sources</h6>
-                            <div class="d-flex flex-wrap gap-2">
-                                {% if track.spotify_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-success" onclick='addGenresFromSourceText({{ track.spotify_genres|tojson }}, "Spotify genres")'>
-                                    <i class="bi bi-plus-circle"></i> Spotify
-                                </button>
-                                {% endif %}
-                                {% if track.lastfm_tags %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='addGenresFromSourceText({{ track.lastfm_tags|tojson }}, "Last.fm tags")'>
-                                    <i class="bi bi-plus-circle"></i> Last.fm
-                                </button>
-                                {% endif %}
-                                {% if track.listenbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-info" onclick='addGenresFromSourceText({{ track.listenbrainz_genres|tojson }}, "ListenBrainz genres")'>
-                                    <i class="bi bi-plus-circle"></i> ListenBrainz
-                                </button>
-                                {% endif %}
-                                {% if track.discogs_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresFromSourceText({{ track.discogs_genres|tojson }}, "Discogs genres")'>
-                                    <i class="bi bi-plus-circle"></i> Discogs
-                                </button>
-                                {% endif %}
-                                {% if track.musicbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='addGenresFromSourceText({{ track.musicbrainz_genres|tojson }}, "MusicBrainz genres")'>
-                                    <i class="bi bi-plus-circle"></i> MusicBrainz
-                                </button>
-                                {% endif %}
-                            </div>
-                            <div class="mt-2">
-                                <button type="button" class="btn btn-sm btn-outline-light" onclick="addAllKnownSourceGenres()">
-                                    <i class="bi bi-collection"></i> Apply All Source Genres
-                                </button>
-                            </div>
-                        </div>
-
-                        <hr>
-
-                        <div>
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <h6 class="mb-0">Field Compare (Current ↔ Candidates)</h6>
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="renderMergeComparePane()">
-                                    <i class="bi bi-arrow-clockwise"></i> Refresh
-                                </button>
-                            </div>
-                            <div id="mergeComparePane" class="table-responsive"></div>
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Scoring Metadata -->
+                <!-- Scoring & Metadata Comparison -->
                 <div class="card mb-4" id="track-scoring-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-graph-up"></i> Scoring Metadata
+                            <i class="bi bi-graph-up"></i> Scoring & Metadata
                         </h5>
                     </div>
                     <div class="card-body">
-                        <div class="metadata-row">
-                            <div class="metadata-label">Track ID</div>
-                            <div class="metadata-value monospace" style="font-size: 0.8rem; overflow-wrap: break-word;">{{ track.id }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Spotify</div>
-                            <div class="metadata-value">{{ track.spotify_score or '—' }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Last.fm</div>
-                            <div class="metadata-value">{{ track.lastfm_ratio or '—' }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Score</div>
-                            <div class="metadata-value">
-                                {% if track.score %}
-                                    <span class="badge badge-success">{{ track.score|round(3) }}</span>
-                                {% else %}
-                                    —
+                        <div class="row g-3">
+                            <div class="col-6">
+                                <h6 class="text-muted mb-2">Popularity Score</h6>
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Spotify</div>
+                                    <div class="metadata-value small">{{ track.spotify_score or '—' }}</div>
+                                </div>
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Last.fm</div>
+                                    <div class="metadata-value small">{{ track.lastfm_ratio or '—' }}</div>
+                                </div>
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Final Score</div>
+                                    <div class="metadata-value">
+                                        {% if track.score %}
+                                            <span class="badge badge-success">{{ track.score|round(3) }}</span>
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <h6 class="text-muted mb-2">Details</h6>
+                                {% if track.spotify_popularity %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Spotify Pop</div>
+                                    <div class="metadata-value small">{{ track.spotify_popularity }}/100</div>
+                                </div>
+                                {% endif %}
+                                {% if track.lastfm_track_playcount %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Last.fm Plays</div>
+                                    <div class="metadata-value small">{{ "{:,}".format(track.lastfm_track_playcount) }}</div>
+                                </div>
+                                {% endif %}
+                                {% if track.spotify_release_age_days %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Age (days)</div>
+                                    <div class="metadata-value small">{{ track.spotify_release_age_days }}</div>
+                                </div>
                                 {% endif %}
                             </div>
                         </div>
-                        {% if track.spotify_popularity %}
+
+                        {% if track.beets_mbid or track.beets_similarity or track.beets_album_artist %}
+                        <hr class="my-3">
+                        <h6 class="text-muted mb-2">Beets Auto-Import</h6>
+                        {% if track.beets_similarity %}
                         <div class="metadata-row">
-                            <div class="metadata-label">Spotify Popularity</div>
-                            <div class="metadata-value">{{ track.spotify_popularity }}/100</div>
+                            <div class="metadata-label small">Match</div>
+                            <div class="metadata-value">
+                                {% if track.beets_similarity >= 0.96 %}
+                                    <span class="badge badge-success">{{ (track.beets_similarity * 100)|round(1) }}% Strong</span>
+                                {% elif track.beets_similarity >= 0.75 %}
+                                    <span class="badge badge-warning">{{ (track.beets_similarity * 100)|round(1) }}% Medium</span>
+                                {% else %}
+                                    <span class="badge badge-danger">{{ (track.beets_similarity * 100)|round(1) }}% Weak</span>
+                                {% endif %}
+                            </div>
                         </div>
                         {% endif %}
-                        {% if track.lastfm_track_playcount %}
+                        {% if track.beets_year %}
                         <div class="metadata-row">
-                            <div class="metadata-label">Last.fm Plays</div>
-                            <div class="metadata-value">{{ "{:,}".format(track.lastfm_track_playcount) }}</div>
+                            <div class="metadata-label small">Year (Beets)</div>
+                            <div class="metadata-value small">{{ track.beets_year }}</div>
                         </div>
                         {% endif %}
-                        {% if track.spotify_release_age_days %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Release Age</div>
-                            <div class="metadata-value">{{ track.spotify_release_age_days }} days</div>
-                        </div>
                         {% endif %}
                     </div>
                 </div>
 
-                <!-- Genres Information (Dynamic) -->
-                <div class="card mb-4" id="track-genres-section">
+                <!-- Consolidated Genre & Tag Sources -->
+                <div class="card mb-4" id="track-genres-sources-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-tags-fill"></i> Genre & Tag Sources
+                            <i class="bi bi-collection-fill"></i> Genre & Tag Sources
                         </h5>
                     </div>
                     <div class="card-body">
@@ -445,7 +389,7 @@
                     </div>
                 </div>
 
-                <!-- Similar Artists Section -->
+                <!-- Similar Artists -->
                 <div class="card mb-4" id="track-similar-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -459,94 +403,7 @@
                     </div>
                 </div>
 
-                <!-- Beets Metadata (MusicBrainz Recommendations) -->
-                {% if track.beets_mbid or track.beets_similarity or track.beets_album_artist %}
-                <div class="card mb-4">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-database-check"></i> Beets Auto-Import Data
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        {% if track.beets_similarity %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Match Confidence</div>
-                            <div class="metadata-value">
-                                {% if track.beets_similarity >= 0.96 %}
-                                    <span class="badge badge-success">{{ (track.beets_similarity * 100)|round(1) }}% — Strong</span>
-                                {% elif track.beets_similarity >= 0.75 %}
-                                    <span class="badge badge-warning">{{ (track.beets_similarity * 100)|round(1) }}% — Medium</span>
-                                {% else %}
-                                    <span class="badge badge-danger">{{ (track.beets_similarity * 100)|round(1) }}% — Weak</span>
-                                {% endif %}
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_mbid %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">MusicBrainz Recording</div>
-                            <div class="metadata-value">
-                                <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary text-decoration-none">
-                                    {{ track.beets_mbid[:8] }}...
-                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
-                                </a>
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_album_mbid %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">MusicBrainz Release</div>
-                            <div class="metadata-value">
-                                <a href="https://musicbrainz.org/release/{{ track.beets_album_mbid }}" target="_blank" class="text-primary text-decoration-none">
-                                    {{ track.beets_album_mbid[:8] }}...
-                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
-                                </a>
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.musicbrainz_artist_id %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">MusicBrainz Artist</div>
-                            <div class="metadata-value">
-                                <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary text-decoration-none">
-                                    {{ track.musicbrainz_artist_id[:8] }}...
-                                    <i class="bi bi-box-arrow-up-right ms-1" style="font-size: 0.75rem;"></i>
-                                </a>
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_album_artist %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Album Artist (Beets)</div>
-                            <div class="metadata-value">{{ track.beets_album_artist }}</div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_year %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Year (Beets)</div>
-                            <div class="metadata-value">{{ track.beets_year }}</div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_import_date %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Import Date</div>
-                            <div class="metadata-value">
-                                <small class="text-muted">{{ track.beets_import_date }}</small>
-                            </div>
-                        </div>
-                        {% endif %}
-                        {% if track.beets_path %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Beets Path</div>
-                            <div class="metadata-value" style="font-size: 0.75rem; overflow-wrap: break-word;">
-                                <code class="text-muted">{{ track.beets_path }}</code>
-                            </div>
-                        </div>
-                        {% endif %}
-                    </div>
-                </div>
-                {% endif %}
-                <!-- Audio Metadata -->
+                <!-- Audio Information -->
                 <div class="card mb-4">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -554,144 +411,148 @@
                         </h5>
                     </div>
                     <div class="card-body">
-                        <div class="metadata-row">
-                            <div class="metadata-label">Duration</div>
-                            <div class="metadata-value">
-                                {% if track.duration %}
-                                    {% set mins = (track.duration / 60)|int %}
-                                    {% set secs = (track.duration % 60)|int %}
-                                    {{ mins }}:{{ "%02d"|format(secs) }}
-                                {% else %}
-                                    —
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Duration</div>
+                                    <div class="metadata-value small">
+                                        {% if track.duration %}
+                                            {% set mins = (track.duration / 60)|int %}
+                                            {% set secs = (track.duration % 60)|int %}
+                                            {{ mins }}:{{ "%02d"|format(secs) }}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                {% if track.bpm %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">BPM</div>
+                                    <div class="metadata-value small">{{ track.bpm }}</div>
+                                </div>
+                                {% endif %}
+                            </div>
+                            <div class="col-6">
+                                {% if track.bitrate %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Bitrate</div>
+                                    <div class="metadata-value small">{{ (track.bitrate / 1000)|round(0)|int }} kbps</div>
+                                </div>
+                                {% endif %}
+                                {% if track.sample_rate %}
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Sample Rate</div>
+                                    <div class="metadata-value small">{{ (track.sample_rate / 1000)|round(1) }} kHz</div>
+                                </div>
                                 {% endif %}
                             </div>
                         </div>
-                        {% if track.bpm %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">BPM</div>
-                            <div class="metadata-value">{{ track.bpm }}</div>
-                        </div>
-                        {% endif %}
-                        {% if track.bitrate %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Bitrate</div>
-                            <div class="metadata-value">{{ (track.bitrate / 1000)|round(0)|int }} kbps</div>
-                        </div>
-                        {% endif %}
-                        {% if track.sample_rate %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">Sample Rate</div>
-                            <div class="metadata-value">{{ (track.sample_rate / 1000)|round(1) }} kHz</div>
-                        </div>
-                        {% endif %}
                         {% if track.isrc %}
-                        <div class="metadata-row">
-                            <div class="metadata-label">ISRC</div>
-                            <div class="metadata-value monospace" style="font-size: 0.75rem;">{{ track.isrc }}</div>
+                        <div class="metadata-row mt-2">
+                            <div class="metadata-label small">ISRC</div>
+                            <div class="metadata-value monospace" style="font-size: 0.7rem;">{{ track.isrc }}</div>
                         </div>
                         {% endif %}
                     </div>
                 </div>
 
-                <!-- Source & Audit Info -->
-                <div class="card">
+                <!-- Sources & Audit Info -->
+                <div class="card mb-4">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-info-circle"></i> Sources & Audit
                         </h5>
                     </div>
                     <div class="card-body">
-                        <div class="metadata-row">
-                            <div class="metadata-label">File Path</div>
-                            <div class="metadata-value">
-                                {% if track.beets_path %}
-                                    <code style="font-size: 0.75rem; word-break: break-all;">{{ track.beets_path }}</code>
-                                {% elif track.file_path %}
-                                    <code style="font-size: 0.75rem; word-break: break-all;">{{ track.file_path }}</code>
-                                {% else %}
-                                    <span class="text-muted">Not available</span>
-                                {% endif %}
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Canonical</div>
+                                    <div class="metadata-value">
+                                        {% if track.is_canonical_title == 1 %}
+                                            <span class="badge badge-success">Yes</span>
+                                        {% else %}
+                                            <span class="badge bg-secondary">No</span>
+                                        {% endif %}
+                                    </div>
+                                </div>
+                                <div class="metadata-row mt-2">
+                                    <div class="metadata-label small">Similarity</div>
+                                    <div class="metadata-value small">
+                                        {% if track.title_similarity_to_base %}
+                                            {{ (track.title_similarity_to_base * 100)|round(1) }}%
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Last Scanned</div>
+                                    <div class="metadata-value small">{{ (track.last_scanned or 'Never').split(' ')[0] }}</div>
+                                </div>
+                                <div class="metadata-row mt-2">
+                                    <div class="metadata-label small">Updated By</div>
+                                    <div class="metadata-value small">{{ track.updated_by or '—' }}</div>
+                                </div>
                             </div>
                         </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Sources</div>
+                        {% if track.single_sources %}
+                        <div class="metadata-row mt-3">
+                            <div class="metadata-label small">Sources</div>
                             <div class="metadata-value">
-                                {% if track.single_sources %}
-                                    {% for source in track.single_sources.split(',') %}
-                                        <span class="badge bg-secondary">{{ source.strip() }}</span>
-                                    {% endfor %}
-                                {% else %}
-                                    —
-                                {% endif %}
+                                {% for source in track.single_sources.split(',') %}
+                                    <span class="badge bg-secondary">{{ source.strip() }}</span>
+                                {% endfor %}
                             </div>
                         </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Canonical</div>
-                            <div class="metadata-value">
-                                {% if track.is_canonical_title == 1 %}
-                                    <span class="badge badge-success">Yes</span>
-                                {% else %}
-                                    <span class="badge bg-secondary">No</span>
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Similarity</div>
-                            <div class="metadata-value">
-                                {% if track.title_similarity_to_base %}
-                                    {{ (track.title_similarity_to_base * 100)|round(1) }}%
-                                {% else %}
-                                    —
-                                {% endif %}
-                            </div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Last Scanned</div>
-                            <div class="metadata-value">{{ track.last_scanned or 'Never' }}</div>
-                        </div>
-                        <div class="metadata-row">
-                            <div class="metadata-label">Updated By</div>
-                            <div class="metadata-value">{{ track.updated_by or '—' }}</div>
-                        </div>
+                        {% endif %}
                     </div>
                 </div>
 
-                <!-- Recommended Genres -->
-                {% if recommended_genres %}
+                <!-- MusicBrainz & External Lookups -->
                 <div class="card">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
-                            <i class="bi bi-tags"></i> Recommended Genres
+                            <i class="bi bi-database"></i> External Lookups
                         </h5>
                     </div>
                     <div class="card-body">
-                        <p class="text-muted mb-2" style="font-size: 0.85rem;">Based on other {{ track.artist }} tracks in your library</p>
-                        <div class="d-flex flex-wrap gap-2">
-                            {% for genre in recommended_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="addGenreToTrack('{{ genre|escape }}')">
-                                    <i class="bi bi-plus-circle"></i> {{ genre }}
-                                </button>
-                            {% endfor %}
+                        {% if track.beets_mbid %}
+                        <div class="mb-3">
+                            <h6 class="mb-2">MusicBrainz Links</h6>
+                            {% if track.beets_mbid %}
+                            <div class="small mb-2">
+                                <strong>Recording:</strong>
+                                <a href="https://musicbrainz.org/recording/{{ track.beets_mbid }}" target="_blank" class="text-primary">
+                                    {{ track.beets_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                </a>
+                            </div>
+                            {% endif %}
+                            {% if track.beets_album_mbid %}
+                            <div class="small mb-2">
+                                <strong>Release:</strong>
+                                <a href="https://musicbrainz.org/release/{{ track.beets_album_mbid }}" target="_blank" class="text-primary">
+                                    {{ track.beets_album_mbid[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                </a>
+                            </div>
+                            {% endif %}
+                            {% if track.musicbrainz_artist_id %}
+                            <div class="small">
+                                <strong>Artist:</strong>
+                                <a href="https://musicbrainz.org/artist/{{ track.musicbrainz_artist_id }}" target="_blank" class="text-primary">
+                                    {{ track.musicbrainz_artist_id[:12] }}... <i class="bi bi-box-arrow-up-right" style="font-size: 0.7rem;"></i>
+                                </a>
+                            </div>
+                            {% endif %}
                         </div>
-                    </div>
-                </div>
-                {% endif %}
-
-                <!-- External Metadata Lookups -->
-                <div class="card">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-database"></i> External Metadata Lookups
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <p class="text-muted mb-3" style="font-size: 0.85rem;">Find potential matches from external databases to improve track and genre information</p>
-                        
-                        <div class="d-grid gap-2 d-md-flex">
-                            <button type="button" class="btn btn-outline-info" onclick="lookupMusicBrainz()">
+                        {% endif %}
+                        <div class="d-grid gap-2">
+                            <button type="button" class="btn btn-outline-info btn-sm" onclick="lookupMusicBrainz()">
                                 <i class="bi bi-search"></i> MusicBrainz Lookup
                             </button>
-                            <button type="button" class="btn btn-outline-warning" onclick="lookupDiscogs()">
+                            <button type="button" class="btn btn-outline-warning btn-sm" onclick="lookupDiscogs()">
                                 <i class="bi bi-search"></i> Discogs Lookup
                             </button>
                         </div>

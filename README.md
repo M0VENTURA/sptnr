@@ -99,7 +99,6 @@ When using the web interface, click the **Help** link in the navigation bar or t
 - Isolated user contexts
 
 ### 🔧 Additional Features
-- Beets music tagger integration
 - MusicBrainz metadata enrichment
 - Real-time log monitoring
 - YAML-based configuration
