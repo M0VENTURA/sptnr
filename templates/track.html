@@ -260,22 +260,22 @@
                             <h6 class="mb-2">Apply IDs & Core Fields</h6>
                             <div class="d-flex flex-wrap gap-2">
                                 {% if track.beets_mbid %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="applyFieldValue('mbid', '{{ track.beets_mbid|escape }}', 'Beets MBID')">
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("mbid", {{ track.beets_mbid|tojson }}, "Beets MBID")'>
                                     <i class="bi bi-check2-circle"></i> Use Beets MBID
                                 </button>
                                 {% endif %}
                                 {% if track.beets_album_artist %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="applyFieldValue('album_artist', '{{ track.beets_album_artist|escape }}', 'Beets Album Artist')">
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("album_artist", {{ track.beets_album_artist|tojson }}, "Beets Album Artist")'>
                                     <i class="bi bi-check2-circle"></i> Use Beets Album Artist
                                 </button>
                                 {% endif %}
                                 {% if track.beets_year %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="applyFieldValue('year', '{{ track.beets_year }}', 'Beets Year')">
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='applyFieldValue("year", {{ track.beets_year|tojson }}, "Beets Year")'>
                                     <i class="bi bi-check2-circle"></i> Use Beets Year
                                 </button>
                                 {% endif %}
                                 {% if track.mbid %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="applyFieldValue('mbid', '{{ track.mbid|escape }}', 'Current MBID')">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='applyFieldValue("mbid", {{ track.mbid|tojson }}, "Current MBID")'>
                                     <i class="bi bi-arrow-repeat"></i> Re-apply Current MBID
                                 </button>
                                 {% endif %}
@@ -286,27 +286,27 @@
                             <h6 class="mb-2">Apply Genres From Sources</h6>
                             <div class="d-flex flex-wrap gap-2">
                                 {% if track.spotify_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-success" onclick="addGenresFromSourceText('{{ track.spotify_genres|escape }}', 'Spotify genres')">
+                                <button type="button" class="btn btn-sm btn-outline-success" onclick='addGenresFromSourceText({{ track.spotify_genres|tojson }}, "Spotify genres")'>
                                     <i class="bi bi-plus-circle"></i> Spotify
                                 </button>
                                 {% endif %}
                                 {% if track.lastfm_tags %}
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="addGenresFromSourceText('{{ track.lastfm_tags|escape }}', 'Last.fm tags')">
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='addGenresFromSourceText({{ track.lastfm_tags|tojson }}, "Last.fm tags")'>
                                     <i class="bi bi-plus-circle"></i> Last.fm
                                 </button>
                                 {% endif %}
                                 {% if track.listenbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-info" onclick="addGenresFromSourceText('{{ track.listenbrainz_genres|escape }}', 'ListenBrainz genres')">
+                                <button type="button" class="btn btn-sm btn-outline-info" onclick='addGenresFromSourceText({{ track.listenbrainz_genres|tojson }}, "ListenBrainz genres")'>
                                     <i class="bi bi-plus-circle"></i> ListenBrainz
                                 </button>
                                 {% endif %}
                                 {% if track.discogs_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-warning" onclick="addGenresFromSourceText('{{ track.discogs_genres|escape }}', 'Discogs genres')">
+                                <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresFromSourceText({{ track.discogs_genres|tojson }}, "Discogs genres")'>
                                     <i class="bi bi-plus-circle"></i> Discogs
                                 </button>
                                 {% endif %}
                                 {% if track.musicbrainz_genres %}
-                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="addGenresFromSourceText('{{ track.musicbrainz_genres|escape }}', 'MusicBrainz genres')">
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='addGenresFromSourceText({{ track.musicbrainz_genres|tojson }}, "MusicBrainz genres")'>
                                     <i class="bi bi-plus-circle"></i> MusicBrainz
                                 </button>
                                 {% endif %}
@@ -316,6 +316,18 @@
                                     <i class="bi bi-collection"></i> Apply All Source Genres
                                 </button>
                             </div>
+                        </div>
+
+                        <hr>
+
+                        <div>
+                            <div class="d-flex justify-content-between align-items-center mb-2">
+                                <h6 class="mb-0">Field Compare (Current ↔ Candidates)</h6>
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick="renderMergeComparePane()">
+                                    <i class="bi bi-arrow-clockwise"></i> Refresh
+                                </button>
+                            </div>
+                            <div id="mergeComparePane" class="table-responsive"></div>
                         </div>
                     </div>
                 </div>
@@ -1049,6 +1061,16 @@ document.addEventListener('DOMContentLoaded', function() {
             }
         });
     }
+
+    ['mbid', 'album_artist', 'year'].forEach(fieldId => {
+        const field = document.getElementById(fieldId);
+        if (field) {
+            field.addEventListener('input', renderMergeComparePane);
+            field.addEventListener('change', renderMergeComparePane);
+        }
+    });
+
+    renderMergeComparePane();
 });
 
 function addGenre() {
@@ -1249,52 +1271,43 @@ function displayTrackGenres(data) {
         { key: 'musicbrainz_genres', label: 'MusicBrainz', color: 'secondary' }
     ];
     
-    let html = '<ul class="nav nav-tabs" role="tablist">';
-    let tabContent = '<div class="tab-content mt-3">';
-    
-    let firstTab = true;
-    sources.forEach((source, index) => {
+    const sourceBlocks = [];
+    sources.forEach(source => {
         const genres = data.genres[source.key] || [];
-        
-        if (genres.length > 0) {
-            const tabId = `genreTab${source.key}`;
-            const activeClass = firstTab ? 'active' : '';
-            
-            html += `
-                <li class="nav-item" role="presentation">
-                    <button class="nav-link ${activeClass}" id="${tabId}-tab" data-bs-toggle="tab" 
-                            data-bs-target="#${tabId}-content" type="button" role="tab">
-                        <i class="bi bi-tag"></i> ${source.label}
-                        <span class="badge bg-secondary ms-2">${genres.length}</span>
-                    </button>
-                </li>
-            `;
-            
-            let genresHtml = '';
-            genres.forEach(genre => {
-                const count = genre.count ? ` <small class="text-muted">(${genre.count}${genre.count === 1 ? ' source' : ' sources'})</small>` : '';
-                genresHtml += `<span class="badge bg-${source.color} me-2 mb-2">${escapeHtml(genre.name)}${count}</span>`;
-            });
-            
-            tabContent += `
-                <div class="tab-pane fade ${activeClass} show" id="${tabId}-content" role="tabpanel">
-                    <div class="d-flex flex-wrap gap-2">
-                        ${genresHtml}
-                    </div>
-                </div>
-            `;
-            
-            firstTab = false;
+        if (!genres.length) {
+            return;
         }
+
+        const genreNames = genres.map(g => g.name).filter(Boolean);
+        const buttonPayload = JSON.stringify(genreNames).replace(/"/g, '&quot;');
+
+        let chipsHtml = '';
+        genres.forEach(genre => {
+            const singleGenrePayload = JSON.stringify([genre.name || '']).replace(/"/g, '&quot;');
+            const count = genre.count ? ` <small class="text-muted">(${genre.count}${genre.count === 1 ? ' source' : ' sources'})</small>` : '';
+            chipsHtml += `<button type="button" class="btn btn-sm btn-outline-${source.color}" onclick="addGenresToCurrent(${singleGenrePayload}, '${source.label}')">${escapeHtml(genre.name)}${count}</button>`;
+        });
+
+        sourceBlocks.push(`
+            <div class="border rounded p-2 mb-2">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                    <div>
+                        <strong>${source.label}</strong>
+                        <span class="badge bg-secondary ms-2">${genres.length}</span>
+                    </div>
+                    <button type="button" class="btn btn-sm btn-outline-light" onclick="addGenresToCurrent(${buttonPayload}, '${source.label}')">
+                        <i class="bi bi-plus-circle"></i> Apply Source
+                    </button>
+                </div>
+                <div class="d-flex flex-wrap gap-2">${chipsHtml}</div>
+            </div>
+        `);
     });
-    
-    html += '</ul>';
-    tabContent += '</div>';
-    
-    if (firstTab) {
+
+    if (!sourceBlocks.length) {
         container.innerHTML = '<div class="alert alert-info mb-0"><i class="bi bi-info-circle"></i> No genres available from any source</div>';
     } else {
-        container.innerHTML = html + tabContent;
+        container.innerHTML = `<div class="mb-2"><small class="text-muted">Click any genre to merge it into the editable Genres field.</small></div>${sourceBlocks.join('')}`;
     }
 }
 
@@ -1437,36 +1450,290 @@ function displaySimilarArtists(data) {
     container.innerHTML = html + tabContent;
 }
 
-function initTrackTabs() {
-    const tabButtons = document.querySelectorAll('[data-track-tab]');
-    if (!tabButtons.length) {
+const mergeFieldCandidates = {
+    mbid: [
+        { source: 'Beets MBID', value: {{ track.beets_mbid|tojson }} },
+        { source: 'Current MBID', value: {{ track.mbid|tojson }} },
+        { source: 'Suggested MBID', value: {{ track.suggested_mbid|tojson }} }
+    ],
+    album_artist: [
+        { source: 'Beets Album Artist', value: {{ track.beets_album_artist|tojson }} },
+        { source: 'Track Album Artist', value: {{ track.album_artist|tojson }} }
+    ],
+    year: [
+        { source: 'Beets Year', value: {{ track.beets_year|tojson }} },
+        { source: 'Track Year', value: {{ track.year|tojson }} }
+    ]
+};
+
+const mergeGenreCandidates = [
+    { source: 'Spotify', value: {{ track.spotify_genres|tojson }} },
+    { source: 'Last.fm', value: {{ track.lastfm_tags|tojson }} },
+    { source: 'ListenBrainz', value: {{ track.listenbrainz_genres|tojson }} },
+    { source: 'Discogs', value: {{ track.discogs_genres|tojson }} },
+    { source: 'MusicBrainz', value: {{ track.musicbrainz_genres|tojson }} }
+];
+
+let mergeCompareEntries = [];
+
+function normalizeMergeValue(value) {
+    return String(value || '').trim().toLowerCase();
+}
+
+function markFieldDiffState(fieldId, hasDiff) {
+    const field = document.getElementById(fieldId);
+    if (!field) {
+        return;
+    }
+    field.classList.toggle('border-warning', hasDiff);
+}
+
+function parseGenresCaseInsensitive(rawText) {
+    return parseGenreText(rawText).map(g => g.toLowerCase());
+}
+
+function renderMergeComparePane() {
+    const container = document.getElementById('mergeComparePane');
+    if (!container) {
         return;
     }
 
-    tabButtons.forEach(button => {
-        button.addEventListener('click', function() {
-            const panelName = this.getAttribute('data-track-tab');
-            if (panelName) {
-                showTrackPanel(panelName);
+    mergeCompareEntries = [];
+    let rowsHtml = '';
+
+    const fieldOrder = [
+        { id: 'mbid', label: 'MBID' },
+        { id: 'album_artist', label: 'Album Artist' },
+        { id: 'year', label: 'Year' }
+    ];
+
+    fieldOrder.forEach(field => {
+        const currentField = document.getElementById(field.id);
+        const currentValue = currentField ? String(currentField.value || '').trim() : '';
+        const normalizedCurrent = normalizeMergeValue(currentValue);
+        const candidates = (mergeFieldCandidates[field.id] || []).filter(c => String(c.value || '').trim());
+
+        let hasAnyDiff = false;
+        candidates.forEach(candidate => {
+            const candidateValue = String(candidate.value || '').trim();
+            const normalizedCandidate = normalizeMergeValue(candidateValue);
+            const isSame = normalizedCurrent && normalizedCurrent === normalizedCandidate;
+            if (!isSame && normalizedCandidate) {
+                hasAnyDiff = true;
             }
+
+            const entryIndex = mergeCompareEntries.length;
+            mergeCompareEntries.push({
+                type: 'field',
+                fieldId: field.id,
+                value: candidateValue,
+                sourceLabel: candidate.source
+            });
+
+            rowsHtml += `
+                <tr>
+                    <td><strong>${field.label}</strong></td>
+                    <td><code>${escapeHtml(currentValue || '—')}</code></td>
+                    <td><code>${escapeHtml(candidateValue)}</code></td>
+                    <td>${escapeHtml(candidate.source)}</td>
+                    <td>${isSame ? '<span class="badge bg-success">Same</span>' : '<span class="badge bg-warning text-dark">Different</span>'}</td>
+                    <td>
+                        <button type="button" class="btn btn-sm btn-outline-primary merge-apply-btn" data-entry-index="${entryIndex}" ${isSame ? 'disabled' : ''}>
+                            Apply
+                        </button>
+                    </td>
+                </tr>
+            `;
+        });
+
+        markFieldDiffState(field.id, hasAnyDiff);
+    });
+
+    const currentGenreSet = new Set(Array.from(currentGenres).map(g => g.toLowerCase()));
+    mergeGenreCandidates.forEach(candidate => {
+        const rawValue = String(candidate.value || '').trim();
+        if (!rawValue) {
+            return;
+        }
+
+        const parsed = parseGenreText(rawValue);
+        if (!parsed.length) {
+            return;
+        }
+
+        const newCount = parsed.filter(g => !currentGenreSet.has(g.toLowerCase())).length;
+        const statusBadge = newCount > 0
+            ? `<span class="badge bg-warning text-dark">${newCount} new</span>`
+            : '<span class="badge bg-success">No new</span>';
+
+        const entryIndex = mergeCompareEntries.length;
+        mergeCompareEntries.push({
+            type: 'genres',
+            rawValue,
+            sourceLabel: `${candidate.source} genres`
+        });
+
+        rowsHtml += `
+            <tr>
+                <td><strong>Genres</strong></td>
+                <td><code>${currentGenres.size} selected</code></td>
+                <td><code>${parsed.length} tags</code></td>
+                <td>${escapeHtml(candidate.source)}</td>
+                <td>${statusBadge}</td>
+                <td>
+                    <button type="button" class="btn btn-sm btn-outline-primary merge-apply-btn" data-entry-index="${entryIndex}" ${newCount === 0 ? 'disabled' : ''}>
+                        Apply
+                    </button>
+                </td>
+            </tr>
+        `;
+    });
+
+    if (!rowsHtml) {
+        container.innerHTML = '<div class="alert alert-info mb-0">No candidate metadata found for compare.</div>';
+        return;
+    }
+
+    container.innerHTML = `
+        <table class="table table-sm table-hover align-middle mb-0">
+            <thead>
+                <tr>
+                    <th>Field</th>
+                    <th>Current</th>
+                    <th>Candidate</th>
+                    <th>Source</th>
+                    <th>Status</th>
+                    <th></th>
+                </tr>
+            </thead>
+            <tbody>${rowsHtml}</tbody>
+        </table>
+    `;
+
+    container.querySelectorAll('.merge-apply-btn').forEach(button => {
+        button.addEventListener('click', function() {
+            const index = Number(this.getAttribute('data-entry-index'));
+            const entry = mergeCompareEntries[index];
+            if (!entry) {
+                return;
+            }
+
+            if (entry.type === 'field') {
+                applyFieldValue(entry.fieldId, entry.value, entry.sourceLabel);
+            } else if (entry.type === 'genres') {
+                addGenresFromSourceText(entry.rawValue, entry.sourceLabel);
+            }
+
+            renderMergeComparePane();
         });
     });
-
-    showTrackPanel('details');
 }
 
-function showTrackPanel(panelName) {
-    const panels = document.querySelectorAll('.track-panel[data-track-panel]');
-    panels.forEach(panel => {
-        const isVisible = panel.getAttribute('data-track-panel') === panelName;
-        panel.style.display = isVisible ? '' : 'none';
+function applyFieldValue(fieldId, value, sourceLabel) {
+    const field = document.getElementById(fieldId);
+    if (!field) {
+        return;
+    }
+
+    const normalizedValue = String(value || '').trim();
+    if (!normalizedValue) {
+        return;
+    }
+
+    const currentValue = String(field.value || '').trim();
+    if (currentValue && currentValue !== normalizedValue) {
+        const ok = confirm(`Replace current ${fieldId.replace('_', ' ')} with ${sourceLabel}?`);
+        if (!ok) {
+            return;
+        }
+    }
+
+    field.value = normalizedValue;
+    renderMergeComparePane();
+}
+
+function parseGenreText(rawText) {
+    if (!rawText) {
+        return [];
+    }
+
+    return String(rawText)
+        .split(',')
+        .map(g => g.trim())
+        .filter(Boolean);
+}
+
+function addGenresToCurrent(genres, sourceLabel = 'source') {
+    const before = currentGenres.size;
+    genres.forEach(genre => currentGenres.add(genre));
+    updateGenresDisplay();
+    const added = currentGenres.size - before;
+    if (added > 0) {
+        showToastInline(`${added} genre${added === 1 ? '' : 's'} added from ${sourceLabel}.`, 'success');
+    } else {
+        showToastInline(`No new genres to add from ${sourceLabel}.`, 'info');
+    }
+    renderMergeComparePane();
+}
+
+function addGenresFromSourceText(rawText, sourceLabel) {
+    const genres = parseGenreText(rawText);
+    if (!genres.length) {
+        showToastInline(`No genres found in ${sourceLabel}.`, 'warning');
+        return;
+    }
+    addGenresToCurrent(genres, sourceLabel);
+}
+
+function addAllKnownSourceGenres() {
+    const sourceFields = [
+        { label: 'Spotify', value: '{{ track.spotify_genres|default("", true)|escape }}' },
+        { label: 'Last.fm', value: '{{ track.lastfm_tags|default("", true)|escape }}' },
+        { label: 'ListenBrainz', value: '{{ track.listenbrainz_genres|default("", true)|escape }}' },
+        { label: 'Discogs', value: '{{ track.discogs_genres|default("", true)|escape }}' },
+        { label: 'MusicBrainz', value: '{{ track.musicbrainz_genres|default("", true)|escape }}' }
+    ];
+
+    const merged = [];
+    sourceFields.forEach(source => {
+        parseGenreText(source.value).forEach(genre => merged.push(genre));
     });
 
-    const tabButtons = document.querySelectorAll('[data-track-tab]');
-    tabButtons.forEach(button => {
-        const isActive = button.getAttribute('data-track-tab') === panelName;
-        button.classList.toggle('active', isActive);
-    });
+    if (!merged.length) {
+        showToastInline('No source genres available to apply.', 'warning');
+        return;
+    }
+
+    addGenresToCurrent(merged, 'all sources');
+}
+
+function showToastInline(message, level = 'info') {
+    const palette = {
+        success: 'alert-success',
+        warning: 'alert-warning',
+        info: 'alert-info',
+        danger: 'alert-danger'
+    };
+
+    const existing = document.getElementById('trackInlineMessage');
+    if (existing) {
+        existing.remove();
+    }
+
+    const alert = document.createElement('div');
+    alert.id = 'trackInlineMessage';
+    alert.className = `alert ${palette[level] || 'alert-info'} py-2 mt-2 mb-0`;
+    alert.textContent = message;
+
+    const container = document.getElementById('track-merge-assistant');
+    if (container) {
+        container.querySelector('.card-body').appendChild(alert);
+        setTimeout(() => {
+            if (alert.parentNode) {
+                alert.remove();
+            }
+        }, 2500);
+    }
 }
 
 function showSimilarArtistsError(message) {
