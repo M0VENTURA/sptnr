@@ -19,6 +19,7 @@ from api_clients.spotify import SpotifyClient
 from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
 from api_clients import timeout_safe_session
+from helpers.helpers import strip_cover_attribution
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
@@ -170,14 +171,14 @@ def search_spotify_track(title: str, artist: str, album: str | None = None):
     _ensure_clients_from_config()
     if not _spotify_enabled or _spotify_client is None:
         return []
-    return _spotify_client.search_track(title, artist, album)
+    return _spotify_client.search_track(strip_cover_attribution(title), artist, album)
 
 
 def get_lastfm_track_info(artist: str, title: str) -> dict:
     _ensure_clients_from_config()
     if _lastfm_client is None:
         return {"track_play": 0}
-    return _lastfm_client.get_track_info(artist, title)
+    return _lastfm_client.get_track_info(artist, strip_cover_attribution(title))
 
 
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:

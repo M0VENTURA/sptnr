@@ -24,7 +24,7 @@ from statistics import median, mean, stdev
 from concurrent.futures import ThreadPoolExecutor
 import concurrent.futures
 from api_clients import session, timeout_safe_session
-from helpers.helpers import find_matching_spotify_single
+from helpers.helpers import find_matching_spotify_single, strip_cover_attribution
 from helpers.matching_utils import normalize_album
 
 # Import centralized logging
@@ -215,8 +215,12 @@ def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     Returns:
         True if track should be excluded from statistics, False otherwise
     """
-    # Check title and album name for keywords
-    combined_text = f"{title} {album}".lower()
+    # Strip cover attributions first to get the base version of the track
+    # This way "(Live Cover)" becomes just the base title before checking filters
+    base_title = strip_cover_attribution(title)
+    
+    # Check base title and album name for keywords
+    combined_text = f"{base_title} {album}".lower()
     return any(keyword in combined_text for keyword in IGNORE_SINGLE_KEYWORDS)
 
 
@@ -1812,7 +1816,9 @@ def detect_single_for_track(
                 conn.close()
     
     # Ignore obvious non-singles by keywords
-    if any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS):
+    # Strip cover attributions first so "Song (Live Cover)" becomes "Song (Live)" before checking
+    base_title = strip_cover_attribution(title)
+    if any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS):
         if verbose:
             log_verbose(f"   âŠ— Skipping non-single: {title} (keyword filter)")
         return {
@@ -3602,7 +3608,7 @@ def popularity_scan(
                                     get_lastfm_track_info,
                                     API_CALL_TIMEOUT,
                                     f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                    track_artist, title
+                                    track_artist, strip_cover_attribution(title)
                                 )
                                 rate_limiter.record_lastfm_request()
                                 
@@ -3860,7 +3866,9 @@ def popularity_scan(
 
                         # Skip Spotify lookup for obvious non-album tracks (live, remix, etc.)
                         # This prevents the scan from hanging on albums with many bonus/live tracks
-                        skip_spotify_lookup = any(k in title.lower() for k in IGNORE_SINGLE_KEYWORDS)
+                        # Strip cover attributions first so "Song (Live Cover)" doesn't get "Cover" matched
+                        base_title = strip_cover_attribution(title)
+                        skip_spotify_lookup = any(k in base_title.lower() for k in IGNORE_SINGLE_KEYWORDS)
                         if skip_spotify_lookup:
                             log_info(f'Skipping Spotify lookup for: {title} (keyword filter: live/remix/etc.)')
                             log_debug(f'Track "{title}" matched keyword filter for exclusion')
@@ -4042,12 +4050,12 @@ def popularity_scan(
                                 # Perform lookup if we can proceed (either initially or after waiting)
                                 if can_proceed:
                                     log_info(f'Getting Last.fm info for: {title} by {artist}')
-                                    log_debug(f'Last.fm lookup params - artist: {artist}, title: {title}')
+                                    log_debug(f'Last.fm lookup params - artist: {artist}, title: {strip_cover_attribution(title)}')
                                     lastfm_info = _run_with_timeout(
                                         get_lastfm_track_info,
                                         API_CALL_TIMEOUT,
                                         f"Last.fm lookup timed out after {API_CALL_TIMEOUT}s",
-                                        artist, title
+                                        artist, strip_cover_attribution(title)
                                     )
                                     # Record API request for rate limiting
                                     rate_limiter.record_lastfm_request()

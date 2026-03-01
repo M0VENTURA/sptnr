@@ -11,6 +11,54 @@ def strip_parentheses(s: str) -> str:
     return re.sub(r"\s*\(.*?\)\s*", " ", (s or "")).strip()
 
 
+def strip_cover_attribution(title: str) -> str:
+    """
+    Strip cover attributions from track titles for cleaner API searches.
+    
+    Removes parenthetical cover attributions like:
+    - "(Artist Name Cover)"
+    - "(Artist Cover)"
+    - "(Cover Version)"
+    - "(Cover by Artist Name)"
+    
+    Also removes common cover labels without artist names:
+    - "(Cover)"
+    
+    Examples:
+        "The Pretender (Foo Fighters Cover)" -> "The Pretender"
+        "Song Name (Cover Version)" -> "Song Name"
+        "Track (Acoustic)" -> "Track (Acoustic)"  [keeps other version tags]
+        "Title (One) Two" -> "Title (One) Two"  [keeps middle parentheses]
+    
+    Args:
+        title: Track title to clean
+        
+    Returns:
+        Title with cover attributions removed
+    """
+    if not title:
+        return title
+    
+    # Remove trailing cover attributions in parentheses
+    # Pattern matches patterns like:
+    # - (Artist Name Cover) 
+    # - (Artist Cover)
+    # - (Cover Version)
+    # - (Cover by Artist)
+    # - (Cover)
+    # But only from the end of the string (trailing)
+    
+    patterns = [
+        r'\s*\([^)]*cover[^)]*\)\s*$',  # Any trailing parentheses containing "cover" (case-insensitive)
+    ]
+    
+    result = title
+    for pattern in patterns:
+        result = re.sub(pattern, '', result, flags=re.IGNORECASE).strip()
+    
+    return result
+
+
 def clean_discogs_biography(text: str) -> str:
     """
     Clean up Discogs biography text by removing artist ID references.

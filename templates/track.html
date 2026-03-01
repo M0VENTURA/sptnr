@@ -94,8 +94,9 @@
 
     <form method="POST" action="{{ url_for('track_edit', track_id=track.id) }}">
         <div class="row g-2 g-md-3">
-            <!-- Left Column: Track Info -->
+            <!-- Left Column: Track Metadata & Editing -->
             <div class="col-12 col-lg-6">
+                <!-- Core Track Information -->
                 <div class="card mb-4" id="track-edit-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
@@ -103,6 +104,7 @@
                         </h5>
                     </div>
                     <div class="card-body">
+                        <h6 class="text-muted mb-3">Basic Details</h6>
                         <div class="mb-3">
                             <label for="title" class="form-label">Title</label>
                             <input type="text" class="form-control" id="title" name="title" value="{{ track.title }}" required>
@@ -117,17 +119,51 @@
                             <label for="album" class="form-label">Album</label>
                             <input type="text" class="form-control" id="album" name="album" value="{{ track.album }}" required>
                         </div>
-                                                <div class="mb-3">
-                            <label for="mbid" class="form-label">MusicBrainz ID (MBID)</label>
+
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="year" class="form-label">Year</label>
+                                <input type="number" class="form-control" id="year" name="year" value="{{ track.year or '' }}" placeholder="e.g., 2023">
+                            </div>
+                            <div class="col-6">
+                                <label for="album_artist" class="form-label">Album Artist</label>
+                                <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ track.album_artist or '' }}" placeholder="Auto if empty">
+                            </div>
+                        </div>
+
+                        <hr class="my-4">
+                        
+                        <h6 class="text-muted mb-3">Identifiers & Metadata</h6>
+                        <div class="mb-3">
+                            <label for="mbid" class="form-label">MusicBrainz ID</label>
                             <div class="input-group">
-                                <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.beets_mbid or track.mbid or '' }}" placeholder="e.g., 579fc21e-40d4-4d72-835c-659e2a4108e4">
+                                <input type="text" class="form-control" id="mbid" name="mbid" value="{{ track.beets_mbid or track.mbid or '' }}" placeholder="e.g., 579fc21e...">
                                 <button class="btn btn-outline-primary" type="button" onclick="lookupTrackMusicBrainz()">
                                     <i class="bi bi-search"></i> Find
                                 </button>
                             </div>
-                            <div class="form-text">Official MusicBrainz recording ID</div>
                         </div>
-                                                <div class="mb-3">
+
+                        <div class="mb-3">
+                            <label for="composer" class="form-label">Composer</label>
+                            <input type="text" class="form-control" id="composer" name="composer" value="{{ track.composer or '' }}" placeholder="Composer name">
+                        </div>
+
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label for="track_number" class="form-label">Track #</label>
+                                <input type="text" class="form-control" id="track_number" name="track_number" value="{{ track.track_number or '' }}" placeholder="1 or 1/12">
+                            </div>
+                            <div class="col-6">
+                                <label for="disc_number" class="form-label">Disc #</label>
+                                <input type="number" class="form-control" id="disc_number" name="disc_number" value="{{ track.disc_number or '' }}" placeholder="1">
+                            </div>
+                        </div>
+
+                        <hr class="my-4">
+
+                        <h6 class="text-muted mb-3">Classification</h6>
+                        <div class="mb-3">
                             <label for="stars" class="form-label">Rating</label>
                             <select class="form-select" id="stars" name="stars">
                                 <option value="0" {% if track.stars == 0 %}selected{% endif %}>☆☆☆☆☆ — 0 Stars</option>
@@ -144,7 +180,7 @@
                             <label class="form-check-label" for="is_single">
                                 <i class="bi bi-single-music"></i> Is Single
                                 {% if track.single_manual_override == 1 %}
-                                <span class="badge bg-warning text-dark ms-2" title="Manually set - single detection scan will skip this track">Manual</span>
+                                <span class="badge bg-warning text-dark ms-2">Manual</span>
                                 {% endif %}
                             </label>
                         </div>
@@ -157,16 +193,26 @@
                                 <option value="high" {% if track.single_confidence == 'high' %}selected{% endif %}>High</option>
                             </select>
                         </div>
-                        
-                        <!-- Genres - Multi-select with add/remove -->
+
                         <div class="mb-3">
-                            <div class="d-flex justify-content-between align-items-center mb-2">
-                                <label for="genres" class="form-label mb-0">Genres</label>
-                                <button type="button" class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()">
-                                    <i class="bi bi-cloud-download"></i> Get Recommendations
-                                </button>
-                            </div>
-                            <div id="genresContainer" class="mb-2">
+                            <label for="comment" class="form-label">Comment</label>
+                            <textarea class="form-control" id="comment" name="comment" rows="2" placeholder="Add notes or comments">{{ track.comment or '' }}</textarea>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Genres & Tags Section -->
+                <div class="card mb-4" id="track-genres-edit-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-tags-fill"></i> Genres & Tags
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Editable genres -->
+                        <div class="mb-4">
+                            <h6 class="mb-2">Your Genres</h6>
+                            <div id="genresContainer" class="mb-3">
                                 {% if track.genres %}
                                     {% for genre in track.genres|split_genres %}
                                     <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
@@ -178,68 +224,70 @@
                                     <span class="text-muted small">No genres set</span>
                                 {% endif %}
                             </div>
-                            <!-- Genre recommendations container -->
-                            <div id="genreRecommendations" class="mb-2" style="display: none;">
-                                <small class="text-muted">Recommended genres (click to add):</small>
-                                <div id="genreRecommendationsList"></div>
-                            </div>
-                            <div class="input-group">
+                            <div class="input-group mb-2">
                                 <input type="text" class="form-control" id="newGenreInput" placeholder="Add genre (e.g., Rock, Jazz)" list="genreDatalist">
                                 <button class="btn btn-outline-success" type="button" onclick="addGenre()">
                                     <i class="bi bi-plus-circle"></i> Add
                                 </button>
                             </div>
-                            <!-- Datalist for genre autocomplete -->
                             <datalist id="genreDatalist">
-                                <option value="Rock">
-                                <option value="Pop">
-                                <option value="Jazz">
-                                <option value="Classical">
-                                <option value="Hip-Hop">
-                                <option value="Electronic">
-                                <option value="Blues">
-                                <option value="Country">
-                                <option value="R&B">
-                                <option value="Soul">
-                                <option value="Funk">
-                                <option value="Metal">
-                                <option value="Punk">
-                                <option value="Alternative">
-                                <option value="Indie">
+                                <option value="Rock"><option value="Pop"><option value="Jazz"><option value="Classical">
+                                <option value="Hip-Hop"><option value="Electronic"><option value="Blues"><option value="Country">
+                                <option value="R&B"><option value="Soul"><option value="Funk"><option value="Metal">
+                                <option value="Punk"><option value="Alternative"><option value="Indie">
                             </datalist>
                             <input type="hidden" id="genres" name="genres" value="{{ track.genres or '' }}">
-                            <div class="form-text">Press Enter or click Add to add a genre. Click × to remove.</div>
+                            <small class="form-text text-muted">Press Enter or click Add. Click × to remove.</small>
                         </div>
-                        
-                        <!-- Additional MP3 Metadata Fields -->
-                        <div class="mb-3">
-                            <label for="year" class="form-label">Year</label>
-                            <input type="number" class="form-control" id="year" name="year" value="{{ track.year or '' }}" placeholder="e.g., 2023">
+
+                        <hr class="my-3">
+
+                        <!-- Genre recommendations & source buttons -->
+                        <div>
+                            <h6 class="mb-2">Add From Sources</h6>
+                            <div class="d-flex flex-wrap gap-2 mb-3">
+                                {% if track.spotify_genres %}
+                                <button type="button" class="btn btn-sm btn-outline-success" onclick='addGenresFromSourceText({{ track.spotify_genres|tojson }}, "Spotify")'>
+                                    <i class="bi bi-plus-circle"></i> Spotify
+                                </button>
+                                {% endif %}
+                                {% if track.lastfm_tags %}
+                                <button type="button" class="btn btn-sm btn-outline-primary" onclick='addGenresFromSourceText({{ track.lastfm_tags|tojson }}, "Last.fm")'>
+                                    <i class="bi bi-plus-circle"></i> Last.fm
+                                </button>
+                                {% endif %}
+                                {% if track.listenbrainz_genres %}
+                                <button type="button" class="btn btn-sm btn-outline-info" onclick='addGenresFromSourceText({{ track.listenbrainz_genres|tojson }}, "ListenBrainz")'>
+                                    <i class="bi bi-plus-circle"></i> ListenBrainz
+                                </button>
+                                {% endif %}
+                                {% if track.discogs_genres %}
+                                <button type="button" class="btn btn-sm btn-outline-warning" onclick='addGenresFromSourceText({{ track.discogs_genres|tojson }}, "Discogs")'>
+                                    <i class="bi bi-plus-circle"></i> Discogs
+                                </button>
+                                {% endif %}
+                                {% if track.musicbrainz_genres %}
+                                <button type="button" class="btn btn-sm btn-outline-secondary" onclick='addGenresFromSourceText({{ track.musicbrainz_genres|tojson }}, "MusicBrainz")'>
+                                    <i class="bi bi-plus-circle"></i> MusicBrainz
+                                </button>
+                                {% endif %}
+                            </div>
+                            <button type="button" class="btn btn-sm btn-outline-light mb-3" onclick="addAllKnownSourceGenres()">
+                                <i class="bi bi-collection"></i> Apply All Source Genres
+                            </button>
                         </div>
-                        
-                        <div class="mb-3">
-                            <label for="album_artist" class="form-label">Album Artist</label>
-                            <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ track.album_artist or '' }}" placeholder="Leave empty to use artist">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="composer" class="form-label">Composer</label>
-                            <input type="text" class="form-control" id="composer" name="composer" value="{{ track.composer or '' }}" placeholder="Composer name">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="track_number" class="form-label">Track Number</label>
-                            <input type="text" class="form-control" id="track_number" name="track_number" value="{{ track.track_number or '' }}" placeholder="e.g., 1 or 1/12">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="disc_number" class="form-label">Disc Number</label>
-                            <input type="number" class="form-control" id="disc_number" name="disc_number" value="{{ track.disc_number or '' }}" placeholder="e.g., 1">
-                        </div>
-                        
-                        <div class="mb-3">
-                            <label for="comment" class="form-label">Comment</label>
-                            <textarea class="form-control" id="comment" name="comment" rows="2" placeholder="Add notes or comments">{{ track.comment or '' }}</textarea>
+
+                        <hr class="my-3">
+
+                        <!-- Recommendations -->
+                        <div>
+                            <button type="button" class="btn btn-sm btn-outline-primary w-100" onclick="fetchGenreRecommendations()">
+                                <i class="bi bi-cloud-download"></i> Get Recommendations
+                            </button>
+                            <div id="genreRecommendations" class="mt-3" style="display: none;">
+                                <small class="text-muted d-block mb-2">Recommended for this track:</small>
+                                <div id="genreRecommendationsList"></div>
+                            </div>
                         </div>
                     </div>
                 </div>
