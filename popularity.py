@@ -5128,9 +5128,9 @@ def popularity_scan(
                         
                         for cluster_id, indices in cluster_track_indices.items():
                             # Top track = highest popularity in cluster
-                            top_idx = max(indices, key=lambda idx: album_tracks_with_scores[idx].get("popularity_score", 0) or 0)
+                            top_idx = max(indices, key=lambda idx: album_tracks_with_scores[idx]["popularity_score"] if album_tracks_with_scores[idx]["popularity_score"] else 0)
                             top_track_id = album_tracks_with_scores[top_idx]["id"]
-                            top_pop = album_tracks_with_scores[top_idx].get("popularity_score", 0) or 0
+                            top_pop = album_tracks_with_scores[top_idx]["popularity_score"] if album_tracks_with_scores[top_idx]["popularity_score"] else 0
                             
                             # Calculate z-score for top track
                             if popularity_stddev > 0 and top_pop > 0:
@@ -5146,7 +5146,7 @@ def popularity_scan(
                         for i, track_row in enumerate(album_tracks_with_scores):
                             track_id = track_row["id"]
                             track_clusters[track_id] = i
-                            pop = track_row.get("popularity_score", 0) or 0
+                            pop = track_row["popularity_score"] if track_row["popularity_score"] else 0
                             if popularity_stddev > 0 and pop > 0:
                                 z = (pop - popularity_mean) / popularity_stddev
                             else:
