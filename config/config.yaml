@@ -185,4 +185,9 @@ features:
   strict_spotify_matching: true  # When enabled, only include exact title matches with ±2s duration and ISRC validation
   spotify_duration_tolerance: 2  # Maximum duration difference in seconds (default: 2)
 
+single_detection:
+  zscore_medium_threshold: 0.6
+  zscore_high_threshold: 1.0
+  standout_gap_z: 0.75  # Minimum z-normalized gap to next track for standout-driven 5★
+
 

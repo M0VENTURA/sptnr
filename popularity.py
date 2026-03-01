@@ -142,10 +142,23 @@ def get_zscore_thresholds():
         thresholds = get_zscore_thresholds()
         return {
             'medium': thresholds.get('medium', 0.6),
-            'high': thresholds.get('high', 1.0)
+            'high': thresholds.get('high', 1.0),
+            'standout_gap_z': thresholds.get('standout_gap_z', 0.75),
         }
     except Exception:
-        return {'medium': 0.6, 'high': 1.0}
+        return {'medium': 0.6, 'high': 1.0, 'standout_gap_z': 0.75}
+
+
+def apply_standout_config_overrides() -> None:
+    """Apply standout/star-rating threshold overrides from config.yaml when available."""
+    try:
+        thresholds = get_zscore_thresholds()
+        STANDOUT_CONFIG['star_5']['standout_gap_z'] = float(thresholds.get('standout_gap_z', 0.75))
+    except Exception:
+        STANDOUT_CONFIG['star_5']['standout_gap_z'] = 0.75
+
+
+apply_standout_config_overrides()
 
 DEFAULT_HIGH_CONF_OFFSET = 1.0        # High confidence: z-score >= 1.0 (loaded from config)
 DEFAULT_MEDIUM_CONF_THRESHOLD = 0.6   # Medium confidence: z-score >= 0.6 (loaded from config)
@@ -5055,6 +5068,22 @@ def popularity_scan(
                         )
                     except Exception as e:
                         log_debug(f"Top standout detection failed for album {album}: {e}")
+
+                    # Precompute per-track deviation from the next lower-ranked album track.
+                    # This is used to ensure standout-driven 5★ upgrades only happen when there
+                    # is clear separation from the rest of the album.
+                    standout_gap_z_by_track = {}
+                    if popularity_stddev > 0:
+                        for idx in range(len(album_tracks_with_scores) - 1):
+                            current_track = album_tracks_with_scores[idx]
+                            next_track = album_tracks_with_scores[idx + 1]
+                            current_score = current_track["popularity_score"] if current_track["popularity_score"] else 0
+                            next_score = next_track["popularity_score"] if next_track["popularity_score"] else 0
+                            gap_z = (current_score - next_score) / popularity_stddev
+                            standout_gap_z_by_track[current_track["id"]] = gap_z
+                    # Lowest-ranked track has no next-track gap.
+                    if album_tracks_with_scores:
+                        standout_gap_z_by_track[album_tracks_with_scores[-1]["id"]] = 0
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
                         track_id = track_row["id"]
@@ -5123,9 +5152,15 @@ def popularity_scan(
                             # **PRIORITY**: Top z-score cluster tracks get instant 5★ (Popularity)
                             # These are the peak standouts from the album based on iterative z-score detection
                             if track_id in top_cluster_tracks:
-                                stars = 5
-                                log_info(f"5-star assignment: {title} (top z-score cluster - instant Popularity)")
-                                log_debug(f"Top cluster track - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                # Top-cluster alone is not enough for 5★.
+                                # Keep cluster tracks strong (4★) unless explicitly confirmed singles.
+                                if single_confidence in ("high", "user"):
+                                    stars = 5
+                                    log_info(f"5-star assignment: {title} (top z-score cluster + explicit single confidence={single_confidence})")
+                                else:
+                                    stars = max(stars, 4)
+                                    log_info(f"4-star assignment: {title} (top z-score cluster without explicit high/user single confidence)")
+                                log_debug(f"Top cluster track - track_id: {track_id}, zscore: {track_zscore:.2f}, confidence: {single_confidence}")
                             else:
                                 # Apply new 5-star rule
                                 # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
@@ -5135,10 +5170,15 @@ def popularity_scan(
                                 is_top_15_artist = popularity_score >= artist_top_15_threshold if artist_top_15_threshold > 0 else False
                                 
                                 if is_top_15_artist:
-                                    # TOP 15% ARTIST: Upgrade to 5 stars (outlier on underperforming album)
-                                    stars = 5
-                                    log_info(f"5-star assignment: {title} (top 15% of artist catalog, pop={popularity_score:.1f} >= artist_top_15={artist_top_15_threshold:.1f})")
-                                    log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}")
+                                    # TOP 15% ARTIST alone is too permissive for 5★.
+                                    # Require strong album outlier signal as well.
+                                    if track_zscore >= STANDOUT_CONFIG['star_5']['album_z']:
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (top 15% artist + strong album z-score, pop={popularity_score:.1f}, z={track_zscore:.2f})")
+                                    else:
+                                        stars = max(stars, 4)
+                                        log_info(f"4-star assignment: {title} (top 15% artist but weak album z-score={track_zscore:.2f})")
+                                    log_debug(f"Artist-relative standout - track_id: {track_id}, popularity: {popularity_score}, artist_top_15: {artist_top_15_threshold}, zscore: {track_zscore:.2f}")
                                 else:
                                     # SECOND: Dual artist context check (global + album outlier)
                                     # Track must be BOTH: top 10% globally AND album outlier (zscore >= 2.0)
@@ -5153,9 +5193,35 @@ def popularity_scan(
                                         log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
                                     # Top standout tracks with clear gaps (non-singles)
                                     elif not is_single and track_id in top_standout_track_ids:
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (top standout with clear gap - popular track)")
-                                        log_debug(f"Top standout track - track_id: {track_id}")
+                                        # 5★ via standout path requires:
+                                        # 1) top-ranked album track,
+                                        # 2) strong album z-score,
+                                        # 3) clear z-normalized gap vs next track on album.
+                                        standout_gap_z_threshold = STANDOUT_CONFIG['star_5'].get('standout_gap_z', 0.75)
+                                        track_gap_z = standout_gap_z_by_track.get(track_id, 0)
+                                        is_top_album_track = i == 0
+
+                                        if (
+                                            is_top_album_track
+                                            and track_zscore >= STANDOUT_CONFIG['star_5']['album_z']
+                                            and track_gap_z >= standout_gap_z_threshold
+                                        ):
+                                            stars = 5
+                                            log_info(
+                                                f"5-star assignment: {title} "
+                                                f"(top standout, strong z-score={track_zscore:.2f}, gap_z={track_gap_z:.2f})"
+                                            )
+                                        else:
+                                            stars = max(stars, 4)
+                                            log_info(
+                                                f"4-star assignment: {title} "
+                                                f"(standout path not eligible for 5★; "
+                                                f"top_track={is_top_album_track}, z={track_zscore:.2f}, gap_z={track_gap_z:.2f})"
+                                            )
+                                        log_debug(
+                                            f"Top standout track - track_id: {track_id}, "
+                                            f"top_track={is_top_album_track}, zscore={track_zscore:.2f}, gap_z={track_gap_z:.2f}"
+                                        )
                                     # User-set singles always get 5 stars
                                     elif single_confidence == "user":
                                         stars = 5
@@ -5256,10 +5322,10 @@ def popularity_scan(
                     # Upgrade is_single flag for medium confidence tracks with 2+ sources
                     if single_upgrades:
                         cursor.executemany(
-                            """UPDATE tracks SET is_single = 1, stars = 5 WHERE id = ?""",
+                            """UPDATE tracks SET is_single = 1 WHERE id = ?""",
                             ((track_id,) for track_id in single_upgrades)
                         )
-                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) with 5★ rating")
+                        log_info(f"Upgraded {len(single_upgrades)} medium-confidence track(s) to single status (2+ sources) without overriding star rating")
                         log_debug(f"Upgraded tracks: {single_upgrades}")
                     
                     conn.commit()

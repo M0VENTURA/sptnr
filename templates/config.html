@@ -833,6 +833,11 @@
               <input type="number" step="0.1" class="form-control form-control-sm" id="zscore_high_threshold" placeholder="1.0" value="{{ config.get('single_detection', {}).get('zscore_high_threshold', 1.0) }}">
               <small class="form-text text-muted">Z-score threshold for high confidence detection (default: 1.0)</small>
             </div>
+            <div class="col-12 col-sm-6 col-lg-4">
+              <label class="form-label form-label-sm">Top Standout Gap Z-Score (5★ Gate)</label>
+              <input type="number" step="0.1" class="form-control form-control-sm" id="standout_gap_z" placeholder="0.75" value="{{ config.get('single_detection', {}).get('standout_gap_z', 0.75) }}">
+              <small class="form-text text-muted">Minimum z-normalized gap to the next track required for standout-driven 5★ (default: 0.75)</small>
+            </div>
             <!-- Source Confidence Settings -->
             <div class="col-12">
               <h6 class="text-secondary mb-3 mt-2">Source Confidence Levels</h6>
@@ -1148,7 +1153,8 @@ function buildConfigObject() {
     },
     single_detection: {
       zscore_medium_threshold: parseFloat(getValue('zscore_medium_threshold', '0.6')) || 0.6,
-      zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0
+      zscore_high_threshold: parseFloat(getValue('zscore_high_threshold', '1.0')) || 1.0,
+      standout_gap_z: parseFloat(getValue('standout_gap_z', '0.75')) || 0.75
     },
     api_integrations: {
       spotify: {

@@ -247,4 +247,5 @@ def get_zscore_thresholds() -> Dict[str, float]:
     return {
         "medium": float(single_detection.get("zscore_medium_threshold", 0.6)),
         "high": float(single_detection.get("zscore_high_threshold", 1.0)),
+        "standout_gap_z": float(single_detection.get("standout_gap_z", 0.75)),
     }
