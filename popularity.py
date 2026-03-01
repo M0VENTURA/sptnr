@@ -116,13 +116,13 @@ GENRE_WEIGHTS = {
 
 # --- Standout & Star Rating Config ---
 STANDOUT_CONFIG = {
-    'album_zscore_threshold': 1.0,         # Album standout: z >= 1.0
-    'album_top_n': 2,                     # Or top 2 in album
+    'album_zscore_threshold': 0.8,         # Album standout: z >= 0.8 (medium confidence, lowered from 1.0)
+    'album_top_n': 2,                     # (DEPRECATED - using gap-based clustering instead)
     'artist_zscore_threshold': 1.2,       # Artist standout: z >= 1.2 (lowered from 1.5)
     'artist_top_percentile': 0.10,        # Top 10% of artist catalog
     'artist_min_tracks': 10,              # Min tracks for artist-level filter
-    'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Lowered from 1.5
-    'star_4': {'album_z': 1.0, 'artist_z': 1.0, 'artist_pct': 0.20},
+    'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Requires z >= 1.0 for 5★
+    'star_4': {'album_z': 0.8, 'artist_z': 1.0, 'artist_pct': 0.20},  # Uses lower 0.8 threshold
     'star_3': {'album_z': 0.0},
     'star_2': {'album_mean': True},
     'star_1': {'default': True},
@@ -4316,6 +4316,7 @@ def popularity_scan(
                     # 1★: Below album mean or excluded from stats
                     try:
                         from statistics import mean as stat_mean, stdev as stat_stdev
+                        from popularity_helpers import get_top_standout_tracks_with_gap
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
                         cursor.execute("""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
@@ -4337,6 +4338,17 @@ def popularity_scan(
                         sorted_artist_scores = sorted(artist_scores, reverse=True)
                         def artist_percentile(score):
                             return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
+                        
+                        # Pre-compute standout clusters for each album to handle multiple singles with similar popularity
+                        album_standout_clusters = {}
+                        unique_albums = set(row_get(t, 'album', '') for t in artist_tracks)
+                        for album_name in unique_albums:
+                            if album_name:
+                                cluster = get_top_standout_tracks_with_gap(artist, album_name, conn, gap_threshold=0.5, verbose=False)
+                                if cluster:
+                                    album_standout_clusters[album_name] = cluster
+                                    log_debug(f"Album '{album_name}' has {len(cluster)} tracks in standout cluster")
+                        
                         for track in artist_tracks:
                             track_id = row_get(track, 'id')
                             track_title = row_get(track, 'title')
@@ -4355,14 +4367,22 @@ def popularity_scan(
                             track_album_scores = [row[0] for row in cursor.fetchall()]
                             track_album_mean = stat_mean(track_album_scores) if track_album_scores else 0
                             track_album_stdev = stat_stdev(track_album_scores) if len(track_album_scores) > 1 else 1
-                            sorted_track_album_scores = sorted(track_album_scores, reverse=True)
                             album_z = (score - track_album_mean) / track_album_stdev if track_album_stdev > 0 else 0
-                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] or score in sorted_track_album_scores[:STANDOUT_CONFIG['album_top_n']])
+                            
+                            # Check if track is in the standout cluster for this album
+                            # Uses gap-based clustering to handle multiple singles with similar high popularity
+                            is_in_standout_cluster = track_id in album_standout_clusters.get(track_album, set())
+                            
+                            # Require BOTH medium z-score (>= 0.8) AND being in standout cluster
+                            # This ensures tracks are statistically significant AND part of top-performing group
+                            # Handles both single standouts and clusters of multiple singles
+                            is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
                             # Artist-level stats
                             artist_z = (score - artist_mean) / artist_stdev if artist_stdev > 0 else 0
                             is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
                             # Star rating assignment
-                            if is_album_standout and is_artist_standout:
+                            # 5★ requires album z >= 1.0 (high confidence) + artist standout
+                            if is_album_standout and is_artist_standout and album_z >= STANDOUT_CONFIG['star_5']['album_z']:
                                 star = 5
                             elif is_album_standout and (artist_z >= STANDOUT_CONFIG['star_4']['artist_z'] or artist_percentile(score) <= STANDOUT_CONFIG['star_4']['artist_pct']):
                                 star = 4
@@ -4509,6 +4529,7 @@ def popularity_scan(
                 # This enables performance optimization by only scanning tracks likely to be singles
                 track_zscores = {}  # Map of track_id -> z-score
                 top_cluster_tracks = set()  # Track IDs in top z-score cluster (instant 5★)
+                album_median_popularity = 0.0  # Track album median for single detection filtering
                 
                 if album_type == "regular" and album_track_count > 1:
                     # Calculate z-scores for regular albums to filter single detection
@@ -4527,9 +4548,10 @@ def popularity_scan(
                             track_ids_for_zscore.append(track_id)
                     
                     if len(album_pops_for_zscore) > 1:
-                        from statistics import mean as stat_mean, stdev as stat_stdev
+                        from statistics import mean as stat_mean, stdev as stat_stdev, median as stat_median
                         pop_mean = stat_mean(album_pops_for_zscore)
                         pop_stddev = stat_stdev(album_pops_for_zscore) if len(album_pops_for_zscore) > 1 else 0
+                        album_median_popularity = stat_median(album_pops_for_zscore)
                         
                         if pop_stddev > 0:
                             # Calculate z-scores
@@ -4617,16 +4639,35 @@ def popularity_scan(
                     
                     album_type_norm = (album_type or "").strip().lower()
                     is_regular_album = album_type_norm in ("regular", "album", "lp", "studio")
+                    
+                    # Check if this is a greatest hits or compilation album
+                    album_lower = album.lower()
+                    greatest_hits_patterns = [
+                        'greatest hits', 'best of', 'the best', 'collection', 'anthology',
+                        'essentials', ' hits', 'singles', 'the very best', 'gold', 'platinum',
+                        'ultimate collection', 'complete', 'definitive', 'various artists'
+                    ]
+                    is_greatest_hits_or_compilation = (
+                        is_compilation or 
+                        any(pattern in album_lower for pattern in greatest_hits_patterns)
+                    )
 
-                    if is_regular_album:
-                        # For regular albums, only run single detection on tracks with positive z-score
+                    if is_regular_album and not is_greatest_hits_or_compilation:
+                        # For regular albums, only run single detection on tracks above album median
                         # This filters out low-popularity deep cuts that are unlikely to be singles
-                        track_zscore = track_zscores.get(track_id, 0)
+                        track_popularity = row_get(track, 'popularity_score', 0)
                         
-                        if track_zscore <= 0:
-                            # Non-positive z-score = below or at album average, skip single detection
+                        if track_popularity > 0 and album_median_popularity > 0:
+                            if track_popularity < album_median_popularity:
+                                # Below album median, skip single detection
+                                skip_single_detection = True
+                                log_debug(f"Skipping single detection for '{title}' (popularity: {track_popularity:.1f} < album median: {album_median_popularity:.1f})")
+                        elif track_popularity <= 0:
+                            # No popularity score, skip single detection
                             skip_single_detection = True
-                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} <= 0)")
+                            log_debug(f"Skipping single detection for '{title}' (no popularity score)")
+                    elif is_greatest_hits_or_compilation:
+                        log_debug(f"Greatest hits/compilation detected - running single detection on all tracks")
                     
                     # Skip single detection if filtered out
                     if skip_single_detection:
