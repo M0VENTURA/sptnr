@@ -3168,9 +3168,69 @@ def popularity_scan(
                 else:
                     log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
                 
-                # ListenBrainz for similar artists is not available
-                # (MusicBrainzClient does not have search_artists method)
-                # Using Last.fm as the primary source for similar artists
+                # Try ListenBrainz for similar artists using the public API
+                # This requires the artist's MusicBrainz MBID
+                try:
+                    if HAVE_MUSICBRAINZ:
+                        # Try to get artist MBID from MusicBrainz
+                        mb_client = _get_timeout_safe_musicbrainz_client()
+                        if mb_client:
+                            try:
+                                # Use get_suggested_mbid to find the artist MBID
+                                artist_mbid, confidence = mb_client.get_suggested_mbid(
+                                    title=artist,  # For artist, title is the artist name
+                                    artist="",     # Empty artist parameter when searching for artist name itself
+                                    limit=1
+                                )
+                                
+                                if artist_mbid:
+                                    log_debug(f"Found MusicBrainz MBID for artist '{artist}': {artist_mbid}")
+                                    
+                                    # Now fetch similar artists from ListenBrainz using the public API
+                                    # ListenBrainz similar-artists endpoint: https://labs.api.listenbrainz.org/similar-artists/json
+                                    try:
+                                        import urllib.parse
+                                        lb_url = "https://labs.api.listenbrainz.org/similar-artists/json"
+                                        params = {
+                                            "artist_mbids": artist_mbid  # Can be comma-separated for multiple MBIDs
+                                        }
+                                        # Use default session to make the request
+                                        res = session.get(lb_url, params=params, timeout=(5, 10))
+                                        res.raise_for_status()
+                                        
+                                        lb_results = res.json()
+                                        
+                                        # Extract similar artists from the response
+                                        # ListenBrainz returns: {"payload": {"artists": [{"artist_name": "...", "artist_mbid": "..."}, ...]}}
+                                        if lb_results and "payload" in lb_results:
+                                            similar_records = lb_results.get("payload", {}).get("artists", [])
+                                            
+                                            if similar_records:
+                                                similar_artists_listenbrainz = [
+                                                    {
+                                                        "name": record.get("artist_name", ""),
+                                                        "mbid": record.get("artist_mbid", "")
+                                                    }
+                                                    for record in similar_records[:10]  # Limit to top 10
+                                                ]
+                                                log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
+                                                log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
+                                            else:
+                                                log_debug(f"No similar artists found for MBID {artist_mbid} from ListenBrainz")
+                                        else:
+                                            log_debug(f"ListenBrainz returned unexpected response format for {artist}")
+                                    except Exception as e:
+                                        log_debug(f"ListenBrainz API call failed for artist {artist}: {e}")
+                                else:
+                                    log_debug(f"Could not find MusicBrainz MBID for artist '{artist}'")
+                            except Exception as e:
+                                log_debug(f"MusicBrainz MBID lookup failed for artist '{artist}': {e}")
+                        else:
+                            log_debug(f"MusicBrainz client not available - skipping ListenBrainz similar artists lookup")
+                    else:
+                        log_debug(f"MusicBrainz not enabled - skipping ListenBrainz similar artists lookup")
+                except Exception as e:
+                    log_debug(f"ListenBrainz similar artists lookup failed for {artist}: {e}")
                 
                 # Store similar artists in database and prepare JSON for later use
                 if similar_artists_lastfm or similar_artists_listenbrainz:
