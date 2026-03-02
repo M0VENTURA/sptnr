@@ -1112,28 +1112,23 @@ def determine_final_status(
     """
     Final single status based on source detection and z-score analysis.
     
-    HIGH-CONFIDENCE (NEW RULES):
-    1. Discogs confirms exact track version (studio or live) as a single, OR
-    2. popularity >= album_mean + 6 AND has_metadata (any explicit metadata source)
+    NEW Z-SCORE BASED LOGIC:
+    - Z-score >= 1: Requires only 1 MEDIUM confidence OR 1 HIGH confidence source
+    - Z-score 0-1: Requires 2 MEDIUM confidence sources OR 1 HIGH confidence source  
+    - Z-score < 0: Single detection skipped (handled earlier in pipeline)
     
-    High confidence is NEVER assigned if has_metadata is False.
+    HIGH-CONFIDENCE SOURCES:
+    - Discogs confirms exact track version as a single
+    - popularity >= album_mean + 6 AND has_metadata
     
-    MEDIUM-CONFIDENCE:
+    MEDIUM-CONFIDENCE SOURCES:
     - Spotify confirms (strict)
     - MusicBrainz confirms (strict, release_group.type == "Single")
-    - Discogs video confirms
-    - Last.fm album has 1-3 tracks (single indicator)
+    - MusicBrainz video relationship
+    - MusicBrainz compilation appearances (3+ Various Artists albums)
+    - Discogs music video confirms
+    - Last.fm single confirmation (album has 1-3 tracks)
     - Radio Edit found in Spotify search results
-    - Z-score >= configured medium threshold (album) OR >= configured high threshold (artist) WITH metadata confirmation (required)
-    
-    LOW-CONFIDENCE:
-    - album_z >= 0.2 AND >= 3 versions WITH metadata confirmation (required)
-    
-    NOT A SINGLE:
-    - None of the above
-    
-    Z-score inference REQUIRES metadata to be valid.
-    Popularity outliers alone CANNOT be marked as singles.
     
     Args:
         discogs_confirmed: Whether Discogs confirms this is a single
@@ -1154,28 +1149,21 @@ def determine_final_status(
     Returns:
         Confidence level: 'high', 'medium', 'low', or 'none'
     """
-    # Load z-score thresholds from config
-    try:
-        from helpers.config_loader import get_zscore_thresholds
-        thresholds = get_zscore_thresholds()
-        zscore_medium_threshold = thresholds.get('medium', 0.6)
-        zscore_high_threshold = thresholds.get('high', 1.0)
-    except Exception:
-        # Fallback to defaults
-        zscore_medium_threshold = 0.6
-        zscore_high_threshold = 1.0
+    # Determine the z-score threshold based on artist z-score
+    # Higher z-score = lower source requirements
+    max_z = max(album_z, artist_z)
     
     # Count high-confidence and medium-confidence sources
     high_confidence_count = 0
     medium_confidence_count = 0
     
     # HIGH-CONFIDENCE SOURCES:
-    # RULE 1: Discogs confirms exact track version as single
+    # Discogs confirms exact track version as single
     if discogs_confirmed:
         high_confidence_count += 1
         log_debug(f"[CONFIDENCE] +1 high: Discogs confirmed")
     
-    # RULE 2: popularity >= album_mean + 6 AND has_metadata
+    # popularity >= album_mean + 6 AND has_metadata
     if has_metadata and popularity >= (album_mean + 6):
         high_confidence_count += 1
         log_debug(f"[CONFIDENCE] +1 high: Popularity check (pop={popularity:.1f} >= album_mean+6={album_mean+6:.1f})")
@@ -1206,50 +1194,28 @@ def determine_final_status(
         medium_confidence_count += 1
         log_debug(f"[CONFIDENCE] +1 medium: Radio Edit found")
     
-    log_debug(f"[CONFIDENCE] Source counts: high={high_confidence_count}, medium={medium_confidence_count}")
+    log_debug(f"[CONFIDENCE] Source counts: high={high_confidence_count}, medium={medium_confidence_count}, max_z={max_z:.2f}")
     log_debug(f"[CONFIDENCE] Metadata flags: discogs={discogs_confirmed}, spotify={spotify_confirmed}, mb={musicbrainz_confirmed}, video={discogs_video_confirmed}, lastfm={lastfm_single_confirmed}, radio_edit={radio_edit_found}")
     
-    # DETERMINE FINAL STATUS:
-    # Mark as high confidence if: 1+ high sources OR 2+ medium sources
-    if high_confidence_count >= 1 or medium_confidence_count >= 2:
-        log_debug(f"[CONFIDENCE] → RETURNING 'high' (high_count={high_confidence_count} >= 1 OR medium_count={medium_confidence_count} >= 2)")
-        return 'high'
+    # DETERMINE FINAL STATUS BASED ON Z-SCORE:
     
-    # Mark as medium confidence if: 1+ medium sources (Spotify, MusicBrainz, or Discogs video)
-    if medium_confidence_count >= 1:
-        log_debug(f"[CONFIDENCE] → RETURNING 'medium' (medium_count={medium_confidence_count} >= 1)")
-        return 'medium'
+    # Z-score >= 1: Only need 1 high OR 1 medium source
+    if max_z >= 1.0:
+        if high_confidence_count >= 1 or medium_confidence_count >= 1:
+            log_debug(f"[CONFIDENCE] → RETURNING 'high' (z>= 1.0: needs 1 source, has high={high_confidence_count}, medium={medium_confidence_count})")
+            return 'high'
     
-    # Z-score inference for confidence ONLY
-    # Per problem statement: popularity outliers alone cannot be singles
-    # Z-scores are INFORMATIONAL only - medium/high confidence requires explicit metadata sources
-    # Determine if z-score detection is enabled
-    use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
-    log_debug(f"[CONFIDENCE] Z-score path: use_zscore_detection={use_zscore_detection} (album_underperforming={album_is_underperforming}, artist_standout={is_artist_level_standout})")
-    log_debug(f"[CONFIDENCE] Z-score thresholds: medium={zscore_medium_threshold}, high={zscore_high_threshold}")
+    # Z-score 0-1: Need 1 high OR 2 medium sources
+    elif max_z >= 0.0:
+        if high_confidence_count >= 1:
+            log_debug(f"[CONFIDENCE] → RETURNING 'high' (z 0-1: has {high_confidence_count} high source)")
+            return 'high'
+        elif medium_confidence_count >= 2:
+            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z 0-1: has {medium_confidence_count} medium sources)")
+            return 'medium'
     
-    if use_zscore_detection:
-        log_debug(f"[CONFIDENCE] Checking z-scores (album_z={album_z:.2f}, artist_z={artist_z:.2f}, version_count={spotify_version_count}, has_metadata={has_metadata})")
-        
-        # With metadata sources: allow z-score based confidence assignment
-        if has_metadata:
-            # HIGH: artist_z >= high threshold with metadata
-            if artist_z >= zscore_high_threshold:
-                log_debug(f"[CONFIDENCE] → RETURNING 'high' (z-score: artist_z={artist_z:.2f} >= high_threshold={zscore_high_threshold}, with metadata)")
-                return 'high'
-            
-            # MEDIUM: album_z >= medium threshold OR artist_z >= medium threshold with metadata
-            if album_z >= zscore_medium_threshold or artist_z >= zscore_medium_threshold:
-                log_debug(f"[CONFIDENCE] → RETURNING 'medium' (z-score: album_z={album_z:.2f} >= medium={zscore_medium_threshold} OR artist_z={artist_z:.2f} >= medium={zscore_medium_threshold}, with metadata)")
-                return 'medium'
-            
-            # Low confidence: album_z >= 0.2 AND >= 3 versions (ONLY with metadata)
-            if album_z >= 0.2 and spotify_version_count >= 3:
-                log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
-                return 'low'
-    
-    # No confidence indicators (z-scores alone don't count toward medium/high without metadata)
-    log_debug(f"[CONFIDENCE] → RETURNING 'none' (z-score detection alone is not sufficient - metadata sources required for medium/high confidence)")
+    # No confidence achieved
+    log_debug(f"[CONFIDENCE] → RETURNING 'none' (insufficient sources for z-score threshold: max_z={max_z:.2f}, high={high_confidence_count}, medium={medium_confidence_count})")
     return 'none'
 
 
@@ -1613,19 +1579,22 @@ def detect_single_enhanced(
     result['album_z_score'] = album_z
     result['artist_z_score'] = artist_z
     
-    # Z-Score Gate: Skip single detection if both z-scores <= 0, UNLESS it's a compilation/greatest hits
-    # Rationale: Low z-scores indicate track not unusual in artist/album context
-    # Exception: Compilations/greatest hits expect to contain singles from various eras/contexts
-    if album_z <= 0.0 and artist_z <= 0.0 and not is_compilation:
-        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f}) and album is not a compilation")
-        log_info(f"   ⓘ Skipping single detection for {title}: z-scores too low (not a compilation album)")
+    # Z-Score Gate: Skip single detection if artist_z < 0, UNLESS it's a compilation/greatest hits
+    # NEW LOGIC:
+    # - z < 0: Skip detection (unless compilation)
+    # - z 0-1: Require 2 medium OR 1 high confidence sources
+    # - z >= 1: Require 1 medium OR 1 high confidence source
+    # - z > 2 with NO sources: Mark as "Popular" with 5★ rating (not as single)
+    if artist_z < 0.0 and not is_compilation:
+        log_debug(f"[ZSCORE] ✗ Artist z-score below 0 (artist_z={artist_z:.2f}, album_z={album_z:.2f}) and album is not a compilation")
+        log_info(f"   ⓘ Skipping single detection for {title}: z-score too low (not a compilation album)")
         if verbose:
-            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics and album is not a compilation)")
+            log_debug(f"Z-score filter: Skipping {title} (artist_z < 0 and album is not a compilation)")
         return result
     
     log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f}, discogs_confirmed={discogs_confirmed})")
     if verbose:
-        log_debug(f"Z-score filter: {title} qualifies for detailed single detection")
+        log_debug(f"Z-score filter: {title} qualifies for detailed single detection (z-threshold varies by score)")
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
     # Declare all source variables first
@@ -2412,6 +2381,18 @@ def detect_single_enhanced(
     result['single_confidence'] = final_status
     result['is_single'] = final_status in ('high', 'medium')
     
+    # ===== SPECIAL CASE: High Z-Score without sources = "Popular" =====
+    # If z-score > 2 but no confidence sources were found, mark as "Popular" (not as single)
+    # These tracks get 5★ rating to indicate exceptional performance without single status
+    max_z = max(album_z, artist_z)
+    if max_z > 2.0 and final_status == 'none' and not result['is_single']:
+        log_debug(f"[POPULAR] ✯ Track has exceptional z-score (max_z={max_z:.2f} > 2.0) without metadata sources - marking as 'Popular'")
+        log_info(f"   ✯ {title} marked as 'Popular' (z-score {max_z:.2f}, no single sources)")
+        result['single_status'] = 'popular'  # Special status for high z-score without sources
+        result['single_confidence'] = 'popular'
+        result['is_single'] = False  # NOT marked as single
+        # Note: Star rating will be assigned separately in popularity.py based on this status
+    
     # ===== EXCLUSION: Check for live/acoustic recordings =====
     # If the track has live/acoustic genre tags, exclude it from single detection
     # UNLESS the album itself is marked as a live release
@@ -2426,8 +2407,8 @@ def detect_single_enhanced(
     
     log_debug(f"[RESULT] is_single set to: {result['is_single']} (status: {final_status})")
     
-    # Map confidence to numeric score
-    confidence_scores = {'high': 1.0, 'medium': 0.67, 'low': 0.33, 'none': 0.0}
+    # Map confidence to numeric score (including 'popular' for display purposes)
+    confidence_scores = {'high': 1.0, 'medium': 0.67, 'low': 0.33, 'popular': 0.5, 'none': 0.0}
     result['single_confidence_score'] = confidence_scores.get(final_status, 0.0)
     
     # Add final debug summary per track
