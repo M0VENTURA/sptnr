@@ -5133,18 +5133,20 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # **PRIORITY**: Top z-score cluster tracks get instant 5★ (Popularity)
-                            # These are the peak standouts from the album based on iterative z-score detection
+                            # **PRIORITY**: Top z-score cluster tracks with z > 1 get 5★ (Popularity)
+                            # These are the peak standouts from the album based on z-score detection
+                            # BUT: Only if they are NOT detected singles (preserve pure popularity rating)
                             if track_id in top_cluster_tracks:
-                                # Top-cluster alone is not enough for 5★.
-                                # Keep cluster tracks strong (4★) unless explicitly confirmed singles.
-                                if single_confidence in ("high", "user"):
+                                # Top cluster + strong z-score + not a detected single = 5★
+                                if track_zscore > 1.0 and not is_single:
                                     stars = 5
-                                    log_info(f"5-star assignment: {title} (top z-score cluster + explicit single confidence={single_confidence})")
+                                    is_popularity_based_5star = True
+                                    log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f}, not single-detected)")
+                                    log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                 else:
                                     stars = max(stars, 4)
-                                    log_info(f"4-star assignment: {title} (top z-score cluster without explicit high/user single confidence)")
-                                log_debug(f"Top cluster track - track_id: {track_id}, zscore: {track_zscore:.2f}, confidence: {single_confidence}")
+                                    log_info(f"4-star assignment: {title} (top cluster but z={track_zscore:.2f} or detected as single)")
+                                    log_debug(f"Top cluster adjusted track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
                             else:
                                 # Apply new 5-star rule
                                 # **NEW**: Check artist-relative popularity first (top 15% of artist's catalog)
