@@ -5177,9 +5177,20 @@ def popularity_scan(
                                         is_popularity_based_5star = True
                                         log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                         log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
-                                    # **PRIORITY: Check single confidence BEFORE cluster logic**
-                                    # Medium confidence with 2+ sources + positive z-score ALWAYS gets 5★
-                                    if single_confidence == "medium":
+                                    # **PRIORITY: Check single confidence BEFORE popularity fallback**
+                                    # Structure: medium 2+ sources → 5★, user → 5★, high → 5★, medium 1 source → 3★
+                                    elif single_confidence == "user":
+                                        # User-set singles always get 5 stars
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (user-set single)")
+                                        log_debug(f"User-set single - track_id: {track_id}")
+                                    elif single_confidence == "high":
+                                        # High confidence always gets 5 stars
+                                        stars = 5
+                                        log_info(f"5-star assignment: {title} (high-confidence single)")
+                                        log_debug(f"High confidence single detected - track_id: {track_id}")
+                                    elif single_confidence == "medium":
+                                        # Medium confidence: depends on number of sources
                                         medium_conf_count = len(single_sources) if single_sources else 0
                                         if medium_conf_count >= 2 and track_zscore > 0.0:
                                             stars = 5  # 2+ medium sources + positive z-score = 5 stars
@@ -5189,22 +5200,11 @@ def popularity_scan(
                                             else:
                                                 log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f})")
                                             log_debug(f"Medium confidence with {medium_conf_count} sources + positive z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
-                                    # User-set singles always get 5 stars
-                                    elif single_confidence == "user":
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (user-set single)")
-                                        log_debug(f"User-set single - track_id: {track_id}")
-                                    # High confidence always gets 5 stars
-                                    elif single_confidence == "high":
-                                        stars = 5
-                                        log_info(f"5-star assignment: {title} (high-confidence single)")
-                                        log_debug(f"High confidence single detected - track_id: {track_id}")
-                                    # Fallback for medium confidence with only 1 source: assign as 3-star
-                                    elif single_confidence == "medium":
-                                        medium_conf_count = len(single_sources) if single_sources else 0
-                                        stars = 3
-                                        log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence source(s) only)")
-                                        log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}, limiting to 3 stars")
+                                        else:
+                                            # Medium confidence with only 1 source or z-score <= 0: assign as 3-star
+                                            stars = 3
+                                            log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f})")
+                                            log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}, limiting to 3 stars")
                                     # Standout tracks with STRONG popularity (z-score >= 1.5) AND high absolute score can get 4-5 stars
                                     # Prevents assigning 5 stars just because a track is above album average
                                     elif is_standout_track and track_zscore >= 1.5 and popularity_score >= 65:
