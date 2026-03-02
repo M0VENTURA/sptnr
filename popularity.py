@@ -4466,6 +4466,118 @@ def popularity_scan(
                         log_debug(f'Standout/star rating analysis failed for {artist}: {e}')
                     # --- End standout/star rating section ---
 
+                # BULK TAG LOOKUP: Fetch tags from ListenBrainz bulk-tag-lookup API
+                # This enriches tracks with community-aggregated MusicBrainz tags/genres
+                # Run BEFORE single detection to ensure all metadata is available
+                try:
+                    if HAVE_MUSICBRAINZ:  # Only proceed if MusicBrainz support available
+                        # Collect recording MBIDs from all tracks that have them
+                        mbid_list = []
+                        track_mbid_map = {}  # Map MBID -> track_id for updating results
+                        
+                        for track in album_tracks:
+                            track_mbid = track.get('mbid')
+                            if track_mbid and track_mbid.strip():  # Only include non-empty MBIDs
+                                mbid_list.append(track_mbid)
+                                track_mbid_map[track_mbid] = track.get('id')
+                        
+                        if mbid_list:
+                            log_debug(f"Bulk tag lookup: Collected {len(mbid_list)} MBIDs from {album} tracks")
+                            
+                            # Batch MBIDs in groups of 50 (conservative limit for URL length)
+                            BATCH_SIZE = 50
+                            all_results = {}
+                            
+                            for batch_start in range(0, len(mbid_list), BATCH_SIZE):
+                                batch_mbids = mbid_list[batch_start:batch_start + BATCH_SIZE]
+                                mbid_query = ",".join(batch_mbids)  # Comma-separated for API
+                                
+                                try:
+                                    # Call ListenBrainz bulk-tag-lookup API
+                                    lb_url = "https://labs.api.listenbrainz.org/bulk-tag-lookup/json"
+                                    params = {"recording_mbid": mbid_query}
+                                    
+                                    res = session.get(lb_url, params=params, timeout=(5, 15))
+                                    res.raise_for_status()
+                                    batch_results = res.json()
+                                    
+                                    # Merge batch results
+                                    if batch_results:
+                                        all_results.update(batch_results)
+                                    
+                                    log_debug(f"Bulk tag lookup batch {batch_start}-{batch_start + len(batch_mbids)}: Fetched tags for {len(batch_results)} recording(s)")
+                                except Exception as batch_error:
+                                    log_debug(f"Bulk tag lookup API call failed for batch {batch_start}-{batch_start + len(batch_mbids)}: {batch_error}")
+                                    # Continue with next batch on error
+                                    continue
+                            
+                            # Process and store results
+                            if all_results:
+                                tags_updated = 0
+                                for mbid, tag_data in all_results.items():
+                                    track_id = track_mbid_map.get(mbid)
+                                    if not track_id:
+                                        continue
+                                    
+                                    # Extract tags from result (format depends on API response structure)
+                                    # ListenBrainz returns tag data that includes popularity/count info
+                                    tags = []
+                                    if isinstance(tag_data, dict):
+                                        # If it's a dict, try to get tags from various possible keys
+                                        if "tags" in tag_data:
+                                            tags = tag_data.get("tags", [])
+                                            if isinstance(tags, dict):
+                                                tags = list(tags.keys()) if tags else []
+                                        elif "tag" in tag_data:
+                                            tags = tag_data.get("tag", [])
+                                    elif isinstance(tag_data, list):
+                                        # If it's already a list, use it directly
+                                        tags = tag_data
+                                    
+                                    if tags:
+                                        # Convert tags to JSON format matching existing genre columns
+                                        tags_json = json.dumps(tags)
+                                        
+                                        # Merge with existing musicbrainz_genres if present
+                                        cursor.execute(
+                                            "SELECT musicbrainz_genres FROM tracks WHERE id = ?",
+                                            (track_id,)
+                                        )
+                                        existing = cursor.fetchone()
+                                        existing_tags = []
+                                        
+                                        if existing and existing[0]:
+                                            try:
+                                                existing_tags = json.loads(existing[0])
+                                                if not isinstance(existing_tags, list):
+                                                    existing_tags = [existing_tags]
+                                            except (json.JSONDecodeError, TypeError):
+                                                existing_tags = []
+                                        
+                                        # Merge and deduplicate tags
+                                        merged_tags = list(dict.fromkeys(existing_tags + tags))  # Preserves order, removes duplicates
+                                        merged_json = json.dumps(merged_tags)
+                                        
+                                        # Update track with merged tags
+                                        cursor.execute(
+                                            "UPDATE tracks SET musicbrainz_genres = ? WHERE id = ?",
+                                            (merged_json, track_id)
+                                        )
+                                        tags_updated += 1
+                                
+                                if tags_updated > 0:
+                                    conn.commit()
+                                    log_info(f"Bulk tag lookup: Updated {tags_updated} tracks with ListenBrainz tags for \"{artist} - {album}\"")
+                                    log_debug(f"Bulk tag lookup: Merged tags with existing musicbrainz_genres for {tags_updated} track(s)")
+                        else:
+                            log_debug(f"Bulk tag lookup: No MBIDs found for album tracks, skipping")
+                    else:
+                        log_debug(f"Bulk tag lookup: MusicBrainz not available, skipping ListenBrainz tags")
+                except Exception as e:
+                    log_debug(f"Bulk tag lookup failed for \"{artist} - {album}\": {e}")
+                    # Continue with single detection even if bulk tag lookup fails
+                # --- End bulk tag lookup section ---
+
                 # CRITICAL FIX: Close the connection BEFORE single detection to prevent lock contention
                 # The original cursor from line ~1949 holds a READ lock on the database.
                 # When detect_single_for_track() creates NEW connections to WRITE, those need to acquire
