@@ -138,7 +138,7 @@ GENRE_WEIGHTS = {
 STANDOUT_CONFIG = {
     'album_zscore_threshold': 0.8,         # Album standout: z >= 0.8 (medium confidence, lowered from 1.0)
     'album_top_n': 2,                     # (DEPRECATED - using gap-based clustering instead)
-    'artist_zscore_threshold': 1.2,       # Artist standout: z >= 1.2 (lowered from 1.5)
+    'artist_zscore_threshold': 2.2,       # Artist standout: z >= 2.2 (popularity standout threshold)
     'artist_top_percentile': 0.10,        # Top 10% of artist catalog
     'artist_min_tracks': 10,              # Min tracks for artist-level filter
     'star_5': {'album_z': 1.0, 'artist_z': 1.2, 'artist_pct': 0.10},  # Requires z >= 1.0 for 5★
