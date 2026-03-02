@@ -2685,10 +2685,10 @@ def popularity_scan(
         sql_params = []
         
         if artist_filter:
-            # Check both artist and album_artist fields to handle compilation albums
-            # (e.g., Various Artists albums where album_artist = "Various Artists" but artist = track artist)
-            sql_conditions.append("(artist = ? OR album_artist = ?)")
-            sql_params.extend([artist_filter, artist_filter])
+            # Artist scans should only include albums owned by that album artist.
+            # Fall back to track artist only when album_artist is missing.
+            sql_conditions.append("(COALESCE(NULLIF(album_artist, ''), artist) = ?)")
+            sql_params.append(artist_filter)
         
         if album_filter and artist_filter:
             sql_conditions.append("album = ?")
@@ -4459,7 +4459,14 @@ def popularity_scan(
                 # Get album type from MusicBrainz with Spotify fallback
                 from api_clients.musicbrainz import get_album_type_with_fallback
                 spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
-                album_type, type_source = get_album_type_with_fallback(artist, album, spotify_album_type, enabled=HAVE_MUSICBRAINZ)
+                pre_detected_album_type = album_type
+                fallback_album_type, type_source = get_album_type_with_fallback(artist, album, spotify_album_type, enabled=HAVE_MUSICBRAINZ)
+                # Preserve stronger local classification from earlier phase.
+                if pre_detected_album_type in ("greatest_hits", "various_artists"):
+                    album_type = pre_detected_album_type
+                    type_source = "local-detected"
+                else:
+                    album_type = fallback_album_type
                 is_compilation = album_type.lower() == 'compilation' if album_type else False
                 log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
                 singles_detected = 0
@@ -4855,6 +4862,30 @@ def popularity_scan(
                 high_conf_count = sum(1 for update in singles_updates if update[0] == 1)
                 log_info(f'Singles detection complete: {singles_detected} high-confidence single(s) detected for "{artist} - {album}" ({len(singles_updates)} tracks checked)')
                 log_debug(f'Singles detection summary - high_conf: {high_conf_count}, total_checked: {len(singles_updates)}')
+
+                # Auto-detect Greatest Hits: if every track on the album is now marked as a single,
+                # treat the album as a greatest hits collection for scan behavior.
+                try:
+                    cursor.execute(
+                        """
+                        SELECT COUNT(*) AS total_tracks,
+                               SUM(CASE WHEN COALESCE(is_single, 0) = 1 THEN 1 ELSE 0 END) AS single_tracks
+                        FROM tracks
+                        WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                          AND album = ?
+                        """,
+                        (artist, album)
+                    )
+                    gh_row = cursor.fetchone()
+                    total_tracks = row_get(gh_row, "total_tracks", 0) if gh_row else 0
+                    single_tracks = row_get(gh_row, "single_tracks", 0) if gh_row else 0
+
+                    if total_tracks >= 5 and single_tracks == total_tracks and album_type not in ("various_artists", "compilation"):
+                        album_type = "greatest_hits"
+                        log_info(f'Auto-detected Greatest Hits by singles ratio: "{artist} - {album}" ({single_tracks}/{total_tracks} tracks marked single)')
+                        log_debug(f'Greatest hits auto-detect applied after singles detection - album_type set to {album_type}')
+                except Exception as e:
+                    log_debug(f'Could not evaluate singles-ratio greatest hits auto-detect for "{artist} - {album}": {e}')
 
                 # POST-PROCESSING: Detect album-level z-score outliers as medium confidence singles
                 # These are tracks that are strong album standouts: zscore >= 2.0 AND popularity >> album mean
