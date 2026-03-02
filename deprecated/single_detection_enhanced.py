@@ -1599,6 +1599,7 @@ def detect_single_enhanced(
         album_mad_scaled = album_mad * 1.4826  # Scale to be comparable to stddev
         album_spread = max(album_mad_scaled, 10.0)  # MIN_SPREAD floor
         album_z = (popularity - album_median) / album_spread if album_spread > 0 else 0
+        log_debug(f"[ZSCORE] Album: median={album_median:.1f}, MAD={album_mad:.1f}, MAD_scaled={album_mad_scaled:.1f}, pop={popularity:.1f}, z={album_z:.2f}")
     else:
         album_z = 0.0
     
@@ -1612,6 +1613,7 @@ def detect_single_enhanced(
             artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
             artist_spread = max(artist_mad_scaled, 10.0)  # MIN_SPREAD floor
             artist_z = (popularity - artist_median) / artist_spread if artist_spread > 0 else 0
+            log_debug(f"[ZSCORE] Artist: median={artist_median:.1f}, MAD={artist_mad:.1f}, MAD_scaled={artist_mad_scaled:.1f}, pop={popularity:.1f}, z={artist_z:.2f}")
         else:
             artist_z = 0.0
     except Exception as e:
