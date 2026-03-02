@@ -5397,6 +5397,11 @@ def album_edit(artist, album):
     track_artist = request.form.get("track_artist", "").strip()  # New: Track artist to apply to all tracks
     release_year = request.form.get("release_year", "").strip() or None
     album_type = request.form.get("album_type", "").strip() or None
+    
+    # Normalize album type - convert standalone "compilation" to "album+compilation"
+    if album_type == "compilation":
+        album_type = "album+compilation"
+    
     album_mbid = request.form.get("album_mbid", "").strip() or None
     album_genres = request.form.get("album_genres", "").strip()
     
