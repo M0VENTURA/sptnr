@@ -4620,6 +4620,21 @@ def popularity_scan(
                 singles_milestone_50 = int(album_track_count * 0.50)
                 singles_milestone_75 = int(album_track_count * 0.75)
                 singles_milestones_logged = set()
+
+                # Adaptive greatest-hits mode during single scan:
+                # If all processed tracks are being detected as singles, switch to full detection
+                # for the rest of the album (including tracks with negative z-scores).
+                force_full_single_detection = (album_type or "").strip().lower() in ("greatest_hits", "compilation", "various_artists")
+                gh_tracks_processed = 0
+                gh_tracks_detected_single = 0
+
+                # Also honor prior state: if every track is already marked single, keep full detection enabled.
+                pre_marked_singles = sum(1 for t in album_tracks if row_get(t, "is_single", 0) == 1)
+                if album_track_count >= 5 and pre_marked_singles == album_track_count:
+                    force_full_single_detection = True
+                    if (album_type or "").strip().lower() == "regular":
+                        album_type = "greatest_hits"
+                    log_info(f'Greatest hits adaptive mode enabled from existing state: "{artist} - {album}" ({pre_marked_singles}/{album_track_count} tracks already marked single)')
                 
                 for track in album_tracks:
                     track_id = track["id"]
@@ -4672,6 +4687,7 @@ def popularity_scan(
                         'ultimate collection', 'complete', 'definitive', 'various artists'
                     ]
                     is_greatest_hits_or_compilation = (
+                        force_full_single_detection or
                         is_compilation or 
                         any(pattern in album_lower for pattern in greatest_hits_patterns)
                     )
@@ -4774,6 +4790,25 @@ def popularity_scan(
                         # Keep sources empty to indicate user-set
                         log_info(f"Preserving user-set single flag for: {title}")
                         log_debug(f"User-set single preserved - track_id: {track_id}, auto_detection: False")
+
+                    # Adaptive greatest-hits promotion during this same single scan:
+                    # once every processed track is being detected as single, continue scanning all remaining tracks.
+                    gh_tracks_processed += 1
+                    if is_single:
+                        gh_tracks_detected_single += 1
+                    if (
+                        not force_full_single_detection
+                        and gh_tracks_processed >= 3
+                        and gh_tracks_detected_single == gh_tracks_processed
+                    ):
+                        force_full_single_detection = True
+                        if (album_type or "").strip().lower() == "regular":
+                            album_type = "greatest_hits"
+                        log_info(
+                            f'Greatest hits adaptive mode enabled during single scan: "{artist} - {album}" '
+                            f'({gh_tracks_detected_single}/{gh_tracks_processed} processed tracks detected as single)'
+                        )
+                        log_debug("Adaptive greatest hits mode now bypasses negative z-score skip for remaining tracks")
                     
                     # Queue single detection results for batch update
                     if is_single or single_sources:
