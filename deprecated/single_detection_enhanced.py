@@ -1532,32 +1532,33 @@ def detect_single_enhanced(
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
-    # STAGE 1: Pre-Filter (with compilation override)
-    if not should_check_track(popularity, album_mean, album_stddev, album_median, album_popularities, spotify_version_count, is_compilation):
-        log_debug(f"[PREFILTER] ✗ REJECTED - Track does not meet pre-filter criteria (not high priority)")
+    # STAGE 1: Pre-Filter Assessment (informational only - does not block detection)
+    # Check priority status for logging purposes, but proceed with all source checks
+    pre_filter_passed = should_check_track(popularity, album_mean, album_stddev, album_median, album_popularities, spotify_version_count, is_compilation)
+    if pre_filter_passed:
+        log_debug(f"[PREFILTER] ✓ PASSED - Track meets priority criteria")
         if verbose:
-            log_debug(f"Pre-filter: Skipping {title} (not high priority)")
-        return result
+            log_debug(f"Pre-filter: {title} (high priority)")
+    else:
+        log_debug(f"[PREFILTER] ℹ Informational - Track does not meet standard pre-filter criteria, but will check authoritative sources")
+        if verbose:
+            log_debug(f"Pre-filter: {title} (lower priority, but checking authoritative sources)")
     
-    log_debug(f"[PREFILTER] ✓ PASSED - Track meets priority criteria")
-    if verbose:
-        log_debug(f"Pre-filter: Checking {title} (high priority)")
-    
-    # ALBUM-LEVEL POPULARITY FILTER
-    # Reject single detection if track popularity is below album median
-    # This prevents album tracks with separate single releases from being incorrectly marked
-    # Uses median instead of mean for robustness against outliers (very popular singles)
+    # ALBUM-LEVEL POPULARITY FILTER (informational)
+    # Track whether track popularity is below album median
+    # Does not block detection, just flags for reference
     album_filter_passed = True
     if album_median > 0 and popularity > 0 and popularity < album_median:
-        log_debug(f"[ALBUM_FILTER] ✗ Album-level popularity filter: pop={popularity:.1f} < album_median={album_median:.1f}")
+        log_debug(f"[ALBUM_FILTER] ℹ Track below album median: pop={popularity:.1f} < album_median={album_median:.1f}")
         if verbose:
-            log_debug(f"Album-level popularity filter: Track {title} (pop={popularity:.1f} < album_median={album_median:.1f})")
+            log_debug(f"Album-level popularity note: Track {title} (pop={popularity:.1f} < album_median={album_median:.1f})")
         album_filter_passed = False
     else:
-        log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, median={album_median:.1f})")
+        log_debug(f"[ALBUM_FILTER] ✓ Track popularity acceptable (pop={popularity:.1f}, median={album_median:.1f})")
     
-    # NOTE: We DON'T return early here anymore - we check all sources regardless of filters
-    # Filters only affect whether it's marked as a single, not whether we detect it
+    # NOTE: Pre-filter is now informational only
+    # Authoritative sources (Discogs, MusicBrainz) are ALWAYS checked regardless of pre-filter status
+    # This ensures metadata-based detection takes precedence over popularity-based filters
     
     # STAGE 2: Discogs (Primary Source) - ALWAYS CHECKED FIRST
     discogs_confirmed = False
