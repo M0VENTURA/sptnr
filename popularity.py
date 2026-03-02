@@ -3049,31 +3049,8 @@ def popularity_scan(
                                         lastfm_bio = artist_info.get("bio", "") or artist_info.get("bio_text", "")
                                         lastfm_image = artist_info.get("image", "")
                                         
-                                        # If we have MusicBrainz artist MBID, try CoverArtArchive for better quality image
-                                        caa_image = ""
-                                        if HAVE_MUSICBRAINZ:
-                                            try:
-                                                mb_search = _run_with_timeout(
-                                                    _get_timeout_safe_musicbrainz_client().search_artists,
-                                                    5,
-                                                    "MusicBrainz artist search timed out",
-                                                    artist
-                                                ) if _get_timeout_safe_musicbrainz_client() else []
-                                                
-                                                if mb_search and len(mb_search) > 0:
-                                                    artist_mbid = mb_search[0].get("id", "")
-                                                    if artist_mbid:
-                                                        caa_image = _run_with_timeout(
-                                                            get_artist_image_from_caa,
-                                                            5,
-                                                            "CoverArtArchive lookup timed out",
-                                                            artist_mbid
-                                                        )
-                                            except Exception as e:
-                                                log_debug(f"CoverArtArchive lookup failed for {artist}: {e}")
-                                        
-                                        # Prefer CoverArtArchive image over Last.fm
-                                        final_image = caa_image or lastfm_image
+                                        # Prefer Last.fm image
+                                        final_image = lastfm_image
                                         
                                         if lastfm_bio or final_image:
                                             cursor.execute("""
@@ -3191,48 +3168,9 @@ def popularity_scan(
                 else:
                     log_debug(f"Last.fm not enabled or API key missing - skipping Last.fm similar artists lookup")
                 
-                # Try ListenBrainz for similar artists (requires MusicBrainz MBID)
-                try:
-                    mb_client = _get_timeout_safe_musicbrainz_client()
-                    if mb_client and HAVE_MUSICBRAINZ:
-                        # Search for artist MBID
-                        mb_results = _run_with_timeout(
-                            mb_client.search_artists,
-                            5,  # 5 second timeout
-                            f"MusicBrainz artist search timed out after 5s",
-                            artist
-                        )
-                        
-                        if mb_results and len(mb_results) > 0:
-                            artist_mbid = mb_results[0].get("id", "")
-                            if artist_mbid:
-                                log_debug(f"Found MusicBrainz MBID for '{artist}': {artist_mbid}")
-                                
-                                # Now fetch similar artists from ListenBrainz using MBID
-                                from api_clients.audiodb_and_listenbrainz import ListenBrainzUserClient
-                                lb_client = ListenBrainzUserClient("")  # Create instance for relationship lookups
-                                
-                                similar_artists_listenbrainz = _run_with_timeout(
-                                    lb_client.get_similar_artists,
-                                    8,  # 8 second timeout
-                                    f"ListenBrainz similar artists lookup timed out after 8s",
-                                    artist_mbid,
-                                    limit=10
-                                )
-                                
-                                if similar_artists_listenbrainz:
-                                    log_info(f"Found {len(similar_artists_listenbrainz)} similar artists for '{artist}' from ListenBrainz")
-                                    log_debug(f"ListenBrainz similar artists: {[a.get('name') for a in similar_artists_listenbrainz]}")
-                                else:
-                                    log_debug(f"No similar artists found for '{artist}' from ListenBrainz")
-                        else:
-                            log_debug(f"Artist '{artist}' not found in MusicBrainz")
-                    else:
-                        log_debug(f"MusicBrainz client not available - skipping ListenBrainz similar artists lookup")
-                except TimeoutError as e:
-                    log_debug(f"ListenBrainz similar artists lookup timed out for {artist}: {e}")
-                except Exception as e:
-                    log_debug(f"ListenBrainz similar artists lookup failed for {artist}: {e}")
+                # ListenBrainz for similar artists is not available
+                # (MusicBrainzClient does not have search_artists method)
+                # Using Last.fm as the primary source for similar artists
                 
                 # Store similar artists in database and prepare JSON for later use
                 if similar_artists_lastfm or similar_artists_listenbrainz:
