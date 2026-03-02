@@ -4381,7 +4381,7 @@ def popularity_scan(
                             score = row_get(track, 'popularity_score', 0)
                             if score <= 0 or artist_stdev == 0:
                                 cursor.execute("""
-                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, star_rating = 1
+                                    UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
                                     WHERE id = ?
                                 """, (track_id,))
                                 continue
