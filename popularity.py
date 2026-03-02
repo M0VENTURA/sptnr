@@ -1759,6 +1759,7 @@ def detect_single_for_track(
     """
     # Use enhanced detection algorithm per problem statement if enabled
     # This implements the exact 8-stage algorithm with pre-filter, Discogs primary, etc.
+    log_debug(f"Advanced detection check - use_advanced_detection={use_advanced_detection}, track_id={track_id}, album={album}, title={title}, artist={artist}")
     if use_advanced_detection and track_id and album:
         conn = None
         try:
@@ -1842,6 +1843,16 @@ def detect_single_for_track(
         finally:
             if conn is not None:
                 conn.close()
+    else:
+        # Advanced detection skipped
+        skip_reason = []
+        if not use_advanced_detection:
+            skip_reason.append("use_advanced_detection=False")
+        if not track_id:
+            skip_reason.append(f"track_id={track_id}")
+        if not album:
+            skip_reason.append(f"album={album}")
+        log_debug(f"Skipping advanced detection for {title}: {', '.join(skip_reason)}")
     
     # Ignore obvious non-singles by keywords
     # Strip cover attributions first so "Song (Live Cover)" becomes "Song (Live)" before checking
