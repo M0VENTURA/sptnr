@@ -725,10 +725,19 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
         top_15_threshold = sorted_scores[top_15_index] if top_15_index < track_count else 0
         top_20_threshold = sorted_scores[top_20_index] if top_20_index < track_count else 0
         
+        # Calculate MAD (Median Absolute Deviation)
+        # MAD is more robust to outliers than standard deviation
+        median_val = median(scores)
+        absolute_deviations = [abs(score - median_val) for score in scores]
+        mad_raw = median(absolute_deviations)
+        # Scale MAD to be comparable to standard deviation (1.4826 is the constant for normal distribution)
+        mad_scaled = mad_raw * 1.4826 if mad_raw > 0 else 0
+        
         return {
             'avg_popularity': mean(scores),
             'median_popularity': median(scores),
             'stddev_popularity': stdev(scores) if len(scores) > 1 else 0,
+            'mad_popularity': mad_scaled,  # NEW: MAD for robust z-score calculation
             'track_count': len(scores),
             'top_15_percentile': top_15_threshold,  # Top 15% of artist's tracks
             'top_20_percentile': top_20_threshold   # Top 20% of artist's tracks
@@ -739,6 +748,7 @@ def calculate_artist_popularity_stats(artist_name: str, conn: sqlite3.Connection
             'avg_popularity': 0,
             'median_popularity': 0,
             'stddev_popularity': 0,
+            'mad_popularity': 0,
             'track_count': 0,
             'top_15_percentile': 0,
             'top_20_percentile': 0
@@ -4342,16 +4352,17 @@ def popularity_scan(
                     #
                     # This section applies album- and artist-normalized standout detection and star rating assignment.
                     #
-                    # Album standout: z >= config or top N in album
-                    # Artist standout: z >= config and in top X% of artist catalog
+                    # Album standout: z >= config or top N in album (using median+MAD)
+                    # Artist standout: z >= config and in top X% of artist catalog (using median+MAD)
                     # 5★: Both album and artist standout, top 10% of artist
                     # 4★: Album standout and artist z >= 1.0 or top 20%
                     # 3★: Album standout only or above album median
-                    # 2★: Not standout, but above album mean
-                    # 1★: Below album mean or excluded from stats
+                    # 2★: Not standout, but above album median
+                    # 1★: Below album median or excluded from stats
                     try:
-                        from statistics import mean as stat_mean, stdev as stat_stdev
+                        from statistics import median as stat_median_standout
                         from popularity_helpers import get_top_standout_tracks_with_gap
+                        MIN_SPREAD = 10.0  # Prevent flat-album noise amplification
                         log_info(f'Analyzing standout/star ratings for artist: {artist}')
                         cursor.execute("""
                             SELECT id, title, album, popularity_score, lastfm_track_playcount FROM tracks
@@ -4368,8 +4379,14 @@ def popularity_scan(
                         artist_scores = [row_get(t, 'popularity_score', 0) for t in artist_tracks if row_get(t, 'popularity_score', 0) > 0]
                         if len(artist_scores) < 2:
                             return
-                        artist_mean = stat_mean(artist_scores)
-                        artist_stdev = stat_stdev(artist_scores) if len(artist_scores) > 1 else 1
+                        
+                        # Use median + MAD for artist-level statistics
+                        artist_median = stat_median_standout(artist_scores)
+                        artist_absolute_devs = [abs(s - artist_median) for s in artist_scores]
+                        artist_mad = stat_median_standout(artist_absolute_devs)
+                        artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
+                        artist_spread = max(artist_mad_scaled, MIN_SPREAD)  # Apply floor
+                        
                         sorted_artist_scores = sorted(artist_scores, reverse=True)
                         def artist_percentile(score):
                             return (sorted_artist_scores.index(score) + 1) / len(sorted_artist_scores)
@@ -4389,20 +4406,23 @@ def popularity_scan(
                             track_title = row_get(track, 'title')
                             track_album = row_get(track, 'album', '')
                             score = row_get(track, 'popularity_score', 0)
-                            if score <= 0 or artist_stdev == 0:
+                            if score <= 0 or artist_spread == 0:
                                 cursor.execute("""
                                     UPDATE tracks SET is_standout_track = 0, artist_z_score = 0, stars = 1
                                     WHERE id = ?
                                 """, (track_id,))
                                 continue
-                            # Album-level stats
+                            # Album-level stats using median + MAD
                             cursor.execute("""
                                 SELECT popularity_score FROM tracks WHERE artist = ? AND album = ? AND popularity_score > 0
                             """, (artist, track_album))
                             track_album_scores = [row[0] for row in cursor.fetchall()]
-                            track_album_mean = stat_mean(track_album_scores) if track_album_scores else 0
-                            track_album_stdev = stat_stdev(track_album_scores) if len(track_album_scores) > 1 else 1
-                            album_z = (score - track_album_mean) / track_album_stdev if track_album_stdev > 0 else 0
+                            track_album_median = stat_median_standout(track_album_scores) if track_album_scores else 0
+                            track_album_abs_devs = [abs(s - track_album_median) for s in track_album_scores]
+                            track_album_mad = stat_median_standout(track_album_abs_devs) if len(track_album_scores) > 1 else 0
+                            track_album_mad_scaled = track_album_mad * 1.4826
+                            track_album_spread = max(track_album_mad_scaled, MIN_SPREAD)
+                            album_z = (score - track_album_median) / track_album_spread if track_album_spread > 0 else 0
                             
                             # Check if track is in the standout cluster for this album
                             # Uses gap-based clustering to handle multiple singles with similar high popularity
@@ -4412,8 +4432,8 @@ def popularity_scan(
                             # This ensures tracks are statistically significant AND part of top-performing group
                             # Handles both single standouts and clusters of multiple singles
                             is_album_standout = (album_z >= STANDOUT_CONFIG['album_zscore_threshold'] and is_in_standout_cluster)
-                            # Artist-level stats
-                            artist_z = (score - artist_mean) / artist_stdev if artist_stdev > 0 else 0
+                            # Artist-level stats using median + MAD
+                            artist_z = (score - artist_median) / artist_spread if artist_spread > 0 else 0
                             is_artist_standout = (artist_z >= STANDOUT_CONFIG['artist_zscore_threshold'] and artist_percentile(score) <= STANDOUT_CONFIG['artist_top_percentile'])
                             # Star rating assignment
                             # 5★ requires album z >= 1.0 (high confidence) + artist standout
@@ -4948,12 +4968,21 @@ def popularity_scan(
                     
                     if zscore_update_tracks:
                         # Calculate album statistics for z-score
-                        from statistics import mean as stat_mean_post, stdev as stat_stdev_post
+                        from statistics import median as stat_median_post
                         album_pops = [t["popularity_score"] for t in zscore_update_tracks if t["popularity_score"]]
                         
                         if album_pops and len(album_pops) > 1:
-                            album_pop_mean = stat_mean_post(album_pops)
-                            album_pop_stddev = stat_stdev_post(album_pops)
+                            # Use median + MAD for robust z-score calculation
+                            MIN_SPREAD = 10.0  # Prevent flat albums from over-amplifying small differences
+                            album_pop_median = stat_median_post(album_pops)
+                            
+                            # Calculate MAD (Median Absolute Deviation)
+                            absolute_deviations = [abs(pop - album_pop_median) for pop in album_pops]
+                            album_pop_mad = stat_median_post(absolute_deviations)
+                            # Scale MAD to be comparable to standard deviation (1.4826 for normal distribution)
+                            album_pop_mad_scaled = album_pop_mad * 1.4826
+                            # Apply MIN_SPREAD floor to prevent flat-album over-amplification
+                            album_pop_spread = max(album_pop_mad_scaled, MIN_SPREAD)
                             
                             zscore_outliers = []
                             for track in zscore_update_tracks:
@@ -4968,14 +4997,14 @@ def popularity_scan(
                                 if track_single_confidence == "high":
                                     continue
                                 
-                                # Calculate album z-score
-                                if album_pop_stddev > 0:
-                                    album_zscore = (track_pop - album_pop_mean) / album_pop_stddev
+                                # Calculate album z-score using median + MAD
+                                if album_pop_spread > 0:
+                                    album_zscore =(track_pop - album_pop_median) / album_pop_spread
                                 else:
                                     album_zscore = 0
                                 
                                 # Check if this is a strong album outlier
-                                if album_zscore >= 2.0 and track_pop > (album_pop_mean * 1.5):
+                                if album_zscore >= 2.0 and track_pop > (album_pop_median * 1.5):
                                     # This is a strong standout - mark as medium confidence unless already marked
                                     if not track_single_confidence or track_single_confidence == "low":
                                         try:
@@ -4994,7 +5023,7 @@ def popularity_scan(
                                             track_id
                                         ))
                                         
-                                        log_debug(f"Album z-score detection: {track_title} (zscore={album_zscore:.2f}, pop={track_pop:.1f} vs mean={album_pop_mean:.1f})")
+                                        log_debug(f"Album z-score detection: {track_title} (zscore={album_zscore:.2f}, pop={track_pop:.1f} vs median={album_pop_median:.1f})")
                             
                             # Batch update z-score outliers
                             if zscore_outliers:
@@ -5023,15 +5052,15 @@ def popularity_scan(
                 # Just update the artist_stats table with popularity statistics
                 if artist_stats['track_count'] > 0:
                     # Update artist_stats table with popularity statistics
-                    # Columns: mean_popularity, median_popularity, popularity_stddev
+                    # Columns: mean_popularity, median_popularity, popularity_stddev, popularity_mad
                     cursor.execute("""
                         UPDATE artist_stats 
-                        SET mean_popularity = ?, median_popularity = ?, popularity_stddev = ?
+                        SET mean_popularity = ?, median_popularity = ?, popularity_stddev = ?, popularity_mad = ?
                         WHERE artist_name = ?
                     """, (artist_stats['avg_popularity'], artist_stats['median_popularity'], 
-                          artist_stats['stddev_popularity'], artist))
+                          artist_stats['stddev_popularity'], artist_stats['mad_popularity'], artist))
                     conn.commit()
-                    log_debug(f"Updated artist_stats table for {artist} - mean: {artist_stats['avg_popularity']:.1f}, median: {artist_stats['median_popularity']:.1f}, stddev: {artist_stats['stddev_popularity']:.1f}")
+                    log_debug(f"Updated artist_stats table for {artist} - mean: {artist_stats['avg_popularity']:.1f}, median: {artist_stats['median_popularity']:.1f}, stddev: {artist_stats['stddev_popularity']:.1f}, MAD: {artist_stats['mad_popularity']:.1f}")
                 
                 # Get all tracks for this album with their popularity scores and single detection
                 # Try matching on artist field first, then fall back to album_artist field
@@ -5080,17 +5109,30 @@ def popularity_scan(
                     # whether to apply z-score based single detection for each track.
                     
                     # Import with aliases to avoid shadowing issues from local imports elsewhere
-                    from statistics import mean as stat_mean, stdev as stat_stdev
+                    from statistics import median as stat_median
+                    
+                    # MIN_SPREAD floor to prevent flat albums from over-amplifying small differences
+                    MIN_SPREAD = 10.0
                     
                     if valid_scores:
-                        popularity_mean = stat_mean(valid_scores)
-                        popularity_stddev = stat_stdev(valid_scores) if len(valid_scores) > 1 else 0
-                        log_debug(f"Star rating statistics - mean: {popularity_mean}, stddev: {popularity_stddev}, valid_scores_count: {len(valid_scores)}")
-                        # Calculate z-scores for all tracks
+                        # Use median + MAD for robust z-score calculation
+                        popularity_median = stat_median(valid_scores)
+                        
+                        # Calculate MAD (Median Absolute Deviation)
+                        absolute_deviations = [abs(score - popularity_median) for score in valid_scores]
+                        popularity_mad = stat_median(absolute_deviations)
+                        # Scale MAD to be comparable to standard deviation (1.4826 for normal distribution)
+                        popularity_mad_scaled = popularity_mad * 1.4826
+                        # Apply MIN_SPREAD floor
+                        popularity_spread = max(popularity_mad_scaled, MIN_SPREAD)
+                        
+                        log_debug(f"Star rating statistics - median: {popularity_median}, MAD: {popularity_mad_scaled:.1f}, spread (with floor): {popularity_spread:.1f}, valid_scores_count: {len(valid_scores)}")
+                        
+                        # Calculate z-scores for all tracks using median+MAD
                         zscores = []
                         for score in valid_scores:
-                            if popularity_stddev > 0:
-                                zscore = (score - popularity_mean) / popularity_stddev
+                            if popularity_spread > 0:
+                                zscore = (score - popularity_median) / popularity_spread
                             else:
                                 zscore = 0
                             zscores.append(zscore)
@@ -5100,20 +5142,21 @@ def popularity_scan(
                         if zscores:
                             top_50_count = max(1, len(zscores) // 2)
                             top_50_zscores = heapq.nlargest(top_50_count, zscores)
+                            from statistics import mean as stat_mean
                             mean_top50_zscore = stat_mean(top_50_zscores)
                         else:
                             mean_top50_zscore = 0
                         
                         # Load z-score thresholds from config
                         zscore_thresholds = get_zscore_thresholds()
-                        high_conf_threshold = popularity_mean + zscore_thresholds['high']
+                        high_conf_threshold = popularity_median + zscore_thresholds['high']
                         medium_conf_zscore_threshold = mean_top50_zscore + zscore_thresholds['medium']
                         
-                        log_info(f"Album stats: mean={popularity_mean:.1f}, stddev={popularity_stddev:.1f}")
+                        log_info(f"Album stats: median={popularity_median:.1f}, MAD={popularity_mad_scaled:.1f}, spread={popularity_spread:.1f}")
                         log_debug(f"Confidence thresholds - high: {high_conf_threshold:.1f}, medium_zscore: {medium_conf_zscore_threshold:.2f}")
                     else:
-                        popularity_mean = DEFAULT_POPULARITY_MEAN
-                        popularity_stddev = 0
+                        popularity_median = DEFAULT_POPULARITY_MEAN
+                        popularity_spread = 0
                         zscore_thresholds = get_zscore_thresholds()
                         high_conf_threshold = DEFAULT_POPULARITY_MEAN + zscore_thresholds['high']
                         medium_conf_zscore_threshold = zscore_thresholds['medium']
@@ -5158,9 +5201,9 @@ def popularity_scan(
                         # Excluded tracks should not participate in confidence-based star rating upgrades
                         is_excluded_track = i in excluded_indices
                         
-                        # Calculate z-score for this track
-                        if popularity_stddev > 0 and popularity_score > 0:
-                            track_zscore = (popularity_score - popularity_mean) / popularity_stddev
+                        # Calculate z-score for this track using median + MAD
+                        if popularity_spread > 0 and popularity_score > 0:
+                            track_zscore = (popularity_score - popularity_median) / popularity_spread
                         else:
                             track_zscore = 0
                         

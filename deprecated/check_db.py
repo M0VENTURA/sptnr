@@ -250,6 +250,7 @@ required_artist_stats_columns = {
     "mean_popularity": "REAL",              # Mean (average) popularity across all tracks
     "median_popularity": "REAL",            # Median popularity across all tracks (legacy)
     "popularity_stddev": "REAL",            # Standard deviation of popularity
+    "popularity_mad": "REAL",               # Median Absolute Deviation (MAD) - robust alternative to stddev
     "mean_popularity_adjusted": "REAL"      # Mean popularity adjusted for pre-2005 releases
 }
 

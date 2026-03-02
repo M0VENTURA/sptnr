@@ -454,18 +454,24 @@ def apply_mean_popularity_adjustment(
     conn = None
 ) -> float:
     """
-    Apply mean-based popularity adjustment with optional time decay for pre-2005 releases.
+    Apply median+MAD-based popularity adjustment with optional time decay for pre-2005 releases.
     
     Algorithm:
-    1. Calculate track z-score relative to artist mean: (track_pop - artist_mean) / artist_stddev
+    1. Calculate track z-score relative to artist median: (track_pop - artist_median) / max(artist_MAD, MIN_SPREAD)
     2. Apply time decay for releases before 2005 (account for sparse Last.fm data pre-2005)
     3. Convert z-score to 0-100 scale using formula: 50 + (z_score * 16.7)
+    
+    Why median+MAD instead of mean+stddev:
+    - Median is robust to outliers and skewed distributions
+    - MAD (Median Absolute Deviation) is less sensitive to extreme values
+    - MIN_SPREAD floor prevents flat albums from over-amplifying small differences
+    - Better handles artists with varied catalog quality (e.g., hits + deep cuts)
     
     Rationale:
     - Avoids algorithmic bias (Spotify weighting issue)
     - Artist context improves accuracy (top 5% of artist > absolute score)
     - Time adjustment acknowledges data sparsity pre-2005
-    - Z-score threshold of 1.8 aligns with single detection logic
+    - Z-score threshold of 1.0 aligns with "popular for this artist" classification
     
     Args:
         track_popularity: Current popularity score (0-100, weighted average)
@@ -479,13 +485,16 @@ def apply_mean_popularity_adjustment(
     if track_popularity <= 0:
         return 0.0
     
+    # MIN_SPREAD floor to prevent flat-album over-amplification
+    MIN_SPREAD = 10.0
+    
     with get_db_connection_context(conn) as db_conn:
         try:
             cursor = db_conn.cursor()
             
-            # Fetch artist statistics (mean, stddev)
+            # Fetch artist statistics (median, MAD)
             cursor.execute("""
-                SELECT mean_popularity, popularity_stddev
+                SELECT median_popularity, popularity_mad
                 FROM artist_stats
                 WHERE artist_name = ?
             """, (artist_name,))
@@ -495,14 +504,24 @@ def apply_mean_popularity_adjustment(
                 # Artist stats not yet computed, return original score
                 return track_popularity
             
-            artist_mean, artist_stddev = row[0], row[1]
+            artist_median, artist_mad = row[0], row[1]
             
-            if artist_mean is None or artist_mean <= 0:
-                # No valid mean, return original score
+            if artist_median is None or artist_median <= 0:
+                # No valid median, return original score
                 return track_popularity
             
-            # Calculate z-score relative to artist mean
-            z_score = calculate_track_zscore(track_popularity, artist_mean, artist_stddev)
+            # Apply MIN_SPREAD floor to prevent flat-album noise amplification
+            # For flat albums (low MAD), MIN_SPREAD prevents tiny differences
+            # from being turned into large z-scores
+            artist_spread = max(artist_mad if artist_mad else 0, MIN_SPREAD)
+            
+            # Calculate z-score relative to artist median
+            # Note: calculate_track_zscore expects (score, center, spread)
+            # We're now passing median as center and MAD (with floor) as spread
+            if artist_spread > 0:
+                z_score = (track_popularity - artist_median) / artist_spread
+            else:
+                z_score = 0
             
             # Apply time decay for pre-2005 releases
             # Pre-2005: Last.fm had fewer active users, resulting in sparse/incomplete data
@@ -514,17 +533,17 @@ def apply_mean_popularity_adjustment(
                 # This gives ~4% reduction per year pre-2005
                 decay_factor = max(0.2, 1.0 - (years_before_2005 * 0.04))
                 z_score *= decay_factor
-                logging.debug(f"Applied time decay to '{artist_name}' release ({release_year}): z_score {(track_popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0:.2f} -> {z_score:.2f} (decay_factor={decay_factor:.2f})")
+                logging.debug(f"Applied time decay to '{artist_name}' release ({release_year}): z_score {(track_popularity - artist_median) / artist_spread if artist_spread > 0 else 0:.2f} -> {z_score:.2f} (decay_factor={decay_factor:.2f})")
             
             # Convert z-score to 0-100 scale
             adjusted_score = zscore_to_popularity(z_score)
             
-            logging.debug(f"Mean popularity adjustment for '{artist_name}': original={track_popularity:.1f}, z_score={z_score:.2f}, adjusted={adjusted_score:.1f} (artist_mean={artist_mean:.1f}, stddev={artist_stddev:.1f})")
+            logging.debug(f"Median+MAD popularity adjustment for '{artist_name}': original={track_popularity:.1f}, z_score={z_score:.2f}, adjusted={adjusted_score:.1f} (artist_median={artist_median:.1f}, MAD={artist_mad:.1f}, spread={artist_spread:.1f})")
             
             return adjusted_score
             
         except Exception as e:
-            logging.debug(f"Error applying mean popularity adjustment for '{artist_name}': {e}")
+            logging.debug(f"Error applying median+MAD popularity adjustment for '{artist_name}': {e}")
             return track_popularity
 
 
