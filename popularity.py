@@ -4677,22 +4677,22 @@ def popularity_scan(
                         any(pattern in album_lower for pattern in greatest_hits_patterns)
                     )
 
-                    if is_regular_album and not is_greatest_hits_or_compilation:
-                        # For regular albums, only run single detection on tracks above album median
-                        # This filters out low-popularity deep cuts that are unlikely to be singles
-                        track_popularity = row_get(track, 'popularity_score', 0)
+                    # Filter single detection by z-score for regular albums
+                    # Skip detection for tracks below album average (negative z-score) unless it's a special collection
+                    if not is_greatest_hits_or_compilation:
+                        # Get pre-calculated z-score (already computed above at line 4595)
+                        track_zscore = track_zscores.get(track_id, 0.0)
                         
-                        if track_popularity > 0 and album_median_popularity > 0:
-                            if track_popularity < album_median_popularity:
-                                # Below album median, skip single detection
-                                skip_single_detection = True
-                                log_debug(f"Skipping single detection for '{title}' (popularity: {track_popularity:.1f} < album median: {album_median_popularity:.1f})")
-                        elif track_popularity <= 0:
-                            # No popularity score, skip single detection
+                        # For regular albums, skip single detection if z-score is negative (below album average)
+                        # Rationale: Below-average tracks are unlikely to be real singles
+                        # Exception: For compilations/greatest hits, run detection on all tracks (different popularity patterns)
+                        if track_zscore < 0.0:
                             skip_single_detection = True
-                            log_debug(f"Skipping single detection for '{title}' (no popularity score)")
-                    elif is_greatest_hits_or_compilation:
-                        log_debug(f"Greatest hits/compilation detected - running single detection on all tracks")
+                            log_debug(f"Skipping single detection for '{title}' (z-score: {track_zscore:.2f} < 0.0 - below album average)")
+                    else:
+                        # Greatest hits/compilation/various artists: Run detection on all tracks
+                        # These collections have different popularity patterns, so average tracks can still be genuine singles
+                        log_debug(f"Greatest hits/compilation/various artists detected - running single detection on all tracks")
                     
                     # Skip single detection if filtered out
                     if skip_single_detection:
