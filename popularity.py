@@ -208,6 +208,26 @@ def strip_parentheses(title: str) -> str:
     return re.sub(r'\s*\([^)]*\)\s*$', '', title).strip()
 
 
+def is_compilation_type(album_type: str) -> bool:
+    """
+    Check if album type indicates compilation.
+    
+    Handles both:
+    - Old format: 'compilation' (standalone)
+    - New MusicBrainz secondary type format: 'album+compilation'
+    
+    Args:
+        album_type: Album type string from database or MusicBrainz
+        
+    Returns:
+        True if album is a compilation, False otherwise
+    """
+    if not album_type:
+        return False
+    album_type_lower = album_type.lower()
+    return album_type_lower == 'compilation' or '+compilation' in album_type_lower
+
+
 def should_exclude_track_from_stats(title: str, album: str = "") -> bool:
     """
     Determine if a track should be excluded from album/artist statistics calculations.
@@ -3456,11 +3476,14 @@ def popularity_scan(
                     log_info(f'Starting popularity scan for album: "{artist} - {album}"')
                 
                 # Detect if this is a live/unplugged album
-                is_live_album = is_live_or_alternate_album(album)
+                # Check album type from MusicBrainz/Spotify first, fall back to name pattern detection
+                album_type_from_field = album_tracks[0].get('spotify_album_type', '') if album_tracks else ''
+                is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
+                
                 if is_live_album:
                     log_info(f'Detected live/unplugged album: "{album}"')
                     log_info(f'Track lookups will include album context to avoid matching studio versions')
-                    log_debug(f'Live album detection: album="{album}"')
+                    log_debug(f'Live album detection: album="{album}", album_type="{album_type_from_field}"')
                     
                     # Update all track titles in this album to add (Live) suffix if not already present
                     live_tracks_updated = 0
@@ -4618,7 +4641,7 @@ def popularity_scan(
                     type_source = "local-detected"
                 else:
                     album_type = fallback_album_type
-                is_compilation = album_type.lower() == 'compilation' if album_type else False
+                is_compilation = is_compilation_type(album_type)
                 log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
                 singles_detected = 0
                 
@@ -4776,7 +4799,11 @@ def popularity_scan(
                 # Adaptive greatest-hits mode during single scan:
                 # If all processed tracks are being detected as singles, switch to full detection
                 # for the rest of the album (including tracks with negative z-scores).
-                force_full_single_detection = (album_type or "").strip().lower() in ("greatest_hits", "compilation", "various_artists")
+                album_type_lower = (album_type or "").strip().lower()
+                force_full_single_detection = (
+                    album_type_lower in ("greatest_hits", "various_artists") or
+                    is_compilation_type(album_type)
+                )
                 gh_tracks_processed = 0
                 gh_tracks_detected_single = 0
 

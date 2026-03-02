@@ -1087,10 +1087,24 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation")
                 return ("compilation", "musicbrainz")
             
-            # Return primary type from MusicBrainz
+            # Combine primary type with secondary types for enhanced classification
+            # Priority order: Live > Remix > Soundtrack > Spokenword
+            album_type = primary_type
             if primary_type in ("album", "single", "ep"):
-                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={primary_type}")
-                return (primary_type, "musicbrainz")
+                # Check for secondary type modifiers
+                if "live" in secondary_types:
+                    album_type = f"{primary_type}+live"
+                elif "remix" in secondary_types:
+                    album_type = f"{primary_type}+remix"
+                elif "soundtrack" in secondary_types:
+                    album_type = f"{primary_type}+soundtrack"
+                elif "spokenword" in secondary_types:
+                    album_type = f"{primary_type}+spokenword"
+                elif "compilation" in secondary_types:
+                    album_type = f"{primary_type}+compilation"
+                
+                logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' type={album_type} (primary={primary_type}, secondary={secondary_types})")
+                return (album_type, "musicbrainz")
         
         # MusicBrainz didn't find this album, fall back to Spotify
         if spotify_album_type:
