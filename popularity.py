@@ -5303,13 +5303,13 @@ def popularity_scan(
                                         stars = 5
                                         log_info(f"5-star assignment: {title} (high-confidence single)")
                                         log_debug(f"High confidence single detected - track_id: {track_id}")
-                                    # Medium confidence with 2+ sources gets 4 stars (not 5)
+                                    # Medium confidence with 2+ sources gets 5 stars
                                     elif single_confidence == "medium":
                                         # Count the number of medium-confidence sources
                                         # Each unique source in single_sources represents a medium-confidence method
                                         medium_conf_count = len(single_sources) if single_sources else 0
                                         if medium_conf_count >= 2 and has_iterative_zscore:
-                                            stars = 4  # Max 4 stars for medium confidence
+                                            stars = 5  # 2+ medium sources + iterative z-score = 5 stars
                                             # Upgrade is_single flag for medium confidence tracks with 2+ sources
                                             if not is_single:
                                                 single_upgrades.append(track_id)

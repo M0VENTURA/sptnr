@@ -267,7 +267,10 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     _ensure_clients_from_config()
     if _lastfm_client is None:
         return {"track_play": 0}
-    normalized_title = normalize_title_for_lastfm(strip_cover_attribution(title))
+    stripped_title = strip_cover_attribution(title)
+    normalized_title = normalize_title_for_lastfm(stripped_title)
+    if stripped_title != normalized_title:
+        logging.debug(f"Title normalization: '{stripped_title}' → '{normalized_title}'")
     return _lastfm_client.get_track_info(artist, normalized_title)
 
 
