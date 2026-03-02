@@ -5190,7 +5190,7 @@ def popularity_scan(
                                         log_info(f"5-star assignment: {title} (high-confidence single)")
                                         log_debug(f"High confidence single detected - track_id: {track_id}")
                                     elif single_confidence == "medium":
-                                        # Medium confidence: depends on number of sources
+                                        # Medium confidence: depends on number of sources AND z-score strength
                                         medium_conf_count = len(single_sources) if single_sources else 0
                                         if medium_conf_count >= 2 and track_zscore > 0.0:
                                             stars = 5  # 2+ medium sources + positive z-score = 5 stars
@@ -5200,8 +5200,18 @@ def popularity_scan(
                                             else:
                                                 log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f})")
                                             log_debug(f"Medium confidence with {medium_conf_count} sources + positive z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                        elif medium_conf_count >= 1 and track_zscore >= 2.0:
+                                            # Single detection source + very strong album standout (z >= 2.0) = 5 stars
+                                            # Example: MusicBrainz detects as compilation single, AND it's album's strongest track
+                                            stars = 5
+                                            if not is_single:
+                                                single_upgrades.append(track_id)
+                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence source + very strong standout z-score={track_zscore:.2f}) - upgraded to single")
+                                            else:
+                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence source + very strong standout z-score={track_zscore:.2f})")
+                                            log_debug(f"Medium confidence with {medium_conf_count} source + very strong z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                         else:
-                                            # Medium confidence with only 1 source or z-score <= 0: assign as 3-star
+                                            # Medium confidence with only 1 source and weak z-score: assign as 3-star
                                             stars = 3
                                             log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence source(s), zscore={track_zscore:.2f})")
                                             log_debug(f"Medium confidence with {medium_conf_count} sources - track_id: {track_id}, limiting to 3 stars")
