@@ -4418,7 +4418,7 @@ def popularity_scan(
                             else:
                                 star = 1
                             cursor.execute("""
-                                UPDATE tracks SET is_standout_track = ?, artist_z_score = ?, star_rating = ?
+                                UPDATE tracks SET is_standout_track = ?, artist_z_score = ?, stars = ?
                                 WHERE id = ?
                             """, (1 if is_album_standout or is_artist_standout else 0, artist_z, star, track_id))
                             log_debug(f"Track: {track_title} | Score: {score:.1f} | Album_z: {album_z:.2f} | Artist_z: {artist_z:.2f} | Album_standout: {is_album_standout} | Artist_standout: {is_artist_standout} | Star: {star}")
