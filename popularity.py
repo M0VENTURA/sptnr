@@ -5125,10 +5125,17 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
+                            # **PRIORITY**: Any standout track is elevated to 5★
+                            # This enforces the simple model: base tracks are 1-4★, standouts/singles are 5★.
+                            if is_standout_track:
+                                stars = 5
+                                is_popularity_based_5star = True
+                                log_info(f"5-star assignment: {title} (standout track)")
+                                log_debug(f"Standout elevation applied - track_id: {track_id}, is_standout_track: {is_standout_track}")
                             # **PRIORITY**: Top z-score cluster tracks with z > 1 get 5★ (Popularity)
                             # These are the peak standouts from the album based on z-score detection
                             # BUT: Only if they are NOT detected singles (preserve pure popularity rating)
-                            if track_id in top_cluster_tracks:
+                            elif track_id in top_cluster_tracks:
                                 # Top cluster + strong z-score + not a detected single = 5★
                                 if track_zscore > 1.0 and not is_single:
                                     stars = 5
@@ -5261,7 +5268,7 @@ def popularity_scan(
                             # Only downgrade popular-based 5★ tracks on underperforming albums.
                             # Single-detection-based 5★ tracks (high/medium confidence, user-set) should NOT be downgraded
                             # because their 5★ status is confirmed by detection sources, not just popularity.
-                            if album_is_underperforming and is_popularity_based_5star:
+                            if album_is_underperforming and is_popularity_based_5star and not is_standout_track:
                                 median_popularity = artist_stats.get('median_popularity', 0) if artist_stats else 0
                                 if median_popularity > 0:
                                     # Only downgrade if track popularity is also below artist median
