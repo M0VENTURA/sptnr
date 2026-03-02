@@ -1222,7 +1222,7 @@ def determine_final_status(
     
     # Z-score inference for confidence ONLY
     # Per problem statement: popularity outliers alone cannot be singles
-    # However, artist-level standouts can get medium or high confidence without metadata based on z-scores
+    # Z-scores are INFORMATIONAL only - medium/high confidence requires explicit metadata sources
     # Determine if z-score detection is enabled
     use_zscore_detection = (not album_is_underperforming) or is_artist_level_standout
     log_debug(f"[CONFIDENCE] Z-score path: use_zscore_detection={use_zscore_detection} (album_underperforming={album_is_underperforming}, artist_standout={is_artist_level_standout})")
@@ -1247,20 +1247,9 @@ def determine_final_status(
             if album_z >= 0.2 and spotify_version_count >= 3:
                 log_debug(f"[CONFIDENCE] → RETURNING 'low' (z-score: album_z >= 0.2 AND version_count >= 3)")
                 return 'low'
-        
-        # Artist-level standouts WITHOUT metadata (popular across entire artist)
-        # HIGH: artist_z >= high threshold without sources
-        elif is_artist_level_standout and artist_z >= zscore_high_threshold:
-            log_debug(f"[CONFIDENCE] → RETURNING 'high' (artist-level standout without metadata, artist_z={artist_z:.2f} >= high_threshold={zscore_high_threshold})")
-            return 'high'
-        
-        # MEDIUM: artist-level standouts between medium and high thresholds
-        elif is_artist_level_standout and artist_z >= zscore_medium_threshold:
-            log_debug(f"[CONFIDENCE] → RETURNING 'medium' (artist-level standout without metadata, artist_z={artist_z:.2f} >= medium_threshold={zscore_medium_threshold})")
-            return 'medium'
     
-    # No confidence indicators
-    log_debug(f"[CONFIDENCE] → RETURNING 'none' (no confidence indicators found)")
+    # No confidence indicators (z-scores alone don't count toward medium/high without metadata)
+    log_debug(f"[CONFIDENCE] → RETURNING 'none' (z-score detection alone is not sufficient - metadata sources required for medium/high confidence)")
     return 'none'
 
 
@@ -2376,18 +2365,11 @@ def detect_single_enhanced(
         album_is_underperforming,
         is_artist_level_standout
     )
-    # NOTE: Z-score inference is used for confidence calculation only, NOT added to sources
-    # Per problem statement: z-score should not appear as a high-confidence source
-    if popularity_inferred:
-        # Record the popularity inference method(s) used
-        if is_artist_level_standout and album_z >= 0.6:
-            result['single_sources'].append('popularity_artist_standout')
-        elif album_z >= 1.0:
-            result['single_sources'].append('popularity_album_standout')
-        else:
-            result['single_sources'].append('popularity_inference')
-        if verbose:
-            log_debug(f"Popularity: Inferred single for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}, confidence={popularity_confidence})")
+    # NOTE: Z-score inference is informational only - NOT added to sources
+    # Medium/high confidence requires explicit metadata sources only
+    # (Last.fm, Spotify, MusicBrainz, Discogs video, Radio Edit)
+    if verbose and popularity_inferred:
+        log_debug(f"Popularity: Z-score indicators present for {title} (album_z={album_z:.2f}, artist_z={artist_z:.2f}) - but not counted toward confidence without metadata sources")
     elif version_count_standout:
         # Version count standout is medium confidence but doesn't mark as single
         result['single_sources'].append('version_count')
