@@ -4443,7 +4443,7 @@ def popularity_scan(
                                 star = 4
                             elif is_album_standout:
                                 star = 3
-                            elif track_album_mean and score > track_album_mean:
+                            elif track_album_median and score > track_album_median:
                                 star = 2
                             else:
                                 star = 1

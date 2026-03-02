@@ -1001,21 +1001,23 @@ def should_check_track(
 # Stage 5: Popularity-Based Inference
 # ============================================================================
 
-def calculate_z_score_strict(popularity: float, pop_mean: float, pop_stddev: float) -> float:
+def calculate_z_score_strict(popularity: float, pop_median: float, pop_mad_scaled: float) -> float:
     """
-    Calculate z-score for a track.
+    Calculate z-score for a track using median + MAD (Median Absolute Deviation).
+    
+    This provides robust statistical measurement less susceptible to outliers than mean+stddev.
     
     Args:
         popularity: Track popularity score
-        pop_mean: Mean popularity (album or artist level)
-        pop_stddev: Standard deviation (album or artist level)
-    
+        pop_median: Median popularity (album or artist level)
+        pop_mad_scaled: MAD scaled by 1.4826 to be comparable to stddev (album or artist level)
+        
     Returns:
-        Z-score value (0 if stddev is 0)
+        Z-score value (0 if MAD is 0)
     """
-    if pop_stddev == 0:
+    if pop_mad_scaled == 0:
         return 0.0
-    return (popularity - pop_mean) / pop_stddev
+    return (popularity - pop_median) / pop_mad_scaled
 
 
 def infer_from_popularity(
@@ -1585,11 +1587,36 @@ def detect_single_enhanced(
                 log_info(f"   ⓘ Discogs client is disabled")
     
     # STAGE 2: Z-Score Filter (Efficiency Gate for remaining metadata checks)
-    # Calculate z-scores to determine if track shows standout characteristics
+    # Calculate z-scores using median+MAD to determine if track shows standout characteristics
     # Skip remaining expensive API calls if both album and artist z-scores are low AND Discogs didn't confirm
-    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
-    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+    
+    # Album z-score using median + MAD
+    if album_median > 0 and album_popularities:
+        # Calculate MAD for album
+        from statistics import median as stat_median
+        album_abs_devs = [abs(s - album_median) for s in album_popularities]
+        album_mad = stat_median(album_abs_devs) if album_abs_devs else 0
+        album_mad_scaled = album_mad * 1.4826  # Scale to be comparable to stddev
+        album_spread = max(album_mad_scaled, 10.0)  # MIN_SPREAD floor
+        album_z = (popularity - album_median) / album_spread if album_spread > 0 else 0
+    else:
+        album_z = 0.0
+    
+    # Artist z-score using median + MAD
+    try:
+        if artist_popularities:
+            from statistics import median as stat_median
+            artist_median = stat_median(artist_popularities)
+            artist_abs_devs = [abs(s - artist_median) for s in artist_popularities]
+            artist_mad = stat_median(artist_abs_devs) if artist_abs_devs else 0
+            artist_mad_scaled = artist_mad * 1.4826  # Scale to be comparable to stddev
+            artist_spread = max(artist_mad_scaled, 10.0)  # MIN_SPREAD floor
+            artist_z = (popularity - artist_median) / artist_spread if artist_spread > 0 else 0
+        else:
+            artist_z = 0.0
+    except Exception as e:
+        log_debug(f"[ZSCORE] Could not calculate artist z-score: {e}")
+        artist_z = 0.0
     
     result['z_score'] = album_z
     result['album_z_score'] = album_z
@@ -1616,22 +1643,16 @@ def detect_single_enhanced(
     artist_mbid = None  # Initialize for use in video/compilation checks
     
     if musicbrainz_client and hasattr(musicbrainz_client, 'enabled') and musicbrainz_client.enabled:
-        # OPTIMIZATION: Calculate z-scores early to decide if we need expensive API calls
-        # If we already have medium-confidence from z-score, skip MusicBrainz (saves ~1-2 seconds)
+        # OPTIMIZATION: Use z-scores from STAGE 2 to decide if we need expensive API calls
+        # Reuse album_z and artist_z already calculated (saves redundant computation)
         early_z_check_needed = not discogs_confirmed
         
         if early_z_check_needed:
-            # Quick z-score check to see if we can skip MusicBrainz
-            temp_album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-            # Get artist stats for quick artist_z check
-            temp_artist_mean, temp_artist_stddev, _ = get_cached_artist_stats(conn, artist)
-            temp_artist_z = calculate_z_score_strict(popularity, temp_artist_mean, temp_artist_stddev)
-            
             # Only skip MusicBrainz if we already have HIGH confidence (z-scores indicate album/artist standout)
             # Medium confidence is not sufficient - allow MusicBrainz to run and add source confirmation
             dynamic_threshold = get_dynamic_z_threshold(artist_track_count, release_year=None, is_compilation=is_compilation)
-            if temp_album_z >= dynamic_threshold or temp_artist_z >= dynamic_threshold:
-                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={temp_album_z:.2f}, artist_z={temp_artist_z:.2f})")
+            if album_z >= dynamic_threshold or artist_z >= dynamic_threshold:
+                log_debug(f"[MUSICBRAINZ] SKIPPED - Already have HIGH confidence from z-score (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
                 musicbrainz_confirmed = False
             else:
                 # Need to call MusicBrainz
