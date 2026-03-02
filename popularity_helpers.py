@@ -200,6 +200,11 @@ def normalize_title_for_lastfm(title: str) -> str:
     
     import re
     
+    # Debug: detect and log character codes for problematic punctuation
+    if any(c in title for c in "'?!''\"\"«»–—−′″…¿¡"):
+        problem_chars = {c: ord(c) for c in title if c in "'?!''\"\"«»–—−′″…¿¡"}
+        logging.debug(f"normalize_title_for_lastfm input '{title}': Found special chars: {problem_chars}")
+    
     # === APOSTROPHE VARIANTS (remove) ===
     # ' (U+2019 right single quotation mark)
     # ' (U+2018 left single quotation mark)  
@@ -269,8 +274,16 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
         return {"track_play": 0}
     stripped_title = strip_cover_attribution(title)
     normalized_title = normalize_title_for_lastfm(stripped_title)
-    if stripped_title != normalized_title:
+    
+    # Debug: Show character codes for titles with apostrophes or punctuation
+    if "'" in stripped_title or "'" in stripped_title or "?" in stripped_title or "!" in stripped_title or "'" in stripped_title or "'" in stripped_title:
+        stripped_codes = [ord(c) for c in stripped_title if c in "'?!'']"]
+        normalized_codes = [ord(c) for c in normalized_title if c in "'?!'']"]
+        logging.debug(f"Title chars - original: {stripped_codes}, normalized: {normalized_codes}")
         logging.debug(f"Title normalization: '{stripped_title}' → '{normalized_title}'")
+    elif stripped_title != normalized_title:
+        logging.debug(f"Title normalization: '{stripped_title}' → '{normalized_title}'")
+    
     return _lastfm_client.get_track_info(artist, normalized_title)
 
 
