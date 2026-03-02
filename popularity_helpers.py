@@ -205,17 +205,12 @@ def normalize_title_for_lastfm(title: str) -> str:
         problem_chars = {c: ord(c) for c in title if c in "'?!''\"\"«»–—−′″…¿¡"}
         logging.debug(f"normalize_title_for_lastfm input '{title}': Found special chars: {problem_chars}")
     
-    # === APOSTROPHE VARIANTS (remove) ===
-    # ' (U+2019 right single quotation mark)
-    # ' (U+2018 left single quotation mark)  
-    # ` (U+0060 grave accent/backtick)
-    # ' (U+0027 straight apostrophe)
-    title = title.replace(''', '')  # curly right
-    title = title.replace(''', '')  # curly left
-    title = title.replace("`", '')  # backtick
-    title = title.replace("'", '')  # straight apostrophe
+    # === AGGRESSIVE APOSTROPHE REMOVAL (regex-based) ===
+    # Match any character that could be an apostrophe/quote (including Unicode variants)
+    # This catches characters we might not have explicitly listed
+    title = re.sub(r"[\u2018\u2019\u0060\u0027\u2032\u2033]", '', title)  # Remove apostrophe/prime variants by Unicode code point
     
-    # === SMART/CURLY QUOTE VARIANTS (remove) ===
+    # === SMART/CURLY QUOTE REMOVAL ===
     # " (U+201D right double quotation mark)
     # " (U+201C left double quotation mark)
     # « (U+00AB left-pointing double angle quotation mark)
@@ -233,14 +228,10 @@ def normalize_title_for_lastfm(title: str) -> str:
     title = title.replace('—', '-')  # em dash
     title = title.replace('−', '-')  # minus sign
     
-    # === PRIME MARKS (convert then remove) ===
-    # ′ (U+2032 prime)
-    # ″ (U+2033 double prime)
-    title = title.replace('′', "'")  # prime to single quote
-    title = title.replace('″', '"')  # double prime to double quote
-    # Now remove the converted quotes
-    title = title.replace("'", '')  # remove converted single quotes
-    title = title.replace('"', '')  # remove converted double quotes
+    # === PRIME MARKS (remove directly, not convert) ===
+    # ′ (U+2032 prime) - already handled by regex above
+    # ″ (U+2033 double prime) - already handled by regex above
+    # No need to convert - the regex handled removal
     
     # === ELLIPSIS (convert to three dots) ===
     # … (U+2026 horizontal ellipsis)
