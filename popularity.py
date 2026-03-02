@@ -5537,12 +5537,11 @@ def popularity_scan(
                             # Check if this track is in the top cluster
                             is_top_cluster = track_id in top_cluster_tracks
                             
-                            # Format sources for display
+                            # Format sources for display (metadata sources only)
                             formatted_sources = [SOURCE_DISPLAY_NAMES.get(s, s.capitalize()) for s in track_sources]
                             
-                            # Add top cluster indicator if applicable
-                            if is_top_cluster and "Popularity_artist_standout" not in formatted_sources:
-                                formatted_sources.append("Popularity_artist_standout")
+                            # NOTE: Do NOT add popularity-based indicators to source display
+                            # Z-scores and top cluster status are shown separately as reason/notes
                             
                             sources_str = "; ".join(formatted_sources) if formatted_sources else ""
                             
