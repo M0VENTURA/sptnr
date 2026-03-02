@@ -4584,33 +4584,25 @@ def popularity_scan(
                                 z_score = (album_pops_for_zscore[i] - pop_mean) / pop_stddev
                                 track_zscores[track_id] = z_score
                             
-                            # Identify top cluster using iterative z-score approach
-                            # Top cluster = tracks that consistently stand out (z >= 1.0 after removing previous standouts)
+                            # Identify top cluster using simple z-score based approach
+                            # Top cluster = tracks with z-score > 1.0 in the album
                             try:
-                                from popularity_helpers import detect_via_iterative_zscore
-                                
-                                for track in album_tracks:
-                                    track_id = track["id"]
-                                    popularity_score = row_get(track, 'popularity_score', 0)
-                                    
-                                    if popularity_score > 0:
-                                        # Check if this track is in the top cluster
-                                        is_top_cluster = detect_via_iterative_zscore(
-                                            popularity_score,
-                                            artist,
-                                            album,
-                                            conn,
-                                            verbose=False
-                                        )
-                                        
-                                        if is_top_cluster:
+                                if len(album_pops_for_zscore) > 1:
+                                    # Use the already-calculated z-scores from earlier
+                                    for track_id, z_score in track_zscores.items():
+                                        if z_score > 1.0:
                                             top_cluster_tracks.add(track_id)
-                                
-                                if top_cluster_tracks:
-                                    log_info(f"Top z-score cluster identified: {len(top_cluster_tracks)} track(s) get instant 5★")
-                                    log_debug(f"Top cluster tracks: {top_cluster_tracks}")
+                                    
+                                    log_debug(f"Top cluster detection (z > 1.0): {len(top_cluster_tracks)} track(s)")
+                                    if top_cluster_tracks:
+                                        log_info(f"Top z-score cluster identified: {len(top_cluster_tracks)} track(s) get instant 5★")
+                                        log_debug(f"Top cluster track IDs: {top_cluster_tracks}")
+                                    else:
+                                        log_info(f"No tracks identified in top z-score cluster (z > 1.0) for album '{album}'")
                             except Exception as e:
-                                log_debug(f"Top cluster detection failed: {e}")
+                                log_info(f"Top cluster detection failed: {e}")
+                                import traceback
+                                log_debug(f"Traceback: {traceback.format_exc()}")
                 
                 log_debug(f"Album type: {album_type}, will filter single detection accordingly")
                 

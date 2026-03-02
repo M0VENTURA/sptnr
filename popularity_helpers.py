@@ -1058,6 +1058,9 @@ def detect_via_iterative_zscore(
     - artist z-score >= 0.5 (if artist stats exist)
     """
     if not current_track_score or current_track_score <= 0:
+        if verbose:
+            from helpers.logging_config import log_debug
+            log_debug(f"detect_via_iterative_zscore: current_track_score invalid: {current_track_score}")
         return False
     
     with get_db_connection_context(conn) as db_conn:
@@ -1102,12 +1105,15 @@ def detect_via_iterative_zscore(
                 
                 found_standout = False
                 for track_id, title, score in album_data:
-                    if score == top_score and track_id not in identified_standouts:
+                    # Use approximate equality for float comparison (within 0.01 tolerance)
+                    if abs(score - top_score) < 0.01 and track_id not in identified_standouts:
                         artist_z = _check_artist_zscore(cursor, artist, track_id)
                         if artist_z >= 0.5 or artist_z == -999:
                             identified_standouts.add(track_id)
                             found_standout = True
-                            if score == current_track_score:
+                            # Use approximate float equality instead of exact comparison
+                            # This handles floating-point rounding errors from database retrieval
+                            if abs(score - current_track_score) < 0.01:  # Within 0.01 tolerance
                                 return True
                             album_data = [(tid, tit, ts) for tid, tit, ts in album_data if tid != track_id]
                         break
