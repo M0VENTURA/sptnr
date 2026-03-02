@@ -130,13 +130,13 @@
         </div>
     </div>
 
-    <!-- Two-Column Layout for Detailed Metadata -->
+    <!-- Two-Column Layout for Edit & Overview -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
-        <div class="row g-2 g-md-3">
-            <!-- LEFT COLUMN -->
+        <div class="row g-3 mb-4">
+            <!-- LEFT COLUMN: EDIT FORM -->
             <div class="col-12 col-lg-6">
                 <!-- Album Edit Card -->
-                <div class="card mb-4 h-100" id="album-information-section">
+                <div class="card" id="album-information-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-pencil-square"></i> Edit Album
@@ -198,11 +198,11 @@
                 </div>
             </div>
 
-            <!-- RIGHT COLUMN -->
+            <!-- RIGHT COLUMN: OVERVIEW -->
             <div class="col-12 col-lg-6">
                 <!-- Album Overview Card -->
                 {% if album_data %}
-                <div class="card mb-4 h-100" id="album-overview-section">
+                <div class="card" id="album-overview-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-graph-up"></i> Album Overview
@@ -297,10 +297,14 @@
                     </div>
                 </div>
                 {% endif %}
-
-                <!-- Album IDs Card -->
-                {% if album_data %}
-                <div class="card mb-4 h-100" id="album-ids-section">
+            </div>
+        </div>
+    </form>
+    
+    <!-- FULL-WIDTH SECTIONS BELOW FORM -->
+    <!-- Album IDs Card -->
+    {% if album_data %}
+    <div class="card mb-4" id="album-ids-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-link-45deg"></i> Album IDs
@@ -339,10 +343,10 @@
                         </small>
                     </div>
                 </div>
-                {% endif %}
-
-                <!-- Genres & Tags Card -->
-                <div class="card mb-4 h-100" id="album-genres-section">
+    {% endif %}
+    
+    <!-- Genres & Tags Card -->
+    <div class="card mb-4" id="album-genres-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-tags-fill"></i> Genres & Tags
@@ -397,8 +401,8 @@
                     </div>
                 </div>
 
-                <!-- Similar Artists Card -->
-                <div class="card mb-4 h-100" id="album-similar-section">
+    <!-- Similar Artists Card -->
+    <div class="card mb-4" id="album-similar-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-person-heart"></i> Similar Artists
@@ -410,12 +414,8 @@
                         </div>
                     </div>
                 </div>
-            </div>
-        </div>
-    </form>
     
-    
-    <div class="card" id="album-tracks-section">
+    <div class="card mb-4" id="album-tracks-section">
         <div class="card-header d-flex justify-content-between align-items-center">
             <h5 class="card-title mb-0">
                 <i class="bi bi-music-note-list"></i> Tracks
