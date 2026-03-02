@@ -1613,11 +1613,14 @@ def detect_single_enhanced(
     result['album_z_score'] = album_z
     result['artist_z_score'] = artist_z
     
-    # If track has no standout characteristics AND Discogs didn't confirm, skip remaining detection
-    if album_z <= 0.0 and artist_z <= 0.0 and not discogs_confirmed:
-        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f}) and Discogs did not confirm")
+    # Z-Score Gate: Skip single detection if both z-scores <= 0, UNLESS it's a compilation/greatest hits
+    # Rationale: Low z-scores indicate track not unusual in artist/album context
+    # Exception: Compilations/greatest hits expect to contain singles from various eras/contexts
+    if album_z <= 0.0 and artist_z <= 0.0 and not is_compilation:
+        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f}) and album is not a compilation")
+        log_info(f"   ⓘ Skipping single detection for {title}: z-scores too low (not a compilation album)")
         if verbose:
-            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics and no Discogs confirmation)")
+            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics and album is not a compilation)")
         return result
     
     log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f}, discogs_confirmed={discogs_confirmed})")

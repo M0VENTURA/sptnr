@@ -4,8 +4,16 @@ import difflib
 import time
 import json
 import re
+import os
+import sys
 from typing import Optional, Dict, List, Tuple
 from . import session
+
+# Add parent directory to path to import root-level modules
+parent_dir = os.path.dirname(os.path.dirname(__file__))
+if parent_dir not in sys.path:
+    sys.path.insert(0, parent_dir)
+
 from helpers.helpers import clean_discogs_biography
 from discogs_singles_cache import normalize_track_title, get_discogs_cache
 
