@@ -4890,8 +4890,8 @@ def popularity_scan(
                     log_debug(f"Single detection params - track: {title}, isrc: {track_isrc}, duration: {track_duration}, popularity: {track_popularity}, album_type: {track_album_type}")
                     
                     # Use the centralized single detection function with advanced parameters
-                    # Use track's individual artist, not the grouping artist
-                    track_artist = track["artist"]
+                    # Use track's individual artist, falling back to album artist if missing
+                    track_artist = track.get("artist") or artist
                     detection_result = detect_single_for_track(
                         title=title,
                         artist=track_artist,
@@ -4905,7 +4905,7 @@ def popularity_scan(
                         isrc=track_isrc,
                         duration=track_duration,
                         popularity=track_popularity,
-                        album_type=track_album_type,
+                        album_type=album_type,
                         use_advanced_detection=True,
                         zscore_threshold=0.20,
                         # Conditional z-score detection parameters
