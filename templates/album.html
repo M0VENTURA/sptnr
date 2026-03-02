@@ -76,277 +76,297 @@
     <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
         <div class="card-body py-2 px-3">
             <ul class="nav nav-pills gap-2 small">
+                <li class="nav-item"><a class="nav-link" href="#album-information-section">Information</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-overview-section">Overview</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-genres-section">Genres</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-similar-section">Similar</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-ids-section">IDs</a></li>
-                <li class="nav-item"><a class="nav-link" href="#album-edit-section">Edit</a></li>
                 <li class="nav-item"><a class="nav-link" href="#album-tracks-section">Tracks</a></li>
             </ul>
         </div>
     </div>
-    
-    <!-- Album Metadata Cards -->
-    {% if album_data %}
-    <div class="row g-2 g-md-3 mb-4" id="album-overview-section">
-        {% if album_data.spotify_release_date %}
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-calendar"></i> Release Date
-                    </div>
-                    <div class="h6 mb-0">{{ album_data.spotify_release_date }}</div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        
-        {% if album_data.spotify_album_type %}
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-collection"></i> Album Type
-                    </div>
-                    <div class="h6 mb-0">
-                        <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-hourglass"></i> Duration
-                    </div>
-                    <div class="h6 mb-0">
-                        {% if album_data.total_duration %}
-                            {% set hours = (album_data.total_duration / 3600)|int %}
-                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
-                            {% if hours > 0 %}
-                                {{ hours }}h {{ minutes }}m
-                            {% else %}
-                                {{ minutes }}m
-                            {% endif %}
-                        {% else %}
-                            —
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-star-fill"></i> Avg Rating
-                    </div>
-                    <div class="h6 mb-0">
-                        {% if album_data.avg_stars %}
-                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
-                        {% else %}
-                            <span class="text-muted">—</span>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-        </div>
-        
-        {% if album_data.singles_count and album_data.singles_count > 0 %}
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-music-note"></i> Detected Singles
-                    </div>
-                    <div class="h6 mb-0">
-                        <span class="badge badge-info">{{ album_data.singles_count }} track{{ 's' if album_data.singles_count != 1 }}</span>
-                    </div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-    
-    <!-- Additional Album Metadata -->
-    {% if album_data %}
-    <div class="row g-2 g-md-3 mb-4">
-        {% if album_data.total_discs and album_data.total_discs > 1 %}
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-disc-fill"></i> Total Discs
-                    </div>
-                    <div class="h6 mb-0">{{ album_data.total_discs }}</div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-        
-        <div class="col-6 col-md-3">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-music-note-list"></i> Track Count
-                    </div>
-                    <div class="h6 mb-0">{{ album_data.track_count or 0 }}</div>
-                </div>
-            </div>
-        </div>
-        
-        {% if album_data.last_scanned %}
-        <div class="col-12 col-md-6">
-            <div class="card h-100">
-                <div class="card-body">
-                    <div class="text-muted mb-2" style="font-size: 0.85rem;">
-                        <i class="bi bi-clock-history"></i> Last Scanned
-                    </div>
-                    <div class="h6 mb-0">{{ album_data.last_scanned }}</div>
-                </div>
-            </div>
-        </div>
-        {% endif %}
-    </div>
-    {% endif %}
-    
-    <!-- Album Genres Section (Dynamic) -->
-    <div class="card mb-4" id="album-genres-section">
-        <div class="card-header">
-            <h6 class="card-title mb-0"><i class="bi bi-tags-fill"></i> Album Genre & Tag Sources</h6>
-        </div>
-        <div class="card-body">
-            <div id="albumGenreSourcesContainer" class="spinner-border" role="status">
-                <span class="visually-hidden">Loading genres...</span>
-            </div>
-        </div>
-    </div>
 
-    <!-- Similar Artists Section -->
-    <div class="card mb-4" id="album-similar-section">
-        <div class="card-header">
-            <h6 class="card-title mb-0"><i class="bi bi-person-heart"></i> Similar Artists to {{ artist_name }}</h6>
-        </div>
-        <div class="card-body">
-            <div id="albumSimilarArtistsContainer" class="spinner-border" role="status">
-                <span class="visually-hidden">Loading similar artists...</span>
-            </div>
-        </div>
-    </div>
-    
-    <!-- Album Release IDs Section -->
-    {% if album_data %}
-    <div class="card mb-4" id="album-ids-section">
-        <div class="card-header d-flex justify-content-between align-items-center">
-            <h5 class="card-title mb-0">
-                <i class="bi bi-link-45deg"></i> Album/Release IDs
-            </h5>
-            <button class="btn btn-sm btn-primary" onclick="openEditAlbumIdsModal()">
-                <i class="bi bi-pencil"></i> Edit IDs
-            </button>
-        </div>
-        <div class="card-body">
-            <div class="row g-3">
-                <div class="col-md-6">
-                    <label class="form-label fw-bold small">MusicBrainz Release ID</label>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.beets_album_mbid or '' }}" readonly>
-                        {% if album_data.beets_album_mbid %}
-                        <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="btn btn-outline-secondary">
-                            <i class="bi bi-box-arrow-up-right"></i>
-                        </a>
-                        {% endif %}
-                    </div>
-                </div>
-                <div class="col-md-6">
-                    <label class="form-label fw-bold small">Discogs Release ID</label>
-                    <div class="input-group input-group-sm">
-                        <input type="text" class="form-control" id="discogsReleaseId" value="{{ album_data.discogs_album_id or '' }}" readonly>
-                        {% if album_data.discogs_album_id %}
-                        <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary">
-                            <i class="bi bi-box-arrow-up-right"></i>
-                        </a>
-                        {% endif %}
-                    </div>
-                </div>
-            </div>
-            <div class="mt-3">
-                <small class="text-muted">
-                    <i class="bi bi-info-circle"></i> These IDs are used for API lookups and future scans. Edit them to correct matching issues.
-                </small>
-            </div>
-        </div>
-    </div>
-    {% endif %}
-    
-    <!-- Editable Album Metadata Form -->
+    <!-- Two-Column Layout -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
-        <div class="card mb-4" id="album-edit-section">
-            <div class="card-header d-flex justify-content-between align-items-center">
-                <h5 class="card-title mb-0">
-                    <i class="bi bi-pencil-square"></i> Album Metadata
-                </h5>
-                <div class="d-flex gap-2">
-                    <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
-                        <i class="bi bi-search"></i> Search Metadata
-                    </button>
-                    <button type="submit" class="btn btn-sm btn-success">
-                        <i class="bi bi-check-circle"></i> Save to Database & MP3s
-                    </button>
+        <div class="row g-2 g-md-3">
+            <!-- LEFT COLUMN -->
+            <div class="col-12 col-lg-6">
+                <!-- Album Information Card -->
+                <div class="card mb-4 h-100" id="album-information-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-info-circle"></i> Album Information
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <!-- Album Art Reference -->
+                            <div class="col-12 d-flex justify-content-center">
+                                <div class="position-relative" style="width: 180px; height: 180px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+                                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name|urlencode, album=album_name|urlencode) }}" 
+                                         alt="{{ album_name }}" 
+                                         style="width: 100%; height: 100%; object-fit: cover;"
+                                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22%3E%3Crect fill=%22%232a2a2a%22 width=%22180%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Art%3C/text%3E%3C/svg%3E';">
+                                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
+                                        <i class="bi bi-pencil"></i> Change
+                                    </button>
+                                </div>
+                            </div>
+
+                            <!-- Basic Album Details -->
+                            <div class="col-12">
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Album Title</div>
+                                    <div class="metadata-value"><strong>{{ album_name }}</strong></div>
+                                </div>
+                            </div>
+                            <div class="col-12">
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Artist</div>
+                                    <div class="metadata-value"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></div>
+                                </div>
+                            </div>
+                            {% if album_data %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Year</div>
+                                    <div class="metadata-value">{{ album_data.spotify_release_date[:4] if album_data.spotify_release_date else '—' }}</div>
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label">Type</div>
+                                    <div class="metadata-value">
+                                        {% if album_data.spotify_album_type %}
+                                            <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
-            </div>
-            <div class="card-body">
-                <div class="row g-3">
-                    <div class="col-md-6">
-                        <label for="album_title" class="form-label">Album Title</label>
-                        <input type="text" class="form-control" id="album_title" name="album_title" value="{{ album_name }}" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label for="album_artist" class="form-label">Album Artist</label>
-                        <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
-                    </div>
-                    <div class="col-md-6">
-                        <label for="track_artist" class="form-label">Track Artist(s)</label>
-                        <div class="input-group">
-                            <input type="text" class="form-control" id="track_artist" name="track_artist" placeholder="Artist name to apply to all track tags">
-                            <button class="btn btn-outline-secondary" type="button" onclick="populateMajorityArtist()">
-                                <i class="bi bi-magic"></i> Auto-Fill
+
+                <!-- Album Metadata Editing Card -->
+                <div class="card mb-4 h-100" id="album-edit-section">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-pencil-square"></i> Edit Album
+                        </h5>
+                        <div class="d-flex gap-2">
+                            <button type="button" class="btn btn-sm btn-outline-info" onclick="openAlbumLookupModal()">
+                                <i class="bi bi-search"></i> Lookup
+                            </button>
+                            <button type="submit" class="btn btn-sm btn-success">
+                                <i class="bi bi-check-circle"></i> Save
                             </button>
                         </div>
-                        <div class="form-text">Auto-Fill will detect the most common artist name across all tracks in this album and populate this field.</div>
                     </div>
-                    <div class="col-md-6"></div>
-                    <div class="col-md-4">
-                        <label for="release_year" class="form-label">Release Year</label>
-                        <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
+                    <div class="card-body">
+                        <h6 class="text-muted mb-3">Basic Information</h6>
+                        <div class="mb-3">
+                            <label for="album_title" class="form-label">Album Title</label>
+                            <input type="text" class="form-control" id="album_title" name="album_title" value="{{ album_name }}" required>
+                        </div>
+                        
+                        <div class="mb-3">
+                            <label for="album_artist" class="form-label">Album Artist</label>
+                            <input type="text" class="form-control" id="album_artist" name="album_artist" value="{{ artist_name }}" required>
+                        </div>
+
+                        <div class="row g-2 mb-3">
+                            <div class="col-6">
+                                <label for="release_year" class="form-label">Release Year</label>
+                                <input type="number" class="form-control" id="release_year" name="release_year" value="{{ album_data.spotify_release_date[:4] if album_data and album_data.spotify_release_date else '' }}" placeholder="e.g., 2023">
+                            </div>
+                            <div class="col-6">
+                                <label for="album_type" class="form-label">Album Type</label>
+                                <select class="form-select" id="album_type" name="album_type">
+                                    <option value="">Unknown</option>
+                                    <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
+                                    <option value="single" {% if album_data and album_data.spotify_album_type == 'single' %}selected{% endif %}>Single</option>
+                                    <option value="ep" {% if album_data and album_data.spotify_album_type == 'ep' %}selected{% endif %}>EP</option>
+                                    <option value="compilation" {% if album_data and album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Compilation</option>
+                                </select>
+                            </div>
+                        </div>
+
+                        <hr class="my-3">
+
+                        <h6 class="text-muted mb-3">Track Artists</h6>
+                        <div class="mb-3">
+                            <label for="track_artist" class="form-label">Track Artist(s)</label>
+                            <div class="input-group">
+                                <input type="text" class="form-control" id="track_artist" name="track_artist" placeholder="Artist name to apply to all track tags">
+                                <button class="btn btn-outline-secondary" type="button" onclick="populateMajorityArtist()">
+                                    <i class="bi bi-magic"></i> Auto-Fill
+                                </button>
+                            </div>
+                            <small class="form-text text-muted">Auto-Fill detects the most common artist name across all tracks.</small>
+                        </div>
+
+                        <input type="hidden" id="album_mbid" name="album_mbid" value="">
                     </div>
-                    <div class="col-md-4">
-                        <label for="album_type" class="form-label">Album Type</label>
-                        <select class="form-select" id="album_type" name="album_type">
-                            <option value="">Unknown</option>
-                            <option value="album" {% if album_data and album_data.spotify_album_type == 'album' %}selected{% endif %}>Album</option>
-                            <option value="single" {% if album_data and album_data.spotify_album_type == 'single' %}selected{% endif %}>Single</option>
-                            <option value="ep" {% if album_data and album_data.spotify_album_type == 'ep' %}selected{% endif %}>EP</option>
-                            <option value="compilation" {% if album_data and album_data.spotify_album_type == 'compilation' %}selected{% endif %}>Compilation</option>
-                        </select>
+                </div>
+            </div>
+
+            <!-- RIGHT COLUMN -->
+            <div class="col-12 col-lg-6">
+                <!-- Album Overview Card (Consolidated Stats) -->
+                {% if album_data %}
+                <div class="card mb-4 h-100" id="album-overview-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-graph-up"></i> Album Overview
+                        </h5>
                     </div>
-                    <div class="col-md-4"></div>
-                    
-                    <!-- Genre Multi-Select -->
-                    <div class="col-12">
-                        <label for="album_genres" class="form-label d-flex justify-content-between align-items-center">
-                            <span>Genres</span>
-                            <button type="button" class="btn btn-sm btn-outline-primary" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
-                                <i class="bi bi-cloud-download"></i> Get Online Suggestions
-                            </button>
-                        </label>
-                        <div id="albumGenresContainer" class="mb-2">
+                    <div class="card-body">
+                        <div class="row g-3">
+                            <!-- Release Information -->
+                            {% if album_data.spotify_release_date %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Release Date</div>
+                                    <div class="metadata-value">{{ album_data.spotify_release_date }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Duration -->
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Duration</div>
+                                    <div class="metadata-value">
+                                        {% if album_data.total_duration %}
+                                            {% set hours = (album_data.total_duration / 3600)|int %}
+                                            {% set minutes = ((album_data.total_duration % 3600) / 60)|int %}
+                                            {% if hours > 0 %}
+                                                {{ hours }}h {{ minutes }}m
+                                            {% else %}
+                                                {{ minutes }}m
+                                            {% endif %}
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Average Rating -->
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Avg Rating</div>
+                                    <div class="metadata-value">
+                                        {% if album_data.avg_stars %}
+                                            <span class="badge badge-success">{{ album_data.avg_stars|round(2) }}★</span>
+                                        {% else %}
+                                            —
+                                        {% endif %}
+                                    </div>
+                                </div>
+                            </div>
+
+                            <!-- Track Count -->
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Track Count</div>
+                                    <div class="metadata-value">{{ album_data.track_count or 0 }}</div>
+                                </div>
+                            </div>
+
+                            <!-- Discs (if multi-disc) -->
+                            {% if album_data.total_discs and album_data.total_discs > 1 %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Total Discs</div>
+                                    <div class="metadata-value">{{ album_data.total_discs }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Detected Singles -->
+                            {% if album_data.singles_count and album_data.singles_count > 0 %}
+                            <div class="col-6">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Detected Singles</div>
+                                    <div class="metadata-value">
+                                        <span class="badge badge-info">{{ album_data.singles_count }} track{{ 's' if album_data.singles_count != 1 }}</span>
+                                    </div>
+                                </div>
+                            </div>
+                            {% endif %}
+
+                            <!-- Last Scanned -->
+                            {% if album_data.last_scanned %}
+                            <div class="col-12">
+                                <div class="metadata-row">
+                                    <div class="metadata-label small">Last Scanned</div>
+                                    <div class="metadata-value">{{ album_data.last_scanned }}</div>
+                                </div>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Album Release IDs Card -->
+                {% if album_data %}
+                <div class="card mb-4 h-100" id="album-ids-section">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-link-45deg"></i> Album IDs
+                        </h5>
+                        <button class="btn btn-sm btn-primary" onclick="openEditAlbumIdsModal()">
+                            <i class="bi bi-pencil"></i> Edit
+                        </button>
+                    </div>
+                    <div class="card-body">
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <label class="form-label fw-bold small">MusicBrainz</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="text" class="form-control" id="musicbrainzReleaseId" value="{{ album_data.beets_album_mbid or '' }}" readonly style="font-size: 0.8rem;">
+                                    {% if album_data.beets_album_mbid %}
+                                    <a href="https://musicbrainz.org/release/{{ album_data.beets_album_mbid }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on MusicBrainz">
+                                        <i class="bi bi-box-arrow-up-right"></i>
+                                    </a>
+                                    {% endif %}
+                                </div>
+                            </div>
+                            <div class="col-6">
+                                <label class="form-label fw-bold small">Discogs</label>
+                                <div class="input-group input-group-sm">
+                                    <input type="text" class="form-control" id="discogsReleaseId" value="{{ album_data.discogs_album_id or '' }}" readonly style="font-size: 0.8rem;">
+                                    {% if album_data.discogs_album_id %}
+                                    <a href="https://www.discogs.com/release/{{ album_data.discogs_album_id }}" target="_blank" class="btn btn-outline-secondary btn-sm" title="Open on Discogs">
+                                        <i class="bi bi-box-arrow-up-right"></i>
+                                    </a>
+                                    {% endif %}
+                                </div>
+                            </div>
+                        </div>
+                        <small class="text-muted d-block mt-2">
+                            <i class="bi bi-info-circle"></i> Used for API lookups and future scans.
+                        </small>
+                    </div>
+                </div>
+                {% endif %}
+
+                <!-- Album Genres & Tags Card -->
+                <div class="card mb-4 h-100" id="album-genres-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-tags-fill"></i> Genres & Tags
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <!-- Editable Genres -->
+                        <h6 class="text-muted mb-2">Your Genres</h6>
+                        <div id="albumGenresContainer" class="mb-3">
                             {% if album_genres %}
                                 {% for genre in album_genres %}
                                 <span class="badge bg-primary me-1 mb-1" style="font-size: 0.9rem;">
@@ -358,30 +378,56 @@
                                 <span class="text-muted small">No genres set</span>
                             {% endif %}
                         </div>
-                        <!-- Recommended Genres from External Sources (inline) -->
-                        <div class="mb-3" id="recommendedGenresSection" style="display: none;">
-                            <h6 class="mb-2 mt-3"><i class="bi bi-stars"></i> Suggested Genres from Spotify, MusicBrainz, and Discogs</h6>
-                            <p class="text-muted small mb-2">Click genres to add them to the list above</p>
-                            <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
-                                <span class="text-muted small">Loading...</span>
-                            </div>
-                        </div>
-                        <div class="input-group">
+                        <div class="input-group mb-3">
                             <input type="text" class="form-control" id="newAlbumGenreInput" placeholder="Add genre (e.g., Rock, Jazz)">
                             <button class="btn btn-outline-success" type="button" onclick="addAlbumGenre()">
                                 <i class="bi bi-plus-circle"></i> Add
                             </button>
                         </div>
+
+                        <hr class="my-3">
+
+                        <!-- Genre Recommendations -->
+                        <h6 class="text-muted mb-2">Get Suggestions</h6>
+                        <button type="button" class="btn btn-sm btn-outline-primary w-100 mb-2" onclick="fetchGenreRecommendations()" id="fetchGenresBtn">
+                            <i class="bi bi-cloud-download"></i> Recommendations
+                        </button>
+                        <div class="mb-3" id="recommendedGenresSection" style="display: none;">
+                            <h6 class="mb-2 mt-2"><i class="bi bi-stars"></i> Suggested Genres</h6>
+                            <p class="text-muted small mb-2">From Spotify, MusicBrainz & Discogs</p>
+                            <div class="d-flex flex-wrap gap-2" id="recommendedGenres">
+                                <span class="text-muted small">Loading...</span>
+                            </div>
+                        </div>
+
+                        <hr class="my-3">
+
+                        <!-- Genre Source Display -->
+                        <h6 class="text-muted mb-2">Source Tags</h6>
+                        <div id="albumGenreSourcesContainer" class="spinner-border spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading genres...</span>
+                        </div>
+
                         <input type="hidden" id="album_genres" name="album_genres" value="{{ album_genres|join(', ') if album_genres else '' }}">
-                        <input type="hidden" id="album_mbid" name="album_mbid" value="">
-                        <div class="form-text">These genres will be applied to all tracks in the album.</div>
+                    </div>
+                </div>
+
+                <!-- Similar Artists Card -->
+                <div class="card mb-4 h-100" id="album-similar-section">
+                    <div class="card-header">
+                        <h5 class="card-title mb-0">
+                            <i class="bi bi-person-heart"></i> Similar Artists
+                        </h5>
+                    </div>
+                    <div class="card-body">
+                        <div id="albumSimilarArtistsContainer" class="spinner-border spinner-border-sm" role="status">
+                            <span class="visually-hidden">Loading similar artists...</span>
+                        </div>
                     </div>
                 </div>
             </div>
         </div>
     </form>
-    
-    <!-- Genre Information section removed - moved to Album Metadata section -->
     
     
     <div class="card" id="album-tracks-section">
