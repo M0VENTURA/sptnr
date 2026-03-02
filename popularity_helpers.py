@@ -10,6 +10,7 @@ import math
 import logging
 import json
 import time
+from contextlib import contextmanager
 from typing import Any, Tuple, List, Dict
 from datetime import datetime
 from collections import defaultdict
@@ -20,6 +21,60 @@ from api_clients.lastfm import LastFmClient
 from api_clients.audiodb_and_listenbrainz import score_by_age as _score_by_age
 from api_clients import timeout_safe_session
 from helpers.helpers import strip_cover_attribution
+
+# ============================================================================
+# Shared z-score and popularity utilities (consolidated from duplicated code)
+# ============================================================================
+
+# Constants for z-score to popularity conversion
+Z_SCORE_MIDPOINT = 50.0
+Z_SCORE_TO_POPULARITY_SCALE = 16.7
+
+
+def calculate_track_zscore(score: float, mean: float, stddev: float) -> float:
+    """
+    Calculate z-score for a track relative to a reference distribution.
+    Z-score = (score - mean) / stddev
+    """
+    if stddev and stddev > 0:
+        return (score - mean) / stddev
+    return 0.0
+
+
+def zscore_to_popularity(z_score: float) -> float:
+    """
+    Convert z-score to 0-100 popularity scale.
+    Formula: 50 + (z_score * 16.7)
+    """
+    score = Z_SCORE_MIDPOINT + (z_score * Z_SCORE_TO_POPULARITY_SCALE)
+    return min(100.0, max(0.0, score))
+
+
+# Context manager for safe database connection handling (replaces boilerplate try/finally)
+@contextmanager
+def get_db_connection_context(conn=None):
+    """
+    Context manager for safe database connection handling.
+    Automatically closes connections that were created by this manager.
+    """
+    should_close = conn is None
+    
+    if should_close:
+        try:
+            from helpers.db_utils import get_db_connection
+            conn = get_db_connection()
+        except Exception as e:
+            logging.error(f"Failed to get database connection: {e}")
+            raise
+    
+    try:
+        yield conn
+    finally:
+        if should_close and conn:
+            try:
+                conn.close()
+            except Exception as e:
+                logging.warning(f"Error closing database connection: {e}")
 
 CONFIG_PATH = os.environ.get("CONFIG_PATH", "/config/config.yaml")
 
@@ -370,41 +425,26 @@ def calculate_lastfm_zscore_popularity(
         # Calculate z-scores for listeners (using median for centering)
         listeners_median = median(album_listeners)
         listeners_stdev = stdev(album_listeners)
-        
-        if listeners_stdev > 0:
-            z_listeners = (listeners - listeners_median) / listeners_stdev
-        else:
-            z_listeners = 0.0
+        z_listeners = calculate_track_zscore(listeners, listeners_median, listeners_stdev)
         
         # Calculate z-scores for playcounts (using median for centering)
         playcount_median = median(album_playcounts)
         playcount_stdev = stdev(album_playcounts)
-        
-        if playcount_stdev > 0:
-            z_playcount = (playcount - playcount_median) / playcount_stdev
-        else:
-            z_playcount = 0.0
+        z_playcount = calculate_track_zscore(playcount, playcount_median, playcount_stdev)
         
         # Average the two z-scores (equal weight for reach and engagement)
         average_zscore = (z_listeners + z_playcount) / 2.0
         
         # Convert z-score to 0-100 scale
-        # Z-scores typically range from -3 to +3, so we normalize:
-        # z_score of 0 (album median) → 50
-        # z_score of +1 (1 stdev above median) → 66.7 (50 + 16.7)
-        # z_score of +2 (2 stdev above median) → 83.3 (50 + 33.3) 
-        # z_score of -1 (1 stdev below median) → 33.3 (50 - 16.7)
-        # Formula: 50 + (z_score * 16.7)
-        
-        score = 50.0 + (average_zscore * 16.7)
-        return min(100.0, max(0.0, score))
+        score = zscore_to_popularity(average_zscore)
+        return score
         
     except (ValueError, ZeroDivisionError):
         return 0.0
 
 
-def score_by_age(playcount: Any, release_str: str):
-    return _score_by_age(playcount, release_str)
+# Re-export score_by_age from api_clients for backward compatibility
+score_by_age = _score_by_age
 
 
 def apply_mean_popularity_adjustment(
@@ -439,79 +479,53 @@ def apply_mean_popularity_adjustment(
     if track_popularity <= 0:
         return 0.0
     
-    # If no connection provided, create one
-    if conn is None:
+    with get_db_connection_context(conn) as db_conn:
         try:
-            conn = get_db_connection()
-            should_close = True
-        except Exception:
-            # If we can't get DB connection, return original score
+            cursor = db_conn.cursor()
+            
+            # Fetch artist statistics (mean, stddev)
+            cursor.execute("""
+                SELECT mean_popularity, popularity_stddev
+                FROM artist_stats
+                WHERE artist_name = ?
+            """, (artist_name,))
+            
+            row = cursor.fetchone()
+            if not row:
+                # Artist stats not yet computed, return original score
+                return track_popularity
+            
+            artist_mean, artist_stddev = row[0], row[1]
+            
+            if artist_mean is None or artist_mean <= 0:
+                # No valid mean, return original score
+                return track_popularity
+            
+            # Calculate z-score relative to artist mean
+            z_score = calculate_track_zscore(track_popularity, artist_mean, artist_stddev)
+            
+            # Apply time decay for pre-2005 releases
+            # Pre-2005: Last.fm had fewer active users, resulting in sparse/incomplete data
+            # Reduce confidence by scaling down the z-score
+            # Linear decay: 2005 = 1.0x, 2000 = 0.8x, 1995 = 0.6x, 1990 = 0.4x, pre-1990 = 0.2x
+            if release_year and release_year < 2005:
+                years_before_2005 = 2005 - release_year
+                # Decay formula: 1.0 - (years_before * 0.04) with floor at 0.2
+                # This gives ~4% reduction per year pre-2005
+                decay_factor = max(0.2, 1.0 - (years_before_2005 * 0.04))
+                z_score *= decay_factor
+                logging.debug(f"Applied time decay to '{artist_name}' release ({release_year}): z_score {(track_popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0:.2f} -> {z_score:.2f} (decay_factor={decay_factor:.2f})")
+            
+            # Convert z-score to 0-100 scale
+            adjusted_score = zscore_to_popularity(z_score)
+            
+            logging.debug(f"Mean popularity adjustment for '{artist_name}': original={track_popularity:.1f}, z_score={z_score:.2f}, adjusted={adjusted_score:.1f} (artist_mean={artist_mean:.1f}, stddev={artist_stddev:.1f})")
+            
+            return adjusted_score
+            
+        except Exception as e:
+            logging.debug(f"Error applying mean popularity adjustment for '{artist_name}': {e}")
             return track_popularity
-    else:
-        should_close = False
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Fetch artist statistics (mean, stddev)
-        cursor.execute("""
-            SELECT mean_popularity, popularity_stddev
-            FROM artist_stats
-            WHERE artist_name = ?
-        """, (artist_name,))
-        
-        row = cursor.fetchone()
-        if not row:
-            # Artist stats not yet computed, return original score
-            return track_popularity
-        
-        artist_mean, artist_stddev = row[0], row[1]
-        
-        if artist_mean is None or artist_mean <= 0:
-            # No valid mean, return original score
-            return track_popularity
-        
-        # Calculate z-score relative to artist mean
-        if artist_stddev and artist_stddev > 0:
-            z_score = (track_popularity - artist_mean) / artist_stddev
-        else:
-            # No variance, track is at mean
-            z_score = 0.0
-        
-        # Apply time decay for pre-2005 releases
-        # Pre-2005: Last.fm had fewer active users, resulting in sparse/incomplete data
-        # Reduce confidence by scaling down the z-score
-        # Linear decay: 2005 = 1.0x, 2000 = 0.8x, 1995 = 0.6x, 1990 = 0.4x, pre-1990 = 0.2x
-        if release_year and release_year < 2005:
-            years_before_2005 = 2005 - release_year
-            # Decay formula: 1.0 - (years_before * 0.04) with floor at 0.2
-            # This gives ~4% reduction per year pre-2005
-            decay_factor = max(0.2, 1.0 - (years_before_2005 * 0.04))
-            z_score *= decay_factor
-            logging.debug(f"Applied time decay to '{artist_name}' release ({release_year}): z_score {(track_popularity - artist_mean) / artist_stddev if artist_stddev > 0 else 0:.2f} -> {z_score:.2f} (decay_factor={decay_factor:.2f})")
-        
-        # Convert z-score to 0-100 scale
-        # Formula: 50 + (z_score * 16.7)
-        # This maps:
-        #   z_score = -3 → 0 points
-        #   z_score = -1 → 33.3 points (1 stdev below artist mean)
-        #   z_score = 0 → 50 points (at artist mean)
-        #   z_score = +1 → 66.7 points (1 stdev above artist mean)
-        #   z_score = +3 → 100 points
-        adjusted_score = 50.0 + (z_score * 16.7)
-        adjusted_score = min(100.0, max(0.0, adjusted_score))
-        
-        logging.debug(f"Mean popularity adjustment for '{artist_name}': original={track_popularity:.1f}, z_score={z_score:.2f}, adjusted={adjusted_score:.1f} (artist_mean={artist_mean:.1f}, stddev={artist_stddev:.1f})")
-        
-        return adjusted_score
-        
-    except Exception as e:
-        logging.debug(f"Error applying mean popularity adjustment for '{artist_name}': {e}")
-        return track_popularity
-    
-    finally:
-        if should_close and conn:
-            conn.close()
 
 
 def apply_album_deviation_adjustment(
@@ -558,84 +572,70 @@ def apply_album_deviation_adjustment(
     if track_popularity <= 0:
         return track_popularity
     
-    # If no connection provided, create one
-    if conn is None:
+    with get_db_connection_context(conn) as db_conn:
         try:
-            conn = get_db_connection()
-            should_close = True
-        except Exception:
-            return track_popularity
-    else:
-        should_close = False
-    
-    try:
-        cursor = conn.cursor()
-        
-        # Fetch all track popularities in this album
-        cursor.execute("""
-            SELECT popularity
-            FROM tracks
-            WHERE artist = ? AND album = ? AND popularity > 0
-            ORDER BY popularity
-        """, (artist_name, album_name))
-        
-        rows = cursor.fetchall()
-        if not rows or len(rows) < 2:
-            # Skip adjustment if album has fewer than 2 tracks with popularity data
-            return track_popularity
-        
-        album_popularities = [row[0] for row in rows]
-        
-        # Calculate album statistics
-        try:
-            album_mean = mean(album_popularities)
-            if len(album_popularities) < 2:
-                album_stddev = 0.0
+            cursor = db_conn.cursor()
+            
+            # Fetch all track popularities in this album
+            cursor.execute("""
+                SELECT popularity
+                FROM tracks
+                WHERE artist = ? AND album = ? AND popularity > 0
+                ORDER BY popularity
+            """, (artist_name, album_name))
+            
+            rows = cursor.fetchall()
+            if not rows or len(rows) < 2:
+                # Skip adjustment if album has fewer than 2 tracks with popularity data
+                return track_popularity
+            
+            album_popularities = [row[0] for row in rows]
+            
+            # Calculate album statistics
+            try:
+                album_mean = mean(album_popularities)
+                if len(album_popularities) < 2:
+                    album_stddev = 0.0
+                else:
+                    album_stddev = stdev(album_popularities)
+            except (ValueError, ZeroDivisionError):
+                return track_popularity
+            
+            # Skip if no variance in album
+            if album_stddev == 0:
+                return track_popularity
+            
+            # Calculate track z-score within album
+            album_zscore = calculate_track_zscore(track_popularity, album_mean, album_stddev)
+            
+            # Determine weight factor based on album popularity tier
+            if album_mean < 40:
+                # Low popularity album: higher weight on album deviation
+                album_weight = 0.40
+            elif album_mean < 60:
+                # Mid-tier album
+                album_weight = 0.30
             else:
-                album_stddev = stdev(album_popularities)
-        except (ValueError, ZeroDivisionError):
+                # High popularity album: lower weight on album deviation
+                album_weight = 0.15
+            
+            # Convert album z-score to 0-100 scale
+            album_zscore_pop = zscore_to_popularity(album_zscore)
+            
+            # Blend with original score
+            adjusted_score = (track_popularity * (1.0 - album_weight)) + (album_zscore_pop * album_weight)
+            
+            logging.debug(
+                f"Album deviation adjustment for '{artist_name}' - '{album_name}': "
+                f"original={track_popularity:.1f}, album_mean={album_mean:.1f}, album_stddev={album_stddev:.2f}, "
+                f"album_zscore={album_zscore:.2f}, weight={album_weight:.0%}, adjusted={adjusted_score:.1f}"
+            )
+            
+            return adjusted_score
+            
+        except Exception as e:
+            logging.debug(f"Error applying album deviation adjustment for '{artist_name}' - '{album_name}': {e}")
             return track_popularity
-        
-        # Skip if no variance in album
-        if album_stddev == 0:
-            return track_popularity
-        
-        # Calculate track z-score within album
-        album_zscore = (track_popularity - album_mean) / album_stddev
-        
-        # Determine weight factor based on album popularity tier
-        if album_mean < 40:
-            # Low popularity album: higher weight on album deviation
-            album_weight = 0.40
-        elif album_mean < 60:
-            # Mid-tier album
-            album_weight = 0.30
-        else:
-            # High popularity album: lower weight on album deviation
-            album_weight = 0.15
-        
-        # Convert album z-score to 0-100 scale
-        album_zscore_pop = 50.0 + (album_zscore * 16.7)
-        album_zscore_pop = min(100.0, max(0.0, album_zscore_pop))
-        
-        # Blend with original score
-        adjusted_score = (track_popularity * (1.0 - album_weight)) + (album_zscore_pop * album_weight)
-        
-        logging.debug(
-            f"Album deviation adjustment for '{artist_name}' - '{album_name}': "
-            f"original={track_popularity:.1f}, album_mean={album_mean:.1f}, album_stddev={album_stddev:.2f}, "
-            f"album_zscore={album_zscore:.2f}, weight={album_weight:.0%}, adjusted={adjusted_score:.1f}"
-        )
-        
-        return adjusted_score
-        
-    except Exception as e:
-        logging.debug(f"Error applying album deviation adjustment for '{artist_name}' - '{album_name}': {e}")
-        return track_popularity
-    
-    finally:
-        if should_close and conn:
-            conn.close()
 
 
 # --- Shared DB/API/Helper Functions (moved from start.py) ---
@@ -1060,79 +1060,66 @@ def detect_via_iterative_zscore(
     if not current_track_score or current_track_score <= 0:
         return False
     
-    should_close = False
-    if conn is None:
+    with get_db_connection_context(conn) as db_conn:
         try:
-            from helpers.db_utils import get_db_connection
-            conn = get_db_connection()
-            should_close = True
-        except Exception as e:
-            if verbose:
-                logging.debug(f"Iterative zscore: Could not get DB connection: {e}")
-            return False
-    
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, title, popularity_score
-            FROM tracks
-            WHERE artist = ? AND album = ? AND popularity_score > 0
-            ORDER BY popularity_score DESC
-        """, (artist, album))
-        
-        album_tracks = cursor.fetchall()
-        if not album_tracks or len(album_tracks) < 2:
-            return False
-        
-        album_data = [(row[0], row[1], row[2]) for row in album_tracks]
-        identified_standouts = set()
-        
-        iteration = 0
-        max_iterations = 5
-        
-        while iteration < max_iterations:
-            iteration += 1
-            remaining_scores = [score for _, _, score in album_data if score > 0]
-            if not remaining_scores or len(remaining_scores) < 2:
-                break
+            cursor = db_conn.cursor()
+            cursor.execute("""
+                SELECT id, title, popularity_score
+                FROM tracks
+                WHERE artist = ? AND album = ? AND popularity_score > 0
+                ORDER BY popularity_score DESC
+            """, (artist, album))
             
-            try:
-                album_mean = mean(remaining_scores)
-                album_stdev = stdev(remaining_scores) if len(remaining_scores) > 1 else 0
-            except (ValueError, ZeroDivisionError):
-                break
+            album_tracks = cursor.fetchall()
+            if not album_tracks or len(album_tracks) < 2:
+                return False
             
-            if album_stdev == 0:
-                break
+            album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+            identified_standouts = set()
             
-            top_score = max(remaining_scores)
-            top_z = (top_score - album_mean) / album_stdev
-            if top_z < 1.0:
-                break
+            iteration = 0
+            max_iterations = 5
             
-            found_standout = False
-            for track_id, title, score in album_data:
-                if score == top_score and track_id not in identified_standouts:
-                    artist_z = _check_artist_zscore(cursor, artist, track_id)
-                    if artist_z >= 0.5 or artist_z == -999:
-                        identified_standouts.add(track_id)
-                        found_standout = True
-                        if score == current_track_score:
-                            return True
-                        album_data = [(tid, tit, ts) for tid, tit, ts in album_data if tid != track_id]
+            while iteration < max_iterations:
+                iteration += 1
+                remaining_scores = [score for _, _, score in album_data if score > 0]
+                if not remaining_scores or len(remaining_scores) < 2:
+                    break
+                
+                try:
+                    album_mean = mean(remaining_scores)
+                    album_stdev = stdev(remaining_scores) if len(remaining_scores) > 1 else 0
+                except (ValueError, ZeroDivisionError):
+                    break
+                
+                if album_stdev == 0:
+                    break
+                
+                top_score = max(remaining_scores)
+                top_z = calculate_track_zscore(top_score, album_mean, album_stdev)
+                if top_z < 1.0:
+                    break
+                
+                found_standout = False
+                for track_id, title, score in album_data:
+                    if score == top_score and track_id not in identified_standouts:
+                        artist_z = _check_artist_zscore(cursor, artist, track_id)
+                        if artist_z >= 0.5 or artist_z == -999:
+                            identified_standouts.add(track_id)
+                            found_standout = True
+                            if score == current_track_score:
+                                return True
+                            album_data = [(tid, tit, ts) for tid, tit, ts in album_data if tid != track_id]
+                        break
+                
+                if not found_standout:
                     break
             
-            if not found_standout:
-                break
-        
-        return False
-    except Exception as e:
-        if verbose:
-            logging.debug(f"Iterative zscore error: {e}")
-        return False
-    finally:
-        if should_close:
-            conn.close()
+            return False
+        except Exception as e:
+            if verbose:
+                logging.debug(f"Iterative zscore error: {e}")
+            return False
 
 
 def _check_artist_zscore(cursor, artist: str, track_id: int) -> float:
@@ -1161,7 +1148,7 @@ def _check_artist_zscore(cursor, artist: str, track_id: int) -> float:
         if artist_stdev == 0:
             return -999
         
-        return (track_score - artist_mean) / artist_stdev
+        return calculate_track_zscore(track_score, artist_mean, artist_stdev)
     except Exception as e:
         logging.debug(f"Artist zscore error: {e}")
         return -999
@@ -1181,94 +1168,81 @@ def get_top_standout_tracks_with_gap(
     For greatest hits and compilations, the 50% rule is skipped since these albums
     are specifically curated to contain mostly standout tracks.
     """
-    should_close = False
-    if conn is None:
+    with get_db_connection_context(conn) as db_conn:
         try:
-            from helpers.db_utils import get_db_connection
-            conn = get_db_connection()
-            should_close = True
+            cursor = db_conn.cursor()
+            cursor.execute("""
+                SELECT id, title, popularity_score
+                FROM tracks
+                WHERE artist = ? AND album = ? AND popularity_score > 0
+                ORDER BY popularity_score DESC
+            """, (artist, album))
+            
+            album_tracks = cursor.fetchall()
+            if not album_tracks or len(album_tracks) < 2:
+                return set()
+            
+            album_data = [(row[0], row[1], row[2]) for row in album_tracks]
+            scores = [score for _, _, score in album_data]
+            try:
+                album_mean = mean(scores)
+                album_stdev = stdev(scores) if len(scores) > 1 else 0
+            except (ValueError, ZeroDivisionError):
+                return set()
+            if album_stdev == 0:
+                return set()
+            
+            top_standouts = set()
+            prev_z = None
+            for track_id, title, score in album_data:
+                current_z = calculate_track_zscore(score, album_mean, album_stdev)
+                if prev_z is None:
+                    # First track must have z-score >= 0.8 (medium confidence threshold)
+                    if current_z >= 0.8:
+                        top_standouts.add(track_id)
+                        prev_z = current_z
+                    else:
+                        break
+                else:
+                    # Stop if we drop below z-score of 0.5 (above average but not exceptional)
+                    if current_z < 0.5:
+                        break
+                    gap = prev_z - current_z
+                    # Gap must be small (< threshold) to be in the same "cluster"
+                    if gap < gap_threshold:
+                        top_standouts.add(track_id)
+                        prev_z = current_z
+                    else:
+                        break
+            
+            # Check if this is a greatest hits album (by name patterns)
+            album_lower = album.lower()
+            greatest_hits_patterns = [
+                'greatest hits', 'best of', 'the best', 'collection', 'anthology',
+                'essentials', ' hits', 'singles', 'the very best', 'gold', 'platinum',
+                'ultimate collection', 'complete', 'definitive'
+            ]
+            is_greatest_hits = any(pattern in album_lower for pattern in greatest_hits_patterns)
+            
+            # If more than half the album is in the "standout" cluster, then nothing is really standing out
+            # UNLESS it's a compilation or greatest hits album (which are supposed to have mostly standouts)
+            # Return empty set to prevent inflating ratings when the whole album is consistently good
+            total_tracks = len(album_data)
+            standout_count = len(top_standouts)
+            if standout_count > total_tracks / 2 and not is_compilation and not is_greatest_hits:
+                if verbose:
+                    logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%), returning empty set - no clear standouts")
+                return set()
+            elif standout_count > total_tracks / 2 and (is_compilation or is_greatest_hits):
+                if verbose:
+                    album_type = "compilation" if is_compilation else "greatest hits"
+                    logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%) but this is a {album_type} album - allowing standouts")
+            
+            return top_standouts
         except Exception as e:
             if verbose:
-                logging.debug(f"Top standouts: Could not get DB connection: {e}")
+                logging.debug(f"Top standouts detection error: {e}")
             return set()
-    
-    try:
-        cursor = conn.cursor()
-        cursor.execute("""
-            SELECT id, title, popularity_score
-            FROM tracks
-            WHERE artist = ? AND album = ? AND popularity_score > 0
-            ORDER BY popularity_score DESC
-        """, (artist, album))
-        
-        album_tracks = cursor.fetchall()
-        if not album_tracks or len(album_tracks) < 2:
-            return set()
-        
-        album_data = [(row[0], row[1], row[2]) for row in album_tracks]
-        scores = [score for _, _, score in album_data]
-        try:
-            album_mean = mean(scores)
-            album_stdev = stdev(scores) if len(scores) > 1 else 0
-        except (ValueError, ZeroDivisionError):
-            return set()
-        if album_stdev == 0:
-            return set()
-        
-        top_standouts = set()
-        prev_z = None
-        for track_id, title, score in album_data:
-            current_z = (score - album_mean) / album_stdev
-            if prev_z is None:
-                # First track must have z-score >= 0.8 (medium confidence threshold)
-                if current_z >= 0.8:
-                    top_standouts.add(track_id)
-                    prev_z = current_z
-                else:
-                    break
-            else:
-                # Stop if we drop below z-score of 0.5 (above average but not exceptional)
-                if current_z < 0.5:
-                    break
-                gap = prev_z - current_z
-                # Gap must be small (< threshold) to be in the same "cluster"
-                if gap < gap_threshold:
-                    top_standouts.add(track_id)
-                    prev_z = current_z
-                else:
-                    break
-        
-        # Check if this is a greatest hits album (by name patterns)
-        album_lower = album.lower()
-        greatest_hits_patterns = [
-            'greatest hits', 'best of', 'the best', 'collection', 'anthology',
-            'essentials', ' hits', 'singles', 'the very best', 'gold', 'platinum',
-            'ultimate collection', 'complete', 'definitive'
-        ]
-        is_greatest_hits = any(pattern in album_lower for pattern in greatest_hits_patterns)
-        
-        # If more than half the album is in the "standout" cluster, then nothing is really standing out
-        # UNLESS it's a compilation or greatest hits album (which are supposed to have mostly standouts)
-        # Return empty set to prevent inflating ratings when the whole album is consistently good
-        total_tracks = len(album_data)
-        standout_count = len(top_standouts)
-        if standout_count > total_tracks / 2 and not is_compilation and not is_greatest_hits:
-            if verbose:
-                logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%), returning empty set - no clear standouts")
-            return set()
-        elif standout_count > total_tracks / 2 and (is_compilation or is_greatest_hits):
-            if verbose:
-                album_type = "compilation" if is_compilation else "greatest hits"
-                logging.debug(f"Top standouts: {standout_count}/{total_tracks} tracks qualify (>50%) but this is a {album_type} album - allowing standouts")
-        
-        return top_standouts
-    except Exception as e:
-        if verbose:
-            logging.debug(f"Top standouts detection error: {e}")
-        return set()
-    finally:
-        if should_close:
-            conn.close()
 
 
 __all__ = [
