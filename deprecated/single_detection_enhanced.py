@@ -1532,28 +1532,9 @@ def detect_single_enhanced(
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
-    # STAGE 1: Z-Score Filter (EFFICIENCY GATE)
-    # Calculate z-scores early. Only proceed if track shows standout characteristics
-    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
-    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-    
-    result['z_score'] = album_z
-    result['album_z_score'] = album_z
-    result['artist_z_score'] = artist_z
-    
-    # If track has no standout characteristics (both album and artist z-scores ≤ 0), skip detection
-    if album_z <= 0.0 and artist_z <= 0.0:
-        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
-        if verbose:
-            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics)")
-        return result
-    
-    log_debug(f"[ZSCORE] ✓ Track shows standout characteristics (album_z={album_z:.2f}, artist_z={artist_z:.2f}) - proceeding to metadata checks")
-    if verbose:
-        log_debug(f"Z-score filter: {title} qualifies for detailed single detection")
-    
-    # STAGE 2: Discogs Check (Primary Source) - ALWAYS CHECKED (after z-score passes)
+    # STAGE 1: Discogs Check (Primary Metadata Source) - ALWAYS CHECKED FIRST
+    # Discogs provides authoritative metadata about single releases, independent of popularity
+    # Check this BEFORE z-score filtering to ensure we don't miss confirmed singles
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
@@ -1602,6 +1583,28 @@ def detect_single_enhanced(
             elif not getattr(discogs_client, 'enabled', True):
                 log_debug(f"[DISCOGS] Client disabled in configuration")
                 log_info(f"   ⓘ Discogs client is disabled")
+    
+    # STAGE 2: Z-Score Filter (Efficiency Gate for remaining metadata checks)
+    # Calculate z-scores to determine if track shows standout characteristics
+    # Skip remaining expensive API calls if both album and artist z-scores are low AND Discogs didn't confirm
+    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
+    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+    
+    result['z_score'] = album_z
+    result['album_z_score'] = album_z
+    result['artist_z_score'] = artist_z
+    
+    # If track has no standout characteristics AND Discogs didn't confirm, skip remaining detection
+    if album_z <= 0.0 and artist_z <= 0.0 and not discogs_confirmed:
+        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f}) and Discogs did not confirm")
+        if verbose:
+            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics and no Discogs confirmation)")
+        return result
+    
+    log_debug(f"[ZSCORE] ✓ Track qualifies for metadata checks (album_z={album_z:.2f}, artist_z={artist_z:.2f}, discogs_confirmed={discogs_confirmed})")
+    if verbose:
+        log_debug(f"Z-score filter: {title} qualifies for detailed single detection")
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
     # Declare all source variables first
