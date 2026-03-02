@@ -4740,18 +4740,13 @@ def popularity_scan(
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
                 
-                # Use album type already detected at the start of scan (no need to re-fetch from MusicBrainz)
+                # Use album type already detected at the start of scan (no need to re-fetch from Music Brainz)
                 # The album_type_from_field was set at scan start with MusicBrainz lookup + auto-detection
                 spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
                 
-                # Preserve stronger local classification from earlier phase (if any)
-                if pre_detected_album_type in ("greatest_hits", "various_artists"):
-                    album_type = pre_detected_album_type
-                    type_source = "local-detected"
-                else:
-                    # Use the type that was detected and stored at the start of the scan
-                    album_type = album_type_from_field or spotify_album_type or 'album'
-                    type_source = "populated-at-scan-start"
+                # Use the type that was detected and stored at the start of the scan
+                album_type = album_type_from_field or spotify_album_type or 'album'
+                type_source = "populated-at-scan-start"
                 
                 is_compilation = is_compilation_type(album_type)
                 log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
