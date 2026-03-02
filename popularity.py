@@ -3475,9 +3475,112 @@ def popularity_scan(
                     log_unified(f'Popularity Scan - Scanning Album {album} ({album_num}/{len(albums)})')
                     log_info(f'Starting popularity scan for album: "{artist} - {album}"')
                 
+                # ALBUM TYPE DETECTION - Do this once per album at the start
+                # Detect album type from MusicBrainz/auto-detection and apply to all tracks
+                log_debug(f'Starting album type detection for "{artist} - {album}"')
+                
+                # Get current album type from first track (if any)
+                current_album_type = album_tracks[0].get('spotify_album_type', '') if album_tracks else ''
+                detected_album_type = None
+                type_detection_source = None
+                
+                # Auto-detect Various Artists → Album (Compilation)
+                if artist.lower() == 'various artists':
+                    detected_album_type = 'album+compilation'
+                    type_detection_source = 'auto-detected (Various Artists)'
+                    log_info(f'Auto-detected compilation album: "{album}" (artist: Various Artists)')
+                
+                # Auto-detect Soundtrack in album name → Album (Soundtrack)
+                elif 'soundtrack' in album.lower():
+                    detected_album_type = 'album+soundtrack'
+                    type_detection_source = 'auto-detected (Soundtrack in name)'
+                    log_info(f'Auto-detected soundtrack album: "{album}"')
+                
+                # Otherwise, fetch from MusicBrainz with Spotify fallback
+                else:
+                    try:
+                        from api_clients.musicbrainz import get_album_type_with_fallback
+                        detected_album_type, type_detection_source = get_album_type_with_fallback(
+                            artist, album, current_album_type, enabled=HAVE_MUSICBRAINZ
+                        )
+                        log_debug(f'MusicBrainz album type: "{detected_album_type}" (source: {type_detection_source})')
+                    except Exception as e:
+                        log_debug(f'Failed to fetch album type from MusicBrainz: {e}')
+                        detected_album_type = current_album_type or 'album'
+                        type_detection_source = 'fallback (Spotify or default)'
+                
+                # Update ALL tracks in this album with the detected type
+                if detected_album_type and detected_album_type != current_album_type:
+                    tracks_updated = 0
+                    for track in album_tracks:
+                        track_id = track["id"]
+                        cursor.execute("""
+                            UPDATE tracks 
+                            SET spotify_album_type = ?
+                            WHERE id = ?
+                        """, (detected_album_type, track_id))
+                        tracks_updated += 1
+                        # Update the track dict for use in rest of scan
+                        track["spotify_album_type"] = detected_album_type
+                    
+                    if tracks_updated > 0:
+                        conn.commit()
+                        log_info(f'Updated {tracks_updated} track(s) with album type "{detected_album_type}" (source: {type_detection_source})')
+                else:
+                    log_debug(f'Album type unchanged: "{detected_album_type or current_album_type}"')
+                
+                # Use the detected type for rest of scan
+                album_type_from_field = detected_album_type or current_album_type or 'album'
+                
+                # ALBUM-LEVEL DISCOGS GENRE FETCH
+                # For homogeneous album types (Single, EP, Album), fetch Discogs genres once at album level
+                # For compilations/soundtracks/live albums, genres will be fetched per-track (different per track)
+                album_discogs_genres = None
+                album_discogs_genres_json = None
+                
+                # Determine if this is a "homogeneous" album type (all tracks share genres)
+                is_homogeneous_album = True
+                album_type_lower = album_type_from_field.lower()
+                
+                # Check for heterogeneous types (compilation, soundtrack, live, remix, spoken word)
+                heterogeneous_markers = ['+compilation', '+soundtrack', '+live', '+remix', '+spokenword']
+                if any(marker in album_type_lower for marker in heterogeneous_markers):
+                    is_homogeneous_album = False
+                    log_debug(f'Heterogeneous album type detected ("{album_type_from_field}"), will fetch Discogs genres per-track')
+                
+                # Fetch album-level Discogs genres for homogeneous albums
+                if is_homogeneous_album and HAVE_DISCOGS and discogs_token:
+                    try:
+                        # Get Discogs release ID from first track (same for all tracks in album)
+                        first_track_discogs_id = row_get(album_tracks[0], 'discogs_release_id') if album_tracks else None
+                        
+                        if first_track_discogs_id:
+                            from api_clients.discogs import DiscogsClient
+                            discogs_client_album = DiscogsClient(discogs_token)
+                            
+                            log_debug(f'Fetching album-level Discogs genres (release ID: {first_track_discogs_id})')
+                            album_discogs_genres = discogs_client_album.get_release_genres_by_id(first_track_discogs_id)
+                            
+                            if album_discogs_genres:
+                                # Convert to JSON for storage
+                                if isinstance(album_discogs_genres, list) and album_discogs_genres:
+                                    if isinstance(album_discogs_genres[0], str):
+                                        album_discogs_genres = [{"name": g} for g in album_discogs_genres]
+                                    album_discogs_genres_json = json.dumps(album_discogs_genres)
+                                    log_info(f'Fetched {len(album_discogs_genres)} Discogs genre(s) at album level for "{album}" (type: {album_type_from_field})')
+                                    log_debug(f'Album-level Discogs genres: {album_discogs_genres}')
+                            else:
+                                log_debug(f'No Discogs genres found at album level for release ID {first_track_discogs_id}')
+                        else:
+                            log_debug(f'No Discogs release ID available for album-level genre fetch')
+                    except Exception as e:
+                        log_debug(f'Failed to fetch album-level Discogs genres: {e}')
+                        log_info(f'Will fall back to per-track Discogs genre fetching for this album')
+                elif is_homogeneous_album:
+                    log_debug(f'Discogs not configured or disabled, skipping album-level genre fetch')
+                
                 # Detect if this is a live/unplugged album
-                # Check album type from MusicBrainz/Spotify first, fall back to name pattern detection
-                album_type_from_field = album_tracks[0].get('spotify_album_type', '') if album_tracks else ''
+                # Check album type field first (now freshly updated), fall back to name pattern detection
                 is_live_album = '+live' in album_type_from_field or is_live_or_alternate_album(album)
                 
                 if is_live_album:
@@ -3799,8 +3902,14 @@ def popularity_scan(
                                 except Exception as e:
                                     log_debug(f'Failed to fetch ListenBrainz genres for "{title}": {e}')
                             
-                            # Fetch Discogs genres (if release ID available or by title/artist search)
-                            if discogs_client:
+                            # Fetch Discogs genres
+                            # Use album-level data if available (homogeneous albums), otherwise fetch per-track
+                            if album_discogs_genres:
+                                # Use pre-fetched album-level genres for homogeneous albums
+                                track_tags["discogs_genres"] = album_discogs_genres
+                                log_debug(f'Using album-level Discogs genres for "{title}" ({len(album_discogs_genres)} genres)')
+                            elif discogs_client:
+                                # Fetch per-track for heterogeneous albums (compilation, soundtrack, live, etc.)
                                 try:
                                     discogs_genres = None
                                     if discogs_release_id:
@@ -3825,7 +3934,7 @@ def popularity_scan(
                                     
                                     if discogs_genres:
                                         track_tags["discogs_genres"] = discogs_genres
-                                        log_debug(f'Fetched {len(discogs_genres)} Discogs genres for "{title}"')
+                                        log_debug(f'Fetched {len(discogs_genres)} Discogs genres per-track for "{title}" (heterogeneous album)')
                                 except Exception as e:
                                     log_debug(f'Failed to fetch Discogs genres for "{title}": {e}')
                             
@@ -4630,17 +4739,20 @@ def popularity_scan(
 
                 # Perform singles detection for album tracks
                 log_info(f'Starting singles detection for "{artist} - {album}"')
-                # Get album type from MusicBrainz with Spotify fallback
-                from api_clients.musicbrainz import get_album_type_with_fallback
+                
+                # Use album type already detected at the start of scan (no need to re-fetch from MusicBrainz)
+                # The album_type_from_field was set at scan start with MusicBrainz lookup + auto-detection
                 spotify_album_type = row_get(album_tracks[0] if album_tracks else {}, 'spotify_album_type', '')
-                pre_detected_album_type = album_type
-                fallback_album_type, type_source = get_album_type_with_fallback(artist, album, spotify_album_type, enabled=HAVE_MUSICBRAINZ)
-                # Preserve stronger local classification from earlier phase.
+                
+                # Preserve stronger local classification from earlier phase (if any)
                 if pre_detected_album_type in ("greatest_hits", "various_artists"):
                     album_type = pre_detected_album_type
                     type_source = "local-detected"
                 else:
-                    album_type = fallback_album_type
+                    # Use the type that was detected and stored at the start of the scan
+                    album_type = album_type_from_field or spotify_album_type or 'album'
+                    type_source = "populated-at-scan-start"
+                
                 is_compilation = is_compilation_type(album_type)
                 log_debug(f'Album context: {len(album_tracks)} total tracks, compilation={is_compilation}, album_type={album_type} (source: {type_source})')
                 singles_detected = 0
