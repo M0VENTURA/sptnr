@@ -5607,6 +5607,12 @@ def popularity_scan(
                                         stars = 5
                                         log_info(f"5-star assignment: {title} (high-confidence single)")
                                         log_debug(f"High confidence single detected - track_id: {track_id}")
+                                    elif single_confidence == "popular":
+                                        # Popular status: z-score > 2.0 without detection sources - gets 5 stars but NOT marked as single
+                                        stars = 5
+                                        is_popularity_based_5star = True
+                                        log_info(f"5-star assignment: {title} (popular status - exceptional z-score={track_zscore:.2f} without detection sources)")
+                                        log_debug(f"Popular status track - track_id: {track_id}, zscore: {track_zscore:.2f}, is_single: {is_single}")
                                     elif single_confidence == "medium":
                                         # Medium confidence: depends on number of sources AND z-score strength
                                         medium_conf_count = len(single_sources) if single_sources else 0
