@@ -5142,34 +5142,48 @@ def popularity_scan(
                                     stars = 5
                                     is_popularity_based_5star = True
                                     
-                                    # Verify track is also in top 40% of artist's catalog (60th percentile)
-                                    # If not, downgrade to 4★ (album standout, not artist standout)
+                                    # Verify track is in top 40% by Last.fm playcount
+                                    track_lastfm_playcount = row_get(track_row, "lastfm_track_playcount", 0) or 0
+                                    
+                                    # Get all tracks with Last.fm playcount for this artist
                                     try:
                                         cursor = conn.cursor()
                                         cursor.execute(
-                                            """SELECT COALESCE(popularity_score, 0) as pop FROM tracks 
-                                               WHERE artist = ? ORDER BY popularity_score DESC""",
+                                            """SELECT COALESCE(lastfm_track_playcount, 0) as playcount 
+                                               FROM tracks WHERE artist = ? AND lastfm_track_playcount > 0 
+                                               ORDER BY lastfm_track_playcount DESC""",
                                             (artist,)
                                         )
-                                        all_pops = [row[0] for row in cursor.fetchall() if row[0] > 0]
-                                        if all_pops:
+                                        all_playcounts = [row[0] for row in cursor.fetchall() if row[0] > 0]
+                                        
+                                        if all_playcounts and track_lastfm_playcount > 0:
                                             # Calculate 60th percentile (top 40%)
                                             import numpy as np
-                                            top_40_threshold = float(np.percentile(all_pops, 60))
-                                            if popularity_score < top_40_threshold:
+                                            top_40_threshold = float(np.percentile(all_playcounts, 60))
+                                            
+                                            # Get the rank of this track
+                                            rank = sum(1 for p in all_playcounts if p >= track_lastfm_playcount)
+                                            total_ranked = len(all_playcounts)
+                                            percentile_position = (rank / total_ranked * 100) if total_ranked > 0 else 0
+                                            
+                                            if track_lastfm_playcount < top_40_threshold:
                                                 stars = 4
                                                 is_popularity_based_5star = False
-                                                log_info(f"4-star assignment: {title} (album standout z={track_zscore:.2f}, but not top 40% artist catalog pop={popularity_score:.1f} < p60={top_40_threshold:.1f})")
-                                                log_debug(f"Album standout downgraded - track_id: {track_id}, pop: {popularity_score}, top_40_percentile: {top_40_threshold}, zscore: {track_zscore:.2f}")
+                                                log_info(f"4-star assignment: {title} (album standout z={track_zscore:.2f}, Last.fm rank {rank}/{total_ranked} ({percentile_position:.0f}th percentile), below top 40%)")
+                                                log_debug(f"Last.fm validation failed - track_id: {track_id}, playcount: {track_lastfm_playcount}, top_40_threshold: {top_40_threshold}, rank: {rank}/{total_ranked}")
                                             else:
-                                                log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f}, top 40% artist p60={top_40_threshold:.1f})")
-                                                log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}, pop: {popularity_score}")
+                                                log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f}, Last.fm rank {rank}/{total_ranked} ({percentile_position:.0f}th percentile), top 40%)")
+                                                log_debug(f"Last.fm validation passed - track_id: {track_id}, playcount: {track_lastfm_playcount}, top_40_threshold: {top_40_threshold}, rank: {rank}/{total_ranked}")
+                                        elif track_lastfm_playcount == 0:
+                                            # No Last.fm data, fall back to database popularity calculation
+                                            log_debug(f"No Last.fm playcount available for {title}, using database popularity instead")
+                                            log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f}, no Last.fm fallback)")
                                         else:
-                                            log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f})")
+                                            log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f})")
                                             log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                     except Exception as e:
-                                        log_debug(f"Could not calculate top 40% threshold: {e}")
-                                        log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f})")
+                                        log_debug(f"Could not calculate Last.fm ranking: {e}")
+                                        log_info(f"5-star assignment: {title} (album standout z={track_zscore:.2f})")
                                         log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                 else:
                                     stars = max(stars, 4)
