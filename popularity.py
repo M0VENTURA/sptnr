@@ -5308,21 +5308,21 @@ def popularity_scan(
                                         # Count the number of medium-confidence sources
                                         # Each unique source in single_sources represents a medium-confidence method
                                         medium_conf_count = len(single_sources) if single_sources else 0
-                                        if medium_conf_count >= 2 and has_iterative_zscore:
-                                            stars = 5  # 2+ medium sources + iterative z-score = 5 stars
+                                        if medium_conf_count >= 2 and track_zscore >= 0.0:
+                                            stars = 5  # 2+ medium sources + positive z-score = 5 stars
                                             # Upgrade is_single flag for medium confidence tracks with 2+ sources
                                             if not is_single:
                                                 single_upgrades.append(track_id)
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + iterative z-score) - upgraded to single")
+                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f}) - upgraded to single")
                                             else:
-                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + iterative z-score)")
-                                            log_debug(f"Medium confidence with {medium_conf_count} sources + iterative zscore - track_id: {track_id}")
+                                                log_info(f"5-star assignment: {title} (has {medium_conf_count} medium-confidence sources + positive z-score={track_zscore:.2f})")
+                                            log_debug(f"Medium confidence with {medium_conf_count} sources + positive z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                         else:
                                             # Single medium-confidence source only gets 3 stars
                                             stars = 3
-                                            if medium_conf_count >= 2 and not has_iterative_zscore:
-                                                log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence sources but NO iterative z-score detection)")
-                                                log_debug(f"Medium confidence without iterative zscore - track_id: {track_id}, sources: {single_sources}, has_iterative_zscore: {has_iterative_zscore}")
+                                            if medium_conf_count >= 2 and track_zscore < 0.0:
+                                                log_info(f"3-star assignment: {title} (has {medium_conf_count} medium-confidence sources but negative z-score={track_zscore:.2f})")
+                                                log_debug(f"Medium confidence without positive z-score - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                             else:
                                                 log_debug(f"Medium confidence with 1 source only - track_id: {track_id}, limiting to 3 stars")
                                     # Standout tracks with STRONG popularity (z-score >= 1.5) AND high absolute score can get 4-5 stars
