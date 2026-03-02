@@ -73,11 +73,29 @@ def _get_timeout_safe_musicbrainz_client():
 
 def _get_timeout_safe_discogs_client(token: str):
     """Get or create timeout-safe Discogs client for use in popularity scanner."""
-    global _timeout_safe_discogs_clients
-    if not HAVE_DISCOGS:
+    global _timeout_safe_discogs_clients, HAVE_DISCOGS, HAVE_DISCOGS_VIDEO, DiscogsClient
+    if not token:
         return None
+
+    # Lazy import fallback: if module-level import failed early, retry at runtime.
+    # This keeps singles detection aligned with batch genre fetch behavior.
+    if not HAVE_DISCOGS or DiscogsClient is None:
+        try:
+            from api_clients.discogs import DiscogsClient as RuntimeDiscogsClient
+            DiscogsClient = RuntimeDiscogsClient  # type: ignore
+            HAVE_DISCOGS = True
+            HAVE_DISCOGS_VIDEO = True
+            log_debug("Discogs client recovered via lazy runtime import for singles detection")
+        except Exception as e:
+            log_debug(f"Discogs lazy runtime import failed: {e}")
+            return None
+
     if token not in _timeout_safe_discogs_clients:
-        _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True)
+        try:
+            _timeout_safe_discogs_clients[token] = DiscogsClient(token, http_session=timeout_safe_session, enabled=True)
+        except Exception as e:
+            log_debug(f"Discogs client initialization failed for singles detection: {e}")
+            return None
     return _timeout_safe_discogs_clients.get(token)
 
 # Module-level logger
@@ -1745,7 +1763,7 @@ def detect_single_for_track(
             
             # Get API clients
             discogs_client = None
-            if discogs_token and HAVE_DISCOGS:
+            if discogs_token:
                 discogs_client = _get_timeout_safe_discogs_client(discogs_token)
             
             musicbrainz_client = None
@@ -2045,7 +2063,7 @@ def detect_single_for_track(
         log_info(f"   â“˜ MusicBrainz client not available")
     
     # Third check: Discogs single detection
-    if HAVE_DISCOGS and discogs_token:
+    if discogs_token:
         try:
             log_info(f"   Checking Discogs for single: {title}")
             log_debug(f"   Discogs API: Searching for single '{title}' by '{artist}'")
@@ -2071,15 +2089,11 @@ def detect_single_for_track(
             log_info(f"   âš  Discogs single check failed for {title}: {e}")
             log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
-        if not HAVE_DISCOGS:
-            log_info(f"   â“˜ Discogs client not available")
-            log_debug(f"   Discogs: Client not available (module import failed)")
-        elif not discogs_token:
-            log_info(f"   â“˜ Discogs token not configured")
-            log_debug(f"   Discogs: Token not configured in config.yaml")
+        log_info(f"   â“˜ Discogs token not configured")
+        log_debug(f"   Discogs: Token not configured in config.yaml")
     
     # Fourth check: Discogs video detection
-    if HAVE_DISCOGS_VIDEO and discogs_token:
+    if discogs_token:
         try:
             log_info(f"   Checking Discogs for music video: {title}")
             log_debug(f"   Discogs API: Searching for music video '{title}' by '{artist}'")
@@ -2105,12 +2119,8 @@ def detect_single_for_track(
             log_info(f"   âš  Discogs video check failed for {title}: {e}")
             log_debug(f"   Discogs API error: {type(e).__name__}: {str(e)}")
     else:
-        if not HAVE_DISCOGS_VIDEO:
-            log_info(f"   â“˜ Discogs video client not available")
-            log_debug(f"   Discogs: Video client not available")
-        elif not discogs_token:
-            log_info(f"   â“˜ Discogs token not configured for video detection")
-            log_debug(f"   Discogs: Token not configured for video detection")
+        log_info(f"   â“˜ Discogs token not configured for video detection")
+        log_debug(f"   Discogs: Token not configured for video detection")
     
     # Iterative z-score detection (required method)
     iterative_zscore_passed = False
@@ -4472,16 +4482,17 @@ def popularity_scan(
                 singles_detected = 0
                 
                 # Log which sources are available for single detection
+                discogs_client_available = bool(discogs_token and _get_timeout_safe_discogs_client(discogs_token))
                 sources_available = []
                 sources_available.append("Spotify")
                 if HAVE_MUSICBRAINZ:
                     sources_available.append("MusicBrainz")
-                if HAVE_DISCOGS and discogs_token:
+                if discogs_client_available:
                     sources_available.append("Discogs")
-                if HAVE_DISCOGS_VIDEO and discogs_token:
+                if discogs_client_available:
                     sources_available.append("Discogs Video")
                 log_info(f'Available sources for single detection: {[", ".join(sources_available)]}')
-                log_debug(f'Source details: Spotify=enabled, MB={HAVE_MUSICBRAINZ}, Discogs={HAVE_DISCOGS and bool(discogs_token)}, Video={HAVE_DISCOGS_VIDEO and bool(discogs_token)}')
+                log_debug(f'Source details: Spotify=enabled, MB={HAVE_MUSICBRAINZ}, Discogs={discogs_client_available}, Video={discogs_client_available}')
                 
                 # Calculate artist-level popularity statistics BEFORE single detection
                 # Reason: We need to determine if this album is underperforming vs the artist's catalog
