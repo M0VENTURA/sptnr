@@ -2271,24 +2271,55 @@ def detect_single_enhanced(
         lastfm_single_confirmed = False
     
     # STAGE 5: Popularity-Based Inference (including version count)
-    # Calculate album-level z-score
-    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+    # NOTE: Z-scores were already calculated in STAGE 2 using median+MAD
+    # Reuse those values here for consistency
+    # album_z and artist_z were already calculated in STAGE 2
+    # Simply ensure they're stored in result for popularity inference
+    
+    # If we somehow bypassed STAGE 2 (edge case), recalculate using median+MAD
+    if 'album_z_score' not in result or result['album_z_score'] is None:
+        # Recalculate album z-score using median+MAD from STAGE 2 approach
+        if album_median > 0 and album_popularities:
+            from statistics import median as stat_median_stage5
+            album_abs_devs = [abs(s - album_median) for s in album_popularities]
+            album_mad = stat_median_stage5(album_abs_devs) if album_abs_devs else 0
+            album_mad_scaled = album_mad * 1.4826
+            album_spread = max(album_mad_scaled, 10.0)
+            album_z = (popularity - album_median) / album_spread if album_spread > 0 else 0
+        else:
+            album_z = 0.0
+        result['album_z_score'] = album_z
+    else:
+        album_z = result['album_z_score']
+    
     result['z_score'] = album_z  # Store album z-score for backward compatibility
     
-    # Get artist statistics
-    artist_mean, artist_stddev, artist_track_count = calculate_artist_stats(conn, artist)
-    
-    # Calculate artist-level z-score
-    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-    
-    # Store both z-scores in result
-    result['album_z_score'] = album_z
-    result['artist_z_score'] = artist_z
+    # Similarly for artist z-score
+    if 'artist_z_score' not in result or result['artist_z_score'] is None:
+        try:
+            if artist_popularities:
+                from statistics import median as stat_median_artist_stage5
+                artist_median_stage5 = stat_median_stage5(artist_popularities)
+                artist_abs_devs = [abs(s - artist_median_stage5) for s in artist_popularities]
+                artist_mad = stat_median_artist_stage5(artist_abs_devs) if artist_abs_devs else 0
+                artist_mad_scaled = artist_mad * 1.4826
+                artist_spread = max(artist_mad_scaled, 10.0)
+                artist_z = (popularity - artist_median_stage5) / artist_spread if artist_spread > 0 else 0
+            else:
+                artist_z = 0.0
+        except Exception as e:
+            log_debug(f"[STAGE5] Could not recalculate artist z-score: {e}")
+            artist_z = 0.0
+        result['artist_z_score'] = artist_z
+    else:
+        artist_z = result['artist_z_score']
     
     if verbose:
-        log_debug(f"Z-scores for '{title}': album_z={album_z:.2f}, artist_z={artist_z:.2f}")
-        if artist_track_count > 0:
-            log_debug(f"Artist stats: mean={artist_mean:.1f}, stddev={artist_stddev:.1f}, tracks={artist_track_count}")
+        log_debug(f"Z-scores for '{title}': album_z={album_z:.2f}, artist_z={artist_z:.2f} (from STAGE 2, using median+MAD)")
+        if 'artist_track_count' in locals():
+            artist_track_count_val = locals().get('artist_track_count', 0)
+            if artist_track_count_val > 0:
+                log_debug(f"Artist stats: median-based z-score calculation (robust to outliers)")
     
     # ARTIST-LEVEL SANITY FILTER
     # If track.popularity < artist_mean_popularity:
