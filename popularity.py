@@ -5063,19 +5063,6 @@ def popularity_scan(
                     updates = []
                     # Track which medium-confidence tracks should be upgraded to is_single=1
                     single_upgrades = []
-                    top_standout_track_ids = set()
-                    try:
-                        from popularity_helpers import get_top_standout_tracks_with_gap
-                        top_standout_track_ids = get_top_standout_tracks_with_gap(
-                            artist,
-                            album,
-                            conn=conn,
-                            gap_threshold=1.0,
-                            is_compilation=is_compilation,
-                            verbose=False
-                        )
-                    except Exception as e:
-                        log_debug(f"Top standout detection failed for album {album}: {e}")
 
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
@@ -5113,6 +5100,10 @@ def popularity_scan(
                         # Calculate band-based star rating (baseline)
                         band_index = i // band_size
                         stars = max(1, 4 - band_index)
+                        
+                        # Track whether 5★ assignment came from popularity logic vs single detection
+                        # Used to determine if downgrade logic should apply
+                        is_popularity_based_5star = False
                         
                         # NEW: 5-STAR LOGIC WITH ARTIST + ALBUM CONTEXT
                         # A track becomes 5★ if ANY of these conditions are met:
@@ -5167,6 +5158,7 @@ def popularity_scan(
                                     # Require strong album outlier signal as well.
                                     if track_zscore >= STANDOUT_CONFIG['star_5']['album_z']:
                                         stars = 5
+                                        is_popularity_based_5star = True
                                         log_info(f"5-star assignment: {title} (top 15% artist + strong album z-score, pop={popularity_score:.1f}, z={track_zscore:.2f})")
                                     else:
                                         stars = max(stars, 4)
@@ -5182,13 +5174,14 @@ def popularity_scan(
                                     
                                     if is_top_10_global and is_album_outlier:
                                         stars = 5
+                                        is_popularity_based_5star = True
                                         log_info(f"5-star assignment: {title} (top 10% global + album outlier, listeners={track_lastfm_listeners}, zscore={track_zscore:.2f})")
                                         log_debug(f"Dual criteria met - track_id: {track_id}, listeners: {track_lastfm_listeners}, top_10_threshold: {artist_context_threshold}, zscore: {track_zscore:.2f}")
                                     # **PRIORITY: Check single confidence BEFORE cluster logic**
                                     # Medium confidence with 2+ sources + positive z-score ALWAYS gets 5★
                                     if single_confidence == "medium":
                                         medium_conf_count = len(single_sources) if single_sources else 0
-                                        if medium_conf_count >= 2 and track_zscore >= 0.0:
+                                        if medium_conf_count >= 2 and track_zscore > 0.0:
                                             stars = 5  # 2+ medium sources + positive z-score = 5 stars
                                             if not is_single:
                                                 single_upgrades.append(track_id)
@@ -5219,18 +5212,20 @@ def popularity_scan(
                                         stars = 4 if stars < 4 else stars  # Upgrade to at least 4 stars
                                         log_info(f"4+ star assignment: {title} (strong standout - zscore={track_zscore:.2f}, pop={popularity_score:.1f})")
                                         log_debug(f"Standout track with strong metrics - track_id: {track_id}, zscore: {track_zscore:.2f}, popularity: {popularity_score}")
-                            # High-confidence singles are confirmed by multiple authoritative sources (Spotify, Discogs, MusicBrainz, Last.fm),
-                            # so they should always get 5 stars regardless of album performance
-                            if album_is_underperforming and single_confidence == "medium":
-                                if artist_stats['median_popularity'] > 0:
+                            # Only downgrade popular-based 5★ tracks on underperforming albums.
+                            # Single-detection-based 5★ tracks (high/medium confidence, user-set) should NOT be downgraded
+                            # because their 5★ status is confirmed by detection sources, not just popularity.
+                            if album_is_underperforming and is_popularity_based_5star:
+                                median_popularity = artist_stats.get('median_popularity', 0) if artist_stats else 0
+                                if median_popularity > 0:
                                     # Only downgrade if track popularity is also below artist median
-                                    if popularity_score < artist_stats['median_popularity']:
-                                        # Downgrade by 1 star (but keep at least 3 stars for medium-confidence singles)
+                                    if popularity_score < median_popularity:
+                                        # Downgrade by 1 star (but keep at least 3 stars)
                                         original_stars = stars
                                         stars = max(stars - 1, 3)
                                         if stars < original_stars:
-                                            log_info(f"Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={artist_stats['median_popularity']:.1f})")
-                                            log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {artist_stats['median_popularity']}, confidence={single_confidence}")
+                                            log_info(f"Downgraded '{title}': {original_stars}★ -> {stars}★ (underperforming album, pop={popularity_score:.1f} < artist_median={median_popularity:.1f})")
+                                            log_debug(f"Downgrade applied - album_is_underperforming: True, track_pop: {popularity_score}, artist_median: {median_popularity}, is_popularity_based_5star: True")
                         else:
                             # Track is excluded from statistics
                             log_debug(f"Skipped confidence checks for excluded track: {title} (baseline stars={stars})")
