@@ -13,39 +13,85 @@
         </ol>
     </nav>
     
-    <div class="d-flex flex-column flex-lg-row justify-content-between align-items-start mb-4 gap-3">
-        <div class="flex-grow-1">
-            <div class="d-flex gap-3">
-                <!-- Album Art -->
-                <div class="position-relative">
-                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name|urlencode, album=album_name|urlencode) }}" 
-                         alt="{{ album_name }}" 
-                         class="img-thumbnail" 
-                         style="width: 150px; height: 150px; object-fit: cover; border: 1px solid var(--border-color); background-color: #2a2a2a;"
-                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22150%22 height=%22150%22%3E%3Crect fill=%22%232a2a2a%22 width=%22150%22 height=%22150%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2214%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
-                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2 d-none d-md-block" onclick="openAlbumArtModal()" title="Change album art">
-                        <i class="bi bi-pencil"></i> Change Art
-                    </button>
-                </div>
-                <div>
-                    <h1 class="h2 mb-2">
-                        <i class="bi bi-album"></i> {{ album_name }}
-                    </h1>
-                    <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+    <!-- Album Art & Basic Info Combined Card -->
+    <div class="mb-4" id="album-details-section">
+        <div class="card">
+            <div class="card-body">
+                <div class="row g-4">
+                    <!-- Album Art -->
+                    <div class="col-12 col-md-3 d-flex flex-column align-items-center">
+                        <div class="position-relative mb-3" style="width: 200px; height: 200px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
+                            <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name|urlencode, album=album_name|urlencode) }}" 
+                                 alt="{{ album_name }}" 
+                                 style="width: 100%; height: 100%; object-fit: cover;"
+                                 onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%232a2a2a%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Album Art%3C/text%3E%3C/svg%3E';">
+                            <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
+                                <i class="bi bi-pencil"></i> Change
+                            </button>
+                        </div>
+                    </div>
+                    <!-- Album Info -->
+                    <div class="col-12 col-md-9">
+                        <h5 class="mb-3"><i class="bi bi-info-circle"></i> Album Details</h5>
+                        <div class="row g-2">
+                            <div class="col-6">
+                                <small class="text-muted d-block">Artist</small>
+                                <strong><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></strong>
+                            </div>
+                            <div class="col-6">
+                                <small class="text-muted d-block">Album</small>
+                                <strong>{{ album_name }}</strong>
+                            </div>
+                            {% if album_data and album_data.spotify_release_date %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Release Year</small>
+                                <strong>{{ album_data.spotify_release_date[:4] }}</strong>
+                            </div>
+                            {% endif %}
+                            {% if album_data and album_data.spotify_album_type %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Album Type</small>
+                                <strong><span class="badge bg-info">{{ album_data.spotify_album_type|title }}</span></strong>
+                            </div>
+                            {% endif %}
+                            {% if album_data and album_data.track_count %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Tracks</small>
+                                <strong>{{ album_data.track_count }}</strong>
+                            </div>
+                            {% endif %}
+                            {% if album_data and album_data.avg_stars %}
+                            <div class="col-6">
+                                <small class="text-muted d-block">Avg Rating</small>
+                                <strong><span class="badge bg-success">{{ album_data.avg_stars|round(2) }}★</span></strong>
+                            </div>
+                            {% endif %}
+                        </div>
+                    </div>
                 </div>
             </div>
         </div>
-        <div class="d-flex gap-2 flex-column flex-lg-row w-100 w-lg-auto">
-            <button class="btn btn-outline-success" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
+    </div>
+    
+    <!-- Album Title & Action Buttons -->
+    <div class="d-flex flex-column flex-md-row justify-content-between align-items-start mb-4 gap-2">
+        <div class="flex-grow-1">
+            <h1 class="h2 mb-1">
+                <i class="bi bi-album"></i> {{ album_name }}
+            </h1>
+            <p class="text-muted mb-0">by <a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></p>
+        </div>
+        <div class="d-flex gap-2 flex-wrap">
+            <button class="btn btn-outline-success btn-sm" onclick="addBookmark('album', '{{ album_name|escapejs }}', '{{ artist_name|escapejs }}', '{{ album_name|escapejs }}', null)" title="Add to favourites">
                 <i class="bi bi-star"></i> <span class="d-none d-sm-inline">Favourite</span>
             </button>
-            <button class="btn btn-outline-info" onclick="openAlbumLookupModal()">
-                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">External Metadata</span>
+            <button class="btn btn-outline-info btn-sm" onclick="openAlbumLookupModal()">
+                <i class="bi bi-database"></i> <span class="d-none d-sm-inline">Metadata</span>
             </button>
-            <button class="btn btn-outline-warning" onclick="updateAlbumWithBeets('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" title="Update tags and organize files with beets">
-                <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Update with Beets</span>
+            <button class="btn btn-outline-warning btn-sm" onclick="updateAlbumWithBeets('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')">
+                <i class="bi bi-wrench"></i> <span class="d-none d-sm-inline">Beets</span>
             </button>
-            <div class="btn-group" role="group">
+            <div class="btn-group btn-group-sm" role="group">
                 <button type="button" class="btn btn-outline-secondary dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Search for this album">
                     <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
                 </button>
@@ -63,16 +109,14 @@
                 </ul>
             </div>
             <form method="POST" action="{{ url_for('album_rescan', artist=artist_name, album=album_name) }}" class="d-contents">
-                <button class="btn btn-warning" type="submit" title="Full scan: Navidrome + Popularity + Singles">
-                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan Album</span>
+                <button class="btn btn-warning btn-sm" type="submit" title="Full scan: Navidrome + Popularity + Singles">
+                    <i class="bi bi-arrow-repeat"></i> <span class="d-none d-sm-inline">Rescan</span>
                 </button>
             </form>
-            <a href="/downloads#upcoming" class="btn btn-outline-secondary" title="Search for missing releases">
-                <i class="bi bi-bookmark-plus"></i> <span class="d-none d-sm-inline">Track Release</span>
-            </a>
         </div>
     </div>
 
+    <!-- Navigation Tabs -->
     <div class="card mb-4 sticky-top" style="top: 0.75rem; z-index: 1000;">
         <div class="card-body py-2 px-3">
             <ul class="nav nav-pills gap-2 small">
@@ -86,72 +130,13 @@
         </div>
     </div>
 
-    <!-- Two-Column Layout -->
+    <!-- Two-Column Layout for Detailed Metadata -->
     <form method="POST" action="{{ url_for('album_edit', artist=artist_name, album=album_name) }}" id="albumMetadataForm">
         <div class="row g-2 g-md-3">
             <!-- LEFT COLUMN -->
             <div class="col-12 col-lg-6">
-                <!-- Album Information Card -->
+                <!-- Album Edit Card -->
                 <div class="card mb-4 h-100" id="album-information-section">
-                    <div class="card-header">
-                        <h5 class="card-title mb-0">
-                            <i class="bi bi-info-circle"></i> Album Information
-                        </h5>
-                    </div>
-                    <div class="card-body">
-                        <div class="row g-3">
-                            <!-- Album Art Reference -->
-                            <div class="col-12 d-flex justify-content-center">
-                                <div class="position-relative" style="width: 180px; height: 180px; border-radius: 0.5rem; overflow: hidden; background-color: #2a2a2a; border: 2px solid var(--border-color);">
-                                    <img id="albumArtImage" src="{{ url_for('api_album_art', artist=artist_name|urlencode, album=album_name|urlencode) }}" 
-                                         alt="{{ album_name }}" 
-                                         style="width: 100%; height: 100%; object-fit: cover;"
-                                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22180%22 height=%22180%22%3E%3Crect fill=%22%232a2a2a%22 width=%22180%22 height=%22180%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%23666%22 font-size=%2216%22%3ENo Art%3C/text%3E%3C/svg%3E';">
-                                    <button class="btn btn-sm btn-dark position-absolute bottom-0 start-50 translate-middle-x mb-2" onclick="openAlbumArtModal()" title="Change album art">
-                                        <i class="bi bi-pencil"></i> Change
-                                    </button>
-                                </div>
-                            </div>
-
-                            <!-- Basic Album Details -->
-                            <div class="col-12">
-                                <div class="metadata-row">
-                                    <div class="metadata-label">Album Title</div>
-                                    <div class="metadata-value"><strong>{{ album_name }}</strong></div>
-                                </div>
-                            </div>
-                            <div class="col-12">
-                                <div class="metadata-row">
-                                    <div class="metadata-label">Artist</div>
-                                    <div class="metadata-value"><a href="{{ url_for('artist_detail', name=artist_name) }}">{{ artist_name }}</a></div>
-                                </div>
-                            </div>
-                            {% if album_data %}
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label">Year</div>
-                                    <div class="metadata-value">{{ album_data.spotify_release_date[:4] if album_data.spotify_release_date else '—' }}</div>
-                                </div>
-                            </div>
-                            <div class="col-6">
-                                <div class="metadata-row">
-                                    <div class="metadata-label">Type</div>
-                                    <div class="metadata-value">
-                                        {% if album_data.spotify_album_type %}
-                                            <span class="badge badge-info">{{ album_data.spotify_album_type|title }}</span>
-                                        {% else %}
-                                            —
-                                        {% endif %}
-                                    </div>
-                                </div>
-                            </div>
-                            {% endif %}
-                        </div>
-                    </div>
-                </div>
-
-                <!-- Album Metadata Editing Card -->
-                <div class="card mb-4 h-100" id="album-edit-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5 class="card-title mb-0">
                             <i class="bi bi-pencil-square"></i> Edit Album
@@ -215,7 +200,7 @@
 
             <!-- RIGHT COLUMN -->
             <div class="col-12 col-lg-6">
-                <!-- Album Overview Card (Consolidated Stats) -->
+                <!-- Album Overview Card -->
                 {% if album_data %}
                 <div class="card mb-4 h-100" id="album-overview-section">
                     <div class="card-header">
@@ -313,7 +298,7 @@
                 </div>
                 {% endif %}
 
-                <!-- Album Release IDs Card -->
+                <!-- Album IDs Card -->
                 {% if album_data %}
                 <div class="card mb-4 h-100" id="album-ids-section">
                     <div class="card-header d-flex justify-content-between align-items-center">
@@ -356,7 +341,7 @@
                 </div>
                 {% endif %}
 
-                <!-- Album Genres & Tags Card -->
+                <!-- Genres & Tags Card -->
                 <div class="card mb-4 h-100" id="album-genres-section">
                     <div class="card-header">
                         <h5 class="card-title mb-0">
