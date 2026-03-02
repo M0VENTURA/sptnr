@@ -818,21 +818,24 @@ class MusicBrainzClient:
         
         return False
     
-    def appears_on_various_artists(self, title: str, artist: str, min_appearances: int = 2) -> bool:
+    def appears_on_various_artists(self, title: str, artist: str, min_appearances: int = 3) -> bool:
         """
-        Check if a recording appears on multiple compilation or Various Artists albums.
+        Check if a recording appears on multiple Various Artists compilation albums.
         
         Songs released as singles often appear on compilation albums, greatest hits,
         soundtracks, and other Various Artists releases. Multiple appearances on such
         albums is a medium-confidence signal that the track was a popular single.
         
+        This method specifically checks for albums where the Release Artist is 
+        "Various Artists" (or variants like "Various", "VA", "Soundtrack").
+        
         Args:
             title: Track title
             artist: Artist name (the original artist)
-            min_appearances: Minimum number of compilation appearances to confirm (default: 2)
+            min_appearances: Minimum number of Various Artists album appearances (default: 3)
             
         Returns:
-            True if the recording appears on multiple compilation/Various Artists albums
+            True if the recording appears on at least min_appearances Various Artists albums
         """
         if not self.enabled:
             return False
@@ -871,28 +874,24 @@ class MusicBrainzClient:
                 recording = recordings[0]
                 releases = recording.get("releases", [])
                 
-                # Count appearances on Various Artists or compilation albums
+                # Count appearances on Various Artists albums only
+                # Only count albums where the Release Artist is specifically "Various Artists" or variants
                 various_artists_count = 0
-                artist_lower = artist.lower()
                 
                 for release in releases:
-                    # Check artist credits - if it's Various Artists or different from original artist
+                    # Check artist credits - only count if it's explicitly Various Artists
                     artist_credits = release.get("artist-credit", [])
                     if artist_credits:
                         # Get the first artist name from credits
                         release_artist = artist_credits[0].get("name", "").lower() if isinstance(artist_credits[0], dict) else ""
                         
-                        # Count if it's Various Artists or a different artist
+                        # Only count if the release artist is explicitly "Various Artists" or known variants
                         if release_artist in ("various artists", "various", "va", "soundtrack"):
                             various_artists_count += 1
-                            logger.debug(f"MusicBrainz: Found '{title}' on Various Artists album: {release.get('title', 'Unknown')}")
-                        elif release_artist and release_artist != artist_lower:
-                            # Also count if it appears on another artist's album (compilation indicator)
-                            various_artists_count += 1
-                            logger.debug(f"MusicBrainz: Found '{title}' on {release_artist} album: {release.get('title', 'Unknown')}")
+                            logger.debug(f"MusicBrainz: Found '{title}' on Various Artists album: {release.get('title', 'Unknown')} (artist: {release_artist})")
                 
                 if various_artists_count >= min_appearances:
-                    logger.debug(f"MusicBrainz: '{title}' appears on {various_artists_count} Various Artists/compilation albums")
+                    logger.debug(f"MusicBrainz: '{title}' appears on {various_artists_count} Various Artists albums (threshold: {min_appearances})")
                     return True
                 
                 return False
