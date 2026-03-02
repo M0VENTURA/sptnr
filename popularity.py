@@ -5141,8 +5141,36 @@ def popularity_scan(
                                 if track_zscore > 1.0 and not is_single:
                                     stars = 5
                                     is_popularity_based_5star = True
-                                    log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f}, not single-detected)")
-                                    log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                    
+                                    # Verify track is also in top 40% of artist's catalog (60th percentile)
+                                    # If not, downgrade to 4★ (album standout, not artist standout)
+                                    try:
+                                        cursor = conn.cursor()
+                                        cursor.execute(
+                                            """SELECT COALESCE(popularity_score, 0) as pop FROM tracks 
+                                               WHERE artist = ? ORDER BY popularity_score DESC""",
+                                            (artist,)
+                                        )
+                                        all_pops = [row[0] for row in cursor.fetchall() if row[0] > 0]
+                                        if all_pops:
+                                            # Calculate 60th percentile (top 40%)
+                                            import numpy as np
+                                            top_40_threshold = float(np.percentile(all_pops, 60))
+                                            if popularity_score < top_40_threshold:
+                                                stars = 4
+                                                is_popularity_based_5star = False
+                                                log_info(f"4-star assignment: {title} (album standout z={track_zscore:.2f}, but not top 40% artist catalog pop={popularity_score:.1f} < p60={top_40_threshold:.1f})")
+                                                log_debug(f"Album standout downgraded - track_id: {track_id}, pop: {popularity_score}, top_40_percentile: {top_40_threshold}, zscore: {track_zscore:.2f}")
+                                            else:
+                                                log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f}, top 40% artist p60={top_40_threshold:.1f})")
+                                                log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}, pop: {popularity_score}")
+                                        else:
+                                            log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f})")
+                                            log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
+                                    except Exception as e:
+                                        log_debug(f"Could not calculate top 40% threshold: {e}")
+                                        log_info(f"5-star assignment: {title} (top z-score cluster z={track_zscore:.2f})")
+                                        log_debug(f"Top cluster pure popularity track - track_id: {track_id}, zscore: {track_zscore:.2f}")
                                 else:
                                     stars = max(stars, 4)
                                     log_info(f"4-star assignment: {title} (top cluster but z={track_zscore:.2f} or detected as single)")
