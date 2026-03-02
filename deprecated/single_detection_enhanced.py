@@ -1532,8 +1532,28 @@ def detect_single_enhanced(
     spotify_version_count = count_spotify_versions(spotify_results or [], title, duration, isrc)
     result['spotify_version_count'] = spotify_version_count
     
-    # STAGE 1: Discogs Check (Primary Source) - ALWAYS CHECKED FIRST
-    # Discogs is checked before pre-filter so authoritative metadata is not filtered out
+    # STAGE 1: Z-Score Filter (EFFICIENCY GATE)
+    # Calculate z-scores early. Only proceed if track shows standout characteristics
+    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
+    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
+    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
+    
+    result['z_score'] = album_z
+    result['album_z_score'] = album_z
+    result['artist_z_score'] = artist_z
+    
+    # If track has no standout characteristics (both album and artist z-scores ≤ 0), skip detection
+    if album_z <= 0.0 and artist_z <= 0.0:
+        log_debug(f"[ZSCORE] ✗ Z-scores too low for single detection (album_z={album_z:.2f}, artist_z={artist_z:.2f})")
+        if verbose:
+            log_debug(f"Z-score filter: Skipping {title} (no standout characteristics)")
+        return result
+    
+    log_debug(f"[ZSCORE] ✓ Track shows standout characteristics (album_z={album_z:.2f}, artist_z={artist_z:.2f}) - proceeding to metadata checks")
+    if verbose:
+        log_debug(f"Z-score filter: {title} qualifies for detailed single detection")
+    
+    # STAGE 2: Discogs Check (Primary Source) - ALWAYS CHECKED (after z-score passes)
     discogs_confirmed = False
     if discogs_client and hasattr(discogs_client, 'enabled') and discogs_client.enabled:
         try:
@@ -1565,12 +1585,6 @@ def detect_single_enhanced(
                     result['single_confidence'] = 'high'
                     result['is_single'] = True
                     result['single_confidence_score'] = 1.0
-                    album_z = calculate_z_score_strict(popularity, album_mean, album_stddev)
-                    result['z_score'] = album_z
-                    result['album_z_score'] = album_z
-                    artist_mean, artist_stddev, _ = get_cached_artist_stats(conn, artist)
-                    artist_z = calculate_z_score_strict(popularity, artist_mean, artist_stddev)
-                    result['artist_z_score'] = artist_z
                     return result
             else:
                 log_debug(f"[DISCOGS] ✗ NOT confirmed as single by Discogs")
@@ -1588,30 +1602,6 @@ def detect_single_enhanced(
             elif not getattr(discogs_client, 'enabled', True):
                 log_debug(f"[DISCOGS] Client disabled in configuration")
                 log_info(f"   ⓘ Discogs client is disabled")
-    
-    # STAGE 2: Pre-Filter (blocks low-priority tracks from continued checking)
-    # Only check remaining sources if track passes pre-filter criteria
-    if not should_check_track(popularity, album_mean, album_stddev, album_median, album_popularities, spotify_version_count, is_compilation):
-        log_debug(f"[PREFILTER] ✗ REJECTED - Track does not meet pre-filter criteria (not high priority)")
-        if verbose:
-            log_debug(f"Pre-filter: Skipping {title} (not high priority, no Discogs confirmation)")
-        return result
-    
-    log_debug(f"[PREFILTER] ✓ PASSED - Track meets priority criteria")
-    if verbose:
-        log_debug(f"Pre-filter: Checking {title} (high priority)")
-    
-    # ALBUM-LEVEL POPULARITY FILTER
-    # Reject single detection if track popularity is below album median
-    # Uses median instead of mean for robustness against outliers (very popular singles)
-    album_filter_passed = True
-    if album_median > 0 and popularity > 0 and popularity < album_median:
-        log_debug(f"[ALBUM_FILTER] ✗ Album-level popularity filter: pop={popularity:.1f} < album_median={album_median:.1f}")
-        if verbose:
-            log_debug(f"Album-level popularity filter: Track {title} (pop={popularity:.1f} < album_median={album_median:.1f})")
-        album_filter_passed = False
-    else:
-        log_debug(f"[ALBUM_FILTER] ✓ PASSED - Track popularity acceptable (pop={popularity:.1f}, median={album_median:.1f})")
     
     # STAGE 3: MusicBrainz (Secondary Source - checked before Spotify per new ordering)
     # Declare all source variables first
