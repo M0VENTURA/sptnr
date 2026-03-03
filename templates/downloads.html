@@ -3543,6 +3543,52 @@ async function refreshUpcomingReleases() {
   }
 }
 
+function filterUpcomingReleases() {
+  const searchInput = document.getElementById('upcomingSearchBox');
+  const searchTerm = searchInput.value.toLowerCase();
+  const accordion = document.getElementById('releaseAccordion');
+  
+  if (!accordion) return;
+  
+  const accordionItems = accordion.querySelectorAll('.accordion-item');
+  
+  accordionItems.forEach(item => {
+    const table = item.querySelector('table');
+    if (!table) return;
+    
+    const rows = table.querySelectorAll('tbody tr');
+    let visibleRowCount = 0;
+    
+    rows.forEach(row => {
+      // Get artist and album text from first two cells
+      const cells = row.querySelectorAll('td');
+      if (cells.length >= 2) {
+        const artistText = cells[0].textContent.toLowerCase();
+        const albumText = cells[1].textContent.toLowerCase();
+        
+        // Check if row matches search term
+        const matches = searchTerm === '' || 
+                       artistText.includes(searchTerm) || 
+                       albumText.includes(searchTerm);
+        
+        if (matches) {
+          row.style.display = '';
+          visibleRowCount++;
+        } else {
+          row.style.display = 'none';
+        }
+      }
+    });
+    
+    // Show/hide accordion section based on visible rows
+    if (visibleRowCount === 0) {
+      item.style.display = 'none';
+    } else {
+      item.style.display = '';
+    }
+  });
+}
+
 function searchReleaseDownloads(event, artist, album) {
   // Prevent any default behavior
   event.preventDefault();
