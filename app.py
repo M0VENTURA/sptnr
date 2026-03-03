@@ -5696,7 +5696,7 @@ def track_detail(track_id):
 
 @app.route("/track/<track_id>/edit", methods=["POST"])
 def track_edit(track_id):
-    """Update track metadata"""
+    """Update track metadata and write to audio file"""
     conn = get_db()
     cursor = conn.cursor()
     
@@ -5720,7 +5720,13 @@ def track_edit(track_id):
     disc_number = request.form.get("disc_number", type=int) or None
     comment = request.form.get("comment", "").strip() or None
     
+    # First, get the file path from database
+    cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
+    file_result = cursor.fetchone()
+    file_path = file_result.get("file_path") if file_result else None
+    
     # Update database
+    file_write_success = False
     try:
         cursor.execute("""
             UPDATE tracks
@@ -5734,7 +5740,50 @@ def track_edit(track_id):
               track_number, disc_number, comment, track_id))
         
         conn.commit()
-        flash(f"Track '{title or 'Unknown'}' updated successfully", "success")
+        
+        # Now write tags to audio file if file path exists
+        if file_path:
+            try:
+                from helpers.tag_manager import write_tags_to_file
+                
+                # Prepare tags dictionary
+                tags_to_write = {}
+                if title:
+                    tags_to_write["title"] = title
+                if artist:
+                    tags_to_write["artist"] = artist
+                if album:
+                    tags_to_write["album"] = album
+                if album_artist:
+                    tags_to_write["album_artist"] = album_artist
+                if genres:
+                    tags_to_write["genre"] = genres
+                if year:
+                    tags_to_write["year"] = year
+                if composer:
+                    tags_to_write["composer"] = composer
+                if track_number:
+                    tags_to_write["track_number"] = int(track_number) if track_number.isdigit() else track_number
+                if disc_number:
+                    tags_to_write["disc_number"] = disc_number
+                if comment:
+                    tags_to_write["comment"] = comment
+                if mbid:
+                    tags_to_write["mbid"] = mbid
+                
+                # Write to file
+                file_write_success = write_tags_to_file(file_path, tags_to_write)
+                
+                if file_write_success:
+                    flash(f"Track '{title or 'Unknown'}' updated successfully (DB + File)", "success")
+                else:
+                    flash(f"Track '{title or 'Unknown'}' updated in database, but failed to write to audio file", "warning")
+            except ImportError as e:
+                logging.warning(f"Tag manager import failed: {e}")
+                flash(f"Track '{title or 'Unknown'}' updated successfully (database only - tag writer unavailable)", "info")
+        else:
+            flash(f"Track '{title or 'Unknown'}' updated successfully (database only - no file path found)", "info")
+            
     except Exception as e:
         conn.rollback()
         logging.error(f"Error updating track: {e}")
