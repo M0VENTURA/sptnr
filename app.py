@@ -2,6 +2,7 @@
 from helpers.db_utils import (
     ensure_album_artist_column,
     ensure_musicbrainz_album_mbid_column,
+    ensure_writer_column,
     verify_album_artist_column,
 )
 import os
@@ -363,11 +364,15 @@ ensure_result = ensure_album_artist_column()
 # Ensure legacy beets_album_mbid has been migrated to musicbrainz_album_mbid.
 ensure_musicbrainz_album_mbid_column()
 
+# Ensure writer column exists for storing lyricist/songwriter information
+ensure_writer_column()
+
 # Verify the migration worked
 verification = verify_album_artist_column()
 logging.info(f"Album Artist Migration Status: {verification['message']}")
 if not verification["exists"]:
     logging.warning(f"⚠️ Database migration issue: {verification['message']}")
+
 
 # Initialize complete database schema (all tables now created/verified in update_schema)
 # This ensures all tables and columns exist on startup

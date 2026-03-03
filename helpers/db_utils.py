@@ -211,3 +211,53 @@ def get_current_track_rating(track_id: str) -> int:
         import logging
         logging.debug(f"Failed to get current rating for track {track_id}: {e}")
         return 0
+
+
+def ensure_writer_column():
+    """Ensure the writer column exists in the tracks table for storing lyricist/songwriter info.
+    
+    This is called on app startup to automatically add the writer column
+    if it doesn't exist, allowing Navidrome lyricist data to be stored.
+    """
+    import logging
+    
+    try:
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Check if tracks table exists
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='tracks'")
+        if not cursor.fetchone():
+            logging.warning("Tracks table does not exist yet, skipping writer column migration")
+            conn.close()
+            return False
+        
+        # Check if writer column exists
+        cursor.execute("PRAGMA table_info(tracks)")
+        columns = {row[1] for row in cursor.fetchall()}
+        
+        if 'writer' not in columns:
+            # Add the writer column
+            logging.info("Creating writer column for lyricist/songwriter data...")
+            try:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN writer TEXT")
+                conn.commit()
+                logging.info("✓ Successfully added writer column to tracks table")
+            except sqlite3.OperationalError as e:
+                if "duplicate column name" not in str(e).lower():
+                    logging.error(f"✗ Failed to add writer column: {e}")
+                    conn.close()
+                    raise
+                else:
+                    logging.info("✓ Writer column already exists")
+        else:
+            logging.debug("✓ Writer column already exists in tracks table")
+        
+        conn.close()
+        return True
+        
+    except Exception as e:
+        logging.error(f"✗ Error ensuring writer column exists: {e}", exc_info=True)
+        # Don't fail app startup, but log the error
+        return False
+

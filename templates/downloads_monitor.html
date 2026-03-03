@@ -474,8 +474,11 @@ async function loadQueueStatus() {
     const queue = data.queue;
     
     // Categorize items
-    const active = queue.filter(item => ['queued', 'searching', 'downloading', 'discovered', 'possible_duplicate', 'pending_match'].includes(item.status));
-    const completed = queue.filter(item => item.status === 'completed');
+    // Active Queue: actively being processed (queued, searching, downloading)
+    // Possible duplicates are flagged but not active downloads
+    // Discovered and pending_match are found files ready for review, not active
+    const active = queue.filter(item => ['queued', 'searching', 'downloading'].includes(item.status));
+    const completed = queue.filter(item => ['completed', 'discovered', 'pending_match', 'possible_duplicate'].includes(item.status));
     const failed = queue.filter(item => item.status === 'failed');
     
     // Update counts
