@@ -5618,12 +5618,14 @@ def popularity_scan(
                                     # Get all tracks with Last.fm playcount for this artist
                                     try:
                                         cursor = conn.cursor()
-                                        cursor.execute(
-                                            """SELECT COALESCE(lastfm_track_playcount, 0) as playcount 
-                                               FROM tracks WHERE artist = ? AND lastfm_track_playcount > 0 
-                                               ORDER BY lastfm_track_playcount DESC""",
-                                            (artist,)
-                                        )
+                                                                                cursor.execute(
+                                                                                        """SELECT COALESCE(lastfm_track_playcount, 0) as playcount
+                                                                                             FROM tracks
+                                                                                             WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
+                                                                                                 AND lastfm_track_playcount > 0
+                                                                                             ORDER BY lastfm_track_playcount DESC""",
+                                                                                        (artist,)
+                                                                                )
                                         all_playcounts = [row[0] for row in cursor.fetchall() if row[0] > 0]
                                         
                                         if all_playcounts and track_lastfm_playcount > 0:
@@ -5979,7 +5981,7 @@ def popularity_scan(
             cursor.execute(
                 """SELECT id, artist, album, title, stars
                 FROM tracks 
-                WHERE artist = ?
+                WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?
                 ORDER BY stars DESC, popularity_score DESC""",
                 (artist,)
             )
@@ -6264,7 +6266,7 @@ def refresh_all_playlists_from_db():
     try:
         conn = get_db_connection()
         cursor = conn.cursor()
-        cursor.execute("SELECT DISTINCT artist FROM tracks")
+        cursor.execute("SELECT DISTINCT COALESCE(NULLIF(album_artist, ''), artist) AS artist_name FROM tracks")
         artists = [row[0] for row in cursor.fetchall()]
         
         if not artists:
@@ -6272,7 +6274,12 @@ def refresh_all_playlists_from_db():
             return
         
         for name in artists:
-            cursor.execute("SELECT id, artist, album, title, stars FROM tracks WHERE artist = ?", (name,))
+            cursor.execute(
+                """SELECT id, artist, album, title, stars
+                   FROM tracks
+                   WHERE COALESCE(NULLIF(album_artist, ''), artist) = ?""",
+                (name,)
+            )
             rows = cursor.fetchall()
             
             if not rows:
