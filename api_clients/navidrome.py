@@ -277,6 +277,19 @@ class NavidromeClient:
         
         navidrome_genres = "\\".join(genres_list) if genres_list else ""
 
+        # Extract lyricists field from Navidrome - store as JSON array for writer field
+        writers_list = []
+        lyricists = track.get("lyricists", [])
+        if lyricists and isinstance(lyricists, list):
+            # If lyricists is a list of objects with 'name' field
+            writers_list = [l.get("name", "").strip() if isinstance(l, dict) else str(l).strip() for l in lyricists if (l.get("name", "").strip() if isinstance(l, dict) else str(l).strip())]
+        elif isinstance(lyricists, str) and lyricists.strip():
+            # If lyricists is a string, treat as single value
+            writers_list = [lyricists.strip()]
+        
+        import json
+        writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
+
         return {
             "duration": track.get("duration"),  # seconds
             "track_number": _safe_int(raw_track),
@@ -287,6 +300,7 @@ class NavidromeClient:
             "bitrate": track.get("bitRate"),  # kbps
             "sample_rate": track.get("samplingRate"),  # Hz
             "navidrome_genres": navidrome_genres,
+            "writer": writer_json,  # JSON array of lyricists from Navidrome
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
         }

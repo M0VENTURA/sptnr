@@ -197,6 +197,18 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                 navidrome_genre = t.get("genre", "")
                 navidrome_genre_list = [navidrome_genre] if navidrome_genre else []
                 
+                # Extract lyricists from Navidrome - store as JSON array for writer field
+                writers_list = []
+                lyricists = t.get("lyricists", [])
+                if lyricists and isinstance(lyricists, list):
+                    # If lyricists is a list of objects with 'name' field
+                    writers_list = [l.get("name", "").strip() if isinstance(l, dict) else str(l).strip() for l in lyricists if (l.get("name", "").strip() if isinstance(l, dict) else str(l).strip())]
+                elif isinstance(lyricists, str) and lyricists.strip():
+                    # If lyricists is a string, treat as single value
+                    writers_list = [lyricists.strip()]
+                
+                writer_json = json.dumps(writers_list) if writers_list else json.dumps([])
+                
                 # Extract track-level artist for featured artist detection
                 # Fallback to album artist if track artist not available
                 track_artist = t.get("artist", "") or artist_name
@@ -243,6 +255,7 @@ def scan_artist_to_db(artist_name: str, artist_id: str, verbose: bool = False, f
                     "track_number": _safe_int(raw_track),
                     "disc_number": _safe_int(raw_disc),
                     "year": t.get("year"),
+                    "writer": writer_json,  # JSON array of lyricists from Navidrome
                     "album_artist": album_artist_value,
                     "bitrate": t.get("bitRate"),
                     "sample_rate": t.get("samplingRate"),
