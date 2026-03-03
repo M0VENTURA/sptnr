@@ -251,6 +251,26 @@
 
 <script>
 // Queue management functions for downloads monitor
+
+async function fetchJsonOrThrow(url, options = {}) {
+  const response = await fetch(url, options);
+  const raw = await response.text();
+
+  let data = null;
+  try {
+    data = raw ? JSON.parse(raw) : {};
+  } catch (e) {
+    throw new Error(`Server returned non-JSON response (HTTP ${response.status})`);
+  }
+
+  if (!response.ok) {
+    const serverMsg = data && data.error ? data.error : response.statusText;
+    throw new Error(`HTTP ${response.status}: ${serverMsg || 'Request failed'}`);
+  }
+
+  return data;
+}
+
 async function addToQueue(event) {
   event.preventDefault();
   
@@ -266,13 +286,11 @@ async function addToQueue(event) {
   }
   
   try {
-    const response = await fetch('/api/queue/add', {
+    const data = await fetchJsonOrThrow('/api/queue/add', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ artist, title, album, source, priority })
     });
-    
-    const data = await response.json();
     
     if (data.success) {
       alert(`✅ Added to queue: ${artist} - ${title}`);
@@ -293,12 +311,10 @@ async function discoverFiles() {
     button.disabled = true;
     button.innerHTML = '<i class="bi bi-hourglass-split"></i> Scanning...';
     
-    const response = await fetch('/api/downloads/discover', {
+    const data = await fetchJsonOrThrow('/api/downloads/discover', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
-    
-    const data = await response.json();
     
     button.disabled = false;
     button.innerHTML = '<i class="bi bi-search"></i> Discover Files';
@@ -346,12 +362,10 @@ async function processAlbums() {
     button.disabled = true;
     button.innerHTML = '<i class="bi bi-hourglass-split"></i> Processing...';
     
-    const response = await fetch('/api/downloads/process-albums', {
+    const data = await fetchJsonOrThrow('/api/downloads/process-albums', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' }
     });
-    
-    const data = await response.json();
     
     button.disabled = false;
     button.innerHTML = '<i class="bi bi-collection"></i> Process Albums';
@@ -397,12 +411,11 @@ async function useExistingMetadata(artist, album) {
   if (!confirm(`Process ${artist} - ${album} using existing file metadata?`)) return;
 
   try {
-    const response = await fetch('/api/downloads/albums/use-existing', {
+    const data = await fetchJsonOrThrow('/api/downloads/albums/use-existing', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ artist, album })
     });
-    const data = await response.json();
 
     if (data.success) {
       alert(`✅ Processed ${data.processed}/${data.total} tracks using existing metadata`);
@@ -423,12 +436,11 @@ async function applyMusicBrainzMatch(artist, album, releaseGroupId) {
   }
 
   try {
-    const response = await fetch('/api/downloads/albums/apply-match', {
+    const data = await fetchJsonOrThrow('/api/downloads/albums/apply-match', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ artist, album, release_group_id: releaseGroupId })
     });
-    const data = await response.json();
 
     if (data.success) {
       alert(`✅ Applied MusicBrainz match and processed ${data.processed}/${data.total} tracks`);
@@ -449,8 +461,7 @@ function searchOtherSources(artist, album) {
 
 async function loadQueueStatus() {
   try {
-    const response = await fetch('/api/downloads/queue?limit=100');
-    const data = await response.json();
+    const data = await fetchJsonOrThrow('/api/downloads/queue?limit=100');
     
     if (!data || !data.queue) {
       console.error('Queue status error:', data?.error || 'Invalid response');
@@ -734,11 +745,9 @@ async function organizeFile(queueId) {
   }
   
   try {
-    const response = await fetch(`/api/queue/${queueId}/organize`, {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/organize`, {
       method: 'POST'
     });
-    
-    const data = await response.json();
     
     if (data.success) {
       alert('✅ File organized successfully!');
@@ -754,13 +763,11 @@ async function organizeFile(queueId) {
 
 async function retryQueueItem(queueId) {
   try {
-    const response = await fetch(`/api/queue/${queueId}/update`, {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/update`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ status: 'queued' })
     });
-    
-    const data = await response.json();
     
     if (data.success) {
       alert('✅ Retrying download...');
@@ -780,11 +787,9 @@ async function deleteQueueItem(queueId) {
   }
   
   try {
-    const response = await fetch(`/api/queue/${queueId}/delete`, {
+    const data = await fetchJsonOrThrow(`/api/queue/${queueId}/delete`, {
       method: 'DELETE'
     });
-    
-    const data = await response.json();
     
     if (data.success) {
       alert('✅ Removed from queue');
@@ -870,11 +875,9 @@ async function organizeGroup(queueIds) {
   
   for (const queueId of queueIds) {
     try {
-      const response = await fetch(`/api/queue/${queueId}/organize`, {
+      const data = await fetchJsonOrThrow(`/api/queue/${queueId}/organize`, {
         method: 'POST'
       });
-      
-      const data = await response.json();
       
       if (data.success) {
         successCount++;
@@ -907,11 +910,9 @@ async function deleteGroup(queueIds) {
   
   for (const queueId of queueIds) {
     try {
-      const response = await fetch(`/api/queue/${queueId}/delete`, {
+      const data = await fetchJsonOrThrow(`/api/queue/${queueId}/delete`, {
         method: 'DELETE'
       });
-      
-      const data = await response.json();
       
       if (data.success) {
         successCount++;
