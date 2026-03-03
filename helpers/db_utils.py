@@ -112,27 +112,45 @@ def ensure_musicbrainz_album_mbid_column():
 
         if has_legacy and not has_new:
             logging.info("Renaming tracks.beets_album_mbid -> tracks.musicbrainz_album_mbid")
-            cursor.execute(
-                "ALTER TABLE tracks RENAME COLUMN beets_album_mbid TO musicbrainz_album_mbid"
-            )
-            conn.commit()
-            logging.info("✓ Renamed beets_album_mbid to musicbrainz_album_mbid")
+            try:
+                cursor.execute(
+                    "ALTER TABLE tracks RENAME COLUMN beets_album_mbid TO musicbrainz_album_mbid"
+                )
+                conn.commit()
+                logging.info("✓ Renamed beets_album_mbid to musicbrainz_album_mbid")
+            except Exception as rename_error:
+                logging.warning(f"Rename failed (may already be done): {rename_error}")
+                # Try to verify the new column exists, if not add it
+                cursor.execute("PRAGMA table_info(tracks)")
+                columns_after = {row[1] for row in cursor.fetchall()}
+                if "musicbrainz_album_mbid" not in columns_after:
+                    logging.info("New column doesn't exist; adding it instead")
+                    cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
+                    conn.commit()
+                    logging.info("✓ Added musicbrainz_album_mbid column")
         elif has_legacy and has_new:
-            cursor.execute(
-                """
-                UPDATE tracks
-                SET musicbrainz_album_mbid = beets_album_mbid
-                WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
-                  AND beets_album_mbid IS NOT NULL
-                  AND beets_album_mbid != ''
-                """
-            )
-            conn.commit()
-            logging.info("✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid")
+            try:
+                cursor.execute(
+                    """
+                    UPDATE tracks
+                    SET musicbrainz_album_mbid = beets_album_mbid
+                    WHERE (musicbrainz_album_mbid IS NULL OR musicbrainz_album_mbid = '')
+                      AND beets_album_mbid IS NOT NULL
+                      AND beets_album_mbid != ''
+                    """
+                )
+                conn.commit()
+                logging.info("✓ Backfilled musicbrainz_album_mbid from legacy beets_album_mbid")
+            except Exception as backfill_error:
+                logging.warning(f"Backfill failed: {backfill_error}")
         elif not has_new:
-            cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
-            conn.commit()
-            logging.info("✓ Added missing musicbrainz_album_mbid column")
+            logging.info("Adding missing musicbrainz_album_mbid column")
+            try:
+                cursor.execute("ALTER TABLE tracks ADD COLUMN musicbrainz_album_mbid TEXT")
+                conn.commit()
+                logging.info("✓ Added missing musicbrainz_album_mbid column")
+            except Exception as add_error:
+                logging.warning(f"Add column failed (may already exist): {add_error}")
 
         conn.close()
         return True
