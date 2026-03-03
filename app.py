@@ -7579,20 +7579,28 @@ def scan_combined():
                     # Determine force rescan based on mode
                     force_rescan = (mode == 'force' or mode == 'resume_force')
                     
-                    # Determine start index for resume mode
+                    # Determine start index for resume mode using checkpoint file
                     start_idx = 0
+                    checkpoint_path = os.path.join(os.path.dirname(DB_PATH), "combined_scan_checkpoint.json")
                     if mode == 'resume' or mode == 'resume_force':
-                        from scan_resume import get_last_scanned_artist
-                        last_scanned_artist = get_last_scanned_artist(scan_type="combined", db_path=DB_PATH)
-                        if last_scanned_artist:
-                            logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}'")
-                            for idx, (artist_name, _) in enumerate(artists):
-                                if artist_name == last_scanned_artist:
-                                    start_idx = idx  # Start from this artist (rescan it completely)
-                                    logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
-                                    break
+                        if os.path.exists(checkpoint_path):
+                            try:
+                                with open(checkpoint_path, 'r') as f:
+                                    checkpoint = json.load(f)
+                                    last_scanned_artist = checkpoint.get("last_scanned_artist")
+                                    if last_scanned_artist:
+                                        logging.info(f"Resume mode: Found last scanned artist '{last_scanned_artist}' in checkpoint")
+                                        for idx, (artist_name, _) in enumerate(artists):
+                                            if artist_name == last_scanned_artist:
+                                                start_idx = idx  # Start from this artist (rescan it completely)
+                                                logging.info(f"Resuming combined scan from artist index {start_idx} ('{last_scanned_artist}')")
+                                                break
+                                    else:
+                                        logging.warning("Resume mode: Checkpoint exists but has no last_scanned_artist, starting from beginning")
+                            except Exception as e:
+                                logging.warning(f"Resume mode: Error reading checkpoint: {e}, starting from beginning")
                         else:
-                            logging.warning("Resume mode: No last scanned artist found, starting from beginning")
+                            logging.warning("Resume mode: No checkpoint found, starting from beginning")
                     
                     # Process each artist sequentially
                     for idx, (artist_name, info) in enumerate(artists[start_idx:], start=start_idx+1):
@@ -7600,6 +7608,7 @@ def scan_combined():
                         with scan_lock:
                             if scan_process_combined is None:
                                 logging.info("Combined scan stop signal received, exiting gracefully")
+                                # Preserve checkpoint for potential resume
                                 _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "stopped", "exit_code": 0})
                                 return
                         
@@ -7648,11 +7657,25 @@ def scan_combined():
                             "percent_complete": int((idx / total) * 100)
                         }
                         _write_progress_file(combined_progress_file, "combined_scan", True, progress_data)
+                        
+                        # Update checkpoint with the last scanned artist
+                        try:
+                            with open(checkpoint_path, 'w') as f:
+                                json.dump({"last_scanned_artist": artist_name}, f)
+                        except Exception as e:
+                            logging.warning(f"Error saving combined scan checkpoint: {e}")
+                    
+                    # Clear checkpoint when scan completes successfully
+                    if os.path.exists(checkpoint_path):
+                        os.remove(checkpoint_path)
                     
                     _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "complete", "exit_code": 0})
                     logging.info("Combined scan completed successfully")
                 except Exception as e:
                     logging.error(f"Error in combined scan: {e}", exc_info=True)
+                    # Clear checkpoint on error to prevent resuming from error state
+                    if os.path.exists(checkpoint_path):
+                        os.remove(checkpoint_path)
                     _write_progress_with_current_artist(combined_progress_file, "combined_scan", False, {"status": "error", "error": str(e), "exit_code": 1})
                 finally:
                     # Clean up thread reference when done
