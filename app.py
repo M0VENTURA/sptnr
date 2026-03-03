@@ -292,6 +292,21 @@ def split_genres(s):
     genres = re.split(r'[\\,]+', str(s))
     return [g.strip() for g in genres if g.strip()]
 
+
+@app.template_filter('split_artist_collabs')
+def split_artist_collabs(s):
+    """Split collaboration artist strings into individual artist names."""
+    if not s:
+        return []
+
+    import re
+
+    # Common collaboration delimiters used in imported metadata.
+    # Keep this conservative to avoid splitting legitimate band names.
+    parts = re.split(r'\s+(?:w/|feat\.?|ft\.?|featuring)\s+', str(s), flags=re.IGNORECASE)
+    cleaned = [p.strip() for p in parts if p and p.strip()]
+    return cleaned or [str(s).strip()]
+
 # Add Jinja2 filter for regex replacement
 @app.template_filter('regex_replace')
 def regex_replace(s, pattern, replacement):
