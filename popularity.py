@@ -5193,10 +5193,11 @@ def popularity_scan(
                         log_info(f'Starting cover detection for album "{artist} - {album}"')
                         
                         # Get all tracks for this album with metadata
+                        # Note: Use COALESCE to handle album_artist grouping like singles detection does
                         cursor.execute("""
                             SELECT id, title, artist, writer, mbid 
                             FROM tracks 
-                            WHERE artist = ? AND album = ?
+                            WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?
                             ORDER BY position
                         """, (artist, album))
                         album_tracks_for_cover = [dict(row) for row in cursor.fetchall()]
