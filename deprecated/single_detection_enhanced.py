@@ -1575,6 +1575,14 @@ def detect_single_enhanced(
         log_debug(f"[ZSCORE] Could not calculate artist z-score: {e}")
         artist_z = 0.0
     
+    # For compilation/greatest-hits albums, album-level distributions are often
+    # heterogeneous and less meaningful. Reuse artist-level z-score as the
+    # primary baseline so compilation tracks are evaluated against the artist's
+    # full catalogue rather than the mixed album cohort.
+    if is_compilation:
+        album_z = artist_z
+        log_debug(f"[ZSCORE] Compilation baseline override: using artist-wide z-score for album_z (album_z={album_z:.2f})")
+
     result['z_score'] = album_z
     result['album_z_score'] = album_z
     result['artist_z_score'] = artist_z
