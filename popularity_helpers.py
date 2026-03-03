@@ -10,6 +10,7 @@ import math
 import logging
 import json
 import time
+import difflib
 from contextlib import contextmanager
 from typing import Any, Tuple, List, Dict
 from datetime import datetime
@@ -330,7 +331,42 @@ def get_lastfm_track_info(artist: str, title: str) -> dict:
     elif stripped_title != normalized_title:
         logging.debug(f"Title normalization: '{stripped_title}' → '{normalized_title}'")
     
-    return _lastfm_client.get_track_info(artist, normalized_title)
+    # Try exact match first
+    result = _lastfm_client.get_track_info(artist, normalized_title)
+    
+    # If exact match failed (no listeners/playcount), try fuzzy matching
+    if result.get("listeners", 0) == 0 and result.get("track_play", 0) == 0:
+        logging.debug(f"Exact match failed for '{normalized_title}' by '{artist}', trying fuzzy search...")
+        
+        # Search for tracks by same artist
+        search_results = _lastfm_client.search_track(artist, normalized_title, limit=10)
+        
+        if search_results:
+            # Find best match using fuzzy string matching
+            best_match = None
+            best_ratio = 0.0
+            
+            for track in search_results:
+                track_name = track.get("name", "")
+                track_normalized = normalize_title_for_lastfm(track_name)
+                
+                # Calculate similarity ratio
+                ratio = difflib.SequenceMatcher(None, normalized_title.lower(), track_normalized.lower()).ratio()
+                
+                if ratio > best_ratio:
+                    best_ratio = ratio
+                    best_match = track_name
+            
+            # Accept fuzzy match if similarity > 0.85 (same threshold as Discogs verification)
+            if best_ratio > 0.85 and best_match:
+                logging.info(f"🔍 Fuzzy matched '{title}' → '{best_match}' by '{artist}' (similarity: {best_ratio:.2f})")
+                
+                # Fetch track info using the matched title
+                result = _lastfm_client.get_track_info(artist, best_match)
+            else:
+                logging.debug(f"No fuzzy match above threshold (best: {best_ratio:.2f}) for '{title}' by '{artist}'")
+    
+    return result
 
 
 def calculate_lastfm_popularity_score(listeners: int, artist_max_listeners: int = 0) -> float:

@@ -1084,7 +1084,7 @@ def get_album_type_with_fallback(artist: str, album: str, spotify_album_type: st
             # Check if it's a compilation (either primary or secondary type)
             if primary_type == "compilation" or "compilation" in secondary_types:
                 logger.debug(f"MusicBrainz: Album '{album}' by '{artist}' detected as compilation")
-               return ("compilation", "musicbrainz")
+                return ("compilation", "musicbrainz")
             
             # Combine primary type with secondary types for enhanced classification
             # Format: "primary (secondary)" for better readability

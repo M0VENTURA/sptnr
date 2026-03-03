@@ -375,6 +375,77 @@ class LastFmClient:
             logger.error(f"Failed to fetch Last.fm info for '{title}' by '{artist}': {e}")
             return {"track_play": 0, "listeners": 0, "toptags": {}}
     
+    def search_track(self, artist: str, title: str, limit: int = 10) -> list[dict]:
+        """
+        Search for tracks on Last.fm by artist and title.
+        
+        Used for fuzzy matching when exact track lookup fails.
+        
+        Args:
+            artist: Artist name to filter results
+            title: Track title to search for
+            limit: Maximum number of results to return (default 10)
+            
+        Returns:
+            List of dicts with 'name' (track title) and 'artist' keys
+            Returns empty list if no results or error
+        """
+        if not self.api_key:
+            logger.debug("Last.fm API key missing. Skipping search.")
+            return []
+        
+        params = {
+            "method": "track.search",
+            "track": title,
+            "api_key": self.api_key,
+            "format": "json",
+            "limit": limit
+        }
+        
+        try:
+            res = self.session.get(self.base_url, params=params, timeout=(5, 10))
+            res.raise_for_status()
+            data = res.json()
+            
+            # Extract track list from response
+            results = data.get("results", {})
+            trackmatches = results.get("trackmatches", {})
+            tracks = trackmatches.get("track", [])
+            
+            # Ensure it's always a list
+            if isinstance(tracks, dict):
+                tracks = [tracks]
+            
+            # Filter results to same artist (case-insensitive)
+            artist_lower = artist.lower()
+            filtered_tracks = []
+            for track in tracks:
+                track_artist = track.get("artist", "")
+                if isinstance(track_artist, dict):
+                    track_artist = track_artist.get("name", "")
+                
+                if track_artist.lower() == artist_lower:
+                    filtered_tracks.append({
+                        "name": track.get("name", ""),
+                        "artist": track_artist
+                    })
+            
+            return filtered_tracks
+            
+        except (ConnectionError, ConnectionResetError) as e:
+            logger.debug(f"Connection error searching for '{title}' by '{artist}': {e}")
+            return []
+        except Timeout as e:
+            logger.debug(f"Timeout searching for '{title}' by '{artist}': {e}")
+            return []
+        except HTTPError as e:
+            status_code = e.response.status_code if hasattr(e.response, 'status_code') else 'unknown'
+            logger.debug(f"HTTP error {status_code} searching for '{title}' by '{artist}': {e}")
+            return []
+        except Exception as e:
+            logger.debug(f"Failed to search Last.fm for '{title}' by '{artist}': {e}")
+            return []
+    
     def get_album_track_count(self, artist: str, album: str) -> int:
         """
         Fetch album track count from Last.fm.
