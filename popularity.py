@@ -5530,6 +5530,9 @@ def popularity_scan(
                     updates = []
                     # Track which medium-confidence tracks should be upgraded to is_single=1
                     single_upgrades = []
+                    # Popularity-only 5★ promotions require a strong outlier signal.
+                    # Keep this stricter than album standout tagging to avoid over-promotion.
+                    popularity_5star_z_threshold = 2.0
 
                     
                     for i, track_row in enumerate(album_tracks_with_scores):
@@ -5601,19 +5604,19 @@ def popularity_scan(
                         # Skip confidence-based upgrades for excluded tracks (e.g., bonus tracks with parentheses)
                         # These tracks were excluded from statistics calculation, so their z-scores are not meaningful
                         if not is_excluded_track:
-                            # **PRIORITY**: Standout tracks are elevated to 5★ only when they clear z-score threshold
-                            # This prevents near-threshold tracks (e.g. z < 1.0) from being over-promoted.
-                            if is_standout_track and track_zscore >= 1.0:
+                            # **PRIORITY**: Standout tracks are elevated to 5★ only when they are strong outliers.
+                            # This prevents medium outliers (e.g. z ~1.0-1.9) from being over-promoted.
+                            if is_standout_track and track_zscore >= popularity_5star_z_threshold:
                                 stars = 5
                                 is_popularity_based_5star = True
                                 log_info(f"5-star assignment: {title} (standout track, zscore={track_zscore:.2f})")
                                 log_debug(f"Standout elevation applied - track_id: {track_id}, is_standout_track: {is_standout_track}, zscore: {track_zscore:.2f}")
-                            # **PRIORITY**: Top z-score cluster tracks with z > 1 get 5★ (Popularity)
+                            # **PRIORITY**: Top z-score cluster tracks with z >= 2.0 get 5★ (Popularity)
                             # These are the peak standouts from the album based on z-score detection
                             # BUT: Only if they are NOT detected singles (preserve pure popularity rating)
                             elif track_id in top_cluster_tracks:
-                                # Top cluster + strong z-score + not a detected single = 5★
-                                if track_zscore > 1.0 and not is_single:
+                                    # Top cluster + strong outlier z-score + not a detected single = 5★
+                                if track_zscore >= popularity_5star_z_threshold and not is_single:
                                     stars = 5
                                     is_popularity_based_5star = True
                                     
@@ -5677,7 +5680,7 @@ def popularity_scan(
                                 if is_top_15_artist:
                                     # TOP 15% ARTIST alone is too permissive for 5★.
                                     # Require strong album outlier signal as well.
-                                    if track_zscore >= STANDOUT_CONFIG['star_5']['album_z']:
+                                    if track_zscore >= popularity_5star_z_threshold:
                                         stars = 5
                                         is_popularity_based_5star = True
                                         log_info(f"5-star assignment: {title} (top 15% artist + strong album z-score, pop={popularity_score:.1f}, z={track_zscore:.2f})")
