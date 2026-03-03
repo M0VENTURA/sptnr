@@ -5247,7 +5247,8 @@ def _auto_detect_album_type(artist_name: str, album_name: str):
                 pass
         
         # Check discogs_is_single flag if format check didn't yield result
-        if not new_type and discogs_is_single == 1:
+        # But sanity check: ignore if album has 6+ tracks (can't be a single)
+        if not new_type and discogs_is_single == 1 and total_tracks < 6:
             new_type = 'single'
             classification_reason = "Discogs confirmed as single"
         
