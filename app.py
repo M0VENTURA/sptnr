@@ -5723,7 +5723,7 @@ def track_edit(track_id):
     # First, get the file path from database
     cursor.execute("SELECT file_path FROM tracks WHERE id = ?", (track_id,))
     file_result = cursor.fetchone()
-    file_path = file_result.get("file_path") if file_result else None
+    file_path = file_result["file_path"] if file_result else None
     
     # Update database
     file_write_success = False
