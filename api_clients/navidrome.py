@@ -303,6 +303,7 @@ class NavidromeClient:
             "writer": writer_json,  # JSON array of lyricists from Navidrome
             "stars": int(track.get("userRating", 0) or 0),
             "mbid": track.get("mbid", "") or "",
+            "file_path": track.get("path", ""),  # File path from Navidrome
         }
     
     def start_scan(self) -> bool:

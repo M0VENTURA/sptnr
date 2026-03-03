@@ -13468,7 +13468,7 @@ def api_get_track(track_id):
         cursor.execute("""
             SELECT id, title, artist, album, genres, stars, is_single, 
                    single_confidence, duration, track_number, disc_number,
-                   year, album_artist, composer, comment, mbid
+                   year, album_artist, composer, comment, mbid, file_path
             FROM tracks 
             WHERE id = ?
         """, (track_id,))
@@ -13502,7 +13502,8 @@ def api_get_track(track_id):
                     'album_artist': row[12],
                     'composer': row[13],
                     'comment': row[14],
-                    'mbid': row[15]
+                    'mbid': row[15],
+                    'file_path': row[16]
                 }
         except (IndexError, TypeError) as e:
             logging.error(f"[API] Error converting track row to dict: {e}")
