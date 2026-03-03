@@ -4901,6 +4901,8 @@ def album_detail(artist, album):
                                  tracks_by_disc={},
                                  album_data=None,
                                  album_genres=[],
+                                 qbit_config={"enabled": False, "web_url": "http://localhost:8080"},
+                                 slskd_config={"enabled": False},
                                  error="Album not found")
         
         # Get album metadata from first track
@@ -13885,23 +13887,37 @@ def api_album_apply_mbid():
         
         conn = get_db()
         cursor = conn.cursor()
+
+        # Detect compatible MBID column for mixed schema deployments.
+        cursor.execute("PRAGMA table_info(tracks)")
+        track_columns = {row[1] for row in cursor.fetchall()}
+        mb_album_column = None
+        if "musicbrainz_album_mbid" in track_columns:
+            mb_album_column = "musicbrainz_album_mbid"
+        elif "beets_album_mbid" in track_columns:
+            mb_album_column = "beets_album_mbid"
         
         # Update all tracks in this album with MBID and cover art
         updates = []
         if mbid:
             updates.append("mbid = ?")
-            updates.append("musicbrainz_album_mbid = ?")
+            if mb_album_column:
+                updates.append(f"{mb_album_column} = ?")
         if cover_art_url:
             updates.append("cover_art_url = ?")
         
         if not updates:
             return jsonify({"error": "No data to update"}), 400
         
-        query = f"UPDATE tracks SET {', '.join(updates)} WHERE artist = ? AND album = ?"
+        query = (
+            f"UPDATE tracks SET {', '.join(updates)} "
+            "WHERE COALESCE(NULLIF(album_artist, ''), artist) = ? AND album = ?"
+        )
         params = []
         if mbid:
             params.append(mbid)
-            params.append(mbid)  # Same ID for both fields
+            if mb_album_column:
+                params.append(mbid)  # Same ID for both fields
         if cover_art_url:
             params.append(cover_art_url)
         params.extend([artist, album])

@@ -93,12 +93,12 @@
                     <i class="bi bi-download"></i> <span class="d-none d-sm-inline">Download</span>
                 </button>
                 <ul class="dropdown-menu dropdown-menu-end">
-                    {% if qbit_config.enabled %}
+                    {% if qbit_config is defined and qbit_config.enabled %}
                     <li><a class="dropdown-item" onclick="openQbitSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
                         <i class="bi bi-cloud-download"></i> Search qBittorrent
                     </a></li>
                     {% endif %}
-                    {% if slskd_config.enabled %}
+                    {% if slskd_config is defined and slskd_config.enabled %}
                     <li><a class="dropdown-item" onclick="openSlskdSearchAlbum('{{ artist_name|escapejs }}', '{{ album_name|escapejs }}')" href="javascript:void(0)">
                         <i class="bi bi-music-note-beamed"></i> Search Soulseek
                     </a></li>
